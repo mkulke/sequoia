@@ -34,6 +34,7 @@ sequoia-net = { path = "net", version = "0.7" }
 sequoia-store = { path = "store", version = "0.7" }
 sequoia-store-rusqlite = { path = "store-rusqlite", version = "0.7" }
 sequoia-tool = { path = "tool", version = "0.7" }
+sequoia-secret = { path = "secret", version = "0.7"  }
 sequoia-sqv = { path = "sqv", version = "0.7" }
 sequoia-guide = { path = "guide", version = "0.7" }
 
