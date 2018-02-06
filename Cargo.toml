@@ -11,6 +11,7 @@ openpgp = { path = "openpgp" }
 sequoia-core = { path = "core" }
 sequoia-ffi = { path = "ffi" }
 sequoia-net = { path = "net" }
+sequoia-secret = { path = "secret" }
 sequoia-store = { path = "store" }
 sequoia-tool = { path = "tool" }
 
