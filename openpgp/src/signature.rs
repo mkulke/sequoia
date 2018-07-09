@@ -422,7 +422,7 @@ impl Signature {
     pub fn verify_subkey_binding(&self, signer: &Key, pk: &Key, subkey: &Key)
         -> Result<bool>
     {
-        if self.sigtype != SignatureType::SubkeyBinding {
+        if self.sigtype != SignatureType::SubkeyBinding && self.sigtype != SignatureType::PrimaryKeyBinding {
             return Err(Error::UnsupportedSignatureType(self.sigtype).into());
         }
 
@@ -434,7 +434,7 @@ impl Signature {
             return Ok(false);
         }
 
-        if ! self.key_flags().can_sign() {
+        if ! (self.key_flags().can_sign() || self.key_flags().can_certify()) {
             // No backsig required.
             return Ok(true)
         }
