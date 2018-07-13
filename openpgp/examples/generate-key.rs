@@ -26,7 +26,7 @@ use openpgp::{
 use nettle::{curve25519, ed25519};
 
 fn new_rsa_key() -> Key {
-    let mut rng = nettle::Yarrow::default();
+    let mut rng = nettle::Yarrow::from_seed(b"penis");
     let (pubkey, seckey) = nettle::rsa::generate_keypair(&mut rng, 2048).unwrap();
     let mut key = Key::new()
         .pk_algo(PublicKeyAlgorithm::RSAEncryptSign);
@@ -34,14 +34,13 @@ fn new_rsa_key() -> Key {
         e: MPI::new(&pubkey.e()),
         n: MPI::new(&pubkey.n()),
     };
-    let (p, q) = seckey.primes();
-    let (_, _, inv) = seckey.d_crt();
+    let (p, q, u) = seckey.as_rfc4880();
     key.secret = Some(SecretKey::Unencrypted {
         mpis: MPIs::RSASecretKey {
             d: MPI::new(&seckey.d()),
             p: MPI::new(&p),
             q: MPI::new(&q),
-            u: MPI::new(&inv),
+            u: MPI::new(&u),
         },
     });
     key
@@ -152,7 +151,7 @@ fn main() {
             primary.hash(&mut hash);
             uid.hash(&mut hash);
             let mut sig = Signature::new(SignatureType::PositiveCertificate);
-            sig.set_key_flags(&KeyFlags::default().set_certify(true).set_sign(true)).unwrap();
+            sig.set_key_flags(&KeyFlags::default().set_certify(true).set_sign(true).set_encrypt_for_transport(true).set_encrypt_at_rest(true)).unwrap();
             sig.set_signature_creation_time(now).unwrap();
             sig.set_key_expiration_time(Some(time::Duration::weeks(52))).unwrap();
             sig.set_issuer_fingerprint(primary.fingerprint()).unwrap();
@@ -165,7 +164,7 @@ fn main() {
             primary.serialize(&mut sink, Tag::SecretKey).unwrap();
             uid.serialize(&mut sink).unwrap();
             sig.serialize(&mut sink).unwrap();
-
+/*
             let enc = new_encryption_key()
                 .creation_time(now);
 
@@ -188,6 +187,7 @@ fn main() {
 
             enc.serialize(&mut sink, Tag::SecretSubkey).unwrap();
             sig.serialize(&mut sink).unwrap();
+            */
         },
 
         "null-uid" => {
