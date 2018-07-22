@@ -1,0 +1,4 @@
+test:
+  script:
+    - apt install git rustc cargo clang make pkg-config nettle-dev libssl-dev capnproto libsqlite3-dev
+    - make test
