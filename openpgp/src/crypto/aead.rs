@@ -15,7 +15,7 @@ use conversions::{
 };
 use Error;
 use Result;
-use SessionKey;
+use crypto::SessionKey;
 
 impl AEADAlgorithm {
     /// Returns the digest size of the AEAD algorithm.
