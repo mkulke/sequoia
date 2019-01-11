@@ -40,6 +40,8 @@ ifneq "$(PYTHON)" "disable"
 	echo $$PYTHONPATH
 	LDFLAGS=-L$(CARGO_TARGET_DIR)/debug LD_LIBRARY_PATH=$(CARGO_TARGET_DIR)/debug \
 		strace -f -o trace -- $(PYTHON) setup.py test || (find ; grep _sequoia trace ; false)
+	LDFLAGS=-L$(CARGO_TARGET_DIR)/debug LD_LIBRARY_PATH=$(CARGO_TARGET_DIR)/debug \
+		$(PYTHON) setup.py test || (find ; false)
 endif
 
 .PHONY: shell
