@@ -37,8 +37,9 @@ test check:
 ifneq "$(PYTHON)" "disable"
 	LDFLAGS=-L$(CARGO_TARGET_DIR)/debug LD_LIBRARY_PATH=$(CARGO_TARGET_DIR)/debug \
 		PYTHONPATH=build/lib.linux-x86_64-3.7 $(PYTHON) -c "import _sequoia; print(_sequoia)"
+	echo $$PYTHONPATH
 	LDFLAGS=-L$(CARGO_TARGET_DIR)/debug LD_LIBRARY_PATH=$(CARGO_TARGET_DIR)/debug \
-		$(PYTHON) setup.py test || (find ; false)
+		strace -f -o trace -- $(PYTHON) setup.py test || (find ; grep _sequoia trace ; false)
 endif
 
 .PHONY: shell
