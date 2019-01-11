@@ -8,6 +8,7 @@ test:
     - cargo --version
     - clang --version
     - make
+    - find ffi/lang/python
     - SEQUOIA_CTEST_VALGRIND=/usr/bin/valgrind make test
     - du -sh target
     - du -sh cargo
