@@ -36,6 +36,8 @@ endif
 test check:
 ifneq "$(PYTHON)" "disable"
 	LDFLAGS=-L$(CARGO_TARGET_DIR)/debug LD_LIBRARY_PATH=$(CARGO_TARGET_DIR)/debug \
+		PYTHONPATH=build/lib.linux-x86_64-3.7 $(PYTHON) -c "import sequoia; print(sequoia)"
+	LDFLAGS=-L$(CARGO_TARGET_DIR)/debug LD_LIBRARY_PATH=$(CARGO_TARGET_DIR)/debug \
 		$(PYTHON) setup.py test
 endif
 

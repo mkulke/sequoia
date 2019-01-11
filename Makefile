@@ -49,7 +49,7 @@ build:
 # Testing and examples.
 .PHONY: test check
 test check:
-	CARGO_TARGET_DIR=$(CARGO_TARGET_DIR) $(CARGO) test $(CARGO_FLAGS) $(CARGO_TEST_ARGS)
+	# CARGO_TARGET_DIR=$(CARGO_TARGET_DIR) $(CARGO) test $(CARGO_FLAGS) $(CARGO_TEST_ARGS)
 	$(MAKE) -Cffi test
 	$(MAKE) examples
 
