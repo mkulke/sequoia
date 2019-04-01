@@ -89,6 +89,21 @@ install: build-release
 	$(MAKE) -Copenpgp-ffi install
 	$(MAKE) -Cffi install
 	$(MAKE) -Csqv install
+	$(INSTALL) -d $(DESTDIR)$(PREFIX)/share/zsh/site-functions
+	$(INSTALL) -t $(DESTDIR)$(PREFIX)/share/zsh/site-functions \
+	    $(CARGO_TARGET_DIR)/_sq
+	$(INSTALL) -t $(DESTDIR)$(PREFIX)/share/zsh/site-functions \
+	    $(CARGO_TARGET_DIR)/_sqv
+	$(INSTALL) -d $(DESTDIR)$(PREFIX)/share/bash-completion/completions
+	$(INSTALL) -t $(DESTDIR)$(PREFIX)/share/bash-completion/completions/sq \
+	    $(CARGO_TARGET_DIR)/sq.bash
+	$(INSTALL) -t $(DESTDIR)$(PREFIX)/share/bash-completion/completions/sq \
+	    $(CARGO_TARGET_DIR)/sqv.bash
+	$(INSTALL) -d $(DESTDIR)$(PREFIX)/share/fish/completions
+	$(INSTALL) -t $(DESTDIR)$(PREFIX)/share/fish/completions \
+	    $(CARGO_TARGET_DIR)/sq.fish
+	$(INSTALL) -t $(DESTDIR)$(PREFIX)/share/fish/completions \
+	    $(CARGO_TARGET_DIR)/sqv.fish
 
 # Infrastructure for creating source distributions.
 .PHONY: dist
