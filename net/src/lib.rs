@@ -34,6 +34,7 @@
 
 extern crate sequoia_openpgp as openpgp;
 extern crate sequoia_core;
+extern crate sequoia_rfc2822 as rfc2822;
 
 #[macro_use]
 extern crate failure;
