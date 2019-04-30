@@ -656,4 +656,18 @@
 //! ARGS:
 //!     <EMAIL_ADDRESS>    The email address to obtain the WKD URI
 //!```
+//! ### Subcommand wkd get
+//! ```text
+//! Print the TPK retrieved from a WKD given an email address
+//!
+// !USAGE:
+//!     sq wkd get [EMAIL_ADDRESS]
+//!
+//! FLAGS:
+//!     -h, --help       Prints help information
+//!     -V, --version    Prints version information
+//!
+//! ARGS:
+//!     <EMAIL_ADDRESS>    The email address to obtain the TPK from the WKD
+//! ```
 include!("sq.rs");

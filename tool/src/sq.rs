@@ -26,7 +26,7 @@ use openpgp::conversions::hex;
 use openpgp::parse::Parse;
 use openpgp::serialize::Serialize;
 use sequoia_core::{Context, NetworkPolicy};
-use sequoia_net::{KeyServer, wkd};
+use sequoia_net::{KeyServer, wkd, async_get_wkd_tpk_from_email};
 use sequoia_store::{Store, LogIter};
 
 mod sq_cli;
@@ -461,10 +461,16 @@ fn real_main() -> Result<(), failure::Error> {
                     let url = wkd::create_wkd_url_from_email(email_address, None)?;
                     println!("{:?}", url);
                 },
+                ("get",  Some(m)) => {
+                    let email_address = m.value_of("input").unwrap();
+                    let tpk = async_get_wkd_tpk_from_email(email_address)?;
+                    println!("{:?}", tpk);
+                },
                 _ => unreachable!(),
             }
         },
         _ => unreachable!(),
+
     }
 
     return Ok(())

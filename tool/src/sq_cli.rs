@@ -436,5 +436,9 @@ pub fn build() -> App<'static, 'static> {
                                 .about("Print the WKD URL of an email address")
                                 .arg(Arg::with_name("input").value_name("EMAIL_ADDRESS")
                                      .help("The email address to obtain the WKD URI")))
+                    .subcommand(SubCommand::with_name("get")
+                                .about("Print the TPK retrieved from a WKD given an email address")
+                                .arg(Arg::with_name("input").value_name("EMAIL_ADDRESS")
+                                     .help("The email address to obtain the TPK from the WKD")))
         )
 }
