@@ -20,6 +20,7 @@ use openpgp::TPK;
 use openpgp::{KeyID, armor, serialize::Serialize};
 use openpgp::parse::Parse;
 use sequoia_core::{Context, NetworkPolicy};
+use wkd;
 
 use super::{Error, Result};
 
@@ -225,4 +226,44 @@ impl AClient for Client<HttpsConnector<HttpConnector>> {
 
 pub(crate) fn url2uri(uri: Url) -> hyper::Uri {
     format!("{}", uri).parse().unwrap()
+}
+
+
+/// Retrieves the trasferable public key from a Web Key Directory URL.
+///
+/// From [draft-koch]:
+/// The HTTP GET method MUST return the binary representation of the
+/// OpenPGP key for the given mail address.  The key needs to carry a
+/// User ID packet ([RFC4880]) with that mail address.
+// Maybe this function should be in wkd.rs?
+pub fn async_get_tpk_from_wkd_url(url: Url, email_address: String)
+           -> Box<Future<Item=TPK, Error=failure::Error> + 'static> {
+    let uri = url2uri(url);
+    // WKD URL must use TLS
+    let https = HttpsConnector::new(4).expect("TLS initialization failed");
+    let client = Client::builder().build::<_, hyper::Body>(https);
+    Box::new(client.get(uri)
+        .from_err()
+        .and_then(|res| {
+        let status = res.status();
+        println!("status {:?}", status);
+        res.into_body().concat2().from_err()
+        .and_then(|body| {
+            // println!("{:?}", body);
+            match TPK::from_bytes(&body) {
+                Ok(tpk) => {
+                    // Checks that a one of the userids in the transpferable
+                    // public key match the email address.
+                    // Move move this out of this function?
+                    if wkd::is_email_in_userids(&tpk, email_address) {
+                        future::done(Ok(tpk))
+                    } else {
+                        // Maybe return other error?
+                        future::err(Error::NotFound.into())
+                    }
+                },
+                Err(e) => future::err(e.into()),
+            }
+        })
+    }))
 }
