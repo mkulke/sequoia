@@ -7,8 +7,17 @@
 use nettle::{
     Hash, hash::insecure_do_not_use::Sha1,
 };
+use url::Url;
 
 use super::{Result};
+
+
+/// # CONSTANTS
+static SCHEME: &str = "https";
+static WELL_KNOWN: &str = ".well-known";
+static OPENPGPKEY : &str = "openpgpkey";
+static HU: &str = "hu";
+static L: &str = "l";
 
 
 /// Returns a 32-char long string from the local part of an email address
@@ -49,6 +58,47 @@ fn split_email_address(email_address: &str) -> Result<(String, String)> {
 }
 
 
+/// Returns the Web Key Directory URL to query.
+///
+/// # Example advanced direct method:
+/// https://openpgpkey.example.org/.well-known/openpgpkey/example.org/hu/
+/// iy9q119eutrkn8s1mk4r39qejnbu3n5q?l=Joe.Doe
+///
+/// # Example direct method:
+/// https://example.org/.well-known/openpgpkey/hu/
+/// iy9q119eutrkn8s1mk4r39qejnbu3n5q?l=Joe.Doe
+pub fn create_wkd_url_from_email<T>(email_address: &str, direct_method: T)
+            -> Result<Url>
+        where T: Into<Option<bool>> {
+    let (domain_string, local_part_string) =
+        split_email_address(email_address)?;
+    let domain = domain_string.as_str();
+    let local_part = local_part_string.as_str();
+    let local_encoded_string = encode_local_part(&local_part_string);
+    let local_encoded = local_encoded_string.as_str();
+
+    let direct_method = direct_method.into().unwrap_or(false);
+    let mut authority = [OPENPGPKEY, ".", domain].concat();
+    let mut path = vec![WELL_KNOWN, OPENPGPKEY, domain, HU, local_encoded].
+        join("/");
+    // println!("{:?}", path);
+    if direct_method {
+        authority = domain.to_string();
+        path = vec![WELL_KNOWN, OPENPGPKEY, HU, local_encoded].join("/");
+    };
+
+    let path_and_query = [path.as_str(), "?", L, "=", local_part].concat();
+    // println!("{:?}", path_and_query);
+    // Uri::builder() interprets the first "." in the path as part of the
+    // scheme.
+    // Url::parse ensure that the URL parses correctly.
+    let url = Url::parse(
+        [SCHEME, "://", authority.as_str(), "/", path_and_query.as_str()]
+        .concat().as_str()
+    )?;
+    Ok(url)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -72,5 +122,28 @@ mod tests {
         assert_eq!(expected_domain, domain);
         assert_eq!(expected_local_part, local_part);
         assert!(split_email_address("thisisnotanemailaddress").is_err());
+    }
+
+
+    #[test]
+    fn test_create_wkd_url_from_email() {
+        // Advanced method
+        let mut expected_uri = Url::parse(
+            ["https://openpgpkey.example.com/",
+            ".well-known/openpgpkey/example.com/hu/",
+            "stnkabub89rpcphiz4ppbxixkwyt1pic?l=test1"].concat().as_str()).
+            unwrap();
+        let mut uri = create_wkd_url_from_email("test1@example.com", None).unwrap();
+        assert_eq!(expected_uri, uri);
+        // Direct method
+        expected_uri = Url::parse(
+            ["https://example.com/",
+            ".well-known/openpgpkey/hu/",
+            "stnkabub89rpcphiz4ppbxixkwyt1pic?l=test1"].concat().as_str()).
+            unwrap();
+        uri = create_wkd_url_from_email("test1@example.com", true).unwrap();
+        assert_eq!(expected_uri, uri);
+        // invalidd email
+        assert!(create_wkd_url_from_email("invalidemail", true).is_err());
     }
 }
