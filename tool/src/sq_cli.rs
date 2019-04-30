@@ -428,4 +428,13 @@ pub fn build() -> App<'static, 'static> {
                                      .help("Sets the prefix to use for output files \
                                             (defaults to the input filename with a dash, \
                                             or 'output')"))))
+
+        .subcommand(SubCommand::with_name("wkd")
+                    .about("Interacts with Web Key Directories")
+                    .setting(AppSettings::ArgRequiredElseHelp)
+                    .subcommand(SubCommand::with_name("url")
+                                .about("Print the WKD URL of an email address")
+                                .arg(Arg::with_name("input").value_name("EMAIL_ADDRESS")
+                                     .help("The email address to obtain the WKD URI")))
+        )
 }

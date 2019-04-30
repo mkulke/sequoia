@@ -34,6 +34,7 @@
 //!     key          Manipulates keys
 //!     list         Lists key stores and known keys
 //!     packet       OpenPGP Packet manipulation
+//!     wkd          Interacts with Web Key Directories
 //! ```
 //!
 //! ## Subcommand decrypt
@@ -625,5 +626,34 @@
 //! ARGS:
 //!     <FILE>    Sets the input file to use
 //! ```
-
+//! ## Subcommand wkd
+//! ```text
+//! Interacts with Web Key Directories
+//!
+//! USAGE:
+//!     sq wkd [SUBCOMMAND]
+//!
+//! FLAGS:
+//!     -h, --help       Prints help information
+//!     -V, --version    Prints version information
+//!
+//! SUBCOMMANDS:
+//!     get     Print the TPK retrieved from a WKD given an email address
+//!     help    Prints this message or the help of the given subcommand(s)
+//!     url     Print the WKD URL of an email address
+//!```
+//! ### Subcommand wkd url
+//!```text
+//! Print the WKD URL of an email address
+//!
+//! USAGE:
+//!     sq wkd url [EMAIL_ADDRESS]
+//!
+//! FLAGS:
+//!     -h, --help       Prints help information
+//!     -V, --version    Prints version information
+//!
+//! ARGS:
+//!     <EMAIL_ADDRESS>    The email address to obtain the WKD URI
+//!```
 include!("sq.rs");
