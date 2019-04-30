@@ -9,6 +9,8 @@ use nettle::{
 };
 use url::Url;
 
+use openpgp::TPK;
+
 use super::{Result};
 
 
@@ -99,6 +101,28 @@ pub fn create_wkd_url_from_email<T>(email_address: &str, direct_method: T)
     Ok(url)
 }
 
+
+/// Return true if the email address is in one userid of the transferable
+/// public.
+pub fn is_email_in_userids(tpk: &TPK, email: String) -> bool {
+    for userid_binding in tpk.userids() {
+        // Not important if the userid address can not be parsed,
+        // but that at least one parses and match the email address.
+        let string = userid_binding.userid().address().
+            unwrap_or(None).unwrap_or("".to_string());
+        if string.as_str().contains(email.as_str()) {
+            println!("User ID matches email: {}", email);
+            return true
+        };
+    };
+    // Create an error type here?
+    let msg = format!("Can not find a User ID that matches the email
+                      for key: {:?}", tpk.fingerprint());
+    eprintln!("{}", msg);
+    false
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,5 +169,10 @@ mod tests {
         assert_eq!(expected_uri, uri);
         // invalidd email
         assert!(create_wkd_url_from_email("invalidemail", true).is_err());
+    }
+
+    #[test]
+    fn test_is_email_in_userids() {
+        // tpk: &TPK, email: String) -> bool
     }
 }
