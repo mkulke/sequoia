@@ -199,6 +199,44 @@ impl From<url::ParseError> for Error {
     }
 }
 
+
+/// Retrieves the transferable public key from an email address.
+///
+/// From [draft-koch]:
+/// Note that the key
+/// may be revoked or expired - it is up to the client to handle such
+/// conditions.  To ease distribution of revoked keys, a server may
+/// return revoked keys in addition to a new key.
+// Maybe this function should be in wkd.rs?
+pub fn async_get_wkd_tpk_from_email(email_address: &str) -> Result<TPK> {
+    let mut core = Core::new()?;
+    let mut url = wkd::create_wkd_url_from_email(email_address, None)?;
+    // println!("url {:?}", url);
+    // This should be refactored to be recursive
+    match core.run(async::async_get_tpk_from_wkd_url(
+            url, email_address.to_string())) {
+        Ok(tpk) => Ok(tpk),
+        Err(e)  => {
+            eprintln!("{:?}", e);
+            // From [draft-koch]:
+            // Implementations MUST first try the advanced method.
+            // Only if the required sub-domain does not exist, they SHOULD
+            // fall back to the direct method.
+            // What if the sub-domain exits but fails for other reason?.
+            // Is there any case where the error should be checked and do not
+            // try again?
+            url = wkd::create_wkd_url_from_email(email_address, true)?;
+            // println!("url {:?}", url);
+            match core.run(async::async_get_tpk_from_wkd_url(
+                    url, email_address.to_string())) {
+                Ok(tpk) => Ok(tpk),
+                Err(e) => Err(e.into())
+            }
+        },
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
