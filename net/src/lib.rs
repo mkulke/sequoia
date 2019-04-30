@@ -51,6 +51,10 @@ extern crate url;
 
 extern crate capnp_rpc;
 
+// For wkd:
+extern crate nettle;
+extern crate zbase32;
+
 use hyper::client::{ResponseFuture, HttpConnector};
 use hyper::{Client, Request, Body};
 use hyper_tls::HttpsConnector;
@@ -66,6 +70,7 @@ use sequoia_core::Context;
 pub mod async;
 use async::url2uri;
 pub mod ipc;
+pub mod wkd;
 
 /// For accessing keyservers using HKP.
 pub struct KeyServer {
