@@ -44,17 +44,15 @@ extern crate hyper;
 extern crate hyper_tls;
 extern crate memsec;
 extern crate native_tls;
+extern crate nettle;
 extern crate tokio_core;
 extern crate tokio_io;
 #[macro_use]
 extern crate percent_encoding;
 extern crate url;
+extern crate zbase32;
 
 extern crate capnp_rpc;
-
-// For wkd:
-extern crate nettle;
-extern crate zbase32;
 
 use hyper::client::{ResponseFuture, HttpConnector};
 use hyper::{Client, Request, Body};
