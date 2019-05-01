@@ -37,7 +37,7 @@ fn encode_local_part(local_part: &str) -> String {
     hasher.digest(&mut local_hash);
     // println!("Hash: {:?}", local_hash);
 
-    // After z-base-32 encoding 20 bytes, it should be 30 bytes lenght
+    // After z-base-32 encoding 20 bytes, it should be 30 bytes length
     // Even if zbase32 documentation talks about bites, it refers to bytes.
     // encode_full_bytes(data: &[u8]) -> String
     let local_encoded = zbase32::encode_full_bytes(&local_hash[..]);
