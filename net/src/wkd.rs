@@ -46,7 +46,7 @@ fn encode_local_part(local_part: &str) -> String {
 }
 
 
-/// Returns the domain and local_part of an email address
+/// Returns the local_part and domain of an email address
 fn split_email_address(email_address: &str) -> Result<(String, String)> {
     // Ensure that is a valid email address by parsing it.
     rfc2822::AddrSpec::parse(email_address)?;
@@ -56,7 +56,7 @@ fn split_email_address(email_address: &str) -> Result<(String, String)> {
     // println!("Local parth: {:?}", local_part);
     let domain = &v[1].to_lowercase();
     // println!("Domain: {:?}", domain);
-    Ok((domain.to_string(), local_part.to_string()))
+    Ok((local_part.to_string(), domain.to_string()))
 }
 
 
@@ -72,7 +72,7 @@ fn split_email_address(email_address: &str) -> Result<(String, String)> {
 pub fn create_wkd_url_from_email<T>(email_address: &str, direct_method: T)
             -> Result<Url>
         where T: Into<Option<bool>> {
-    let (domain_string, local_part_string) =
+    let (local_part_string, domain_string) =
         split_email_address(email_address)?;
     let domain = domain_string.as_str();
     let local_part = local_part_string.as_str();
@@ -141,7 +141,7 @@ mod tests {
     fn test_split_email_address() {
         let expected_domain = "example.com";
         let expected_local_part = "test1";
-        let (domain, local_part) = split_email_address("test1@example.com").
+        let (local_part, domain) = split_email_address("test1@example.com").
             unwrap();
         assert_eq!(expected_domain, domain);
         assert_eq!(expected_local_part, local_part);
