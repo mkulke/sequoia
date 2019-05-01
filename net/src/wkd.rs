@@ -172,6 +172,15 @@ mod tests {
 
     #[test]
     fn test_is_email_in_userids() {
-        // tpk: &TPK, email: String) -> bool
+        use openpgp::tpk::TPKBuilder;
+        let (tpk, _) = TPKBuilder::default()
+            .add_userid("test2@example.com")
+            .add_userid("test1 bar (baz) <test1@example.com>")
+            .add_signing_subkey()
+            .add_encryption_subkey()
+            .generate().unwrap();
+        assert!(is_email_in_userids(&tpk, "test1@example.com"));
+        assert!(!is_email_in_userids(&tpk, "test1@example.com.mallory.com"));
+        assert!(!is_email_in_userids(&tpk, "invalidemailaddress"));
     }
 }
