@@ -103,7 +103,7 @@ pub fn create_wkd_url_from_email<T>(email_address: &str, direct_method: T)
 
 
 /// Return true if the email address is in one userid of the transferable
-/// public.
+/// public key.
 pub fn is_email_in_userids<S: AsRef<str>>(tpk: &TPK, email: S) -> bool {
     let email = email.as_ref();
     for userid_binding in tpk.userids() {
