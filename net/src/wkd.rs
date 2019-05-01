@@ -153,18 +153,16 @@ mod tests {
     fn test_create_wkd_url_from_email() {
         // Advanced method
         let mut expected_uri = Url::parse(
-            ["https://openpgpkey.example.com/",
-            ".well-known/openpgpkey/example.com/hu/",
-            "stnkabub89rpcphiz4ppbxixkwyt1pic?l=test1"].concat().as_str()).
-            unwrap();
+            "https://openpgpkey.example.com/\
+            .well-known/openpgpkey/example.com/hu/\
+            stnkabub89rpcphiz4ppbxixkwyt1pic?l=test1").unwrap();
         let mut uri = create_wkd_url_from_email("test1@example.com", None).unwrap();
         assert_eq!(expected_uri, uri);
         // Direct method
         expected_uri = Url::parse(
-            ["https://example.com/",
-            ".well-known/openpgpkey/hu/",
-            "stnkabub89rpcphiz4ppbxixkwyt1pic?l=test1"].concat().as_str()).
-            unwrap();
+            "https://example.com/\
+            .well-known/openpgpkey/hu/\
+            stnkabub89rpcphiz4ppbxixkwyt1pic?l=test1").unwrap();
         uri = create_wkd_url_from_email("test1@example.com", true).unwrap();
         assert_eq!(expected_uri, uri);
         // invalidd email
