@@ -104,13 +104,14 @@ pub fn create_wkd_url_from_email<T>(email_address: &str, direct_method: T)
 
 /// Return true if the email address is in one userid of the transferable
 /// public.
-pub fn is_email_in_userids(tpk: &TPK, email: String) -> bool {
+pub fn is_email_in_userids<S: AsRef<str>>(tpk: &TPK, email: S) -> bool {
+    let email = email.as_ref();
     for userid_binding in tpk.userids() {
         // Not important if the userid address can not be parsed,
         // but that at least one parses and match the email address.
         let string = userid_binding.userid().address().
             unwrap_or(None).unwrap_or("".to_string());
-        if string.as_str().contains(email.as_str()) {
+        if string.as_str().contains(email) {
             println!("User ID matches email: {}", email);
             return true
         };
