@@ -111,7 +111,7 @@ pub fn is_email_in_userids<S: AsRef<str>>(tpk: &TPK, email: S) -> bool {
         // but that at least one parses and match the email address.
         let string = userid_binding.userid().address().
             unwrap_or(None).unwrap_or("".to_string());
-        if string.as_str().contains(email) {
+        if string.as_str() == email {
             println!("User ID matches email: {}", email);
             return true
         };
