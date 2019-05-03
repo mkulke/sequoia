@@ -34,6 +34,7 @@
 
 extern crate sequoia_openpgp as openpgp;
 extern crate sequoia_core;
+extern crate sequoia_rfc2822 as rfc2822;
 
 #[macro_use]
 extern crate failure;
@@ -43,11 +44,13 @@ extern crate hyper;
 extern crate hyper_tls;
 extern crate memsec;
 extern crate native_tls;
+extern crate nettle;
 extern crate tokio_core;
 extern crate tokio_io;
 #[macro_use]
 extern crate percent_encoding;
 extern crate url;
+extern crate zbase32;
 
 extern crate capnp_rpc;
 
@@ -66,6 +69,7 @@ use sequoia_core::Context;
 pub mod async;
 use async::url2uri;
 pub mod ipc;
+pub mod wkd;
 
 /// For accessing keyservers using HKP.
 pub struct KeyServer {
@@ -146,6 +150,9 @@ pub type Result<T> = ::std::result::Result<T, failure::Error>;
 #[derive(Fail, Debug)]
 /// Errors returned from the network routines.
 pub enum Error {
+    /// An email address was not found in TPK userids.
+    #[fail(display = "Email address not found in TPK userids")]
+    EmailNotInUserids,
     /// A requested key was not found.
     #[fail(display = "Key not found")]
     NotFound,
@@ -192,6 +199,58 @@ impl From<url::ParseError> for Error {
         Error::UriError(e)
     }
 }
+
+
+/// Retrieves the transferable public key from an email address or error.
+///
+/// From [draft-koch] section 3.1, Key Discovery:
+/// Note that the key
+/// may be revoked or expired - it is up to the client to handle such
+/// conditions.  To ease distribution of revoked keys, a server may
+/// return revoked keys in addition to a new key.
+pub fn wkd_get_tpk_from_email(email_address: &str) -> Result<TPK> {
+    let mut core = Core::new()?;
+    let wkd_url = wkd::WkdUrl::from(email_address)?;
+    // Advanced method
+    let url = wkd_url.to_url(None)?;
+    // Since the tpk would be write to stdout, send info messages to stderr
+    eprintln!("Attempting to retrieve public key from {} ...", url);
+    match core.run(async::async_get_tpk_from_wkd_url(&url)) {
+        Ok(tpk) => Ok(tpk),
+        Err(e)  => {
+            // Because this error is not returned, let the user know what
+            // failed
+            eprintln!("{}", e);
+            // From [draft-koch] section 3.1, Key Discovery:
+            // Implementations MUST first try the advanced method.
+            // Only if the required sub-domain does not exist, they SHOULD
+            // fall back to the direct method.
+            // What if the sub-domain exits but fails for other reason?.
+            // Is there any case where the error should be checked and do not
+            // try again?
+            // Direct method
+            let wkd_url = wkd::WkdUrl::from(email_address)?;
+            let url = wkd_url.to_url(true)?;
+            // Since the tpk would be write to stdout, send info messages to
+            // stderr
+            eprintln!("Attempting to retrieve public key from {} ...", url);
+            match core.run(async::async_get_tpk_from_wkd_url(&url)) {
+                Ok(tpk) => {
+                    // From [draft-koch] section 3.1, Key Discovery:
+                    // The HTTP GET method MUST return the binary
+                    // representation of the
+                    // OpenPGP key for the given mail address.
+                    // The key needs to carry a
+                    // User ID packet ([RFC4880]) with that mail address.
+                    wkd::is_email_in_userids(&tpk, email_address)?;
+                    Ok(tpk)
+                },
+                Err(e) => Err(e.into())
+            }
+        }
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

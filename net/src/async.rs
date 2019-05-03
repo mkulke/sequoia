@@ -226,3 +226,26 @@ impl AClient for Client<HttpsConnector<HttpConnector>> {
 pub(crate) fn url2uri(uri: Url) -> hyper::Uri {
     format!("{}", uri).parse().unwrap()
 }
+
+
+/// Retrieves the trasferable public key from a Web Key Directory URL or error.
+pub fn async_get_tpk_from_wkd_url(url: &Url)
+           -> Box<Future<Item=TPK, Error=failure::Error> + 'static> {
+    let uri = url.as_str().parse::<hyper::Uri>().unwrap();
+    // WKD URL must use TLS
+    let https = HttpsConnector::new(4).expect("TLS initialization failed");
+    let client = Client::builder().build::<_, hyper::Body>(https);
+    Box::new(client.get(uri)
+        .from_err()
+        .and_then(|res| {
+        res.into_body().concat2().from_err()
+        .and_then(|body| {
+            match TPK::from_bytes(&body) {
+                Ok(tpk) => {
+                    future::done(Ok(tpk))
+                },
+                Err(e) => future::err(e.into()),
+            }
+        })
+    }))
+}

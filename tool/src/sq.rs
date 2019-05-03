@@ -26,7 +26,7 @@ use openpgp::conversions::hex;
 use openpgp::parse::Parse;
 use openpgp::serialize::Serialize;
 use sequoia_core::{Context, NetworkPolicy};
-use sequoia_net::KeyServer;
+use sequoia_net::{KeyServer, wkd, wkd_get_tpk_from_email};
 use sequoia_store::{Store, LogIter};
 
 mod sq_cli;
@@ -452,6 +452,29 @@ fn real_main() -> Result<(), failure::Error> {
         ("key", Some(m)) => match m.subcommand() {
             ("generate", Some(m)) => commands::key::generate(m, force)?,
             _ => unreachable!(),
+        },
+        ("wkd",  Some(m)) => {
+            match m.subcommand() {
+                ("uri",  Some(m)) => {
+                    let email_address = m.value_of("input").unwrap();
+                    let wkd_url = wkd::WkdUrl::from(email_address)?;
+                    let uri = wkd_url.to_url(None)?;
+                    println!("{}", uri);
+                },
+                ("get",  Some(m)) => {
+                    let email_address = m.value_of("input").unwrap();
+                    let tpk = wkd_get_tpk_from_email(email_address)?;
+                    // Since the tpk would be write to stdout, send info
+                    // messages to stderr
+                    eprintln!("Succesfully got tpk {:?}", tpk);
+                    // This is different to store export and keyserver get,
+                    // Since the output is always bytes and it's not intented
+                    // to be stored in a file, but consumed by other software.
+                    let mut output = Box::new(io::stdout());
+                    tpk.serialize(&mut output)?;
+                },
+                _ => unreachable!(),
+            }
         },
         _ => unreachable!(),
     }
