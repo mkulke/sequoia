@@ -11,6 +11,7 @@ use libc::{c_char, c_int, size_t, time_t, uint8_t};
 
 extern crate sequoia_openpgp as openpgp;
 use self::openpgp::{
+    Policy,
     autocrypt::Autocrypt,
     crypto,
     constants::ReasonForRevocation,
@@ -162,12 +163,12 @@ fn pgp_tpk_revocation_status_at(tpk: *const TPK, when: time_t)
 {
     let when = when as i64;
     let when = if when == 0 {
-        None
+        time::now()
     } else {
-        Some(time::at(time::Timespec::new(when, 0)))
+        time::at(time::Timespec::new(when, 0))
     };
 
-    tpk.ref_raw().revocation_status_at(when).move_into_raw()
+    tpk.ref_raw().revocation_status(&when as &Policy).move_into_raw()
 }
 
 /// Returns the TPK's current revocation status.
@@ -179,7 +180,7 @@ fn pgp_tpk_revocation_status_at(tpk: *const TPK, when: time_t)
 fn pgp_tpk_revocation_status(tpk: *const TPK)
     -> *mut RevocationStatus<'static>
 {
-    tpk.ref_raw().revocation_status().move_into_raw()
+    tpk.ref_raw().revocation_status(None).move_into_raw()
 }
 
 fn int_to_reason_for_revocation(code: c_int) -> ReasonForRevocation {
@@ -330,7 +331,7 @@ fn pgp_tpk_expired(tpk: *const TPK)
                    -> c_int {
     let tpk = tpk.ref_raw();
 
-    tpk.expired() as c_int
+    tpk.expired(None) as c_int
 }
 
 /// Returns whether the TPK has expired.
@@ -338,7 +339,8 @@ fn pgp_tpk_expired(tpk: *const TPK)
 fn pgp_tpk_expired_at(tpk: *const TPK, when: time_t)
                       -> c_int {
     let tpk = tpk.ref_raw();
-    tpk.expired_at(time::at(time::Timespec::new(when as i64, 0))) as c_int
+    tpk.expired(&time::at(time::Timespec::new(when as i64, 0)) as &Policy)
+        as c_int
 }
 
 /// Returns whether the TPK is alive.
@@ -347,7 +349,7 @@ fn pgp_tpk_alive(tpk: *const TPK)
                  -> c_int {
     let tpk = tpk.ref_raw();
 
-    tpk.alive() as c_int
+    tpk.alive(None) as c_int
 }
 
 /// Returns whether the TPK is alive at the specified time.
@@ -355,7 +357,8 @@ fn pgp_tpk_alive(tpk: *const TPK)
 fn pgp_tpk_alive_at(tpk: *const TPK, when: time_t)
                     -> c_int {
     let tpk = tpk.ref_raw();
-    tpk.alive_at(time::at(time::Timespec::new(when as i64, 0))) as c_int
+    tpk.alive(&time::at(time::Timespec::new(when as i64, 0)) as &Policy)
+        as c_int
 }
 
 /// Changes the TPK's expiration.

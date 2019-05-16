@@ -31,6 +31,8 @@ use {
     TPK,
     KeyID,
     Fingerprint,
+    Policy,
+    DefaultPolicy,
 };
 use parse::{Parse, PacketParserResult, PacketParser};
 use serialize::SerializeInto;
@@ -871,7 +873,7 @@ impl<'a> Iterator for KeyIter<'a> {
                 self.primary = true;
 
                 (tpk.primary_key_signature(),
-                 tpk.revocation_status(),
+                 tpk.revocation_status(None),
                  tpk.primary())
             } else {
                 self.subkey_iter.next()
@@ -1705,10 +1707,11 @@ impl TPK {
     /// Note: this only returns whether the primary key is revoked.  If you
     /// want to know whether a subkey, user id, etc., is revoked, then
     /// you need to query them separately.
-    pub fn revocation_status_at<T>(&self, t: T) -> RevocationStatus
-        where T: Into<Option<time::Tm>>
+    pub fn revocation_status<'a, P>(&self, policy: P) -> RevocationStatus
+        where P: Into<Option<&'a dyn Policy>>
     {
-        let t = t.into().unwrap_or_else(time::now_utc);
+        let p = policy.into().unwrap_or(&DefaultPolicy(()));
+        let t = p.current_time();
         let has_self_revs =
             active_revocation(&self.primary_selfsigs,
                               &self.primary_self_revocations, t);
@@ -1726,15 +1729,6 @@ impl TPK {
         } else {
             RevocationStatus::NotAsFarAsWeKnow
         }
-    }
-
-    /// Returns the TPK's current revocation status.
-    ///
-    /// Note: this only returns whether the primary key is revoked.  If you
-    /// want to know whether a subkey, user id, etc., is revoked, then
-    /// you need to query them separately.
-    pub fn revocation_status(&self) -> RevocationStatus {
-        self.revocation_status_at(None)
     }
 
     /// Returns a revocation certificate for the TPK.
@@ -1756,7 +1750,7 @@ impl TPK {
     ///     .set_cipher_suite(CipherSuite::Cv25519)
     ///     .generate()?;
     /// assert_eq!(RevocationStatus::NotAsFarAsWeKnow,
-    ///            tpk.revocation_status());
+    ///            tpk.revocation_status(None));
     ///
     /// let mut keypair = tpk.primary().clone().into_keypair()?;
     /// let sig = tpk.revoke(&mut keypair, ReasonForRevocation::KeyCompromised,
@@ -1765,7 +1759,7 @@ impl TPK {
     ///
     /// let tpk = tpk.merge_packets(vec![sig.clone().into()])?;
     /// assert_eq!(RevocationStatus::Revoked(&[sig]),
-    ///            tpk.revocation_status());
+    ///            tpk.revocation_status(None));
     /// # Ok(())
     /// # }
     pub fn revoke(&self, primary_signer: &mut Signer,
@@ -1810,13 +1804,13 @@ impl TPK {
     ///     .set_cipher_suite(CipherSuite::Cv25519)
     ///     .generate()?;
     /// assert_eq!(RevocationStatus::NotAsFarAsWeKnow,
-    ///            tpk.revocation_status());
+    ///            tpk.revocation_status(None));
     ///
     /// let mut keypair = tpk.primary().clone().into_keypair()?;
     /// let tpk = tpk.revoke_in_place(&mut keypair,
     ///                               ReasonForRevocation::KeyCompromised,
     ///                               b"It was the maid :/")?;
-    /// if let RevocationStatus::Revoked(sigs) = tpk.revocation_status() {
+    /// if let RevocationStatus::Revoked(sigs) = tpk.revocation_status(None) {
     ///     assert_eq!(sigs.len(), 1);
     ///     assert_eq!(sigs[0].sigtype(), SignatureType::KeyRevocation);
     ///     assert_eq!(sigs[0].reason_for_revocation(),
@@ -1837,36 +1831,24 @@ impl TPK {
     }
 
     /// Returns whether or not the TPK has expired.
-    pub fn expired(&self) -> bool {
+    pub fn expired<'a, P>(&self, policy: P) -> bool
+        where P: Into<Option<&'a dyn Policy>>
+    {
+        let p = policy.into().unwrap_or(&DefaultPolicy(()));
         if let Some(Signature::V4(sig)) = self.primary_key_signature() {
-            sig.key_expired(self.primary())
-        } else {
-            false
-        }
-    }
-
-    /// Returns whether or not the key is expired at the given time.
-    pub fn expired_at(&self, tm: time::Tm) -> bool {
-        if let Some(Signature::V4(sig)) = self.primary_key_signature() {
-            sig.key_expired_at(self.primary(), tm)
-        } else {
-            false
-        }
-    }
-
-    /// Returns whether or not the TPK is alive.
-    pub fn alive(&self) -> bool {
-        if let Some(sig) = self.primary_key_signature() {
-            sig.key_alive(self.primary())
+            sig.key_expired_at(self.primary(), p.current_time())
         } else {
             false
         }
     }
 
     /// Returns whether or not the key is alive at the given time.
-    pub fn alive_at(&self, tm: time::Tm) -> bool {
+    pub fn alive<'a, P>(&self, policy: P) -> bool
+        where P: Into<Option<&'a dyn Policy>>
+    {
+        let p = policy.into().unwrap_or(&DefaultPolicy(()));
         if let Some(sig) = self.primary_key_signature() {
-            sig.key_alive_at(self.primary(), tm)
+            sig.key_alive_at(self.primary(), p.current_time())
         } else {
             false
         }
@@ -3548,7 +3530,7 @@ mod test {
             assert_eq!(sigtype, SignatureType::PositiveCertificate,
                        "{:#?}", tpk);
 
-            let revoked = tpk.revocation_status();
+            let revoked = tpk.revocation_status(None);
             if direct_revoked {
                 assert_match!(RevocationStatus::Revoked(_) = revoked,
                               "{:#?}", tpk);
@@ -3635,7 +3617,7 @@ mod test {
         let (tpk, _) = TPKBuilder::autocrypt(None, Some("Test"))
             .generate().unwrap();
         assert_eq!(RevocationStatus::NotAsFarAsWeKnow,
-                   tpk.revocation_status());
+                   tpk.revocation_status(None));
 
         let mut keypair = tpk.primary().clone().into_keypair().unwrap();
         let sig = tpk.revoke(&mut keypair,
@@ -3644,7 +3626,7 @@ mod test {
         assert_eq!(sig.sigtype(), SignatureType::KeyRevocation);
 
         let tpk = tpk.merge_packets(vec![sig.into()]).unwrap();
-        assert_match!(RevocationStatus::Revoked(_) = tpk.revocation_status());
+        assert_match!(RevocationStatus::Revoked(_) = tpk.revocation_status(None));
     }
 
     #[test]
@@ -3670,7 +3652,7 @@ mod test {
         assert_eq!(sig.sigtype(), SignatureType::CertificateRevocation);
         let tpk = tpk.merge_packets(vec![sig.into()]).unwrap();
         assert_eq!(RevocationStatus::NotAsFarAsWeKnow,
-                   tpk.revocation_status());
+                   tpk.revocation_status(None));
 
         let uid = tpk.userids().skip(1).next().unwrap();
         assert_match!(RevocationStatus::Revoked(_) = uid.revoked(None));
@@ -3748,13 +3730,16 @@ mod test {
         let te1 = t1 - time::Duration::days((300.0 * f1) as i64);
         let t12 = t1 + time::Duration::days((300.0 * f2) as i64);
         let t23 = t2 + time::Duration::days((300.0 * f3) as i64);
-        assert_eq!(tpk.revocation_status_at(te1), RevocationStatus::NotAsFarAsWeKnow);
-        assert_eq!(tpk.revocation_status_at(t12), RevocationStatus::NotAsFarAsWeKnow);
-        match tpk.revocation_status_at(t23) {
+        assert_eq!(tpk.revocation_status(&te1 as &Policy),
+                   RevocationStatus::NotAsFarAsWeKnow);
+        assert_eq!(tpk.revocation_status(&t12 as &Policy),
+                   RevocationStatus::NotAsFarAsWeKnow);
+        match tpk.revocation_status(&t23 as &Policy) {
             RevocationStatus::Revoked(_) => {}
             _ => unreachable!(),
         }
-        assert_eq!(tpk.revocation_status_at(time::now_utc()), RevocationStatus::NotAsFarAsWeKnow);
+        assert_eq!(tpk.revocation_status(None),
+                   RevocationStatus::NotAsFarAsWeKnow);
     }
 
     #[test]

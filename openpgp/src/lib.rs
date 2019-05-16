@@ -515,3 +515,49 @@ pub enum RevocationStatus<'a> {
     /// revocation certificate.
     NotAsFarAsWeKnow,
 }
+
+/// A policy for cryptographic operations.
+///
+/// # Example
+///
+/// This demonstrates how to evaluate signatures for a different time.
+///
+/// ```rust
+/// # extern crate time;
+/// # use sequoia_openpgp::*;
+/// # fn f(tpk: &TPK) -> Result<()> {
+/// // First option: Explicit implementation of Policy:
+/// struct NextWeek(());
+///
+/// impl Policy for NextWeek {
+///     fn current_time(&self) -> time::Tm {
+///         time::now() + time::Duration::weeks(1)
+///     }
+/// }
+///
+/// let alive = tpk.alive(&NextWeek(()) as &Policy);
+///
+/// // Second option: Use time::Tm as Policy:
+/// let next_week = time::now() + time::Duration::weeks(1);
+/// let alive_ = tpk.alive(&next_week as &Policy);
+///
+/// assert_eq!(alive, alive_);
+/// # Ok(()) }
+/// ```
+pub trait Policy {
+    /// Returns the time relative to which signatures are evaluated.
+    ///
+    /// The default implementation returns the current time.
+    fn current_time(&self) -> time::Tm {
+        time::now()
+    }
+}
+
+struct DefaultPolicy(());
+impl Policy for DefaultPolicy {}
+
+impl Policy for time::Tm {
+    fn current_time(&self) -> time::Tm {
+        self.clone()
+    }
+}

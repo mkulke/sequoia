@@ -14,7 +14,7 @@ use std::process::exit;
 use std::fs::File;
 use std::collections::{HashMap, HashSet};
 
-use openpgp::{TPK, Packet, packet::Signature, KeyID, RevocationStatus};
+use openpgp::{TPK, Packet, packet::Signature, KeyID, RevocationStatus, Policy};
 use openpgp::constants::HashAlgorithm;
 use openpgp::crypto::Hash;
 use openpgp::parse::{Parse, PacketParserResult, PacketParser};
@@ -273,7 +273,7 @@ fn real_main() -> Result<(), failure::Error> {
                                     }
                                 }
 
-                                if tpk.revocation_status_at(t)
+                                if tpk.revocation_status(&t as &Policy)
                                     != RevocationStatus::NotAsFarAsWeKnow
                                 {
                                     eprintln!(

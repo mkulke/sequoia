@@ -555,11 +555,11 @@ mod tests {
         let (tpk, revocation) = TPKBuilder::new()
             .set_cipher_suite(CipherSuite::Cv25519)
             .generate().unwrap();
-        assert_eq!(tpk.revocation_status(),
+        assert_eq!(tpk.revocation_status(None),
                    RevocationStatus::NotAsFarAsWeKnow);
 
         let tpk = tpk.merge_packets(vec![revocation.clone().into()]).unwrap();
-        assert_eq!(tpk.revocation_status(),
+        assert_eq!(tpk.revocation_status(None),
                    RevocationStatus::Revoked(&[revocation]));
     }
 
