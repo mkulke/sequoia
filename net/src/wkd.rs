@@ -82,13 +82,13 @@ impl WkdUrl {
     }
 
     /// Returns an URL string from a WkdUrl.
-    pub fn to_string<T>(self, direct_method: T) -> Result<String>
+    pub fn to_string<T>(&self, direct_method: T) -> Result<String>
             where T: Into<Option<bool>> {
         let direct_method = direct_method.into().unwrap_or(false);
         let authority;
         let path;
         if direct_method {
-            authority = self.domain;
+            authority = self.domain.clone();
             path = ".well-known/openpgpkey/hu/".to_string() +
                    &self.local_encoded;
         } else {
@@ -103,7 +103,7 @@ impl WkdUrl {
     }
 
     /// Returns an url::Url.
-    pub fn to_url<T>(self, direct_method: T) -> Result<Url>
+    pub fn to_url<T>(&self, direct_method: T) -> Result<Url>
             where T: Into<Option<bool>> {
         let url_string = self.to_string(direct_method)?;
         let url = Url::parse(url_string.as_str())?;
@@ -111,7 +111,7 @@ impl WkdUrl {
     }
 
     /// Returns an hyper::Uri.
-    pub fn to_uri<T>(self, direct_method: T) -> Result<Uri>
+    pub fn to_uri<T>(&self, direct_method: T) -> Result<Uri>
             where T: Into<Option<bool>> {
         // let url = self.to_url(direct_method)?;
         let url_string = self.to_string(direct_method)?;
