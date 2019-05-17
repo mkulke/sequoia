@@ -253,7 +253,7 @@ pub(crate) fn url2uri(uri: Url) -> hyper::Uri {
 // XXX: Maybe the direct method should be tried on other errors too.
 // https://mailarchive.ietf.org/arch/msg/openpgp/6TxZc2dQFLKXtS0Hzmrk963EteE
 pub fn async_wkd_get<S: AsRef<str>>(email_address: S)
-    -> Box<Future<Item=Vec<TPK>, Error=failure::Error> + 'static> {
+    -> impl Future<Item=Vec<TPK>, Error=failure::Error> {
     let email_address = email_address.as_ref().to_string();
     // WKD must use TLS
     // XXX: Change this expect for an error
@@ -284,8 +284,7 @@ pub fn async_wkd_get<S: AsRef<str>>(email_address: S)
         Ok(_) => wkd_url2.unwrap().to_uri(None),
     };
     // Then, there is no need to repeat the HTTP request
-    Box::new(
-        client.get(uri.unwrap())
+    client.get(uri.unwrap())
         .from_err()
         .and_then(|res| res.into_body().concat2().from_err())
         .and_then(move |body|
@@ -293,7 +292,6 @@ pub fn async_wkd_get<S: AsRef<str>>(email_address: S)
                 Ok(tpks) => future::done(Ok(tpks)),
                 Err(e) => future::err(e).into(),
         })
-    )
 
     // 2. option: consume the future to know if it was an error and which
     // type. But wait is blocking.
