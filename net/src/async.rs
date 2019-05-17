@@ -261,12 +261,10 @@ pub fn async_wkd_get<S: AsRef<str>>(email_address: S)
     let client = Client::builder()
         .build::<_, hyper::Body>(https);
 
-    // FIXME: solve the move!!!
-    let wkd_url = wkd::WkdUrl::from(&email_address);
-    let wkd_url2 = wkd::WkdUrl::from(&email_address);
+    let wkd_url = wkd::WkdUrl::from(&email_address).expect("xxx");
 
     // Advanced method
-    let url_string = wkd_url.unwrap().to_string(None);
+    let url_string = wkd_url.to_string(None);
 
     // 1. option: just resolve the domain.
     // This is not async, solving the domain in an async way will require
@@ -277,11 +275,11 @@ pub fn async_wkd_get<S: AsRef<str>>(email_address: S)
             // in all systems.
             if e.to_string().contains("No address associated with hostname") {
                 // Direct method
-                wkd_url2.unwrap().to_uri(true)
+                wkd_url.to_uri(true)
             } else {
                 Err(failure::Error::from(e))
             },
-        Ok(_) => wkd_url2.unwrap().to_uri(None),
+        Ok(_) => wkd_url.to_uri(None),
     };
     // Then, there is no need to repeat the HTTP request
     client.get(uri.unwrap())
@@ -304,7 +302,7 @@ pub fn async_wkd_get<S: AsRef<str>>(email_address: S)
     //     Err(e) =>
     //         if e.to_string().contains("No address associated with hostname") {
     //             // Direct method
-    //             uri = wkd_url2.unwrap().to_uri(false);
+    //             uri = wkd_url.to_uri(false);
     //             // Then also have to consume it here
     //             future::done(client.get(uri.unwrap()).map(|r| r).wait())
     //         } else {
@@ -332,7 +330,7 @@ pub fn async_wkd_get<S: AsRef<str>>(email_address: S)
     //         // And the else must be other ResponseFuture
     //         if e.to_string().contains("No address associated with hostname") {
     //             // Direct method
-    //             uri = wkd_url2.unwrap().to_uri(false);
+    //             uri = wkd_url.to_uri(false);
     //             client.get(uri.unwrap())
     //         } else {
     //             // how to convert an hyper::error to a ResponseFuture?,
