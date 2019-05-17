@@ -12,7 +12,6 @@ use hyper_tls::HttpsConnector;
 use native_tls::{Certificate, TlsConnector};
 use percent_encoding::{percent_encode, DEFAULT_ENCODE_SET};
 use std::convert::From;
-use std::net::ToSocketAddrs;
 use std::io::Cursor;
 use tokio_core::reactor::Handle;
 use url::Url;
@@ -254,93 +253,31 @@ pub(crate) fn url2uri(uri: Url) -> hyper::Uri {
 // https://mailarchive.ietf.org/arch/msg/openpgp/6TxZc2dQFLKXtS0Hzmrk963EteE
 pub fn async_wkd_get<S: AsRef<str>>(email_address: S)
     -> impl Future<Item=Vec<TPK>, Error=failure::Error> {
-    let email_address = email_address.as_ref().to_string();
-    // WKD must use TLS
-    // XXX: Change this expect for an error
-    let https = HttpsConnector::new(4).expect("TLS initialization failed");
-    let client = Client::builder()
-        .build::<_, hyper::Body>(https);
+    let email = email_address.as_ref().to_string();
+    future::lazy(move || -> Result<_> {
+        // First, prepare URIs and client.
+        let wkd_url = wkd::WkdUrl::from(&email)?;
 
-    let wkd_url = wkd::WkdUrl::from(&email_address).expect("xxx");
+        // WKD must use TLS, so build a client for that.
+        let https = HttpsConnector::new(4)?;
+        let client = Client::builder().build::<_, hyper::Body>(https);
 
-    // Advanced method
-    let url_string = wkd_url.to_string(None);
-
-    // 1. option: just resolve the domain.
-    // This is not async, solving the domain in an async way will require
-    // other dependency.
-    let uri = match url_string.unwrap().to_socket_addrs() {
-        Err(e) =>
-            // getaddrinfo is POSIX and seems to always return this string
-            // in all systems.
-            if e.to_string().contains("No address associated with hostname") {
-                // Direct method
-                wkd_url.to_uri(true)
-            } else {
-                Err(failure::Error::from(e))
-            },
-        Ok(_) => wkd_url.to_uri(None),
-    };
-    // Then, there is no need to repeat the HTTP request
-    client.get(uri.unwrap())
-        .from_err()
-        .and_then(|res| res.into_body().concat2().from_err())
-        .and_then(move |body|
-            match wkd::parse_body(&body, &email_address) {
-                Ok(tpks) => future::done(Ok(tpks)),
-                Err(e) => future::err(e).into(),
-        })
-
-    // 2. option: consume the future to know if it was an error and which
-    // type. But wait is blocking.
-    //
-    // Advanced method
-    // let mut uri = wkd_url1.unwrap().to_uri(None);
-    //
-    // let response = match client.get(uri.unwrap()).map(|r| r).wait() {
-    //     Ok(r) => future::ok(r),
-    //     Err(e) =>
-    //         if e.to_string().contains("No address associated with hostname") {
-    //             // Direct method
-    //             uri = wkd_url.to_uri(false);
-    //             // Then also have to consume it here
-    //             future::done(client.get(uri.unwrap()).map(|r| r).wait())
-    //         } else {
-    //             future::err(e).into()
-    //         },
-    // };
-    // Box::new(
-    //     response.from_err()
-    //     .and_then(|res| res.into_body().concat2().from_err())
-    //     .and_then(move |body|
-    //         match wkd::parse_body(&body, &email_address) {
-    //             Ok(tpks) => future::done(Ok(tpks)),
-    //             Err(e) => future::err(e).into(),
-    //     })
-    // )
-
-    // 3. option: If there's a way to convert a future::done into a
-    // a response future, then this would work, it courrently doesn't in the
-    // else block.
-    // This does not work because of the else
-    // Box::new(
-    //     client.get(uri.unwrap())
-    //     .or_else(|e| -> ResponseFuture {
-    //         // If i put this if, then i need to put an else
-    //         // And the else must be other ResponseFuture
-    //         if e.to_string().contains("No address associated with hostname") {
-    //             // Direct method
-    //             uri = wkd_url.to_uri(false);
-    //             client.get(uri.unwrap())
-    //         } else {
-    //             // how to convert an hyper::error to a ResponseFuture?,
-    //             // new is private
-    //             ResponseFuture::new(Box::new(future::err(e).into()))
-    //         }})        .and_then(|res| res.into_body().concat2().from_err())
-    //     .and_then(move |body|
-    //         match wkd::parse_body(&body, &email_address) {
-    //             Ok(tpks) => future::done(Ok(tpks)),
-    //             Err(e) => future::err(e).into(),
-    //     })
-    // )
+        Ok((email, client, wkd_url.to_uri(false)?, wkd_url.to_uri(true)?))
+    }).and_then(|(email, client, advanced_uri, direct_uri)| {
+        // First, try the Advanced Method.
+        client.get(advanced_uri)
+            // Fall back to the Direct Method.
+            .or_else(move |_| {
+                client.get(direct_uri)
+            })
+            .from_err()
+            .map(|res| (email, res))
+    }).and_then(|(email, res)| {
+        // Join the response body.
+        res.into_body().concat2().from_err()
+            .map(|body| (email, body))
+    }).and_then(|(email, body)| {
+        // And parse the response.
+        wkd::parse_body(&body, &email)
+    })
 }
