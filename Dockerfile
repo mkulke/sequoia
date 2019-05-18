@@ -37,11 +37,13 @@ USER builder
 #
 # the `build-release` target is used instead of the default because
 # `install` calls it after anyways
-RUN cd /home/builder/sequoia && PYTHON=disable CARGO_TARGET_DIR=target cargo build --release --package sequoia-sqv && \
+RUN cd /home/builder/sequoia && \
+        PYTHON=disable CARGO_TARGET_DIR=target cargo build --release --all && \
+        PYTHON=disable CARGO_TARGET_DIR=target cargo build --release --package sequoia-sqv && \
         PYTHON=disable CARGO_TARGET_DIR=target cargo build --release --package sequoia-sq && \
         install -d /opt/usr/local/bin && \
         install -t /opt/usr/local/bin target/release/sq && \
-        install -t /opt/usr/local/bin target/release/sqv \
+        install -t /opt/usr/local/bin target/release/sqv
 
 FROM debian:buster-slim AS sq-base
 
