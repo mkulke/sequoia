@@ -44,3 +44,13 @@ RUN make -C /home/builder/sequoia build-release; \
 FROM debian:buster-slim
 
 COPY --from=build /opt/ /
+
+RUN groupadd -r user && \
+    useradd --no-log-init -r -g user user && \
+    mkdir /home/user && \
+    chown -R user:user /home/user && \
+    apt update && apt upgrade -y && \
+    apt install -y libssl1.1 libsqlite3-0 && \
+    apt clean
+
+USER user
