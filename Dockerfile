@@ -41,7 +41,8 @@ RUN make -C /home/builder/sequoia build-release; \
     make -C /home/builder/sequoia build-release; \
     make -C /home/builder/sequoia build-release && \
     make -C /home/builder/sequoia install DESTDIR=/opt/ && \
-    make -C /home/builder/sequoia clean
+    make -C /home/builder/sequoia clean && \
+    rm /opt/usr/local/lib/*.a # .a files are not necesary and take ~500MB
 
 FROM debian:buster-slim
 
@@ -54,8 +55,7 @@ RUN groupadd -r user && \
     apt update && apt upgrade -y && \
     apt install -y libssl1.1 libsqlite3-0 && \
     apt clean && \
-    rm -fr -- /var/lib/lists/* /var/cache/* && \
-    rm -f /usr/local/lib/*.a # .a files are not necesary and take ~500MB
+    rm -fr -- /var/lib/lists/* /var/cache/* \
 
 USER user
 
