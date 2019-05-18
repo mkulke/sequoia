@@ -40,7 +40,8 @@ USER builder
 RUN make -C /home/builder/sequoia build-release; \
     make -C /home/builder/sequoia build-release; \
     make -C /home/builder/sequoia build-release && \
-    make -C /home/builder/sequoia install DESTDIR=/opt/
+    make -C /home/builder/sequoia install DESTDIR=/opt/ && \
+    make -C /home/builder/sequoia clean
 
 FROM debian:buster-slim
 
