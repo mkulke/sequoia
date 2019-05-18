@@ -54,3 +54,5 @@ RUN groupadd -r user && \
     apt clean
 
 USER user
+
+ENTRYPOINT /usr/local/bin/sq
