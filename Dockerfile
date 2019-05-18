@@ -56,4 +56,4 @@ RUN groupadd -r user && \
 
 USER user
 
-ENTRYPOINT /usr/local/bin/sq
+CMD /usr/local/bin/sq
