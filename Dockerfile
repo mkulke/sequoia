@@ -51,7 +51,8 @@ RUN groupadd -r user && \
     chown -R user:user /home/user && \
     apt update && apt upgrade -y && \
     apt install -y libssl1.1 libsqlite3-0 && \
-    apt clean
+    apt clean && \
+    rm -fr -- /var/lib/lists/* /var/cache/*
 
 USER user
 
