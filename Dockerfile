@@ -44,9 +44,7 @@ RUN make -C /home/builder/sequoia build-release; \
     make -C /home/builder/sequoia clean && \
     rm /opt/usr/local/lib/*.a # .a files are not necesary and take ~500MB
 
-FROM debian:buster-slim
-
-COPY --from=build /opt/ /
+FROM debian:buster-slim AS sq-base
 
 RUN groupadd -r user && \
     useradd --no-log-init -r -g user user && \
@@ -57,6 +55,17 @@ RUN groupadd -r user && \
     apt clean && \
     rm -fr -- /var/lib/lists/* /var/cache/*
 
+FROM sq-base AS sqv
+
+COPY --from=build /opt/usr/local/bin/sqv /usr/local/bin/sqv
+
 USER user
 
-CMD /usr/local/bin/sq
+ENTRYPOINT /usr/local/bin/sqv
+
+FROM sqv AS sq
+
+COPY --from=build /opt/usr/local/bin/sq /usr/local/bin/sq
+
+ENTRYPOINT /usr/local/bin/sq
+
