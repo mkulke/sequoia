@@ -52,7 +52,8 @@ RUN groupadd -r user && \
     apt update && apt upgrade -y && \
     apt install -y libssl1.1 libsqlite3-0 && \
     apt clean && \
-    rm -fr -- /var/lib/lists/* /var/cache/*
+    rm -fr -- /var/lib/lists/* /var/cache/* && \
+    rm -f /usr/local/lib/*.a # .a files are not necesary and take ~500MB
 
 USER user
 
