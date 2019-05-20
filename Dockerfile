@@ -25,7 +25,8 @@ RUN groupadd --system builder && \
         python3-cffi \
         python3-pytest \
         rustc && \
-    apt clean
+    apt clean && \
+    chown builder /opt
 
 COPY --chown=builder:builder . /home/builder/sequoia
 
@@ -36,12 +37,12 @@ USER builder
 #
 # the `build-release` target is used instead of the default because
 # `install` calls it after anyways
-RUN make -C /home/builder/sequoia build-release; \
-    make -C /home/builder/sequoia build-release; \
-    make -C /home/builder/sequoia build-release && \
-    make -C /home/builder/sequoia install DESTDIR=/opt/ && \
-    make -C /home/builder/sequoia clean && \
-    rm /opt/usr/local/lib/*.a # .a files are not necesary and take ~500MB
+RUN cd /home/builder/sequoia && \
+    CARGO_TARGET_DIR=target cargo build -p sequoia-sqv --release && \
+    CARGO_TARGET_DIR=target cargo build -p sequoia-tool --release && \
+    install -d /opt/usr/local/bin && \
+    install -t /opt/usr/local/bin target/release/sq && \
+    install -t /opt/usr/local/bin target/release/sqv
 
 FROM debian:buster-slim AS sq-base
 
