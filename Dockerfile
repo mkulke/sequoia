@@ -37,13 +37,12 @@ USER builder
 #
 # the `build-release` target is used instead of the default because
 # `install` calls it after anyways
-RUN cd /home/builder/sequoia && \
-        PYTHON=disable CARGO_TARGET_DIR=target cargo build --release --all && \
-        PYTHON=disable CARGO_TARGET_DIR=target cargo build --release --package sequoia-sqv && \
-        PYTHON=disable CARGO_TARGET_DIR=target cargo build --release --package sequoia-sq && \
-        install -d /opt/usr/local/bin && \
-        install -t /opt/usr/local/bin target/release/sq && \
-        install -t /opt/usr/local/bin target/release/sqv
+RUN make -C /home/builder/sequoia build-release; \
+    make -C /home/builder/sequoia build-release; \
+    make -C /home/builder/sequoia build-release && \
+    make -C /home/builder/sequoia install DESTDIR=/opt/ && \
+    make -C /home/builder/sequoia clean && \
+    rm /opt/usr/local/lib/*.a # .a files are not necesary and take ~500MB
 
 FROM debian:buster-slim AS sq-base
 
@@ -62,11 +61,12 @@ COPY --from=build /opt/usr/local/bin/sqv /usr/local/bin/sqv
 
 USER user
 
-ENTRYPOINT /usr/local/bin/sqv
+WORKDIR /home/user
+ENTRYPOINT ["/usr/local/bin/sqv"]
+CMD ["--help"]
 
 FROM sqv AS sq
 
 COPY --from=build /opt/usr/local/bin/sq /usr/local/bin/sq
 
-ENTRYPOINT /usr/local/bin/sq
-
+ENTRYPOINT ["/usr/local/bin/sq"]
