@@ -2,15 +2,12 @@
 # where nettle and rustc are too old
 FROM debian:buster AS build
 
-COPY . /home/builder/sequoia
-
 # create a sandbox user for the build (in ~builder) and install (in /opt)
 # give it permissions to the build dir and home
 # upgrade everything
 # add dependencies, as specified by the Sequoia README.md file
-RUN groupadd -r builder && \
-    useradd --no-log-init -r -g builder builder && \
-    chown -R builder:builder /home/builder /opt && \
+RUN groupadd --system builder && \
+    useradd --no-log-init --create-home --system --gid builder builder && \
     apt update && apt upgrade -yy && \
     apt install -y --no-install-recommends \
         ca-certificates \
@@ -29,6 +26,8 @@ RUN groupadd -r builder && \
         python3-pytest \
         rustc && \
     apt clean
+
+COPY --chown=builder:builder . /home/builder/sequoia
 
 # switch to the sandbox user
 USER builder
