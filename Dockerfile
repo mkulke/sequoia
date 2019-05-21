@@ -54,7 +54,7 @@ RUN groupadd user && \
     apt update && apt upgrade -y && \
     apt install -y libssl1.1 libsqlite3-0 && \
     apt clean && \
-    rm -fr -- /var/lib/lists/* /var/cache/*
+    rm -fr -- /var/lib/apt/lists/* /var/cache/*
 
 FROM sq-base AS sqv
 
