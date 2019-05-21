@@ -40,9 +40,9 @@ USER builder
 RUN cd /home/builder/sequoia && \
     CARGO_TARGET_DIR=target cargo build -p sequoia-sqv --release && \
     CARGO_TARGET_DIR=target cargo build -p sequoia-tool --release && \
-    install -d /opt/usr/local/bin && \
-    install -t /opt/usr/local/bin target/release/sq && \
-    install -t /opt/usr/local/bin target/release/sqv
+    install --strip -D --target-directory /opt/usr/local/bin \
+                  target/release/sq \
+                  target/release/sqv
 
 FROM debian:buster-slim AS sq-base
 
