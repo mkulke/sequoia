@@ -6,8 +6,8 @@ FROM debian:buster AS build
 # give it permissions to the build dir and home
 # upgrade everything
 # add dependencies, as specified by the Sequoia README.md file
-RUN groupadd --system builder && \
-    useradd --no-log-init --create-home --system --gid builder builder && \
+RUN groupadd builder && \
+    useradd --no-log-init --create-home --gid builder builder && \
     apt update && apt upgrade -yy && \
     apt install -y --no-install-recommends \
         ca-certificates \
@@ -46,8 +46,8 @@ RUN cd /home/builder/sequoia && \
 
 FROM debian:buster-slim AS sq-base
 
-RUN groupadd -r user && \
-    useradd --no-log-init -r -g user user && \
+RUN groupadd user && \
+    useradd --no-log-init -g user user && \
     mkdir /home/user && \
     chown -R user:user /home/user && \
     apt update && apt upgrade -y && \
