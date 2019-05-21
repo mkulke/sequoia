@@ -24,7 +24,8 @@ RUN groupadd builder && \
         python3-setuptools \
         python3-cffi \
         python3-pytest \
-        rustc && \
+        rustc \
+        && \
     apt clean && \
     chown builder /opt
 
