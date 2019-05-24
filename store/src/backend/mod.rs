@@ -547,23 +547,20 @@ impl node::binding::Server for BindingServer {
 
         // Check in the database for the current key.
         let key_id = sry!(self.key_id());
-        let (fingerprint, key): (String, Option<Vec<u8>>)
+        let (fingerprint, current): (String, Option<TPK>)
             = sry!(self.c.query_row(
                 "SELECT fingerprint, key FROM keys WHERE id = ?1",
                 &[&key_id],
-                |row| (row.get(0), row.get_checked(1).ok())));
+                |row| (row.get(0), row.get_checked::<_, store_rusqlite::TPK>(1)
+                       .map(|t| TPK::from(t)).ok())));
 
-        // If we found one, convert it to TPK.
-        let current = if let Some(current) = key {
-            let current = sry!(TPK::from_bytes(&current));
+        // If we found one, check consistency.
+        if let Some(current) = current.as_ref() {
             if current.fingerprint().to_hex() != fingerprint {
                 // Inconsistent database.
                 fail!(node::Error::SystemError);
             }
-            Some(current)
-        } else {
-            None
-        };
+        }
 
         // Check for conflicts.
         if new.fingerprint().to_hex() != fingerprint {
@@ -754,20 +751,19 @@ impl KeyServer {
     /// Merges other into this key updating the database.
     ///
     /// Returnes the merged key as blob.
-    fn merge(&self, other: TPK) -> Result<Vec<u8>> {
+    fn merge(&self, other: TPK) -> Result<TPK> {
         let mut new = other;
 
         // Get the current key from the database.
-        let (fingerprint, key): (String, Option<Vec<u8>>)
+        let (fingerprint, key): (String, Option<TPK>)
             = self.c.query_row(
                 "SELECT fingerprint, key FROM keys WHERE id = ?1",
                 &[&self.id],
-                |row| (row.get(0), row.get_checked(1).ok()))?;
+                |row| (row.get(0), row.get_checked::<_, store_rusqlite::TPK>(1)
+                       .map(|t| t.into()).ok()))?;
 
         // If there was a key stored there, merge it.
         if let Some(current) = key {
-            let current = TPK::from_bytes(&current)?;
-
             if current.fingerprint().to_hex() != fingerprint {
                 // Inconsistent database.
                 return Err(node::Error::SystemError.into());
@@ -781,14 +777,13 @@ impl KeyServer {
         }
 
         // Write key back to the database.
-        let mut blob = vec![];
-        new.serialize(&mut blob)?;
-
+        let new = store_rusqlite::TPK::from(new);
         self.c.execute("UPDATE keys SET key = ?1 WHERE id = ?2",
-                       &[&blob, &self.id])?;
+                       &[&new, &self.id])?;
+        let new = new.into();
         KeyServer::reindex_subkeys(&self.c, self.id, &new)?;
 
-        Ok(blob)
+        Ok(new)
     }
 
     /// Keeps the mapping of (sub)KeyIDs to keys up-to-date.
@@ -1030,7 +1025,9 @@ impl node::key::Server for KeyServer {
               -> Promise<(), capnp::Error> {
         bind_results!(results);
         let new = sry!(TPK::from_bytes(&pry!(pry!(params.get()).get_key())));
-        let blob = sry!(self.merge(new));
+        let tpk = sry!(self.merge(new));
+        let mut blob = Vec::new();
+        sry!(tpk.serialize(&mut blob));
         pry!(pry!(results.get().get_result()).set_ok(&blob[..]));
         Promise::ok(())
     }

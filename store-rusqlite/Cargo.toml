@@ -21,5 +21,6 @@ default = ["background-services"]
 background-services = []
 
 [dependencies]
+sequoia-openpgp = { path = "../openpgp", version = "0.7" }
 rusqlite = "0.14"
 time = "0.1.38"

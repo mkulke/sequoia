@@ -1684,6 +1684,7 @@ name = "sequoia-store-rusqlite"
 version = "0.7.0"
 dependencies = [
  "rusqlite 0.14.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "sequoia-openpgp 0.7.0",
  "time 0.1.42 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 

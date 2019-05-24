@@ -1,5 +1,8 @@
 //! Data types for working with `rusqlite`.
 
+extern crate sequoia_openpgp as openpgp;
+use openpgp::{parse::Parse, serialize::Serialize};
+
 extern crate rusqlite;
 use rusqlite::types::{ToSql, ToSqlOutput, FromSql, FromSqlResult, ValueRef};
 use std::fmt;
@@ -92,5 +95,49 @@ impl Sub<Timestamp> for Timestamp {
 
     fn sub(self, other: Self) -> Self::Output {
         self.0 - other.0
+    }
+}
+
+/// Represents a TPK.
+#[derive(Clone, PartialEq)]
+pub struct TPK(openpgp::TPK);
+
+impl fmt::Display for TPK {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<openpgp::TPK> for TPK {
+    fn from(tpk: openpgp::TPK) -> Self {
+        TPK(tpk)
+    }
+}
+
+impl From<TPK> for openpgp::TPK {
+    fn from(tpk: TPK) -> Self {
+        tpk.0
+    }
+}
+
+impl ToSql for TPK {
+    fn to_sql(&self) -> rusqlite::Result<ToSqlOutput> {
+        use rusqlite::Error;
+
+        let mut buf = Vec::new();
+        self.0.serialize(&mut buf)
+            .map_err(|e| Error::ToSqlConversionFailure(Box::new(e.compat())))?;
+
+        Ok(buf.into())
+    }
+}
+
+impl FromSql for TPK {
+    fn column_result(value: ValueRef) -> FromSqlResult<Self> {
+        use rusqlite::types::FromSqlError;
+
+        Ok(openpgp::TPK::from_bytes(value.as_blob()?)
+           .map_err(|e| FromSqlError::Other(Box::new(e.compat())))?
+           .into())
     }
 }
