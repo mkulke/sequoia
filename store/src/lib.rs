@@ -78,6 +78,7 @@ extern crate sequoia_openpgp as openpgp;
 extern crate sequoia_core;
 extern crate sequoia_ipc;
 extern crate sequoia_net;
+extern crate sequoia_store_rusqlite as store_rusqlite;
 
 use openpgp::Fingerprint;
 use openpgp::KeyID;

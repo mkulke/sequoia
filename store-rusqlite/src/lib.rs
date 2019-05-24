@@ -1,9 +1,10 @@
 //! Data types for working with `rusqlite`.
 
-use rusqlite;
+extern crate rusqlite;
 use rusqlite::types::{ToSql, ToSqlOutput, FromSql, FromSqlResult, ValueRef};
 use std::fmt;
 use std::ops::{Add, Sub};
+extern crate time;
 use time::{Timespec, Duration, now_utc};
 
 /// Represents a row id.

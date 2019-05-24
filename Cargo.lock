@@ -1510,6 +1510,7 @@ dependencies = [
  "sequoia-rfc2822 0.7.0",
  "sequoia-sqv 0.7.0",
  "sequoia-store 0.7.0",
+ "sequoia-store-rusqlite 0.7.0",
  "sequoia-tool 0.7.0",
 ]
 
@@ -1672,9 +1673,18 @@ dependencies = [
  "sequoia-ipc 0.7.0",
  "sequoia-net 0.7.0",
  "sequoia-openpgp 0.7.0",
+ "sequoia-store-rusqlite 0.7.0",
  "time 0.1.42 (registry+https://github.com/rust-lang/crates.io-index)",
  "tokio-core 0.1.17 (registry+https://github.com/rust-lang/crates.io-index)",
  "tokio-io 0.1.12 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "sequoia-store-rusqlite"
+version = "0.7.0"
+dependencies = [
+ "rusqlite 0.14.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "time 0.1.42 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]

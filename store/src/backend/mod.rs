@@ -33,8 +33,7 @@ use store_protocol_capnp::node;
 use super::Result;
 
 // Data types for working with `rusqlite`.
-pub mod support;
-use self::support::{ID, Timestamp};
+use store_rusqlite::{ID, Timestamp};
 
 // Logging.
 mod log;
