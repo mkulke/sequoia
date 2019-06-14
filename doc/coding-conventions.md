@@ -72,5 +72,24 @@ in the code and documentation.
 | Key ID      | keyid        | keyid, id       | keyid        | Key ID        |
 | User ID     | userid       | userid, uid     | userid       | User ID       |
 
+## Commits
+
+- The first word should be the name of the crate, followed by colon.
+- The description is indented 2 spaces.
+- In general, follow [A Note About Git Commit Messages].
+
+## Merge requests
+
+- During review, there is no need for fixups, you can squash and push force,
+  though some of us prefer fixups and only squash them when the MR is ready
+  to merge.
+- You can merge your own MR when not modifying someone else code, except
+  someone new to the project.
+
+## Releases
+
+TBD
+
 [clearer traits]: https://doc.rust-lang.org/stable/book/ch10-02-traits.html#clearer-trait-bounds-with-where-clauses
 [Rust Style Guide]: https://github.com/rust-dev-tools/fmt-rfcs/blob/master/guide/guide.md
+[A Note About Git Commit Messages]: https://tbaggery.com/2008/04/19/a-note-about-git-commit-messages.html
