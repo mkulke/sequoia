@@ -247,7 +247,7 @@ pub fn get<S: AsRef<str>>(email_address: S) -> Result<Vec<TPK>> {
 /// The owner of the directory and files will be the user that runs this
 /// command.
 /// This command only works on Unix-like systems.
-pub fn generate<S, T, P>(domain: S, buffer: &[u8], base_path: P,
+pub fn generate<S, T, P>(domain: S, tpks: &[u8], base_path: P,
                       direct_method: T)
     -> Result<()>
     where S: AsRef<str>,
@@ -276,7 +276,7 @@ pub fn generate<S, T, P>(domain: S, buffer: &[u8], base_path: P,
     // Create the files.
     // This is very similar to parse_body, but here the userids must contain
     // a domain, not be equal to an email address.
-    let parser = TPKParser::from_bytes(&buffer)?;
+    let parser = TPKParser::from_bytes(&tpks)?;
     let tpks: Vec<TPK> = parser.flatten().collect();
     for tpk in tpks {
         let mut tpk_bytes: Vec<u8> = Vec::new();
