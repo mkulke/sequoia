@@ -14,7 +14,25 @@ Nevertheless, we do have some rules that we try to stick to:
 
 - maximum line length is 79 characters
 - line breaks before operators
-- expressive, yet short, variable names unless the scope is small
+- expressive, yet short, variable names unless the scope is small.
+  If choosing acronyms or short names that are not obvious by the context,
+  add a comment in the definition to explain what they are.
+- No whitespaces at the end of the line.
+- No comma without a whitespace after.
+- Function signatures that do not fit in one line [clearer traits]:
+
+  ```rust
+  fn some_function<T, U>(t: T, u: U) -> i32
+      where T: Display + Clone,
+            U: Clone + Debug
+  {
+  ```
+
+Each of us also have some personal preferences, that are good to know to choose
+to follow them or not.
+
+- No space before colon.
+- [Rust Style Guide].
 
 It is important to note that these are not strict rules. Sometimes, adhering to
 the rules has severe disadvantages, and sometimes it may not even be possible.
@@ -30,6 +48,17 @@ We follow [RFC 1574].
 
 [RFC 1574]: https://github.com/rust-lang/rfcs/blob/master/text/1574-more-api-documentation-conventions.md#appendix-a-full-conventions-text
 
+And:
+
+- No link in the short module description.
+- Quotes need to be indented.
+- Reflow text to use all available space.
+  - Unless lines separated by dot.
+  - Unless quoted from other text, for instance RFC (which is 72 characters
+    per line).
+- Whenever we doubt or ask about something, it probably needs more
+  documentation or comments.
+
 ## Identifiers and documentation
 
 This is a list of OpenPGP-specific terminology and how we represent it
@@ -42,3 +71,6 @@ in the code and documentation.
 | Key Flags   | keyflags     | flags           | keyflags     | Key Flags     |
 | Key ID      | keyid        | keyid, id       | keyid        | Key ID        |
 | User ID     | userid       | userid, uid     | userid       | User ID       |
+
+[clearer traits]: https://doc.rust-lang.org/stable/book/ch10-02-traits.html#clearer-trait-bounds-with-where-clauses
+[Rust Style Guide]: https://github.com/rust-dev-tools/fmt-rfcs/blob/master/guide/guide.md
