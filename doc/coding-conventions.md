@@ -12,9 +12,9 @@ useful when trying to understand how the code evolved over time.
 
 Nevertheless, we do have some rules that we try to stick to:
 
-  - maximum line length is 79 characters
-  - line breaks before operators
-  - expressive, yet short, variable names unless the scope is small
+- maximum line length is 79 characters
+- line breaks before operators
+- expressive, yet short, variable names unless the scope is small
 
 It is important to note that these are not strict rules. Sometimes, adhering to
 the rules has severe disadvantages, and sometimes it may not even be possible.
@@ -42,4 +42,3 @@ in the code and documentation.
 | Key Flags   | keyflags     | flags           | keyflags     | Key Flags     |
 | Key ID      | keyid        | keyid, id       | keyid        | Key ID        |
 | User ID     | userid       | userid, uid     | userid       | User ID       |
-
