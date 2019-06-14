@@ -1,16 +1,14 @@
 # Coding conventions
 
-We strive to make Sequoia's APIs and code as consistent and
-predictable as possible, to ease maintenance and make Sequoia easy and
-safe to use.
+We strive to make Sequoia's APIs and code as consistent and predictable as
+possible, to ease maintenance and make Sequoia easy and safe to use.
 
 ## Rust
 
-We do not use automated tools to format our source code.  The source
-is an expression of art, and must not be mutilated by some algorithm.
-Furthermore, "fixing" the formatting obscures the version control
-history, making it less useful when trying to understand how the code
-evolved over time.
+We do not use automated tools to format our source code. The source is an
+expression of art, and must not be mutilated by some algorithm. Furthermore,
+"fixing" the formatting obscures the version control history, making it less
+useful when trying to understand how the code evolved over time.
 
 Nevertheless, we do have some rules that we try to stick to:
 
@@ -18,16 +16,15 @@ Nevertheless, we do have some rules that we try to stick to:
   - line breaks before operators
   - expressive, yet short, variable names unless the scope is small
 
-It is important to note that these are not strict rules.  Sometimes,
-adhering to the rules has severe disadvantages, and sometimes it may
-not even be possible.
+It is important to note that these are not strict rules. Sometimes, adhering to
+the rules has severe disadvantages, and sometimes it may not even be possible.
 
-As a general rule, please try to make the code look nice.  Remember,
-the code is written for humans to understand.  Writing good looking
-code, such that it is easy to read and understand is more important
-than strict adherence to a set of rules.
+As a general rule, please try to make the code look nice. Remember, the code is
+written for humans to understand. Writing good looking code, such that it is
+easy to read and understand is more important than strict adherence to a set of
+rules.
 
-## Documentation
+## Rust Documentation
 
 We follow [RFC 1574].
 
