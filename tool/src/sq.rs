@@ -489,6 +489,17 @@ fn real_main() -> Result<(), failure::Error> {
                         tpk.serialize(&mut output)?;
                     }
                 },
+                ("generate", Some(m)) => {
+                    let domain = m.value_of("domain").unwrap();
+                    let mut f = open_or_stdin(m.value_of("input"))?;
+                    // XXX: is a bad idea to use this default dir?
+                    let base_path = m.value_of("output")
+                        .unwrap_or("/var/www/html");
+                    let direct_method = m.is_present("direct_method");
+                    let mut buffer: Vec<u8> = Vec::new();
+                    f.read_to_end(&mut buffer)?;
+                    wkd::generate(domain, &buffer, &base_path, direct_method)?;
+                }
                 _ => unreachable!(),
             }
         },

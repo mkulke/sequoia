@@ -436,9 +436,8 @@ pub fn build() -> App<'static, 'static> {
 
         .subcommand(SubCommand::with_name("wkd")
                     .about("Interacts with Web Key Directories")
-                    .setting(AppSettings::ArgRequiredElseHelp)
+                    .setting(AppSettings::SubcommandRequiredElseHelp)
                     .subcommand(SubCommand::with_name("url")
-                                .setting(AppSettings::SubcommandRequiredElseHelp)
                                 .about("Prints the Web Key Directory URl of \
                                         an email address.")
                                 .arg(Arg::with_name("input")
@@ -446,7 +445,6 @@ pub fn build() -> App<'static, 'static> {
                                     .help("The email address from which to \
                                             obtain the WKD URI.")))
                     .subcommand(SubCommand::with_name("get")
-                                .setting(AppSettings::SubcommandRequiredElseHelp)
                                 .about("Writes to the standard output the \
                                         Transferable Public Key retrieved \
                                         from a Web Key Directory, given an \
@@ -459,5 +457,30 @@ pub fn build() -> App<'static, 'static> {
                                     .long("binary")
                                     .short("B")
                                     .help("Don't ASCII-armor encode the OpenPGP data")))
+                    .subcommand(SubCommand::with_name("generate")
+                                .about("Generates a Web Key Directory for the \
+                                        given domain and keys.\n\
+                                        The owner of the directory and files will be the user \
+                                        that runs this command.\n\
+                                        This command only works on Unix-like systems.")
+                                .arg(Arg::with_name("output")
+                                     .long("output")
+                                     .short("o")
+                                     .takes_value(true)
+                                     .help("The top level directory directory. \
+                                            [default: /var/www/html]"))
+                                .arg(Arg::with_name("direct_method")
+                                     .long("direct_method")
+                                     .short("d")
+                                     .help("Use the direct method. \
+                                            [default: advanced method]"))
+                                .arg(Arg::with_name("domain")
+                                    .value_name("DOMAIN")
+                                    .help("The domain for the WKD.")
+                                    .required(true))
+                                .arg(Arg::with_name("input")
+                                    .value_name("KEYRING")
+                                    .help("The keyring file with the keys to add to the WKD."))
+                    )
         )
 }
