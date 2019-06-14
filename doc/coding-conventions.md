@@ -14,7 +14,7 @@ evolved over time.
 
 Nevertheless, we do have some rules that we try to stick to:
 
-  - maximum line length is 80 characters
+  - maximum line length is 79 characters
   - line breaks before operators
   - expressive, yet short, variable names unless the scope is small
 
