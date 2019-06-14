@@ -1589,6 +1589,7 @@ dependencies = [
  "sequoia-core 0.7.0",
  "sequoia-openpgp 0.7.0",
  "sequoia-rfc2822 0.7.0",
+ "tempfile 3.0.7 (registry+https://github.com/rust-lang/crates.io-index)",
  "tokio-core 0.1.17 (registry+https://github.com/rust-lang/crates.io-index)",
  "tokio-io 0.1.12 (registry+https://github.com/rust-lang/crates.io-index)",
  "url 1.7.2 (registry+https://github.com/rust-lang/crates.io-index)",
