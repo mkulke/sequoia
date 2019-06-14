@@ -5,10 +5,10 @@ possible, to ease maintenance and make Sequoia easy and safe to use.
 
 ## Rust
 
-We do not use automated tools to format our source code. The source is an
-expression of art, and must not be mutilated by some algorithm. Furthermore,
-"fixing" the formatting obscures the version control history, making it less
-useful when trying to understand how the code evolved over time.
+We do not use automated tools to format our source code. For some of us, the
+source is an expression of art, and must not be mutilated by some algorithm.
+Furthermore, "fixing" the formatting obscures the version control history,
+making it less useful when trying to understand how the code evolved over time.
 
 Nevertheless, we do have some rules that we try to stick to:
 
