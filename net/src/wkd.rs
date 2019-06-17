@@ -267,12 +267,14 @@ pub fn generate<S, T, P>(domain: S, tpks: &[TPK], base_path: P,
     // This can not fail, otherwise file_path would have fail.
     let dir_path = base_path.join(
         Path::new(&file_path).parent().unwrap());
+    println!("Creating {:?} directory.", dir_path);
     // With fs::create_dir_all the permissions can't be set.
     fs::DirBuilder::new()
         .mode(0o744)
         .recursive(true)
         .create(&dir_path)?;
 
+    let mut found_a_key = false;
     // Create the files.
     // This is very similar to parse_body, but here the userids must contain
     // a domain, not be equal to an email address.
@@ -282,6 +284,7 @@ pub fn generate<S, T, P>(domain: S, tpks: &[TPK], base_path: P,
             if let Some(address) = uidb.userid().address()? {
                 let wkd_url = Url::from(&address)?;
                 if wkd_url.domain == domain {
+                    found_a_key = false;
                     // Since dir_path contains all the hierarchy, only the file
                     // name is needed.
                     let file_path = dir_path.join(wkd_url.local_encoded);
@@ -296,6 +299,9 @@ pub fn generate<S, T, P>(domain: S, tpks: &[TPK], base_path: P,
                 }
             }
         }
+    }
+    if !found_a_key {
+        println!("No keys found for the domain.");
     }
     Ok(())
 }
