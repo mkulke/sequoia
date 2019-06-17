@@ -284,7 +284,7 @@ pub fn generate<S, T, P>(domain: S, tpks: &[TPK], base_path: P,
             if let Some(address) = uidb.userid().address()? {
                 let wkd_url = Url::from(&address)?;
                 if wkd_url.domain == domain {
-                    found_a_key = false;
+                    found_a_key = true;
                     // Since dir_path contains all the hierarchy, only the file
                     // name is needed.
                     let file_path = dir_path.join(wkd_url.local_encoded);
