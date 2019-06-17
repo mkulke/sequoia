@@ -425,16 +425,21 @@ mod tests {
             "openpgpkey.sequoia-pgp.org/\
              .well-known/openpgpkey/sequoia-pgp.org/hu\
              /jwp7xjqkdujgz5op6bpsoypg34pnrgmq");
+        // Check parent directory permissions
         assert_eq!(path.parent().unwrap().metadata().unwrap().permissions()
                    .mode(),16868);  // 744
+        // Check that justus file was created
         assert!(path.is_file());
+        // Check the permissions of the file.
         assert_eq!(path.metadata().unwrap().permissions().mode(),33188); // 644
         let path = dir_path.join(
             "openpgpkey.sequoia-pgp.org/\
              .well-known/openpgpkey/sequoia-pgp.org/hu\
              /7t1uqk9cwh1955776rc4z1gqf388566j");
+        // Check that juga file was created.
         assert!(path.is_file());
         assert_eq!(path.metadata().unwrap().permissions().mode(),33188);
+        // Check that the file for test uid is not created.
         let path = dir_path.join(
             "openpgpkey.example.com/\
              .well-known/openpgpkey/example.com/hu/\
