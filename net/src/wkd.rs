@@ -413,15 +413,11 @@ mod tests {
             .add_userid("justus@sequoia-pgp.org")
             .generate()
             .unwrap();
-        let mut tpk_bytes: Vec<u8> = Vec::new();
-        let mut tpk2_bytes: Vec<u8> = Vec::new();
-        tpk.serialize(&mut tpk_bytes).unwrap();
-        tpk2.serialize(&mut tpk2_bytes).unwrap();
-        tpk_bytes.extend(tpk2_bytes);
+        let tpks = [tpk, tpk2];
 
         let dir = tempfile::tempdir().unwrap();
         let dir_path = dir.path();
-        let result = generate("sequoia-pgp.org", &tpk_bytes, &dir_path, None);
+        let result = generate("sequoia-pgp.org", &tpks, &dir_path, None);
         assert!(result.is_ok());
 
         // justus and juga files will be generated, but not test one.
