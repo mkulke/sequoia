@@ -27,6 +27,7 @@ use openpgp::conversions::hex;
 use openpgp::parse::Parse;
 use openpgp::serialize::Serialize;
 use openpgp::tpk::armor::Encoder;
+use openpgp::tpk::TPKParser;
 use sequoia_core::{Context, NetworkPolicy};
 use sequoia_net::{KeyServer, wkd};
 use sequoia_store::{Store, LogIter};
@@ -498,7 +499,10 @@ fn real_main() -> Result<(), failure::Error> {
                     let direct_method = m.is_present("direct_method");
                     let mut buffer: Vec<u8> = Vec::new();
                     f.read_to_end(&mut buffer)?;
-                    wkd::generate(domain, &buffer, &base_path, direct_method)?;
+                    let parser = TPKParser::from_bytes(&buffer)?;
+                    let tpks: Vec<TPK> = parser.filter_map(|tpk| tpk.ok())
+                        .collect();
+                    wkd::generate(domain, &tpks, &base_path, direct_method)?;
                 }
                 _ => unreachable!(),
             }
