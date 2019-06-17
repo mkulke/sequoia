@@ -502,7 +502,9 @@ fn real_main() -> Result<(), failure::Error> {
                     let parser = TPKParser::from_bytes(&buffer)?;
                     let tpks: Vec<TPK> = parser.filter_map(|tpk| tpk.ok())
                         .collect();
-                    wkd::generate(domain, &tpks, &base_path, direct_method)?;
+                    wkd::generate(domain, &tpks, &base_path, direct_method)
+                        .context(format!("Failed to generate the WKD in {}.",
+                                         base_path))?;
                 }
                 _ => unreachable!(),
             }
