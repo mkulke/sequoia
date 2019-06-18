@@ -644,7 +644,7 @@
 //!     get     Writes to the standard output the Transferable Public Key retrieved from a Web Key Directory, given an
 //!             email address
 //!     help    Prints this message or the help of the given subcommand(s)
-//!     url     Prints the Web Key Directory URL of an email address.
+//!     url     Prints the Web Key Directory URl of an email address.
 //! ```
 //!
 //! ### Subcommand wkd get
@@ -667,7 +667,7 @@
 //! ### Subcommand wkd url
 //!
 //! ```text
-//! Prints the Web Key Directory URL of an email address.
+//! Prints the Web Key Directory URl of an email address.
 //!
 //! USAGE:
 //!     sq wkd url <EMAIL_ADDRESS>

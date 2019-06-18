@@ -438,7 +438,8 @@ pub fn build() -> App<'static, 'static> {
                     .about("Interacts with Web Key Directories")
                     .setting(AppSettings::SubcommandRequiredElseHelp)
                     .subcommand(SubCommand::with_name("url")
-                                .about("Prints the Web Key Directory URL of \
+                                .setting(AppSettings::ArgRequiredElseHelp)
+                                .about("Prints the Web Key Directory URl of \
                                         an email address.")
                                 .arg(Arg::with_name("input")
                                     .value_name("EMAIL_ADDRESS")
@@ -446,6 +447,7 @@ pub fn build() -> App<'static, 'static> {
                                     .help("The email address from which to \
                                             obtain the WKD URI.")))
                     .subcommand(SubCommand::with_name("get")
+                                .setting(AppSettings::ArgRequiredElseHelp)
                                 .about("Writes to the standard output the \
                                         Transferable Public Key retrieved \
                                         from a Web Key Directory, given an \
