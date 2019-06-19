@@ -256,7 +256,7 @@ pub fn generate<S, T, P>(domain: S, tpks: &[TPK], base_path: P,
 {
     let domain = domain.as_ref();
     let base_path = base_path.as_ref();
-    println!("Generating WKD for domain {}.", domain);
+    eprintln!("Generating WKD for domain {}.", domain);
 
     // Create the directories first, instead of creating it for every file.
     // Since the email local part would be the file name which is not created
@@ -267,7 +267,7 @@ pub fn generate<S, T, P>(domain: S, tpks: &[TPK], base_path: P,
     // This can not fail, otherwise file_path would have fail.
     let dir_path = base_path.join(
         Path::new(&file_path).parent().unwrap());
-    println!("Creating {:?} directory.", dir_path);
+    eprintln!("Creating {:?} directory.", dir_path);
     // With fs::create_dir_all the permissions can't be set.
     fs::DirBuilder::new()
         .mode(0o744)
@@ -301,7 +301,7 @@ pub fn generate<S, T, P>(domain: S, tpks: &[TPK], base_path: P,
         }
     }
     if !found_a_key {
-        println!("No keys found for the domain.");
+        eprintln!("No keys found for the domain.");
     }
     Ok(())
 }
