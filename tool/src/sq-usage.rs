@@ -478,10 +478,10 @@
 //!         --with-password     Prompt for a password to protect the generated key with.
 //!
 //! OPTIONS:
-//!         --can-encrypt <PURPOSE>          The key has an encryption-capable subkey (default) [default: all]  [possible
-//!                                          values: transport, rest, all]
-//!     -c, --cipher-suite <CIPHER-SUITE>    Cryptographic algorithms used for the key. [default: rsa3k]  [possible values:
-//!                                          rsa3k, cv25519]
+//!         --can-encrypt <PURPOSE>          The key has an encryption-capable subkey (default) [possible values: transport,
+//!                                          rest, all]
+//!     -c, --cipher-suite <CIPHER-SUITE>    Cryptographic algorithms used for the key. [default: cv25519]  [possible
+//!                                          values: rsa3k, cv25519]
 //!         --expiry <EXPIRY>                When the key should expire.  Either 'N[ymwd]', for N years, months, weeks, or
 //!                                          days, or 'never'.
 //!     -e, --export <OUTFILE>               Exports the key instead of saving it in the store
@@ -641,8 +641,7 @@
 //!     -V, --version    Prints version information
 //!
 //! SUBCOMMANDS:
-//!     get     Writes to the standard output the Transferable Public Key retrieved from a Web Key Directory, given an
-//!             email address
+//!     get     Writes to the standard output the TPK retrieved from a Web Key Directory, given an email address
 //!     help    Prints this message or the help of the given subcommand(s)
 //!     url     Prints the Web Key Directory URL of an email address.
 //! ```
@@ -650,7 +649,7 @@
 //! ### Subcommand wkd get
 //!
 //! ```text
-//! Writes to the standard output the Transferable Public Key retrieved from a Web Key Directory, given an email address
+//! Writes to the standard output the TPK retrieved from a Web Key Directory, given an email address
 //!
 //! USAGE:
 //!     sq wkd get [FLAGS] <EMAIL_ADDRESS>
