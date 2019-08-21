@@ -54,7 +54,7 @@ impl TPK {
             serialize_sig(o, s)?;
         }
 
-        for u in self.userids.iter() {
+        for u in self.userids() {
             if export && ! u.selfsigs().iter().chain(u.self_revocations()).any(
                 |s| s.exportable_certification().unwrap_or(true))
             {
@@ -77,7 +77,7 @@ impl TPK {
             }
         }
 
-        for u in self.user_attributes.iter() {
+        for u in self.user_attributes() {
             if export && ! u.selfsigs().iter().chain(u.self_revocations()).any(
                 |s| s.exportable_certification().unwrap_or(true))
             {
@@ -100,7 +100,7 @@ impl TPK {
             }
         }
 
-        for k in self.subkeys.iter() {
+        for k in self.subkeys() {
             if export && ! k.selfsigs().iter().chain(k.self_revocations()).any(
                 |s| s.exportable_certification().unwrap_or(true))
             {
@@ -123,7 +123,7 @@ impl TPK {
             }
         }
 
-        for u in self.unknowns.iter() {
+        for u in self.unknowns() {
             if export && ! u.certifications().iter().any(
                 |s| s.exportable_certification().unwrap_or(true))
             {
@@ -133,12 +133,21 @@ impl TPK {
 
             PacketRef::Unknown(u.unknown()).serialize(o)?;
 
-            for s in u.certifications().iter() {
+            for s in u.self_revocations() {
+                serialize_sig(o, s)?;
+            }
+            for s in u.selfsigs() {
+                serialize_sig(o, s)?;
+            }
+            for s in u.other_revocations() {
+                serialize_sig(o, s)?;
+            }
+            for s in u.certifications() {
                 serialize_sig(o, s)?;
             }
         }
 
-        for s in self.bad.iter() {
+        for s in self.bad_signatures() {
             serialize_sig(o, s)?;
         }
 
@@ -164,7 +173,7 @@ impl SerializeInto for TPK {
             l += PacketRef::Signature(s).serialized_len();
         }
 
-        for u in self.userids.iter() {
+        for u in self.userids() {
             l += PacketRef::UserID(u.userid()).serialized_len();
 
             for s in u.self_revocations() {
@@ -181,7 +190,7 @@ impl SerializeInto for TPK {
             }
         }
 
-        for u in self.user_attributes.iter() {
+        for u in self.user_attributes() {
             l += PacketRef::UserAttribute(u.user_attribute()).serialized_len();
 
             for s in u.self_revocations() {
@@ -198,7 +207,7 @@ impl SerializeInto for TPK {
             }
         }
 
-        for k in self.subkeys.iter() {
+        for k in self.subkeys() {
             l += PacketRef::PublicSubkey(k.subkey()).serialized_len();
 
             for s in k.self_revocations() {
@@ -215,15 +224,24 @@ impl SerializeInto for TPK {
             }
         }
 
-        for u in self.unknowns.iter() {
+        for u in self.unknowns() {
             l += PacketRef::Unknown(u.unknown()).serialized_len();
 
-            for s in u.certifications().iter() {
+            for s in u.self_revocations() {
+                l += PacketRef::Signature(s).serialized_len();
+            }
+            for s in u.selfsigs() {
+                l += PacketRef::Signature(s).serialized_len();
+            }
+            for s in u.other_revocations() {
+                l += PacketRef::Signature(s).serialized_len();
+            }
+            for s in u.certifications() {
                 l += PacketRef::Signature(s).serialized_len();
             }
         }
 
-        for s in self.bad.iter() {
+        for s in self.bad_signatures() {
             l += PacketRef::Signature(s).serialized_len();
         }
 
@@ -358,18 +376,18 @@ impl<'a> TSK<'a> {
 
             packet.serialize(o)
         };
-        serialize_key(o, &self.tpk.primary, Tag::PublicKey, Tag::SecretKey)?;
+        serialize_key(o, &self.tpk.primary(), Tag::PublicKey, Tag::SecretKey)?;
 
-        for s in self.tpk.primary_selfsigs.iter() {
+        for s in self.tpk.selfsigs() {
             serialize_sig(o, s)?;
         }
-        for s in self.tpk.primary_self_revocations.iter() {
+        for s in self.tpk.self_revocations() {
             serialize_sig(o, s)?;
         }
-        for s in self.tpk.primary_certifications.iter() {
+        for s in self.tpk.certifications() {
             serialize_sig(o, s)?;
         }
-        for s in self.tpk.primary_other_revocations.iter() {
+        for s in self.tpk.other_revocations() {
             serialize_sig(o, s)?;
         }
 
@@ -442,7 +460,7 @@ impl<'a> TSK<'a> {
             }
         }
 
-        for u in self.tpk.unknowns.iter() {
+        for u in self.tpk.unknowns() {
             if export && ! u.certifications().iter().any(
                 |s| s.exportable_certification().unwrap_or(true))
             {
@@ -452,12 +470,21 @@ impl<'a> TSK<'a> {
 
             PacketRef::Unknown(&u.unknown()).serialize(o)?;
 
-            for s in u.certifications().iter() {
+            for s in u.self_revocations() {
+                serialize_sig(o, s)?;
+            }
+            for s in u.selfsigs() {
+                serialize_sig(o, s)?;
+            }
+            for s in u.other_revocations() {
+                serialize_sig(o, s)?;
+            }
+            for s in u.certifications() {
                 serialize_sig(o, s)?;
             }
         }
 
-        for s in self.tpk.bad.iter() {
+        for s in self.tpk.bad_signatures() {
             serialize_sig(o, s)?;
         }
 
@@ -499,7 +526,7 @@ impl<'a> SerializeInto for TSK<'a> {
 
             packet.serialized_len()
         };
-        l += serialized_len_key(&self.tpk.primary,
+        l += serialized_len_key(self.tpk.primary(),
                                 Tag::PublicKey, Tag::SecretKey);
 
         for s in self.tpk.selfsigs() {
@@ -515,7 +542,7 @@ impl<'a> SerializeInto for TSK<'a> {
             l += PacketRef::Signature(s).serialized_len();
         }
 
-        for u in self.tpk.userids.iter() {
+        for u in self.tpk.userids() {
             l += PacketRef::UserID(u.userid()).serialized_len();
 
             for s in u.self_revocations() {
@@ -532,7 +559,7 @@ impl<'a> SerializeInto for TSK<'a> {
             }
         }
 
-        for u in self.tpk.user_attributes.iter() {
+        for u in self.tpk.user_attributes() {
             l += PacketRef::UserAttribute(u.user_attribute()).serialized_len();
 
             for s in u.self_revocations() {
@@ -549,7 +576,7 @@ impl<'a> SerializeInto for TSK<'a> {
             }
         }
 
-        for k in self.tpk.subkeys.iter() {
+        for k in self.tpk.subkeys() {
             l += serialized_len_key(k.subkey(),
                                     Tag::PublicSubkey, Tag::SecretSubkey);
 
@@ -567,15 +594,24 @@ impl<'a> SerializeInto for TSK<'a> {
             }
         }
 
-        for u in self.tpk.unknowns.iter() {
+        for u in self.tpk.unknowns() {
             l += PacketRef::Unknown(u.unknown()).serialized_len();
 
-            for s in u.certifications().iter() {
+            for s in u.self_revocations() {
+                l += PacketRef::Signature(s).serialized_len();
+            }
+            for s in u.selfsigs() {
+                l += PacketRef::Signature(s).serialized_len();
+            }
+            for s in u.other_revocations() {
+                l += PacketRef::Signature(s).serialized_len();
+            }
+            for s in u.certifications() {
                 l += PacketRef::Signature(s).serialized_len();
             }
         }
 
-        for s in self.tpk.bad.iter() {
+        for s in self.tpk.bad_signatures() {
             l += PacketRef::Signature(s).serialized_len();
         }
 
