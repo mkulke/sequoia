@@ -84,7 +84,6 @@ impl Signer for KeyPair {
     {
         use crate::PublicKeyAlgorithm::*;
         use crate::crypto::mpis::PublicKey;
-        use memsec;
 
         let mut rng = Yarrow::default();
 
@@ -145,8 +144,8 @@ impl Signer for KeyPair {
                     // Nettle expects the private key to be exactly
                     // ED25519_KEY_SIZE bytes long but OpenPGP allows leading
                     // zeros to be stripped.
-                    // Padding has to be unconditionaly, otherwise we have a
-                    // secret-dependant branch.
+                    // Padding has to be unconditional; otherwise we have a
+                    // secret-dependent branch.
                     let missing = ed25519::ED25519_KEY_SIZE
                         .saturating_sub(scalar.value().len());
                     let mut sec = [0u8; ed25519::ED25519_KEY_SIZE];
@@ -214,7 +213,6 @@ impl Decryptor for KeyPair {
     {
         use crate::PublicKeyAlgorithm::*;
         use crate::crypto::mpis::PublicKey;
-        use nettle::rsa;
 
         self.secret.map(
             |secret| Ok(match (self.public.mpis(), secret, ciphertext)

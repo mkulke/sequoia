@@ -172,8 +172,6 @@ pub fn encrypt_shared(recipient: &Key, session_key: &SessionKey, VB: MPI,
 pub fn decrypt(recipient: &Key, recipient_sec: &SecretKey,
                ciphertext: &Ciphertext)
                -> Result<SessionKey> {
-    use memsec;
-
     match (recipient.mpis(), recipient_sec, ciphertext) {
         (PublicKey::ECDH { ref curve, ..},
          SecretKey::ECDH { ref scalar, },
@@ -187,8 +185,8 @@ pub fn decrypt(recipient: &Key, recipient_sec: &SecretKey,
                     // Nettle expects the private key to be exactly
                     // CURVE25519_SIZE bytes long but OpenPGP allows leading
                     // zeros to be stripped.
-                    // Padding has to be unconditionaly, otherwise we have a
-                    // secret-dependant branch.
+                    // Padding has to be unconditional; otherwise we have a
+                    // secret-dependent branch.
                     //
                     // Reverse the scalar.  See
                     // https://lists.gnupg.org/pipermail/gnupg-devel/2018-February/033437.html.
