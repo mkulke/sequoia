@@ -15,7 +15,10 @@ use crate::HashAlgorithm;
 use crate::PublicKeyAlgorithm;
 use crate::SignatureType;
 use crate::packet::Signature;
-use crate::packet::Key;
+use crate::packet::{
+    key,
+    Key,
+};
 use crate::KeyID;
 use crate::packet::UserID;
 use crate::packet::UserAttribute;
@@ -114,13 +117,17 @@ impl Builder {
     /// The Signature's public-key algorithm field is set to the
     /// algorithm used by `signer`, the hash-algorithm field is set to
     /// `hash_algo`.
-    pub fn sign_primary_key_binding(mut self, signer: &mut Signer,
-                                    algo: HashAlgorithm)
-                                    -> Result<Signature> {
+    pub fn sign_primary_key_binding<R>(mut self, signer: &mut Signer<R>,
+                                       algo: HashAlgorithm)
+        -> Result<Signature>
+        where R: key::KeyRole
+    {
         self.pk_algo = signer.public().pk_algo();
         self.hash_algo = algo;
         let digest =
-            Signature::primary_key_binding_hash(&self, signer.public())?;
+            Signature::primary_key_binding_hash(&self,
+                                                signer.public()
+                                                    .mark_role_primary_ref())?;
 
         self.sign(signer, digest)
     }
@@ -130,9 +137,13 @@ impl Builder {
     /// The Signature's public-key algorithm field is set to the
     /// algorithm used by `signer`, the hash-algorithm field is set to
     /// `hash_algo`.
-    pub fn sign_userid_binding(mut self, signer: &mut Signer,
-                               key: &Key, userid: &UserID, algo: HashAlgorithm)
-                               -> Result<Signature> {
+    pub fn sign_userid_binding<R>(mut self, signer: &mut Signer<R>,
+                                 key: &key::PublicKey,
+                                 userid: &UserID,
+                                 algo: HashAlgorithm)
+        -> Result<Signature>
+        where R: key::KeyRole
+    {
         self.pk_algo = signer.public().pk_algo();
         self.hash_algo = algo;
         let digest = Signature::userid_binding_hash(&self, key, userid)?;
@@ -145,9 +156,13 @@ impl Builder {
     /// The Signature's public-key algorithm field is set to the
     /// algorithm used by `signer`, the hash-algorithm field is set to
     /// `hash_algo`.
-    pub fn sign_subkey_binding(mut self, signer: &mut Signer,
-                               primary: &Key, subkey: &Key, algo: HashAlgorithm)
-                               -> Result<Signature> {
+    pub fn sign_subkey_binding<R>(mut self, signer: &mut Signer<R>,
+                                  primary: &key::PublicKey,
+                                  subkey: &key::PublicSubkey,
+                                  algo: HashAlgorithm)
+        -> Result<Signature>
+        where R: key::KeyRole
+    {
         self.pk_algo = signer.public().pk_algo();
         self.hash_algo = algo;
         let digest = Signature::subkey_binding_hash(&self, primary, subkey)?;
@@ -160,10 +175,13 @@ impl Builder {
     /// The Signature's public-key algorithm field is set to the
     /// algorithm used by `signer`, the hash-algorithm field is set to
     /// `hash_algo`.
-    pub fn sign_user_attribute_binding(mut self, signer: &mut Signer,
-                                       key: &Key, ua: &UserAttribute,
-                                       algo: HashAlgorithm)
-                                       -> Result<Signature> {
+    pub fn sign_user_attribute_binding<R>(mut self, signer: &mut Signer<R>,
+                                          key: &key::PublicKey,
+                                          ua: &UserAttribute,
+                                          algo: HashAlgorithm)
+        -> Result<Signature>
+        where R: key::KeyRole
+    {
         self.pk_algo = signer.public().pk_algo();
         self.hash_algo = algo;
         let digest =
@@ -177,9 +195,11 @@ impl Builder {
     /// The Signature's public-key algorithm field is set to the
     /// algorithm used by `signer`, the hash-algorithm field is set to
     /// `hash_algo`.
-    pub fn sign_hash(mut self, signer: &mut Signer,
-                     hash_algo: HashAlgorithm, mut hash: hash::Context)
-                     -> Result<Signature> {
+    pub fn sign_hash<R>(mut self, signer: &mut Signer<R>,
+                        hash_algo: HashAlgorithm, mut hash: hash::Context)
+        -> Result<Signature>
+        where R: key::KeyRole
+    {
         // Fill out some fields, then hash the packet.
         self.pk_algo = signer.public().pk_algo();
         self.hash_algo = hash_algo;
@@ -197,9 +217,11 @@ impl Builder {
     /// The Signature's public-key algorithm field is set to the
     /// algorithm used by `signer`, the hash-algorithm field is set to
     /// `hash_algo`.
-    pub fn sign_message(mut self, signer: &mut Signer,
-                     hash_algo: HashAlgorithm, msg: &[u8])
-                     -> Result<Signature> {
+    pub fn sign_message<R>(mut self, signer: &mut Signer<R>,
+                           hash_algo: HashAlgorithm, msg: &[u8])
+        -> Result<Signature>
+        where R: key::KeyRole
+    {
         // Hash the message
         let mut hash = hash_algo.context()?;
         hash.update(msg);
@@ -216,7 +238,10 @@ impl Builder {
         self.sign(signer, digest)
     }
 
-    fn sign(self, signer: &mut Signer, digest: Vec<u8>) -> Result<Signature> {
+    fn sign<R>(self, signer: &mut Signer<R>, digest: Vec<u8>)
+        -> Result<Signature>
+        where R: key::KeyRole
+    {
         let algo = self.hash_algo;
         let mpis = signer.sign(algo, &digest)?;
 
@@ -521,8 +546,11 @@ impl Signature4 {
     /// is not revoked, not expired, has a valid self-signature, has a
     /// subkey binding signature (if appropriate), has the signing
     /// capability, etc.
-    pub fn verify_hash(&self, key: &Key, hash_algo: HashAlgorithm, hash: &[u8])
+    pub fn verify_hash<R>(&self, key: &Key<key::PublicParts, R>,
+                          hash_algo: HashAlgorithm,
+                          hash: &[u8])
         -> Result<bool>
+        where R: key::KeyRole
     {
         use crate::PublicKeyAlgorithm::*;
         use crate::crypto::mpis::PublicKey;
@@ -631,12 +659,14 @@ impl Signature4 {
     /// Constraints on the signature, like creation and expiration
     /// time, or signature revocations must be checked by the caller.
     ///
-    /// Likewise, this function does not check whether `key` can made
+    /// Likewise, this function does not check whether `key` can make
     /// valid signatures; it is up to the caller to make sure the key
     /// is not revoked, not expired, has a valid self-signature, has a
     /// subkey binding signature (if appropriate), has the signing
     /// capability, etc.
-    pub fn verify(&self, key: &Key) -> Result<bool> {
+    pub fn verify<R>(&self, key: &Key<key::PublicParts, R>) -> Result<bool>
+        where R: key::KeyRole
+    {
         if !(self.typ() == SignatureType::Binary
              || self.typ() == SignatureType::Text
              || self.typ() == SignatureType::Standalone) {
@@ -667,8 +697,11 @@ impl Signature4 {
     /// key is not revoked, not expired, has a valid self-signature,
     /// has a subkey binding signature (if appropriate), has the
     /// signing capability, etc.
-    pub fn verify_primary_key_binding(&self, signer: &Key, pk: &Key)
+    pub fn verify_primary_key_binding<R>(&self,
+                                         signer: &Key<key::PublicParts, R>,
+                                         pk: &key::PublicKey)
         -> Result<bool>
+        where R: key::KeyRole
     {
         if self.typ() != SignatureType::DirectKey {
             return Err(Error::UnsupportedSignatureType(self.typ()).into());
@@ -695,8 +728,11 @@ impl Signature4 {
     /// key is not revoked, not expired, has a valid self-signature,
     /// has a subkey binding signature (if appropriate), has the
     /// signing capability, etc.
-    pub fn verify_primary_key_revocation(&self, signer: &Key, pk: &Key)
+    pub fn verify_primary_key_revocation<R>(&self,
+                                            signer: &Key<key::PublicParts, R>,
+                                            pk: &key::PublicKey)
         -> Result<bool>
+        where R: key::KeyRole
     {
         if self.typ() != SignatureType::KeyRevocation {
             return Err(Error::UnsupportedSignatureType(self.typ()).into());
@@ -728,8 +764,12 @@ impl Signature4 {
     /// key is not revoked, not expired, has a valid self-signature,
     /// has a subkey binding signature (if appropriate), has the
     /// signing capability, etc.
-    pub fn verify_subkey_binding(&self, signer: &Key, pk: &Key, subkey: &Key)
+    pub fn verify_subkey_binding<R>(&self,
+                                    signer: &Key<key::PublicParts, R>,
+                                    pk: &key::PublicKey,
+                                    subkey: &key::PublicSubkey)
         -> Result<bool>
+        where R: key::KeyRole
     {
         if self.typ() != SignatureType::SubkeyBinding {
             return Err(Error::UnsupportedSignatureType(self.typ()).into());
@@ -756,8 +796,9 @@ impl Signature4 {
                 return Err(Error::UnsupportedSignatureType(self.typ()).into());
             } else {
                 // We can't use backsig.verify_subkey_binding.
-                let hash = Signature::subkey_binding_hash(&backsig, pk, &subkey)?;
-                match backsig.verify_hash(&subkey, backsig.hash_algo(), &hash[..])
+                let hash = Signature::subkey_binding_hash(&backsig, pk, subkey)?;
+                match backsig.verify_hash(subkey.mark_role_unspecified_ref(),
+                                          backsig.hash_algo(), &hash[..])
                 {
                     Ok(true) => {
                         if TRACE {
@@ -803,9 +844,12 @@ impl Signature4 {
     /// key is not revoked, not expired, has a valid self-signature,
     /// has a subkey binding signature (if appropriate), has the
     /// signing capability, etc.
-    pub fn verify_subkey_revocation(&self, signer: &Key, pk: &Key,
-                                    subkey: &Key)
+    pub fn verify_subkey_revocation<R>(&self,
+                                       signer: &Key<key::PublicParts, R>,
+                                       pk: &key::PublicKey,
+                                       subkey: &key::PublicSubkey)
         -> Result<bool>
+        where R: key::KeyRole
     {
         if self.typ() != SignatureType::SubkeyRevocation {
             return Err(Error::UnsupportedSignatureType(self.typ()).into());
@@ -832,9 +876,12 @@ impl Signature4 {
     /// key is not revoked, not expired, has a valid self-signature,
     /// has a subkey binding signature (if appropriate), has the
     /// signing capability, etc.
-    pub fn verify_userid_binding(&self, signer: &Key,
-                                 pk: &Key, userid: &UserID)
+    pub fn verify_userid_binding<R>(&self,
+                                    signer: &Key<key::PublicParts, R>,
+                                    pk: &key::PublicKey,
+                                    userid: &UserID)
         -> Result<bool>
+        where R: key::KeyRole
     {
         if !(self.typ() == SignatureType::GenericCertificate
              || self.typ() == SignatureType::PersonaCertificate
@@ -864,9 +911,12 @@ impl Signature4 {
     /// key is not revoked, not expired, has a valid self-signature,
     /// has a subkey binding signature (if appropriate), has the
     /// signing capability, etc.
-    pub fn verify_userid_revocation(&self, signer: &Key,
-                                    pk: &Key, userid: &UserID)
+    pub fn verify_userid_revocation<R>(&self,
+                                       signer: &Key<key::PublicParts, R>,
+                                       pk: &key::PublicKey,
+                                       userid: &UserID)
         -> Result<bool>
+        where R: key::KeyRole
     {
         if self.typ() != SignatureType::CertificateRevocation {
             return Err(Error::UnsupportedSignatureType(self.typ()).into());
@@ -893,9 +943,12 @@ impl Signature4 {
     /// key is not revoked, not expired, has a valid self-signature,
     /// has a subkey binding signature (if appropriate), has the
     /// signing capability, etc.
-    pub fn verify_user_attribute_binding(&self, signer: &Key,
-                                         pk: &Key, ua: &UserAttribute)
+    pub fn verify_user_attribute_binding<R>(&self,
+                                            signer: &Key<key::PublicParts, R>,
+                                            pk: &key::PublicKey,
+                                            ua: &UserAttribute)
         -> Result<bool>
+        where R: key::KeyRole
     {
         if !(self.typ() == SignatureType::GenericCertificate
              || self.typ() == SignatureType::PersonaCertificate
@@ -925,9 +978,12 @@ impl Signature4 {
     /// key is not revoked, not expired, has a valid self-signature,
     /// has a subkey binding signature (if appropriate), has the
     /// signing capability, etc.
-    pub fn verify_user_attribute_revocation(&self, signer: &Key,
-                                            pk: &Key, ua: &UserAttribute)
+    pub fn verify_user_attribute_revocation<R>(&self,
+                                               signer: &Key<key::PublicParts, R>,
+                                               pk: &key::PublicKey,
+                                               ua: &UserAttribute)
         -> Result<bool>
+        where R: key::KeyRole
     {
         if self.typ() != SignatureType::CertificateRevocation {
             return Err(Error::UnsupportedSignatureType(self.typ()).into());
@@ -954,8 +1010,9 @@ impl Signature4 {
     /// key is not revoked, not expired, has a valid self-signature,
     /// has a subkey binding signature (if appropriate), has the
     /// signing capability, etc.
-    pub fn verify_message(&self, signer: &Key, msg: &[u8])
+    pub fn verify_message<R>(&self, signer: &Key<key::PublicParts, R>, msg: &[u8])
         -> Result<bool>
+        where R: key::KeyRole
     {
         if self.typ() != SignatureType::Binary &&
             self.typ() != SignatureType::Text {
@@ -994,6 +1051,7 @@ mod test {
     use crate::crypto::mpis::MPI;
     use crate::TPK;
     use crate::parse::Parse;
+    use crate::packet::Key;
     use crate::packet::key::Key4;
 
     #[cfg(feature = "compression-deflate")]
@@ -1090,17 +1148,17 @@ mod test {
                 crate::tests::message(test.data)).unwrap();
             while let PacketParserResult::Some(pp) = ppr {
                 if let Packet::Signature(ref sig) = pp.packet {
-                    let result = sig.verify(tpk.primary()).unwrap_or(false);
+                    let result = sig.verify(tpk.primary().key()).unwrap_or(false);
                     eprintln!("  Primary {:?}: {:?}",
-                              tpk.primary().fingerprint(), result);
+                              tpk.primary().key().fingerprint(), result);
                     if result {
                         good += 1;
                     }
 
                     for sk in tpk.subkeys() {
-                        let result = sig.verify(sk.subkey()).unwrap_or(false);
+                        let result = sig.verify(sk.key()).unwrap_or(false);
                         eprintln!("   Subkey {:?}: {:?}",
-                                  sk.subkey().fingerprint(), result);
+                                  sk.key().fingerprint(), result);
                         if result {
                             good += 1;
                         }
@@ -1150,7 +1208,9 @@ mod test {
             "emmelie-dorothea-dina-samantha-awina-ed25519-private.pgp",
         ] {
             let tpk = TPK::from_bytes(crate::tests::key(key)).unwrap();
-            let mut pair = tpk.primary().clone().into_keypair()
+            let mut pair = tpk.primary().key().clone()
+                .mark_parts_secret()
+                .into_keypair()
                 .expect("secret key is encrypted/missing");
 
             let sig = Builder::new(SignatureType::Binary);
@@ -1177,7 +1237,8 @@ mod test {
         use time;
         use crate::constants::Curve;
 
-        let key: Key = Key4::generate_ecc(true, Curve::Ed25519)
+        let key: Key<key::SecretParts, key::PrimaryRole>
+            = Key4::generate_ecc(true, Curve::Ed25519)
             .unwrap().into();
         let msg = b"Hello, World";
         let mut pair = key.into_keypair().unwrap();
@@ -1204,7 +1265,7 @@ mod test {
             panic!("Expected a Signature, got: {:?}", p);
         };
 
-        assert!(sig.verify_message(tpk.primary(), &msg[..]).unwrap());
+        assert!(sig.verify_message(tpk.primary().key(), &msg[..]).unwrap());
     }
 
     #[test]
@@ -1227,13 +1288,15 @@ mod test {
             curve: Curve::Ed25519,
             q: MPI::new(&pnt[..]),
         };
-        let private_mpis = mpis::SecretKey::EdDSA {
+        let private_mpis = mpis::SecretKeyMaterial::EdDSA {
             scalar: MPI::new(&sec[..]).into(),
         };
-        let key = Key4::new(time::now().canonicalize(),
-                            PublicKeyAlgorithm::EdDSA,
-                            public_mpis, Some(private_mpis.into()))
-            .unwrap();
+        let key : key::SecretKey
+            = Key4::new(time::now().canonicalize(),
+                        PublicKeyAlgorithm::EdDSA,
+                        public_mpis, Some(private_mpis.into()))
+            .unwrap()
+            .into();
         let mut pair = key.into_keypair().unwrap();
         let msg = b"Hello, World";
         let mut hash = HashAlgorithm::SHA256.context().unwrap();
@@ -1260,7 +1323,10 @@ mod test {
         let uid_binding = &test2.primary_key_signature_full().unwrap().0.unwrap();
         let cert = &uid_binding.certifications()[0];
 
-        assert_eq!(cert.verify_userid_binding(cert_key1, test2.primary(), uid_binding.userid()).ok(), Some(true));
+        assert_eq!(cert.verify_userid_binding(cert_key1,
+                                              test2.primary().key(),
+                                              uid_binding.userid()).ok(),
+                   Some(true));
     }
 
     #[test]
@@ -1268,8 +1334,9 @@ mod test {
         use crate::Fingerprint;
         use crate::packet::signature::subpacket::*;
 
-        let mut pair = Key4::generate_ecc(true, Curve::Ed25519).unwrap()
-            .into_keypair().unwrap();
+        let key : key::SecretKey
+            = Key4::generate_ecc(true, Curve::Ed25519).unwrap().into();
+        let mut pair = key.into_keypair().unwrap();
         let msg = b"Hello, World";
         let mut hash = HashAlgorithm::SHA256.context().unwrap();
         hash.update(&msg[..]);

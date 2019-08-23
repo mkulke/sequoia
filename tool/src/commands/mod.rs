@@ -11,7 +11,7 @@ use sequoia_core::Context;
 use crate::openpgp::constants::DataFormat;
 use crate::openpgp::crypto;
 use crate::openpgp::{TPK, KeyID, Result};
-use crate::openpgp::packet::key::SecretKey;
+use crate::openpgp::packet::prelude::*;
 use crate::openpgp::parse::{
     Parse,
     PacketParserResult,
@@ -42,7 +42,10 @@ fn tm2str(t: &time::Tm) -> String {
 }
 
 /// Returns suitable signing keys from a given list of TPKs.
-fn get_signing_keys(tpks: &[openpgp::TPK]) -> Result<Vec<crypto::KeyPair>> {
+fn get_signing_keys(tpks: &[openpgp::TPK])
+    -> Result<Vec<crypto::KeyPair<
+           openpgp::packet::key::UnspecifiedRole>>>
+{
     let mut keys = Vec::new();
     'next_tpk: for tsk in tpks {
         for key in tsk.keys_valid()
@@ -51,14 +54,14 @@ fn get_signing_keys(tpks: &[openpgp::TPK]) -> Result<Vec<crypto::KeyPair>> {
         {
             if let Some(secret) = key.secret() {
                 let unencrypted = match secret {
-                    SecretKey::Encrypted(ref e) => {
+                    SecretKeyMaterial::Encrypted(ref e) => {
                         let password = rpassword::read_password_from_tty(Some(
                             &format!("Please enter password to decrypt {}/{}: ",
                                      tsk, key))).unwrap();
                         e.decrypt(key.pk_algo(), &password.into())
                             .expect("decryption failed")
                     },
-                    SecretKey::Unencrypted(ref u) => u.clone(),
+                    SecretKeyMaterial::Unencrypted(ref u) => u.clone(),
                 };
 
                 keys.push(crypto::KeyPair::new(key.clone(), unencrypted)
@@ -115,7 +118,7 @@ pub fn encrypt(store: &mut store::Store,
     if ! signers.is_empty() {
         sink = Signer::with_intended_recipients(
             sink,
-            signers.iter_mut().map(|s| -> &mut dyn crypto::Signer { s })
+            signers.iter_mut().map(|s| -> &mut dyn crypto::Signer<_> { s })
                 .collect(),
             &recipients,
             None)?;

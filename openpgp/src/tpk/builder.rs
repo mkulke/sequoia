@@ -2,8 +2,11 @@ use time;
 
 use crate::packet;
 use crate::packet::{Features, KeyFlags};
-use crate::packet::Key;
-use crate::packet::key::Key4;
+use crate::packet::{
+    key,
+    Key,
+    key::Key4,
+};
 use crate::Result;
 use crate::packet::Signature;
 use crate::packet::signature;
@@ -42,7 +45,10 @@ impl Default for CipherSuite {
 }
 
 impl CipherSuite {
-    fn generate_key(self, flags: &KeyFlags) -> Result<Key> {
+    fn generate_key<R>(self, flags: &KeyFlags)
+        -> Result<Key<key::SecretParts, R>>
+        where R: key::KeyRole
+    {
         use crate::constants::Curve;
 
         match self {
@@ -286,7 +292,7 @@ impl TPKBuilder {
 
         // Generate & and self-sign primary key.
         let (primary, sig) = self.primary_key()?;
-        let mut signer = primary.clone().into_keypair().unwrap();
+        let mut signer = primary.clone().mark_parts_secret().into_keypair().unwrap();
 
         packets.push(Packet::PublicKey({
             let mut primary = primary.clone();
@@ -350,13 +356,14 @@ impl TPKBuilder {
                     .set_signature_creation_time(time::now().canonicalize())?
                     .set_issuer_fingerprint(subkey.fingerprint())?
                     .set_issuer(subkey.keyid())?
-                    .sign_subkey_binding(&mut subkey_signer, &primary, &subkey,
+                    .sign_subkey_binding(&mut subkey_signer, &primary,
+                                         &subkey.mark_parts_public_ref(),
                                          HashAlgorithm::SHA512)?;
                 builder = builder.set_embedded_signature(backsig)?;
             }
 
-            let signature =
-                subkey.bind(&mut signer, &tpk, builder, None, None)?;
+            let signature = subkey.mark_parts_public_ref()
+                .bind(&mut signer, &tpk, builder, None, None)?;
             tpk = tpk.merge_packets(vec![Packet::SecretSubkey(subkey),
                                          signature.into()])?;
         }
@@ -373,7 +380,7 @@ impl TPKBuilder {
     }
 
     fn primary_key(&self)
-        -> Result<(Key, Signature)>
+        -> Result<(key::PublicKey, Signature)>
     {
         let key = self.ciphersuite.generate_key(
             &KeyFlags::default().set_certify(true))?;
@@ -391,7 +398,7 @@ impl TPKBuilder {
         let sig = sig.sign_primary_key_binding(&mut signer,
                                                HashAlgorithm::SHA512)?;
 
-        Ok((key, sig.into()))
+        Ok((key.mark_parts_public(), sig.into()))
     }
 }
 
@@ -452,16 +459,16 @@ mod tests {
             .set_cipher_suite(CipherSuite::RSA3k)
             .set_cipher_suite(CipherSuite::Cv25519)
             .generate().unwrap();
-        assert_eq!(tpk1.primary().pk_algo(), PublicKeyAlgorithm::EdDSA);
+        assert_eq!(tpk1.primary().key().pk_algo(), PublicKeyAlgorithm::EdDSA);
 
         let (tpk2, _) = TPKBuilder::new()
             .set_cipher_suite(CipherSuite::RSA3k)
             .add_userid("test2@example.com")
             .add_encryption_subkey()
             .generate().unwrap();
-        assert_eq!(tpk2.primary().pk_algo(),
+        assert_eq!(tpk2.primary().key().pk_algo(),
                    PublicKeyAlgorithm::RSAEncryptSign);
-        assert_eq!(tpk2.subkeys().next().unwrap().subkey().pk_algo(),
+        assert_eq!(tpk2.subkeys().next().unwrap().key().pk_algo(),
                    PublicKeyAlgorithm::RSAEncryptSign);
     }
 
@@ -470,7 +477,7 @@ mod tests {
         let (tpk1, _) = TPKBuilder::new()
             .add_userid("test2@example.com")
             .generate().unwrap();
-        assert_eq!(tpk1.primary().pk_algo(),
+        assert_eq!(tpk1.primary().key().pk_algo(),
                    PublicKeyAlgorithm::EdDSA);
         assert!(tpk1.subkeys().next().is_none());
         if let Some(sig) = tpk1.primary_key_signature() {
@@ -486,9 +493,9 @@ mod tests {
         let (tpk1, _) = TPKBuilder::autocrypt(Autocrypt::V1,
                                               Some("Foo"))
             .generate().unwrap();
-        assert_eq!(tpk1.primary().pk_algo(),
+        assert_eq!(tpk1.primary().key().pk_algo(),
                    PublicKeyAlgorithm::RSAEncryptSign);
-        assert_eq!(tpk1.subkeys().next().unwrap().subkey().pk_algo(),
+        assert_eq!(tpk1.subkeys().next().unwrap().key().pk_algo(),
                    PublicKeyAlgorithm::RSAEncryptSign);
         assert_eq!(tpk1.userids().count(), 1);
     }
@@ -498,14 +505,14 @@ mod tests {
         let (tpk1, _) = TPKBuilder::autocrypt(Autocrypt::V1_1,
                                               Some("Foo"))
             .generate().unwrap();
-        assert_eq!(tpk1.primary().pk_algo(),
+        assert_eq!(tpk1.primary().key().pk_algo(),
                    PublicKeyAlgorithm::EdDSA);
-        assert_eq!(tpk1.subkeys().next().unwrap().subkey().pk_algo(),
+        assert_eq!(tpk1.subkeys().next().unwrap().key().pk_algo(),
                    PublicKeyAlgorithm::ECDH);
         assert_match!(
             crate::crypto::mpis::PublicKey::ECDH {
                 curve: crate::constants::Curve::Cv25519, ..
-            } = tpk1.subkeys().next().unwrap().subkey().mpis());
+            } = tpk1.subkeys().next().unwrap().key().mpis());
         assert_eq!(tpk1.userids().count(), 1);
     }
 
@@ -582,7 +589,7 @@ mod tests {
             .set_cipher_suite(CipherSuite::Cv25519)
             .set_password(Some(String::from("streng geheim").into()))
             .generate().unwrap();
-        assert!(tpk.primary().secret().unwrap().is_encrypted());
+        assert!(tpk.primary().key().secret().unwrap().is_encrypted());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use crate::Result;
 use crate::TPK;
-use crate::packet::{Key, Signature, Tag};
+use crate::packet::{key, Signature, Tag};
 use crate::serialize::{
     PacketRef, Serialize, SerializeInto,
     generic_serialize_into, generic_export_into,
@@ -25,7 +25,7 @@ impl TPK {
     fn serialize_common(&self, o: &mut dyn std::io::Write, export: bool)
                         -> Result<()>
     {
-        PacketRef::PublicKey(self.primary()).serialize(o)?;
+        PacketRef::PublicKey(self.primary().key()).serialize(o)?;
 
         // Writes a signature if it is exportable or `! export`.
         let serialize_sig =
@@ -108,7 +108,7 @@ impl TPK {
                 continue;
             }
 
-            PacketRef::PublicSubkey(k.subkey()).serialize(o)?;
+            PacketRef::PublicSubkey(k.key()).serialize(o)?;
             for s in k.self_revocations() {
                 serialize_sig(o, s)?;
             }
@@ -158,7 +158,7 @@ impl TPK {
 impl SerializeInto for TPK {
     fn serialized_len(&self) -> usize {
         let mut l = 0;
-        l += PacketRef::PublicKey(self.primary()).serialized_len();
+        l += PacketRef::PublicKey(self.primary().key()).serialized_len();
 
         for s in self.selfsigs() {
             l += PacketRef::Signature(s).serialized_len();
@@ -208,7 +208,7 @@ impl SerializeInto for TPK {
         }
 
         for k in self.subkeys() {
-            l += PacketRef::PublicSubkey(k.subkey()).serialized_len();
+            l += PacketRef::PublicSubkey(k.key()).serialized_len();
 
             for s in k.self_revocations() {
                 l += PacketRef::Signature(s).serialized_len();
@@ -294,7 +294,7 @@ impl TPK {
 /// # Ok(()) }
 pub struct TSK<'a> {
     tpk: &'a TPK,
-    filter: Option<Box<'a + Fn(&'a Key) -> bool>>,
+    filter: Option<Box<'a + Fn(&'a key::UnspecifiedSecret) -> bool>>,
 }
 
 impl<'a> TSK<'a> {
@@ -320,14 +320,18 @@ impl<'a> TSK<'a> {
     ///
     /// // Only write out the primary key's secret.
     /// let mut buf = Vec::new();
-    /// tpk.as_tsk().set_filter(|k| k == tpk.primary()).serialize(&mut buf)?;
+    /// tpk.as_tsk()
+    ///     .set_filter(
+    ///         |k| k == tpk.primary().key()
+    ///                 .mark_parts_secret_ref().mark_role_unspecified_ref())
+    ///     .serialize(&mut buf)?;
     ///
     /// let tpk_ = TPK::from_bytes(&buf)?;
     /// assert_eq!(tpk_.keys_valid().secret(true).count(), 1);
-    /// assert!(tpk_.primary().secret().is_some());
+    /// assert!(tpk_.primary().key().secret().is_some());
     /// # Ok(()) }
     pub fn set_filter<P>(mut self, predicate: P) -> Self
-        where P: 'a + Fn(&'a Key) -> bool
+        where P: 'a + Fn(&'a key::UnspecifiedSecret) -> bool
     {
         self.filter = Some(Box::new(predicate));
         self
@@ -357,7 +361,8 @@ impl<'a> TSK<'a> {
 
         // Serializes public or secret key depending on the filter.
         let serialize_key =
-            |o: &mut dyn std::io::Write, key: &'a Key, tag_public, tag_secret|
+            |o: &mut dyn std::io::Write, key: &'a key::UnspecifiedSecret,
+             tag_public, tag_secret|
         {
             let tag = if key.secret().is_some()
                 && self.filter.as_ref().map(|f| f(key)).unwrap_or(true) {
@@ -366,28 +371,31 @@ impl<'a> TSK<'a> {
                 tag_public
             };
 
-            let packet = match tag {
-                Tag::PublicKey => PacketRef::PublicKey(key),
-                Tag::PublicSubkey => PacketRef::PublicSubkey(key),
-                Tag::SecretKey => PacketRef::SecretKey(key),
-                Tag::SecretSubkey => PacketRef::SecretSubkey(key),
+            match tag {
+                Tag::PublicKey =>
+                    PacketRef::PublicKey(key.into()).serialize(o),
+                Tag::PublicSubkey =>
+                    PacketRef::PublicSubkey(key.into()).serialize(o),
+                Tag::SecretKey =>
+                    PacketRef::SecretKey(key.into()).serialize(o),
+                Tag::SecretSubkey =>
+                    PacketRef::SecretSubkey(key.into()).serialize(o),
                 _ => unreachable!(),
-            };
-
-            packet.serialize(o)
+            }
         };
-        serialize_key(o, &self.tpk.primary(), Tag::PublicKey, Tag::SecretKey)?;
+        serialize_key(o, self.tpk.primary().key().into(),
+                      Tag::PublicKey, Tag::SecretKey)?;
 
-        for s in self.tpk.selfsigs() {
+        for s in self.tpk.primary().selfsigs() {
             serialize_sig(o, s)?;
         }
-        for s in self.tpk.self_revocations() {
+        for s in self.tpk.primary().self_revocations() {
             serialize_sig(o, s)?;
         }
-        for s in self.tpk.certifications() {
+        for s in self.tpk.primary().certifications() {
             serialize_sig(o, s)?;
         }
-        for s in self.tpk.other_revocations() {
+        for s in self.tpk.primary().other_revocations() {
             serialize_sig(o, s)?;
         }
 
@@ -445,7 +453,8 @@ impl<'a> TSK<'a> {
                 continue;
             }
 
-            serialize_key(o, k.subkey(), Tag::PublicSubkey, Tag::SecretSubkey)?;
+            serialize_key(o, k.key().into(),
+                          Tag::PublicSubkey, Tag::SecretSubkey)?;
             for s in k.self_revocations() {
                 serialize_sig(o, s)?;
             }
@@ -507,7 +516,8 @@ impl<'a> SerializeInto for TSK<'a> {
         let mut l = 0;
 
         // Serializes public or secret key depending on the filter.
-        let serialized_len_key = |key: &'a Key, tag_public, tag_secret|
+        let serialized_len_key
+            = |key: &'a key::UnspecifiedSecret, tag_public, tag_secret|
         {
             let tag = if key.secret().is_some()
                 && self.filter.as_ref().map(|f| f(key)).unwrap_or(true) {
@@ -517,16 +527,16 @@ impl<'a> SerializeInto for TSK<'a> {
             };
 
             let packet = match tag {
-                Tag::PublicKey => PacketRef::PublicKey(key),
-                Tag::PublicSubkey => PacketRef::PublicSubkey(key),
-                Tag::SecretKey => PacketRef::SecretKey(key),
-                Tag::SecretSubkey => PacketRef::SecretSubkey(key),
+                Tag::PublicKey => PacketRef::PublicKey(key.into()),
+                Tag::PublicSubkey => PacketRef::PublicSubkey(key.into()),
+                Tag::SecretKey => PacketRef::SecretKey(key.into()),
+                Tag::SecretSubkey => PacketRef::SecretSubkey(key.into()),
                 _ => unreachable!(),
             };
 
             packet.serialized_len()
         };
-        l += serialized_len_key(self.tpk.primary(),
+        l += serialized_len_key(self.tpk.primary().key().into(),
                                 Tag::PublicKey, Tag::SecretKey);
 
         for s in self.tpk.selfsigs() {
@@ -577,7 +587,7 @@ impl<'a> SerializeInto for TSK<'a> {
         }
 
         for k in self.tpk.subkeys() {
-            l += serialized_len_key(k.subkey(),
+            l += serialized_len_key(k.key().into(),
                                     Tag::PublicSubkey, Tag::SecretSubkey);
 
             for s in k.self_revocations() {
@@ -632,6 +642,7 @@ mod test {
     use super::*;
     use crate::parse::Parse;
     use crate::serialize::Serialize;
+    use crate::packet::key;
 
     /// Demonstrates that public keys and all components are
     /// serialized.
@@ -711,15 +722,16 @@ mod test {
         use crate::constants::{Curve, SignatureType};
         use crate::packet::{
             signature, UserID, user_attribute::{UserAttribute, Subpacket},
-            Key, KeyFlags, key::Key4,
+            KeyFlags, key::Key4,
         };
 
         let (tpk, _) = TPKBuilder::new().generate().unwrap();
-        let mut keypair = tpk.primary().clone().into_keypair().unwrap();
+        let mut keypair = tpk.primary().key().clone().mark_parts_secret()
+            .into_keypair().unwrap();
 
-        let key: Key =
+        let key: key::SecretSubkey =
             Key4::generate_ecc(false, Curve::Cv25519).unwrap().into();
-        let key_binding = key.bind(
+        let key_binding = key.mark_parts_public_ref().bind(
             &mut keypair, &tpk,
             signature::Builder::new(SignatureType::SubkeyBinding)
                 .set_key_flags(

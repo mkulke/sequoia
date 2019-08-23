@@ -8,6 +8,8 @@ use crate::tpk::UserIDBinding;
 use crate::tpk::UserAttributeBinding;
 use crate::tpk::UnknownBinding;
 
+use crate::packet::key;
+
 // The type of the parser's input.
 //
 // The parser iterators over tuples consisting of the token's starting
@@ -49,7 +51,7 @@ pub enum Token {
 /// public.  But, since this module is not public, it will not
 /// actually be exported to used of the library.
 pub enum Component {
-    SubkeyBinding(SubkeyBinding),
+    SubkeyBinding(SubkeyBinding<key::PublicParts>),
     UserIDBinding(UserIDBinding),
     UserAttributeBinding(UserAttributeBinding),
     UnknownBinding(UnknownBinding),

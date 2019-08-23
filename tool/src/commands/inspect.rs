@@ -131,15 +131,15 @@ fn inspect_tpk(output: &mut io::Write, tpk: &openpgp::TPK,
     writeln!(output)?;
     writeln!(output, "    Fingerprint: {}", tpk.fingerprint())?;
     inspect_revocation(output, "", tpk.revocation_status())?;
-    inspect_key(output, "", tpk.primary(), tpk.primary_key_signature(),
+    inspect_key(output, "", tpk.primary().key(), tpk.primary_key_signature(),
                 tpk.certifications(),
                 print_keygrips, print_certifications)?;
     writeln!(output)?;
 
     for skb in tpk.subkeys() {
-        writeln!(output, "         Subkey: {}", skb.subkey().fingerprint())?;
+        writeln!(output, "         Subkey: {}", skb.key().fingerprint())?;
         inspect_revocation(output, "", skb.revoked(None))?;
-        inspect_key(output, "", skb.subkey(), skb.binding_signature(),
+        inspect_key(output, "", skb.key(), skb.binding_signature(),
                     skb.certifications(),
                     print_keygrips, print_certifications)?;
         writeln!(output)?;
@@ -164,14 +164,17 @@ fn inspect_tpk(output: &mut io::Write, tpk: &openpgp::TPK,
     Ok(())
 }
 
-fn inspect_key(output: &mut io::Write,
-               indent: &str,
-               key: &openpgp::packet::Key,
-               binding_signature: Option<&openpgp::packet::Signature>,
-               certs: &[openpgp::packet::Signature],
-               print_keygrips: bool,
-               print_certifications: bool)
-               -> Result<()> {
+fn inspect_key<P, R>(output: &mut io::Write,
+                     indent: &str,
+                     key: &openpgp::packet::Key<P, R>,
+                     binding_signature: Option<&openpgp::packet::Signature>,
+                     certs: &[openpgp::packet::Signature],
+                     print_keygrips: bool,
+                     print_certifications: bool)
+        -> Result<()>
+        where P: openpgp::packet::key::KeyParts,
+              R: openpgp::packet::key::KeyRole
+{
     if let Some(sig) = binding_signature {
         if sig.key_expired(key) {
             writeln!(output, "{}                 Expired", indent)?;

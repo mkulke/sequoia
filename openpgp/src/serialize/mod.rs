@@ -642,9 +642,9 @@ impl SerializeInto for crypto::mpis::PublicKey {
     }
 }
 
-impl Serialize for crypto::mpis::SecretKey {
+impl Serialize for crypto::mpis::SecretKeyMaterial {
     fn serialize(&self, w: &mut dyn std::io::Write) -> Result<()> {
-        use crate::crypto::mpis::SecretKey::*;
+        use crate::crypto::mpis::SecretKeyMaterial::*;
 
         match self {
             &RSA{ ref d, ref p, ref q, ref u } => {
@@ -686,9 +686,9 @@ impl Serialize for crypto::mpis::SecretKey {
     }
 }
 
-impl SerializeInto for crypto::mpis::SecretKey {
+impl SerializeInto for crypto::mpis::SecretKeyMaterial {
     fn serialized_len(&self) -> usize {
-        use crate::crypto::mpis::SecretKey::*;
+        use crate::crypto::mpis::SecretKeyMaterial::*;
         match self {
             &RSA{ ref d, ref p, ref q, ref u } => {
                 d.serialized_len() + p.serialized_len() + q.serialized_len()
@@ -727,7 +727,7 @@ impl SerializeInto for crypto::mpis::SecretKey {
     }
 }
 
-impl crypto::mpis::SecretKey {
+impl crypto::mpis::SecretKeyMaterial {
     /// Writes this secret key with a checksum to `w`.
     pub fn serialize_chksumd<W: io::Write>(&self, w: &mut W) -> Result<()> {
         // First, the MPIs.
@@ -1303,7 +1303,7 @@ impl SerializeInto for OnePassSig3 {
     }
 }
 
-impl Serialize for Key {
+impl<P: key::KeyParts, R: key::KeyRole> Serialize for Key<P, R> {
     fn serialize(&self, o: &mut io::Write) -> Result<()> {
         match self {
             &Key::V4(ref p) => p.serialize(o),
@@ -1311,7 +1311,7 @@ impl Serialize for Key {
     }
 }
 
-impl Key {
+impl<P: key::KeyParts, R: key::KeyRole> Key<P, R> {
     fn net_len_key(&self, serialize_secrets: bool) -> usize {
         match self {
             &Key::V4(ref p) => p.net_len_key(serialize_secrets),
@@ -1319,7 +1319,7 @@ impl Key {
     }
 }
 
-impl SerializeInto for Key {
+impl<P: key::KeyParts, R: key::KeyRole> SerializeInto for Key<P, R> {
     fn serialized_len(&self) -> usize {
         match self {
             &Key::V4(ref p) => p.serialized_len(),
@@ -1328,18 +1328,24 @@ impl SerializeInto for Key {
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
         match self {
-            &Key::V4(ref p) => p.serialize_into(buf)
+            &Key::V4(ref p) => p.serialize_into(buf),
         }
     }
 }
 
-impl Serialize for Key4 {
+impl<P, R> Serialize for Key4<P, R>
+    where P: key::KeyParts,
+          R: key::KeyRole,
+{
     fn serialize(&self, o: &mut io::Write) -> Result<()> {
         self.serialize_key(o, true)
     }
 }
 
-impl Key4 {
+impl<P, R> Key4<P, R>
+    where P: key::KeyParts,
+          R: key::KeyRole,
+{
     pub(crate) // For tests in key.
     fn serialize_key(&self, o: &mut io::Write, serialize_secrets: bool)
                      -> Result<()> {
@@ -1352,7 +1358,7 @@ impl Key4 {
 
         if have_secret_key {
             match self.secret().unwrap() {
-                SecretKey::Unencrypted(ref u) => u.map(|mpis| -> Result<()> {
+                SecretKeyMaterial::Unencrypted(ref u) => u.map(|mpis| -> Result<()> {
                     // S2K usage.
                     write_byte(o, 0)?;
 
@@ -1367,7 +1373,7 @@ impl Key4 {
                     write_be_u16(o, checksum as u16)?;
                     Ok(())
                 })?,
-                SecretKey::Encrypted(ref e) => {
+                SecretKeyMaterial::Encrypted(ref e) => {
                     // S2K usage.
                     write_byte(o, 254)?;
                     write_byte(o, e.algo().into())?;
@@ -1389,10 +1395,10 @@ impl Key4 {
             + self.mpis().serialized_len()
             + if have_secret_key {
                 1 + match self.secret().as_ref().unwrap() {
-                    SecretKey::Unencrypted(ref u) =>
+                    SecretKeyMaterial::Unencrypted(ref u) =>
                         u.map(|mpis| mpis.serialized_len())
                         + 2, // Two octet checksum.
-                    SecretKey::Encrypted(ref e) =>
+                    SecretKeyMaterial::Encrypted(ref e) =>
                         1 + e.s2k().serialized_len() + e.ciphertext().len(),
                 }
             } else {
@@ -1401,7 +1407,10 @@ impl Key4 {
     }
 }
 
-impl SerializeInto for Key4 {
+impl<P, R> SerializeInto for Key4<P, R>
+    where P: key::KeyParts,
+          R: key::KeyRole,
+{
     fn serialized_len(&self) -> usize {
         self.net_len_key(true)
     }
@@ -2190,13 +2199,13 @@ pub enum PacketRef<'a> {
     /// One pass signature packet.
     OnePassSig(&'a packet::OnePassSig),
     /// Public key packet.
-    PublicKey(&'a packet::Key),
+    PublicKey(&'a packet::key::PublicKey),
     /// Public subkey packet.
-    PublicSubkey(&'a packet::Key),
+    PublicSubkey(&'a packet::key::PublicSubkey),
     /// Public/Secret key pair.
-    SecretKey(&'a packet::Key),
+    SecretKey(&'a packet::key::SecretKey),
     /// Public/Secret subkey pair.
-    SecretSubkey(&'a packet::Key),
+    SecretSubkey(&'a packet::key::SecretSubkey),
     /// Marker packet.
     Marker(&'a packet::Marker),
     /// Trust packet.
@@ -2925,7 +2934,8 @@ mod test {
         use crate::tpk::TPKBuilder;
 
         let (tpk, _) = TPKBuilder::new().generate().unwrap();
-        let mut keypair = tpk.primary().clone().into_keypair().unwrap();
+        let mut keypair = tpk.primary().key().clone().mark_parts_secret()
+            .into_keypair().unwrap();
         let uid = UserID::from("foo");
 
         // Make a signature w/o an exportable certification subpacket.
