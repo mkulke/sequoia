@@ -526,17 +526,15 @@ impl<'a, I: Iterator<Item=Packet>> TPKParser<'a, I> {
 
             Some(tpk)
         }).and_then(|mut tpk| {
-            fn split_sigs(primary: &Fingerprint, primary_keyid: &KeyID,
-                          sigs: Vec<Signature>)
-                          -> (Vec<Signature>, Vec<Signature>,
-                              Vec<Signature>, Vec<Signature>)
+            fn split_sigs<C>(primary: &Fingerprint, primary_keyid: &KeyID,
+                             b: &mut ComponentBinding<C>)
             {
                 let mut selfsigs = vec![];
                 let mut certifications = vec![];
                 let mut self_revs = vec![];
                 let mut other_revs = vec![];
 
-                for sig in sigs.into_iter() {
+                for sig in mem::replace(&mut b.certifications, vec![]) {
                     match sig {
                         Signature::V4(sig) => {
                             let typ = sig.typ();
@@ -570,7 +568,10 @@ impl<'a, I: Iterator<Item=Packet>> TPKParser<'a, I> {
                     }
                 }
 
-                (selfsigs, certifications, self_revs, other_revs)
+                b.selfsigs = selfsigs;
+                b.certifications = certifications;
+                b.self_revocations = self_revs;
+                b.other_revocations = other_revs;
             }
 
             let primary_fp = tpk.primary().key().fingerprint();
@@ -579,41 +580,16 @@ impl<'a, I: Iterator<Item=Packet>> TPKParser<'a, I> {
             // The parser puts all of the signatures on the
             // certifications field.  Split them now.
 
-            let (selfsigs, certifications, self_revs, other_revs)
-                = split_sigs(
-                    &primary_fp, &primary_keyid,
-                    mem::replace(&mut tpk.primary.certifications, vec![]));
-            tpk.primary.selfsigs = selfsigs;
-            tpk.primary.certifications = certifications;
-            tpk.primary.self_revocations = self_revs;
-            tpk.primary.other_revocations = other_revs;
+            split_sigs(&primary_fp, &primary_keyid, &mut tpk.primary);
 
-            for mut b in tpk.userids.iter_mut() {
-                let (selfsigs, certifications, self_revs, other_revs)
-                    = split_sigs(&primary_fp, &primary_keyid,
-                                 mem::replace(&mut b.certifications, vec![]));
-                b.selfsigs = selfsigs;
-                b.certifications = certifications;
-                b.self_revocations = self_revs;
-                b.other_revocations = other_revs;
+            for b in tpk.userids.iter_mut() {
+                split_sigs(&primary_fp, &primary_keyid, b);
             }
-            for mut b in tpk.user_attributes.iter_mut() {
-                let (selfsigs, certifications, self_revs, other_revs)
-                    = split_sigs(&primary_fp, &primary_keyid,
-                                 mem::replace(&mut b.certifications, vec![]));
-                b.selfsigs = selfsigs;
-                b.certifications = certifications;
-                b.self_revocations = self_revs;
-                b.other_revocations = other_revs;
+            for b in tpk.user_attributes.iter_mut() {
+                split_sigs(&primary_fp, &primary_keyid, b);
             }
-            for mut b in tpk.subkeys.iter_mut() {
-                let (selfsigs, certifications, self_revs, other_revs)
-                    = split_sigs(&primary_fp, &primary_keyid,
-                                 mem::replace(&mut b.certifications, vec![]));
-                b.selfsigs = selfsigs;
-                b.certifications = certifications;
-                b.self_revocations = self_revs;
-                b.other_revocations = other_revs;
+            for b in tpk.subkeys.iter_mut() {
+                split_sigs(&primary_fp, &primary_keyid, b);
             }
 
             let tpk = tpk.canonicalize();
@@ -704,76 +680,23 @@ impl fmt::Display for TPK {
     }
 }
 
-/// An iterator over `UserIDBinding`s.
-pub struct UserIDBindingIter<'a> {
-    iter: slice::Iter<'a, UserIDBinding>,
-}
-
-impl<'a> Iterator for UserIDBindingIter<'a> {
-    type Item = &'a UserIDBinding;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next()
-    }
-}
-
-impl<'a> ExactSizeIterator for UserIDBindingIter<'a> {
-    fn len(&self) -> usize { self.iter.len() }
-}
-
-/// An iterator over `UserAttributeBinding`s.
-pub struct UserAttributeBindingIter<'a> {
-    iter: slice::Iter<'a, UserAttributeBinding>,
-}
-
-impl<'a> Iterator for UserAttributeBindingIter<'a> {
-    type Item = &'a UserAttributeBinding;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next()
-    }
-}
-
-impl<'a> ExactSizeIterator for UserAttributeBindingIter<'a> {
-    fn len(&self) -> usize { self.iter.len() }
+/// An iterator over `ComponetBinding`s.
+pub struct ComponentBindingIter<'a, C> {
+    iter: Option<slice::Iter<'a, ComponentBinding<C>>>,
 }
 
 /// An iterator over `KeyBinding`s.
-pub struct KeyBindingIter<'a, P: key::KeyParts, R: key::KeyRole> {
-    iter: Option<slice::Iter<'a, ComponentBinding<Key<P, R>>>>,
-}
-
-impl<'a, P: key::KeyParts, R: key::KeyRole> Iterator
-    for KeyBindingIter<'a, P, R>
-{
-    type Item = &'a ComponentBinding<Key<P, R>>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self.iter {
-            Some(ref mut iter) => iter.next(),
-            None => None,
-        }
-    }
-}
-
-impl<'a, P: key::KeyParts, R: key::KeyRole> ExactSizeIterator
-    for KeyBindingIter<'a, P, R>
-{
-    fn len(&self) -> usize {
-        match self.iter {
-            Some(ref iter) => iter.len(),
-            None => 0,
-        }
-    }
-}
-
+pub type KeyBindingIter<'a, P, R> = ComponentBindingIter<'a, Key<P, R>>;
+/// An iterator over `UserIDBinding`s.
+pub type UserIDBindingIter<'a> = ComponentBindingIter<'a, UserID>;
+/// An iterator over `UserAttributeBinding`s.
+pub type UserAttributeBindingIter<'a> = ComponentBindingIter<'a, UserAttribute>;
 /// An iterator over `UnknownBinding`s.
-pub struct UnknownBindingIter<'a> {
-    iter: Option<slice::Iter<'a, UnknownBinding>>,
-}
+pub type UnknownBindingIter<'a> = ComponentBindingIter<'a, Unknown>;
 
-impl<'a> Iterator for UnknownBindingIter<'a> {
-    type Item = &'a UnknownBinding;
+impl<'a, C> Iterator for ComponentBindingIter<'a, C>
+{
+    type Item = &'a ComponentBinding<C>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.iter {
@@ -783,7 +706,8 @@ impl<'a> Iterator for UnknownBindingIter<'a> {
     }
 }
 
-impl<'a> ExactSizeIterator for UnknownBindingIter<'a> {
+impl<'a, C> ExactSizeIterator for ComponentBindingIter<'a, C>
+{
     fn len(&self) -> usize {
         match self.iter {
             Some(ref iter) => iter.len(),
@@ -930,35 +854,6 @@ impl TPK {
         } else {
             None
         }
-    }
-
-    /// The self-signatures.
-    ///
-    /// All self-signatures have been validated, and the newest
-    /// self-signature is last.
-    pub fn selfsigs(&self) -> &[Signature] {
-        &self.primary.selfsigs
-    }
-
-    /// Any third-party certifications.
-    ///
-    /// The signatures have *not* been validated.
-    pub fn certifications(&self) -> &[Signature] {
-        &self.primary.certifications
-    }
-
-    /// Revocations issued by the key itself.
-    ///
-    /// The revocations have been validated, and the newest is last.
-    pub fn self_revocations(&self) -> &[Signature] {
-        &self.primary.self_revocations
-    }
-
-    /// Revocations issued by other keys.
-    ///
-    /// The revocations have *not* been validated.
-    pub fn other_revocations(&self) -> &[Signature] {
-        &self.primary.other_revocations
     }
 
     /// Returns the TPK's revocation status at the specified time.
@@ -1193,7 +1088,7 @@ impl TPK {
     /// The primary user id is returned first.  A valid
     /// `UserIDBinding` has at least one good self-signature.
     pub fn userids(&self) -> UserIDBindingIter {
-        UserIDBindingIter { iter: self.userids.iter() }
+        UserIDBindingIter { iter: Some(self.userids.iter()) }
     }
 
     /// Returns an iterator over the TPK's valid `UserAttributeBinding`s.
@@ -1201,7 +1096,7 @@ impl TPK {
     /// A valid `UserIDAttributeBinding` has at least one good
     /// self-signature.
     pub fn user_attributes(&self) -> UserAttributeBindingIter {
-        UserAttributeBindingIter { iter: self.user_attributes.iter() }
+        UserAttributeBindingIter { iter: Some(self.user_attributes.iter()) }
     }
 
     /// Returns an iterator over the TPK's valid subkeys.
