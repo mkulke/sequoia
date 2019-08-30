@@ -31,7 +31,6 @@ use crate::{
     Fingerprint,
 };
 use crate::parse::{Parse, PacketParserResult, PacketParser};
-use crate::serialize::SerializeInto;
 use crate::constants::ReasonForRevocation;
 
 mod builder;
@@ -58,6 +57,8 @@ use parser::{
 
 const TRACE : bool = false;
 
+// Helper functions.
+
 /// Compare the creation time of two signatures.  Order them so that
 /// the more recent signature is first.
 fn canonical_signature_order(a: Option<time::Tm>, b: Option<time::Tm>)
@@ -67,6 +68,14 @@ fn canonical_signature_order(a: Option<time::Tm>, b: Option<time::Tm>)
         (None, Some(_)) => Ordering::Greater,
         (Some(_), None) => Ordering::Less,
         (Some(ref a), Some(ref b)) => a.cmp(b),
+    }
+}
+
+fn sig_cmp(a: &Signature, b: &Signature) -> Ordering {
+    match canonical_signature_order(a.signature_creation_time(),
+                                    b.signature_creation_time()) {
+        Ordering::Equal => a.mpis().cmp(b.mpis()),
+        r => r
     }
 }
 
@@ -237,6 +246,46 @@ impl<C> ComponentBinding<C> {
         } else {
             RevocationStatus::NotAsFarAsWeKnow
         }
+    }
+
+    // Converts the component into an iterator over the contained
+    // packets.
+    fn into_packets<'a>(self) -> impl Iterator<Item=Packet>
+        where Packet: From<C>
+    {
+        let p : Packet = self.component.into();
+        std::iter::once(p)
+            .chain(self.selfsigs.into_iter().map(|s| s.into()))
+            .chain(self.certifications.into_iter().map(|s| s.into()))
+            .chain(self.self_revocations.into_iter().map(|s| s.into()))
+            .chain(self.other_revocations.into_iter().map(|s| s.into()))
+    }
+
+    // Sorts and dedups the binding's signatures.
+    //
+    // This function assumes that the signatures have already been
+    // cryptographically checked.
+    //
+    // Note: this uses Signature::eq to compare signatures.  That
+    // function ignores unhashed packets.  If there are two signatures
+    // that only differ in their unhashed subpackets, they will be
+    // deduped.  The unhashed areas are *not* merged; the one that is
+    // kept is undefined.
+    fn sort_and_dedup(&mut self)
+    {
+        self.selfsigs.sort_by(sig_cmp);
+        self.selfsigs.dedup();
+
+        // There is no need to sort the certifications, but we do
+        // want to remove dups and sorting is a prerequisite.
+        self.certifications.sort_by(sig_cmp);
+        self.certifications.dedup();
+
+        self.self_revocations.sort_by(sig_cmp);
+        self.self_revocations.dedup();
+
+        self.other_revocations.sort_by(sig_cmp);
+        self.other_revocations.dedup();
     }
 }
 
@@ -930,11 +979,6 @@ impl TPK {
         -> Result<Signature>
         where R: key::KeyRole
     {
-        if primary_signer.public().fingerprint() != self.fingerprint() {
-            return Err(Error::InvalidArgument(
-                "signer is not the primary key".into()).into());
-        }
-
         // Recompute the signature.
         let hash_algo = HashAlgorithm::SHA512;
         let mut hash = hash_algo.context()?;
@@ -943,8 +987,8 @@ impl TPK {
 
         signature::Builder::new(SignatureType::KeyRevocation)
             .set_signature_creation_time(time::now_utc())?
-            .set_issuer_fingerprint(self.primary().key().fingerprint())?
-            .set_issuer(self.primary().key().keyid())?
+            .set_issuer_fingerprint(primary_signer.public().fingerprint())?
+            .set_issuer(primary_signer.public().keyid())?
             .set_reason_for_revocation(code, reason)?
             .sign_hash(primary_signer, hash_algo, hash)
     }
@@ -1191,13 +1235,6 @@ impl TPK {
     fn canonicalize(mut self) -> Self {
         tracer!(TRACE, "canonicalize", 0);
 
-        // Helper functions.
-        // Turn a signature into a key for use by dedup.
-        fn sig_key(a: &mut Signature) -> Box<[u8]> {
-            a.to_vec().expect("XXX: this better not fail")
-                .into_boxed_slice()
-        }
-
         // Fallback time.
         let time_zero = time::at_utc(time::Timespec::new(0, 0));
 
@@ -1384,46 +1421,20 @@ impl TPK {
         });
         t!("Retained {} subkeys", self.subkeys.len());
 
-        fn sig_cmp(a: &Signature, b: &Signature) -> Ordering {
-            canonical_signature_order(a.signature_creation_time(),
-                                      b.signature_creation_time())
-        }
 
-        // Sort and dedup the primary key's signatures.
-        self.primary.selfsigs.sort_by(sig_cmp);
-        self.primary.selfsigs.dedup_by_key(sig_key);
-
-        // There is no need to sort the certifications, but we do
-        // want to remove dups and sorting is a prerequisite.
-        self.primary.certifications.sort_by(sig_cmp);
-        self.primary.certifications.dedup_by_key(sig_key);
-
-        self.primary.self_revocations.sort_by(sig_cmp);
-        self.primary.self_revocations.dedup_by_key(sig_key);
-
-        self.primary.other_revocations.sort_by(sig_cmp);
-        self.primary.other_revocations.dedup_by_key(sig_key);
+        self.primary.sort_and_dedup();
 
         self.bad.sort_by(sig_cmp);
-        self.bad.dedup_by_key(sig_key);
+        self.bad.dedup();
 
-
-        // Sort the signatures so that the current valid
-        // self-signature is last.
-        for userid in &mut self.userids {
-            userid.selfsigs.sort_by(sig_cmp);
-            userid.selfsigs.dedup_by_key(sig_key);
-
-            // There is no need to sort the certifications, but we do
-            // want to remove dups and sorting is a prerequisite.
-            userid.certifications.sort_by(sig_cmp);
-            userid.certifications.dedup_by_key(sig_key);
-
-            userid.self_revocations.sort_by(sig_cmp);
-            userid.self_revocations.dedup_by_key(sig_key);
-
-            userid.other_revocations.sort_by(sig_cmp);
-            userid.other_revocations.dedup_by_key(sig_key);
+        for binding in &mut self.userids {
+            binding.sort_and_dedup();
+        }
+        for binding in &mut self.user_attributes {
+            binding.sort_and_dedup();
+        }
+        for binding in &mut self.subkeys {
+            binding.sort_and_dedup();
         }
 
         // First, we sort the bindings lexographically by user id in
@@ -1444,20 +1455,11 @@ impl TPK {
 
                 // Recall: if a and b are equal, a will be dropped.
                 b.selfsigs.append(&mut a.selfsigs);
-                b.selfsigs.sort_by(sig_cmp);
-                b.selfsigs.dedup_by_key(sig_key);
-
                 b.certifications.append(&mut a.certifications);
-                b.certifications.sort_by(sig_cmp);
-                b.certifications.dedup_by_key(sig_key);
-
                 b.self_revocations.append(&mut a.self_revocations);
-                b.self_revocations.sort_by(sig_cmp);
-                b.self_revocations.dedup_by_key(sig_key);
-
                 b.other_revocations.append(&mut a.self_revocations);
-                b.other_revocations.sort_by(sig_cmp);
-                b.other_revocations.dedup_by_key(sig_key);
+
+                b.sort_and_dedup();
 
                 true
             } else {
@@ -1558,24 +1560,6 @@ impl TPK {
             a.userid().value().cmp(&b.userid().value())
         });
 
-        // Sort the signatures so that the current valid
-        // self-signature is last.
-        for attribute in &mut self.user_attributes {
-            attribute.selfsigs.sort_by(sig_cmp);
-            attribute.selfsigs.dedup_by_key(sig_key);
-
-            // There is no need to sort the certifications, but we do
-            // want to remove dups and sorting is a prerequisite.
-            attribute.certifications.sort_by(sig_cmp);
-            attribute.certifications.dedup_by_key(sig_key);
-
-            attribute.self_revocations.sort_by(sig_cmp);
-            attribute.self_revocations.dedup_by_key(sig_key);
-
-            attribute.other_revocations.sort_by(sig_cmp);
-            attribute.other_revocations.dedup_by_key(sig_key);
-        }
-
         // Sort the user attributes in preparation for a dedup.  As
         // for the user ids, we can't do the final sort here, because
         // we rely on the self-signatures.
@@ -1588,20 +1572,11 @@ impl TPK {
             if a.user_attribute() == b.user_attribute() {
                 // Recall: if a and b are equal, a will be dropped.
                 b.selfsigs.append(&mut a.selfsigs);
-                b.selfsigs.sort_by(sig_cmp);
-                b.selfsigs.dedup_by_key(sig_key);
-
                 b.certifications.append(&mut a.certifications);
-                b.certifications.sort_by(sig_cmp);
-                b.certifications.dedup_by_key(sig_key);
-
                 b.self_revocations.append(&mut a.self_revocations);
-                b.self_revocations.sort_by(sig_cmp);
-                b.self_revocations.dedup_by_key(sig_key);
-
                 b.other_revocations.append(&mut a.self_revocations);
-                b.other_revocations.sort_by(sig_cmp);
-                b.other_revocations.dedup_by_key(sig_key);
+
+                b.sort_and_dedup();
 
                 true
             } else {
@@ -1688,24 +1663,6 @@ impl TPK {
         });
 
 
-        // Sort the signatures so that the current valid
-        // self-signature is last.
-        for subkey in &mut self.subkeys {
-            subkey.selfsigs.sort_by(sig_cmp);
-            subkey.selfsigs.dedup_by_key(sig_key);
-
-            // There is no need to sort the certifications, but we do
-            // want to remove dups and sorting is a prerequisite.
-            subkey.certifications.sort_by(sig_cmp);
-            subkey.certifications.dedup_by_key(sig_key);
-
-            subkey.self_revocations.sort_by(sig_cmp);
-            subkey.self_revocations.dedup_by_key(sig_key);
-
-            subkey.other_revocations.sort_by(sig_cmp);
-            subkey.other_revocations.dedup_by_key(sig_key);
-        }
-
         // Sort the subkeys in preparation for a dedup.  As for the
         // user ids, we can't do the final sort here, because we rely
         // on the self-signatures.
@@ -1728,20 +1685,11 @@ impl TPK {
                 }
 
                 b.selfsigs.append(&mut a.selfsigs);
-                b.selfsigs.sort_by(sig_cmp);
-                b.selfsigs.dedup_by_key(sig_key);
-
                 b.certifications.append(&mut a.certifications);
-                b.certifications.sort_by(sig_cmp);
-                b.certifications.dedup_by_key(sig_key);
-
                 b.self_revocations.append(&mut a.self_revocations);
-                b.self_revocations.sort_by(sig_cmp);
-                b.self_revocations.dedup_by_key(sig_key);
-
                 b.other_revocations.append(&mut a.self_revocations);
-                b.other_revocations.sort_by(sig_cmp);
-                b.other_revocations.dedup_by_key(sig_key);
+
+                b.sort_and_dedup();
 
                 true
             } else {
@@ -1860,84 +1808,21 @@ impl TPK {
         self.primary().key().keyid()
     }
 
-    /// Converts the TPK into a sequence of packets.
+    /// Converts the TPK into an iterator over a sequence of packets.
     ///
-    /// This method discards an invalid components and bad signatures.
-    pub fn into_packets(self) -> Vec<Packet> {
-        let mut p : Vec<Packet> = Vec::new();
-
-        p.push(Packet::PublicKey(self.primary.component));
-
-        for s in self.primary.selfsigs.into_iter() {
-            p.push(Packet::Signature(s));
-        }
-        for s in self.primary.self_revocations.into_iter() {
-            p.push(Packet::Signature(s));
-        }
-        for s in self.primary.certifications.into_iter() {
-            p.push(Packet::Signature(s));
-        }
-        for s in self.primary.other_revocations.into_iter() {
-            p.push(Packet::Signature(s));
-        }
-
-        for u in self.userids.into_iter() {
-            p.push(Packet::UserID(u.component));
-            for s in u.self_revocations.into_iter() {
-                p.push(Packet::Signature(s));
-            }
-            for s in u.selfsigs.into_iter() {
-                p.push(Packet::Signature(s));
-            }
-            for s in u.other_revocations.into_iter() {
-                p.push(Packet::Signature(s));
-            }
-            for s in u.certifications.into_iter() {
-                p.push(Packet::Signature(s));
-            }
-        }
-
-        for u in self.user_attributes.into_iter() {
-            p.push(Packet::UserAttribute(u.component));
-            for s in u.self_revocations.into_iter() {
-                p.push(Packet::Signature(s));
-            }
-            for s in u.selfsigs.into_iter() {
-                p.push(Packet::Signature(s));
-            }
-            for s in u.other_revocations.into_iter() {
-                p.push(Packet::Signature(s));
-            }
-            for s in u.certifications.into_iter() {
-                p.push(Packet::Signature(s));
-            }
-        }
-
-        let subkeys = self.subkeys;
-        for k in subkeys.into_iter() {
-            p.push(Packet::PublicSubkey(k.component));
-            for s in k.self_revocations.into_iter() {
-                p.push(Packet::Signature(s));
-            }
-            for s in k.selfsigs.into_iter() {
-                p.push(Packet::Signature(s));
-            }
-            for s in k.other_revocations.into_iter() {
-                p.push(Packet::Signature(s));
-            }
-            for s in k.certifications.into_iter() {
-                p.push(Packet::Signature(s));
-            }
-        }
-
-        p
+    /// This method discards invalid components and bad signatures.
+    pub fn into_packets(self) -> impl Iterator<Item=Packet> {
+        self.primary.into_packets()
+            .chain(self.userids.into_iter().flat_map(|b| b.into_packets()))
+            .chain(self.user_attributes.into_iter().flat_map(|b| b.into_packets()))
+            .chain(self.subkeys.into_iter().flat_map(|b| b.into_packets()))
     }
 
     /// Converts the TPK into a `PacketPile`.
     ///
     /// This method discards an invalid components and bad signatures.
     pub fn into_packet_pile(self) -> PacketPile {
-        PacketPile::from(self.into_packets())
+        PacketPile::from(self.into_packets().collect::<Vec<Packet>>())
     }
 
     /// Merges `other` into `self`.
@@ -1980,7 +1865,7 @@ impl TPK {
     /// This recanonicalizes the TPK.  If the packets are invalid,
     /// they are dropped.
     pub fn merge_packets(self, mut packets: Vec<Packet>) -> Result<Self> {
-        let mut combined = self.into_packets();
+        let mut combined = self.into_packets().collect::<Vec<_>>();
         combined.append(&mut packets);
         TPK::from_packet_pile(PacketPile::from(combined))
     }
@@ -2530,9 +2415,9 @@ mod test {
         assert_eq!(rev.len(), 1);
         assert_eq!(rev[0].tag(), Tag::Signature);
 
-        let packets_pre_merge = tpk.clone().into_packets().len();
+        let packets_pre_merge = tpk.clone().into_packets().count();
         let tpk = tpk.merge_packets(rev).unwrap();
-        let packets_post_merge = tpk.clone().into_packets().len();
+        let packets_post_merge = tpk.clone().into_packets().count();
         assert_eq!(packets_post_merge, packets_pre_merge + 1);
     }
 
@@ -2698,9 +2583,27 @@ mod test {
                              ReasonForRevocation::KeyCompromised,
                              b"It was the maid :/").unwrap();
         assert_eq!(sig.typ(), SignatureType::KeyRevocation);
+        assert_eq!(sig.issuer(), Some(tpk.primary().key().keyid()));
+        assert_eq!(sig.issuer_fingerprint(),
+                   Some(tpk.primary().key().fingerprint()));
 
         let tpk = tpk.merge_packets(vec![sig.into()]).unwrap();
         assert_match!(RevocationStatus::Revoked(_) = tpk.revocation_status());
+
+
+        // Have other revoke tpk.
+        let (other, _) = TPKBuilder::autocrypt(None, Some("Test 2"))
+            .generate().unwrap();
+
+        let mut keypair = other.primary().key().clone().mark_parts_secret()
+            .into_keypair().unwrap();
+        let sig = tpk.revoke(&mut keypair,
+                             ReasonForRevocation::KeyCompromised,
+                             b"It was the maid :/").unwrap();
+        assert_eq!(sig.typ(), SignatureType::KeyRevocation);
+        assert_eq!(sig.issuer(), Some(other.primary().key().keyid()));
+        assert_eq!(sig.issuer_fingerprint(),
+                   Some(other.primary().key().fingerprint()));
     }
 
     #[test]
