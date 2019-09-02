@@ -65,12 +65,19 @@ use crate::constants::{
 ///
 /// # Compatibility
 ///
-/// This implementation uses the [ZLIB] compression format.  According
-/// to [Section 2.2 of RFC 1950], any data appended after the trailing
-/// checksum is not part of the zlib stream.
+/// This implementation uses the [DEFLATE] compression format.  The
+/// packet structure contains a flag signaling the end of the stream
+/// (see [Section 3.2.3 of RFC 1951]), and any data appended after
+/// that is not part of the stream.
 ///
-/// [ZLIB]: https://tools.ietf.org/html/rfc1950
-/// [Section 2.2 of RFC 1950]: https://tools.ietf.org/html/rfc1950#page-4
+/// [DEFLATE]: https://tools.ietf.org/html/rfc1951
+/// [Section 3.2.3 of RFC 1951]: https://tools.ietf.org/html/rfc1951#page-9
+///
+/// [Section 9.3 of RFC 4880] recommends that this algorithm should be
+/// implemented, therefore support across various implementations
+/// should be good.
+///
+/// [Section 9.3 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-9.3
 ///
 /// # Example
 ///
@@ -91,17 +98,27 @@ use crate::constants::{
 /// # f().unwrap();
 /// # fn f() -> Result<()> {
 ///
-/// let mut o = vec![];
+/// let mut unpadded = vec![];
 /// {
-///     let message = Message::new(&mut o);
+///     let message = Message::new(&mut unpadded);
 ///     // XXX: Insert Encryptor here.
-///     let w = Padder::new(message, padme)?;
 ///     // XXX: Insert Signer here.
-///     let mut w = LiteralWriter::new(w, DataFormat::Text, None, None)?;
+///     let mut w = LiteralWriter::new(message, DataFormat::Text, None, None)?;
 ///     w.write_all(b"Hello world.")?;
 ///     w.finalize()?;
 /// }
-/// assert_eq!(o.len(), 28);
+///
+/// let mut padded = vec![];
+/// {
+///     let message = Message::new(&mut padded);
+///     // XXX: Insert Encryptor here.
+///     let padder = Padder::new(message, padme)?;
+///     // XXX: Insert Signer here.
+///     let mut w = LiteralWriter::new(padder, DataFormat::Text, None, None)?;
+///     w.write_all(b"Hello world.")?;
+///     w.finalize()?;
+/// }
+/// assert!(unpadded.len() < padded.len());
 /// # Ok(())
 /// # }
 pub struct Padder<'a, P: Fn(u64) -> u64 + 'a> {
@@ -123,11 +140,12 @@ impl<'a, P: Fn(u64) -> u64 + 'a> Padder<'a, P> {
                                      Cookie::new(level));
 
         // Compressed data header.
-        inner.as_mut().write_u8(CompressionAlgorithm::Zlib.into())?;
+        inner.as_mut().write_u8(CompressionAlgorithm::Zip.into())?;
 
         // Create an appropriate filter.
         let inner: writer::Stack<'a, Cookie> =
-            writer::ZLIB::new(inner, Cookie::new(level));
+            writer::ZIP::new(inner, Cookie::new(level),
+                             writer::CompressionLevel::none());
 
         Ok(writer::Stack::from(Box::new(Self {
             inner: inner.into(),
@@ -308,5 +326,56 @@ mod test {
                     l, o, max_overhead);
             true
         }
+    }
+
+    /// Asserts that we can consume the padded messages.
+    #[test]
+    fn roundtrip() {
+        use std::io::Write;
+        use crate::constants::DataFormat;
+        use crate::parse::Parse;
+        use crate::serialize::stream::*;
+
+        let mut msg = vec![0; rand::random::<usize>() % 1024];
+        crate::crypto::random(&mut msg);
+
+        let mut padded = vec![];
+        {
+            let message = Message::new(&mut padded);
+            let padder = Padder::new(message, padme).unwrap();
+            let mut w =
+                LiteralWriter::new(padder, DataFormat::Binary, None, None)
+                .unwrap();
+            w.write_all(&msg).unwrap();
+            w.finalize().unwrap();
+        }
+
+        let m = crate::Message::from_bytes(&padded).unwrap();
+        assert_eq!(m.body().unwrap().body().unwrap(), &msg[..]);
+    }
+
+    /// Asserts that no actual compression is done.
+    ///
+    /// We want to avoid having the size of the data stream depend on
+    /// the data's compressibility, therefore it is best to disable
+    /// the compression.
+    #[test]
+    fn no_compression() {
+        use std::io::Write;
+        use crate::constants::DataFormat;
+        use crate::serialize::stream::*;
+        const MSG: &[u8] = b"@@@@@@@@@@@@@@";
+        let mut padded = vec![];
+        {
+            let message = Message::new(&mut padded);
+            let padder = Padder::new(message, padme).unwrap();
+            let mut w = LiteralWriter::new(padder, DataFormat::Text, None, None)
+                .unwrap();
+            w.write_all(MSG).unwrap();
+            w.finalize().unwrap();
+        }
+
+        assert!(padded.windows(MSG.len()).any(|ch| ch == MSG),
+                "Could not find uncompressed message");
     }
 }
