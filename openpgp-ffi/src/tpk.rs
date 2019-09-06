@@ -466,6 +466,7 @@ pub extern "C" fn pgp_user_id_binding_iter_next<'a>(
 
 /// Wraps a KeyIter for export via the FFI.
 pub struct KeyIterWrapper<'a> {
+    pub(crate) // For serialize.rs.
     iter: KeyIter<'a, openpgp::packet::key::PublicParts,
                   openpgp::packet::key::UnspecifiedRole>,
     // Whether next has been called.
@@ -566,6 +567,50 @@ pub extern "C" fn pgp_tpk_key_iter_signing_capable<'a>(
     use std::mem;
     let tmp = mem::replace(&mut iter_wrapper.iter, KeyIter::empty());
     iter_wrapper.iter = tmp.signing_capable();
+}
+
+/// Changes the iterator to only return keys that are capable of
+/// encrypting data at rest.
+///
+/// If you call this function and, e.g., the `signing_capable`
+/// function, the *union* of the values is used.  That is, the
+/// iterator will return keys that are certification capable *or*
+/// signing capable.
+///
+/// Note: you may not call this function after starting to iterate.
+#[::sequoia_ffi_macros::extern_fn] #[no_mangle]
+pub extern "C" fn pgp_tpk_key_iter_encrypting_capable_at_rest<'a>(
+    iter_wrapper: *mut KeyIterWrapper<'a>)
+{
+    let iter_wrapper = ffi_param_ref_mut!(iter_wrapper);
+    if iter_wrapper.next_called {
+        panic!("Can't change KeyIter filter after iterating.");
+    }
+
+    let tmp = std::mem::replace(&mut iter_wrapper.iter, KeyIter::empty());
+    iter_wrapper.iter = tmp.encrypting_capable_at_rest();
+}
+
+/// Changes the iterator to only return keys that are capable of
+/// encrypting data for transport.
+///
+/// If you call this function and, e.g., the `signing_capable`
+/// function, the *union* of the values is used.  That is, the
+/// iterator will return keys that are certification capable *or*
+/// signing capable.
+///
+/// Note: you may not call this function after starting to iterate.
+#[::sequoia_ffi_macros::extern_fn] #[no_mangle]
+pub extern "C" fn pgp_tpk_key_iter_encrypting_capable_for_transport<'a>(
+    iter_wrapper: *mut KeyIterWrapper<'a>)
+{
+    let iter_wrapper = ffi_param_ref_mut!(iter_wrapper);
+    if iter_wrapper.next_called {
+        panic!("Can't change KeyIter filter after iterating.");
+    }
+
+    let tmp = std::mem::replace(&mut iter_wrapper.iter, KeyIter::empty());
+    iter_wrapper.iter = tmp.encrypting_capable_for_transport();
 }
 
 /// Changes the iterator to only return keys that are alive.
