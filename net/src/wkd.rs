@@ -14,10 +14,15 @@
 
 // XXX: We might want to merge the 2 structs in the future and move the
 // functions to methods.
+extern crate tempfile;
 extern crate tokio_core;
 
+use std::collections::HashMap;
 use std::fmt;
+use std::fs;
+use std::path::{Path, PathBuf};
 
+use failure::ResultExt;
 use futures::{future, Future, Stream};
 use hyper::{Uri, Client};
 use hyper_tls::HttpsConnector;
@@ -29,11 +34,38 @@ use nettle::{
 };
 use url;
 
-use crate::openpgp::TPK;
+use crate::openpgp::{
+    Fingerprint,
+    TPK,
+};
 use crate::openpgp::parse::Parse;
+use crate::openpgp::serialize::Serialize;
 use crate::openpgp::tpk::TPKParser;
 
 use super::{Result, Error};
+
+/// WKD variants.
+///
+/// There are two variants of the URL scheme.  `Advanced` should be
+/// preferred.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Variant {
+    /// Advanced variant.
+    ///
+    /// This method uses a separate subdomain and is more flexible.
+    /// This method should be preferred.
+    Advanced,
+    /// Direct variant.
+    ///
+    /// This method is deprecated.
+    Direct,
+}
+
+impl Default for Variant {
+    fn default() -> Self {
+        Variant::Advanced
+    }
+}
 
 
 /// Stores the local_part and domain of an email address.
@@ -82,7 +114,7 @@ impl EmailAddress {
 ///
 /// NOTE: This is a different `Url` than [`url::Url`] (`url` crate) that is
 /// actually returned with the method [to_url](#method.to_url)
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Url {
     domain: String,
     local_encoded: String,
@@ -109,10 +141,11 @@ impl Url {
     }
 
     /// Returns an URL string from a [`Url`].
-    pub fn build<T>(&self, direct_method: T) -> String
-            where T: Into<Option<bool>> {
-        let direct_method = direct_method.into().unwrap_or(false);
-        if direct_method {
+    pub fn build<V>(&self, variant: V) -> String
+        where V: Into<Option<Variant>>
+    {
+        let variant = variant.into().unwrap_or_default();
+        if variant == Variant::Direct {
             format!("https://{}/.well-known/openpgpkey/hu/{}?l={}",
                     self.domain, self.local_encoded, self.local_part)
         } else {
@@ -123,19 +156,42 @@ impl Url {
     }
 
     /// Returns an [`url::Url`].
-    pub fn to_url<T>(&self, direct_method: T) -> Result<url::Url>
-            where T: Into<Option<bool>> {
-        let url_string = self.build(direct_method);
+    pub fn to_url<V>(&self, variant: V) -> Result<url::Url>
+            where V: Into<Option<Variant>> {
+        let url_string = self.build(variant);
         let url_url = url::Url::parse(url_string.as_str())?;
         Ok(url_url)
     }
 
     /// Returns an [`hyper::Uri`].
-    pub fn to_uri<T>(&self, direct_method: T) -> Result<Uri>
-            where T: Into<Option<bool>> {
-        let url_string = self.build(direct_method);
+    pub fn to_uri<V>(&self, variant: V) -> Result<Uri>
+            where V: Into<Option<Variant>> {
+        let url_string = self.build(variant);
         let uri = url_string.as_str().parse::<Uri>()?;
         Ok(uri)
+    }
+
+    /// Returns a [`PathBuf`].
+    pub fn to_file_path<V>(&self, variant: V) -> Result<PathBuf>
+        where V: Into<Option<Variant>>
+    {
+        // Create the directories string.
+        let variant = variant.into().unwrap_or_default();
+        let url = self.to_url(variant)?;
+        // Can not create path_buf as:
+        // let path_buf: PathBuf = [url.domain().unwrap(), url.path()]
+        //    .iter().collect();
+        // or:
+        // let mut path_buf = PathBuf::new();
+        // path_buf.push(url.domain().unwrap());
+        // path_buf.push(url.path());
+        // Because the domain part will disapear, dunno why.
+        // url.to_file_path() would not create the directory with the domain,
+        // but expect the hostname to match the domain.
+        // Ignore the query part of the url, take only the domain and path.
+        let string = format!("{}{}", url.domain().unwrap(), url.path());
+        let path_buf = PathBuf::from(string);
+        Ok(path_buf)
     }
 }
 
@@ -246,7 +302,8 @@ pub fn get<S: AsRef<str>>(email_address: S)
         let https = HttpsConnector::new(4)?;
         let client = Client::builder().build::<_, hyper::Body>(https);
 
-        Ok((email, client, wkd_url.to_uri(false)?, wkd_url.to_uri(true)?))
+        use self::Variant::*;
+        Ok((email, client, wkd_url.to_uri(Advanced)?, wkd_url.to_uri(Direct)?))
     }).and_then(|(email, client, advanced_uri, direct_uri)| {
         // First, try the Advanced Method.
         client.get(advanced_uri)
@@ -266,6 +323,104 @@ pub fn get<S: AsRef<str>>(email_address: S)
     })
 }
 
+/// Inserts a key into a Web Key Directory.
+///
+/// Creates a WKD hierarchy at `base_path` for `domain`, and inserts
+/// the given `tpk`.  If `tpk` already exists in the WKD, it is
+/// updated.  Any existing TPKs are left in place.
+///
+/// # Errors
+///
+/// If the TPK does not have a well-formed UserID with `domain`,
+/// `Error::InvalidArgument` is returned.
+pub fn insert<P, S, V>(base_path: P, domain: S, variant: V,
+                       tpk: &TPK)
+                       -> Result<()>
+    where P: AsRef<Path>,
+          S: AsRef<str>,
+          V: Into<Option<Variant>>
+{
+    let base_path = base_path.as_ref();
+    let domain = domain.as_ref();
+    let variant = variant.into().unwrap_or_default();
+
+    // First, check which UserIDs are in `domain`.
+    let addresses = tpk.userids().filter_map(|uidb| {
+        uidb.userid().address().unwrap_or(None).and_then(|addr| {
+            if EmailAddress::from(&addr).ok().map(|e| e.domain == domain)
+                .unwrap_or(false)
+            {
+                Url::from(&addr).ok()
+            } else {
+                None
+            }
+        })
+    }).collect::<Vec<_>>();
+
+    // Any?
+    if addresses.len() == 0 {
+        return Err(openpgp::Error::InvalidArgument(
+            format!("Key {} does not have a UserID in {}", tpk, domain)
+        ).into());
+    }
+
+    // Finally, create the files.
+    for address in addresses.into_iter() {
+        let path = base_path.join(address.to_file_path(variant)?);
+        fs::create_dir_all(path.parent().expect("by construction"))?;
+        let mut keyring = KeyRing::default();
+        if path.is_file() {
+            for t in TPKParser::from_file(&path).context(
+                format!("Error parsing existing file {:?}", path))?
+            {
+                keyring.insert(t.context(
+                    format!("Malformed TPK in existing {:?}", path))?)?;
+            }
+        }
+        keyring.insert(tpk.clone())?;
+        let mut file = fs::File::create(&path)?;
+        keyring.export(&mut file)?;
+    }
+
+    Ok(())
+}
+
+struct KeyRing(HashMap<Fingerprint, TPK>);
+
+impl Default for KeyRing {
+    fn default() -> Self {
+        Self(Default::default())
+    }
+}
+
+impl KeyRing {
+    fn insert(&mut self, tpk: TPK) -> Result<()> {
+        let fp = tpk.fingerprint();
+        if let Some(existing) = self.0.get_mut(&fp) {
+            *existing = existing.clone().merge(tpk)?;
+        } else {
+            self.0.insert(fp, tpk);
+        }
+        Ok(())
+    }
+}
+
+impl Serialize for KeyRing {
+    fn serialize(&self, o: &mut dyn std::io::Write) -> Result<()> {
+        for tpk in self.0.values() {
+            tpk.serialize(o)?;
+        }
+        Ok(())
+    }
+
+    fn export(&self, o: &mut dyn std::io::Write) -> Result<()> {
+        for tpk in self.0.values() {
+            tpk.export(o)?;
+        }
+        Ok(())
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -273,6 +428,7 @@ mod tests {
     use crate::openpgp::tpk::TPKBuilder;
 
     use super::*;
+    use self::Variant::*;
 
     #[test]
     fn encode_local_part_succed() {
@@ -309,11 +465,31 @@ mod tests {
             "https://example.com/\
              .well-known/openpgpkey/hu/\
              stnkabub89rpcphiz4ppbxixkwyt1pic?l=test1";
-        assert_eq!(expected_url, wkd_url.clone().build(true));
+        assert_eq!(expected_url, wkd_url.clone().build(Direct));
         assert_eq!(url::Url::parse(expected_url).unwrap(),
-                   wkd_url.clone().to_url(true).unwrap());
+                   wkd_url.clone().to_url(Direct).unwrap());
         assert_eq!(expected_url.parse::<Uri>().unwrap(),
-                   wkd_url.to_uri(true).unwrap());
+                   wkd_url.to_uri(Direct).unwrap());
+    }
+
+    #[test]
+    fn url_to_file_path() {
+        // Advanced method
+        let expected_path =
+            "openpgpkey.example.com/\
+             .well-known/openpgpkey/example.com/hu/\
+             stnkabub89rpcphiz4ppbxixkwyt1pic";
+        let wkd_url = Url::from("test1@example.com").unwrap();
+        assert_eq!(expected_path,
+            wkd_url.clone().to_file_path(None).unwrap().to_str().unwrap());
+
+        // Direct method
+        let expected_path =
+            "example.com/\
+             .well-known/openpgpkey/hu/\
+             stnkabub89rpcphiz4ppbxixkwyt1pic";
+        assert_eq!(expected_path,
+            wkd_url.to_file_path(Direct).unwrap().to_str().unwrap());
     }
 
     #[test]
@@ -339,5 +515,43 @@ mod tests {
         assert!(valid_tpks.is_ok());
         assert!(valid_tpks.unwrap().len() == 1);
         // XXX: Test with more TPKs
+    }
+
+    #[test]
+    fn wkd_generate() {
+       let (tpk, _) = TPKBuilder::new()
+            .add_userid("test1@example.example")
+            .add_userid("juga@sequoia-pgp.org")
+            .generate()
+            .unwrap();
+        let (tpk2, _) = TPKBuilder::new()
+            .add_userid("justus@sequoia-pgp.org")
+            .generate()
+            .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path();
+        insert(&dir_path, "sequoia-pgp.org", None, &tpk).unwrap();
+        insert(&dir_path, "sequoia-pgp.org", None, &tpk2).unwrap();
+
+        // justus and juga files will be generated, but not test one.
+        let path = dir_path.join(
+            "openpgpkey.sequoia-pgp.org/\
+             .well-known/openpgpkey/sequoia-pgp.org/hu\
+             /jwp7xjqkdujgz5op6bpsoypg34pnrgmq");
+        // Check that justus file was created
+        assert!(path.is_file());
+        let path = dir_path.join(
+            "openpgpkey.sequoia-pgp.org/\
+             .well-known/openpgpkey/sequoia-pgp.org/hu\
+             /7t1uqk9cwh1955776rc4z1gqf388566j");
+        // Check that juga file was created.
+        assert!(path.is_file());
+        // Check that the file for test uid is not created.
+        let path = dir_path.join(
+            "openpgpkey.example.com/\
+             .well-known/openpgpkey/example.com/hu/\
+             stnkabub89rpcphiz4ppbxixkwyt1pic");
+        assert!(!path.is_file());
     }
 }

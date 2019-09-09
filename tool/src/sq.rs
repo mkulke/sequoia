@@ -29,6 +29,7 @@ use crate::openpgp::conversions::hex;
 use crate::openpgp::packet::KeyFlags;
 use crate::openpgp::parse::Parse;
 use crate::openpgp::serialize::Serialize;
+use crate::openpgp::tpk::TPKParser;
 use sequoia_core::{Context, NetworkPolicy};
 use sequoia_net::{KeyServer, wkd};
 use sequoia_store::{Store, LogIter};
@@ -543,6 +544,25 @@ fn real_main() -> Result<(), failure::Error> {
                     let mut output = create_or_stdout(m.value_of("output"), force)?;
                     serialize_keyring(&mut output, &tpks,
                                       m.is_present("binary"))?;
+                },
+                ("generate", Some(m)) => {
+                    let domain = m.value_of("domain").unwrap();
+                    let f = open_or_stdin(m.value_of("input"))?;
+                    let base_path =
+                        m.value_of("base_directory").expect("required");
+                    let variant = if m.is_present("direct_method") {
+                        wkd::Variant::Direct
+                    } else {
+                        wkd::Variant::Advanced
+                    };
+                    let parser = TPKParser::from_reader(f)?;
+                    let tpks: Vec<TPK> = parser.filter_map(|tpk| tpk.ok())
+                        .collect();
+                    for tpk in tpks {
+                        wkd::insert(&base_path, domain, variant, &tpk)
+                            .context(format!("Failed to generate the WKD in \
+                                              {}.", base_path))?;
+                    }
                 },
                 _ => unreachable!(),
             }

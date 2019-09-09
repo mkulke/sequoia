@@ -670,9 +670,31 @@
 //!     -V, --version    Prints version information
 //!
 //! SUBCOMMANDS:
-//!     get     Writes to the standard output the TPK retrieved from a Web Key Directory, given an email address
-//!     help    Prints this message or the help of the given subcommand(s)
-//!     url     Prints the Web Key Directory URL of an email address.
+//!     generate    Generates a Web Key Directory for the given domain and keys.  If the WKD exists, the new keys will
+//!                 be inserted and it is updated and existing ones will be updated.
+//!     get         Writes to the standard output the TPK retrieved from a Web Key Directory, given an email address
+//!     help        Prints this message or the help of the given subcommand(s)
+//!     url         Prints the Web Key Directory URL of an email address.
+//! ```
+//!
+//! ### Subcommand wkd generate
+//!
+//! ```text
+//! Generates a Web Key Directory for the given domain and keys.  If the WKD exists, the new keys will be inserted and it is
+//! updated and existing ones will be updated.
+//!
+//! USAGE:
+//!     sq wkd generate [FLAGS] <BASE-DIRECTORY> <DOMAIN> [KEYRING]
+//!
+//! FLAGS:
+//!     -d, --direct_method    Use the direct method. [default: advanced method]
+//!     -h, --help             Prints help information
+//!     -V, --version          Prints version information
+//!
+//! ARGS:
+//!     <BASE-DIRECTORY>    The location to write the WKD to
+//!     <DOMAIN>            The domain for the WKD.
+//!     <KEYRING>           The keyring file with the keys to add to the WKD.
 //! ```
 //!
 //! ### Subcommand wkd get
