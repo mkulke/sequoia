@@ -194,8 +194,6 @@ impl<'a> writer::Stackable<'a, Cookie> for ArbitraryWriter<'a> {
 /// For every signing key, a signer writes a one-pass-signature
 /// packet, then hashes and emits the data stream, then for every key
 /// writes a signature packet.
-///
-/// Unless otherwise specified, SHA512 is used as hash algorithm.
 pub struct Signer<'a, R>
     where R: key::KeyRole
 {
@@ -227,7 +225,6 @@ impl<'a, R> Signer<'a, R>
     /// ```
     /// extern crate sequoia_openpgp as openpgp;
     /// use std::io::{Read, Write};
-    /// use openpgp::constants::DataFormat;
     /// use openpgp::serialize::stream::{Message, Signer, LiteralWriter};
     /// # use openpgp::{Result, TPK};
     /// # use openpgp::packet::prelude::*;
@@ -246,7 +243,7 @@ impl<'a, R> Signer<'a, R>
     /// {
     ///     let message = Message::new(&mut o);
     ///     let signer = Signer::new(message, vec![&mut signing_keypair], None)?;
-    ///     let mut ls = LiteralWriter::new(signer, DataFormat::Text, None, None)?;
+    ///     let mut ls = LiteralWriter::new(signer, None, None, None)?;
     ///     ls.write_all(b"Make it so, number one!")?;
     ///     ls.finalize()?;
     /// }
@@ -285,7 +282,8 @@ impl<'a, R> Signer<'a, R>
         -> Result<writer::Stack<'a, Cookie>>
         where H: Into<Option<HashAlgorithm>>
     {
-        Self::make(inner, signers, None, false, hash_algo)
+        Self::make(inner, signers, None, false,
+                   hash_algo.into().unwrap_or_default())
     }
 
     /// Creates a signer with intended recipients.
@@ -303,7 +301,7 @@ impl<'a, R> Signer<'a, R>
     {
         Self::make(inner, signers,
                    Some(recipients.iter().map(|r| r.fingerprint()).collect()),
-                   false, hash_algo)
+                   false, hash_algo.into().unwrap_or_default())
     }
 
     /// Creates a signer for a detached signature.
@@ -373,18 +371,17 @@ impl<'a, R> Signer<'a, R>
         -> Result<writer::Stack<'a, Cookie>>
         where H: Into<Option<HashAlgorithm>>
     {
-        Self::make(inner, signers, None, true, hash_algo)
+        Self::make(inner, signers, None, true,
+                   hash_algo.into().unwrap_or_default())
     }
 
-    fn make<H>(inner: writer::Stack<'a, Cookie>,
-               signers: Vec<&'a mut dyn crypto::Signer<R>>,
-               intended_recipients: Option<Vec<Fingerprint>>, detached: bool,
-               hash_algo: H)
+    fn make(inner: writer::Stack<'a, Cookie>,
+            signers: Vec<&'a mut dyn crypto::Signer<R>>,
+            intended_recipients: Option<Vec<Fingerprint>>, detached: bool,
+            hash_algo: HashAlgorithm)
         -> Result<writer::Stack<'a, Cookie>>
-        where H: Into<Option<HashAlgorithm>>
     {
         let mut inner = writer::BoxStack::from(inner);
-        let hash_algo = hash_algo.into().unwrap_or(HashAlgorithm::SHA512);
 
         if signers.len() == 0 {
             return Err(Error::InvalidArgument(
@@ -443,7 +440,7 @@ impl<'a, R> Signer<'a, R>
                 }
 
                 // Compute the signature.
-                let sig = sig.sign_hash(*signer, HashAlgorithm::SHA512, hash)?;
+                let sig = sig.sign_hash(*signer, self.hash.algo(), hash)?;
 
                 // And emit the packet.
                 Packet::Signature(sig).serialize(sink)?;
@@ -555,7 +552,6 @@ impl<'a, R> writer::Stackable<'a, Cookie> for Signer<'a, R>
 /// ```
 /// extern crate sequoia_openpgp as openpgp;
 /// use std::io::Write;
-/// use openpgp::constants::DataFormat;
 /// use openpgp::serialize::stream::{Message, LiteralWriter};
 /// # use openpgp::Result;
 /// # f().unwrap();
@@ -564,11 +560,11 @@ impl<'a, R> writer::Stackable<'a, Cookie> for Signer<'a, R>
 /// let mut o = vec![];
 /// {
 ///     let message = Message::new(&mut o);
-///     let mut w = LiteralWriter::new(message, DataFormat::Text, None, None)?;
+///     let mut w = LiteralWriter::new(message, None, None, None)?;
 ///     w.write_all(b"Hello world.")?;
 ///     w.finalize()?;
 /// }
-/// assert_eq!(b"\xcb\x12t\x00\x00\x00\x00\x00Hello world.", o.as_slice());
+/// assert_eq!(b"\xcb\x12b\x00\x00\x00\x00\x00Hello world.", o.as_slice());
 /// # Ok(())
 /// # }
 /// ```
@@ -588,10 +584,22 @@ impl<'a> LiteralWriter<'a> {
     ///
     /// If `date` is `None`, then the earliest representable time will
     /// be used as a dummy value.
-    pub fn new(inner: writer::Stack<'a, Cookie>,
-               format: DataFormat,
-               filename: Option<&[u8]>,
-               date: Option<time::Tm>)
+    pub fn new<'f, D, F, T>(inner: writer::Stack<'a, Cookie>,
+                            format: D, filename: F, date: T)
+                            -> Result<writer::Stack<'a, Cookie>>
+        where D: Into<Option<DataFormat>>,
+              F: Into<Option<&'f [u8]>>,
+              T: Into<Option<time::Tm>>
+    {
+        Self::make(inner,
+                   format.into().unwrap_or_default(),
+                   filename.into(), date.into())
+    }
+
+    fn make(inner: writer::Stack<'a, Cookie>,
+            format: DataFormat,
+            filename: Option<&[u8]>,
+            date: Option<time::Tm>)
                -> Result<writer::Stack<'a, Cookie>> {
         let mut inner = writer::BoxStack::from(inner);
         let level = inner.cookie_ref().level + 1;
@@ -723,7 +731,6 @@ impl<'a> writer::Stackable<'a, Cookie> for LiteralWriter<'a> {
 /// ```
 /// extern crate sequoia_openpgp as openpgp;
 /// use std::io::Write;
-/// use openpgp::constants::DataFormat;
 /// use openpgp::serialize::stream::{Message, Compressor, LiteralWriter};
 /// use openpgp::constants::CompressionAlgorithm;
 /// # use openpgp::Result;
@@ -735,11 +742,11 @@ impl<'a> writer::Stackable<'a, Cookie> for LiteralWriter<'a> {
 ///     let message = Message::new(&mut o);
 ///     let w = Compressor::new(message,
 ///                             CompressionAlgorithm::Uncompressed, None)?;
-///     let mut w = LiteralWriter::new(w, DataFormat::Text, None, None)?;
+///     let mut w = LiteralWriter::new(w, None, None, None)?;
 ///     w.write_all(b"Hello world.")?;
 ///     w.finalize()?;
 /// }
-/// assert_eq!(b"\xc8\x15\x00\xcb\x12t\x00\x00\x00\x00\x00Hello world.",
+/// assert_eq!(b"\xc8\x15\x00\xcb\x12b\x00\x00\x00\x00\x00Hello world.",
 ///            o.as_slice());
 /// # Ok(())
 /// # }
@@ -752,12 +759,15 @@ impl<'a> Compressor<'a> {
     ///
     /// Passing `None` to `compression_level` selects the default
     /// compression level.
-    pub fn new<L>(inner: writer::Stack<'a, Cookie>, algo: CompressionAlgorithm,
-                  compression_level: L)
-                  -> Result<writer::Stack<'a, Cookie>>
-        where L: Into<Option<writer::CompressionLevel>>
+    pub fn new<C, L>(inner: writer::Stack<'a, Cookie>,
+                     algo: C, compression_level: L)
+                     -> Result<writer::Stack<'a, Cookie>>
+        where C: Into<Option<CompressionAlgorithm>>,
+              L: Into<Option<writer::CompressionLevel>>
     {
         let mut inner = writer::BoxStack::from(inner);
+        let algo = algo.into().unwrap_or_default();
+        let compression_level = compression_level.into().unwrap_or_default();
         let level = inner.cookie_ref().level + 1;
 
         // Packet header.
@@ -772,12 +782,11 @@ impl<'a> Compressor<'a> {
 
     /// Creates a new compressor using the given algorithm.
     pub(crate) // For CompressedData::serialize.
-    fn new_naked<L>(mut inner: writer::Stack<'a, Cookie>,
-                    algo: CompressionAlgorithm,
-                    compression_level: L,
-                    level: usize)
-                    -> Result<writer::Stack<'a, Cookie>>
-        where L: Into<Option<writer::CompressionLevel>>
+    fn new_naked(mut inner: writer::Stack<'a, Cookie>,
+                 algo: CompressionAlgorithm,
+                 compression_level: writer::CompressionLevel,
+                 level: usize)
+                 -> Result<writer::Stack<'a, Cookie>>
     {
         // Compressed data header.
         inner.as_mut().write_u8(algo.into())?;
@@ -912,7 +921,6 @@ impl<'a> Encryptor<'a> {
     /// ```
     /// use std::io::Write;
     /// extern crate sequoia_openpgp as openpgp;
-    /// use openpgp::constants::DataFormat;
     /// use openpgp::packet::KeyFlags;
     /// use openpgp::serialize::stream::{
     ///     Message, Encryptor, LiteralWriter,
@@ -971,27 +979,44 @@ impl<'a> Encryptor<'a> {
     /// let mut o = vec![];
     /// let message = Message::new(&mut o);
     /// let encryptor = Encryptor::new(message,
-    ///                                &[&"совершенно секретно".into()],
+    ///                                &["совершенно секретно".into()],
     ///                                &recipients, None, None)
     ///     .expect("Failed to create encryptor");
-    /// let mut w = LiteralWriter::new(encryptor, DataFormat::Text, None, None)?;
+    /// let mut w = LiteralWriter::new(encryptor, None, None, None)?;
     /// w.write_all(b"Hello world.")?;
     /// w.finalize()?;
     /// # Ok(())
     /// # }
     /// ```
-    pub fn new<C, A, R>(mut inner: writer::Stack<'a, Cookie>,
-                        passwords: &[&Password],
-                        recipients: R,
-                        cipher_algo: C,
-                        aead_algo: A)
-                        -> Result<writer::Stack<'a, Cookie>>
-        where C: Into<Option<SymmetricAlgorithm>>,
-              A: Into<Option<AEADAlgorithm>>,
+    pub fn new<'r, P, R, C, A>(inner: writer::Stack<'a, Cookie>,
+                               passwords: P, recipients: R,
+                               cipher_algo: C, aead_algo: A)
+                               -> Result<writer::Stack<'a, Cookie>>
+        where P: IntoIterator,
+              P::Item: Borrow<Password>,
               R: IntoIterator,
-              R::Item: Borrow<Recipient<'a>>
+              R::Item: Borrow<Recipient<'r>>,
+              C: Into<Option<SymmetricAlgorithm>>,
+              A: Into<Option<AEADAlgorithm>>,
     {
+        let passwords = passwords.into_iter().collect::<Vec<_>>();
+        let passwords_ref = passwords.iter().map(|r| r.borrow()).collect();
         let recipients = recipients.into_iter().collect::<Vec<_>>();
+        let recipients_ref = recipients.iter().map(|r| r.borrow()).collect();
+        Self::make(inner,
+                   passwords_ref,
+                   recipients_ref,
+                   cipher_algo.into().unwrap_or_default(),
+                   aead_algo.into())
+    }
+
+    fn make(mut inner: writer::Stack<'a, Cookie>,
+            passwords: Vec<&Password>,
+            recipients: Vec<&Recipient>,
+            algo: SymmetricAlgorithm,
+            aead_algo: Option<AEADAlgorithm>)
+            -> Result<writer::Stack<'a, Cookie>>
+    {
         if recipients.len() + passwords.len() == 0 {
             return Err(Error::InvalidArgument(
                 "Neither recipient keys nor passwords given".into()).into());
@@ -1003,7 +1028,7 @@ impl<'a> Encryptor<'a> {
             nonce: Box<[u8]>,
         }
 
-        let aead = if let Some(algo) = aead_algo.into() {
+        let aead = if let Some(algo) = aead_algo {
             let mut nonce = vec![0; algo.iv_size()?];
             crypto::random(&mut nonce);
             Some(AEADParameters {
@@ -1016,7 +1041,6 @@ impl<'a> Encryptor<'a> {
         };
 
         let level = inner.as_ref().cookie_ref().level + 1;
-        let algo = cipher_algo.into().unwrap_or(SymmetricAlgorithm::AES256);
 
         // Generate a session key.
         let sk = SessionKey::new(algo.key_size()?);
@@ -1350,7 +1374,7 @@ mod test {
             let m = Message::new(&mut o);
             let c = Compressor::new(m,
                                     CompressionAlgorithm::BZip2, None).unwrap();
-            let mut ls = LiteralWriter::new(c, T, None, None).unwrap();
+            let mut ls = LiteralWriter::new(c, None, None, None).unwrap();
             // Write 64 megabytes of zeroes.
             for _ in 0 .. 16 {
                 ls.write_all(&zeros).unwrap();
@@ -1391,7 +1415,7 @@ mod test {
                     .collect(),
                 None)
                 .unwrap();
-            let mut ls = LiteralWriter::new(signer, T, None, None).unwrap();
+            let mut ls = LiteralWriter::new(signer, None, None, None).unwrap();
             ls.write_all(b"Tis, tis, tis.  Tis is important.").unwrap();
             let signer = ls.finalize_one().unwrap().unwrap();
             let _ = signer.finalize_one().unwrap().unwrap();
@@ -1425,11 +1449,10 @@ mod test {
         {
             let m = Message::new(&mut o);
             let encryptor = Encryptor::new(
-                m, &passwords.iter().collect::<Vec<&Password>>(),
+                m, &passwords,
                 &[], None, None)
                 .unwrap();
-            let mut literal = LiteralWriter::new(encryptor, DataFormat::Binary,
-                                                 None, None)
+            let mut literal = LiteralWriter::new(encryptor, None, None, None)
                 .unwrap();
             literal.write_all(message).unwrap();
         }

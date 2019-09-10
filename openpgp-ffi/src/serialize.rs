@@ -13,12 +13,8 @@ use libc::{c_char, size_t, ssize_t};
 extern crate sequoia_openpgp as openpgp;
 extern crate time;
 
-use self::openpgp::{
-    crypto::Password,
-};
 use self::openpgp::constants::{
     AEADAlgorithm,
-    DataFormat,
     HashAlgorithm,
     SymmetricAlgorithm,
 };
@@ -225,10 +221,7 @@ pub extern "C" fn pgp_literal_writer_new
 {
     ffi_make_fry_from_errp!(errp);
     let inner = ffi_param_move!(inner);
-    ffi_try_box!(LiteralWriter::new(*inner,
-                                     DataFormat::Binary,
-                                     None,
-                                     None))
+    ffi_try_box!(LiteralWriter::new(*inner, None, None, None))
 }
 
 /// A recipient of an encrypted message.
@@ -351,7 +344,7 @@ pub extern "C" fn pgp_encryptor_new<'a>
         Some(aead_algo.into())
     };
     ffi_try_box!(Encryptor::new(*inner,
-                                &passwords_.iter().collect::<Vec<&Password>>(),
+                                passwords_.iter().collect::<Vec<_>>(),
                                 recipients_,
                                 cipher_algo,
                                 aead_algo))

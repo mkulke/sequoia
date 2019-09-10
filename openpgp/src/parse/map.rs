@@ -66,7 +66,8 @@ impl Map {
     /// let ppo = PacketParserBuilder::from_bytes(msg)?
     ///     .map(true).finalize()?;
     /// assert_eq!(ppo.unwrap().map().unwrap().iter()
-    ///            .map(|f| (f.name, f.data)).collect::<Vec<(&str, &[u8])>>(),
+    ///            .map(|f| (f.name(), f.data()))
+    ///            .collect::<Vec<(&str, &[u8])>>(),
     ///            [("CTB", &b"\xcb"[..]),
     ///             ("length", &b"\x12"[..]),
     ///             ("format", b"t"),
@@ -76,7 +77,7 @@ impl Map {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn iter<'a>(&'a self) -> Iter<'a> {
+    pub fn iter<'a>(&'a self) -> impl Iterator<Item = Field<'a>> {
         Iter::new(self)
     }
 }
@@ -85,13 +86,11 @@ impl Map {
 #[derive(Clone, Debug)]
 pub struct Field<'a> {
     /// Name of the field.
-    pub name: &'static str,
+    name: &'static str,
     /// Offset of the field in the packet.
-    pub offset: usize,
-    /// Length of the field.
-    pub length: usize,
+    offset: usize,
     /// Value of the field.
-    pub data: &'a [u8],
+    data: &'a [u8],
 }
 
 impl<'a> Field<'a> {
@@ -102,14 +101,12 @@ impl<'a> Field<'a> {
         if i == 0 {
             Some(Field {
                 offset: 0,
-                length: 1,
                 name: "CTB",
                 data: &map.header.as_slice()[..1],
             })
         } else if i == 1 && has_length {
             Some(Field {
                 offset: 1,
-                length: map.header.len() - 1,
                 name: "length",
                 data: &map.header.as_slice()[1..]
             })
@@ -121,17 +118,36 @@ impl<'a> Field<'a> {
                 let end = cmp::min(len, e.offset + e.length);
                 Field {
                     offset: map.header.len() + e.offset,
-                    length: e.length,
                     name: e.field,
                     data: &map.data[start..end],
                 }
             })
         }
     }
+
+    /// Returns the name of the field.
+    pub fn name(&self) -> &'a str {
+        self.name
+    }
+
+    /// Returns the offset of the field in the packet.
+    pub fn offset(&self) -> usize {
+        self.offset
+    }
+
+    /// Returns the length of the field.
+    pub fn length(&self) -> usize {
+        self.data.len()
+    }
+
+    /// Returns the value of the field.
+    pub fn data(&self) -> &'a [u8] {
+        self.data
+    }
 }
 
 /// An iterator over the map.
-pub struct Iter<'a> {
+struct Iter<'a> {
     map: &'a Map,
     i: usize,
 }

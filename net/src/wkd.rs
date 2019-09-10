@@ -223,13 +223,17 @@ fn encode_local_part<S: AsRef<str>>(local_part: S) -> String {
 /// The key needs to carry a User ID packet ([RFC4880]) with that mail
 /// address.
 /// ```
-pub(crate) fn parse_body<S: AsRef<str>>(body: &[u8], email_address: S)
+fn parse_body<S: AsRef<str>>(body: &[u8], email_address: S)
         -> Result<Vec<TPK>> {
     let email_address = email_address.as_ref();
     // This will fail on the first packet that can not be parsed.
     let packets = TPKParser::from_bytes(&body)?;
     // Collect only the correct packets.
     let tpks: Vec<TPK> = packets.flatten().collect();
+    if tpks.is_empty() {
+        return Err(Error::NotFound.into());
+    }
+
     // Collect only the TPKs that contain the email in any of their userids
     let valid_tpks: Vec<TPK> = tpks.iter()
         // XXX: This filter could become a TPK method, but it adds other API

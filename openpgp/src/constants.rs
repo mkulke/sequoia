@@ -359,6 +359,12 @@ pub enum SymmetricAlgorithm {
     Unknown(u8),
 }
 
+impl Default for SymmetricAlgorithm {
+    fn default() -> Self {
+        SymmetricAlgorithm::AES256
+    }
+}
+
 impl SymmetricAlgorithm {
     /// Returns whether this algorithm is supported.
     pub fn is_supported(&self) -> bool {
@@ -563,6 +569,20 @@ pub enum CompressionAlgorithm {
     Unknown(u8),
 }
 
+impl Default for CompressionAlgorithm {
+    fn default() -> Self {
+        use self::CompressionAlgorithm::*;
+        #[cfg(feature = "compression-deflate")]
+        { Zip }
+        #[cfg(all(feature = "compression-bzip2",
+                  not(feature = "compression-deflate")))]
+        { BZip2 }
+        #[cfg(all(not(feature = "compression-bzip2"),
+                  not(feature = "compression-deflate")))]
+        { Uncompressed }
+    }
+}
+
 impl CompressionAlgorithm {
     /// Returns whether this algorithm is supported.
     pub fn is_supported(&self) -> bool {
@@ -648,6 +668,12 @@ pub enum HashAlgorithm {
     Private(u8),
     /// Unknown hash algorithm identifier.
     Unknown(u8),
+}
+
+impl Default for HashAlgorithm {
+    fn default() -> Self {
+        HashAlgorithm::SHA256
+    }
 }
 
 impl From<u8> for HashAlgorithm {
@@ -987,6 +1013,12 @@ pub enum DataFormat {
 
     /// Unknown format specifier.
     Unknown(char),
+}
+
+impl Default for DataFormat {
+    fn default() -> Self {
+        DataFormat::Binary
+    }
 }
 
 impl From<u8> for DataFormat {

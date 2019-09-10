@@ -412,7 +412,7 @@ impl BodyLength {
 
 impl Serialize for CTBNew {
     fn serialize(&self, o: &mut dyn std::io::Write) -> Result<()> {
-        let tag: u8 = self.common.tag.into();
+        let tag: u8 = self.tag().into();
         o.write_all(&[0b1100_0000u8 | tag])?;
         Ok(())
     }
@@ -428,7 +428,7 @@ impl SerializeInto for CTBNew {
 
 impl Serialize for CTBOld {
     fn serialize(&self, o: &mut dyn std::io::Write) -> Result<()> {
-        let tag: u8 = self.common.tag.into();
+        let tag: u8 = self.tag().into();
         let length_type: u8 = self.length_type.into();
         o.write_all(&[0b1000_0000u8 | (tag << 2) | length_type])?;
         Ok(())
@@ -463,8 +463,8 @@ impl SerializeInto for CTB {
 
 impl Serialize for Header {
     fn serialize(&self, o: &mut dyn std::io::Write) -> Result<()> {
-        self.ctb.serialize(o)?;
-        self.length.serialize(o)?;
+        self.ctb().serialize(o)?;
+        self.length().serialize(o)?;
         Ok(())
     }
 }
@@ -1676,8 +1676,8 @@ impl Serialize for CompressedData {
         }
 
         let o = stream::Message::new(o);
-        let mut o =
-            stream::Compressor::new_naked(o, self.algorithm(), None, 0)?;
+        let mut o = stream::Compressor::new_naked(
+            o, self.algorithm(), Default::default(), 0)?;
 
         // Serialize the packets.
         if let Some(ref children) = self.common.children {

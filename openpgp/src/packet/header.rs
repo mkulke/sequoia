@@ -12,12 +12,27 @@ use crate::packet::ctb::CTB;
 #[derive(Clone, Debug)]
 pub struct Header {
     /// The packet's CTB.
-    pub ctb: CTB,
+    ctb: CTB,
     /// The packet's length.
-    pub length: BodyLength,
+    length: BodyLength,
 }
 
 impl Header {
+    /// Creates a new header.
+    pub fn new(ctb: CTB, length: BodyLength) -> Self {
+        Header { ctb, length }
+    }
+
+    /// Returns the packet's CTB.
+    pub fn ctb(&self) -> &CTB {
+        &self.ctb
+    }
+
+    /// Returns the packet's length.
+    pub fn length(&self) -> &BodyLength {
+        &self.length
+    }
+
     /// Syntax checks the header.
     ///
     /// A header is consider invalid if:
@@ -26,14 +41,15 @@ impl Header {
     ///   - The tag is unknown (if future_compatible is false).
     ///   - The [length encoding] is invalid for the packet.
     ///   - The lengths are unreasonable for a packet (e.g., a
-    ///     >10 kb large PKESK or SKESK).
+    ///     PKESK or SKESK larger than 10 kb).
     ///
     /// [length encoding]: https://tools.ietf.org/html/rfc4880#section-4.2.2.4
     ///
-    /// This function does not check the packet's content.  Use
-    /// `PacketParser::plausible` for that.
+    /// This function does not check the packet's content.
+    // Note: To check the packet's content, use
+    //       `PacketParser::plausible`.
     pub fn valid(&self, future_compatible: bool) -> Result<()> {
-        let tag = self.ctb.tag;
+        let tag = self.ctb.tag();
 
         // Reserved packets are never valid.
         if tag == Tag::Reserved {

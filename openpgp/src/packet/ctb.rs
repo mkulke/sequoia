@@ -4,7 +4,7 @@
 //!
 //!   [Section 4.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-4.2
 
-use std::ops::Deref;
+use std::convert::TryFrom;
 
 use crate::{
     packet::Tag,
@@ -20,9 +20,9 @@ use crate::packet::BodyLength;
 ///
 ///   [Section 4.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-4.2
 #[derive(Clone, Debug)]
-pub struct CTBCommon {
+struct CTBCommon {
     /// RFC4880 Packet tag
-    pub tag: Tag,
+    tag: Tag,
 }
 
 /// The new CTB format.
@@ -33,7 +33,7 @@ pub struct CTBCommon {
 #[derive(Clone, Debug)]
 pub struct CTBNew {
     /// Packet CTB fields
-    pub common: CTBCommon,
+    common: CTBCommon,
 }
 
 impl CTBNew {
@@ -45,14 +45,10 @@ impl CTBNew {
             },
         }
     }
-}
 
-// Allow transparent access of common fields.
-impl Deref for CTBNew {
-    type Target = CTBCommon;
-
-    fn deref(&self) -> &Self::Target {
-        &self.common
+    /// Returns the packet's tag.
+    pub fn tag(&self) -> Tag {
+        self.common.tag
     }
 }
 
@@ -78,11 +74,10 @@ pub enum PacketLengthType {
     Indeterminate,
 }
 
-// XXX: TryFrom is nightly only.
-impl /* TryFrom<u8> for */ PacketLengthType {
-    /* type Error = failure::Error; */
-    /// Mirrors the nightly only TryFrom trait.
-    pub fn try_from(u: u8) -> Result<Self> {
+impl TryFrom<u8> for PacketLengthType {
+    type Error = failure::Error;
+
+    fn try_from(u: u8) -> Result<Self> {
         match u {
             0 => Ok(PacketLengthType::OneOctet),
             1 => Ok(PacketLengthType::TwoOctets),
@@ -113,7 +108,7 @@ impl From<PacketLengthType> for u8 {
 #[derive(Clone, Debug)]
 pub struct CTBOld {
     /// Common CTB fields.
-    pub common: CTBCommon,
+    common: CTBCommon,
     /// Type of length sepcifier.
     pub length_type: PacketLengthType,
 }
@@ -163,14 +158,10 @@ impl CTBOld {
             length_type: length_type,
         })
     }
-}
 
-// Allow transparent access of common fields.
-impl Deref for CTBOld {
-    type Target = CTBCommon;
-
-    fn deref(&self) -> &Self::Target {
-        &self.common
+    /// Returns the packet's tag.
+    pub fn tag(&self) -> Tag {
+        self.common.tag
     }
 }
 
@@ -196,21 +187,7 @@ impl CTB {
     pub fn new(tag: Tag) -> Self {
         CTB::New(CTBNew::new(tag))
     }
-}
 
-// Allow transparent access of common fields.
-impl Deref for CTB {
-    type Target = CTBCommon;
-
-    fn deref(&self) -> &Self::Target {
-        match self {
-            &CTB::New(ref ctb) => return &ctb.common,
-            &CTB::Old(ref ctb) => return &ctb.common,
-        }
-    }
-}
-
-impl CTB {
     /// Parses a CTB as described in [Section 4.2 of RFC 4880].  This
     /// function parses both new and old format CTBs.
     ///
@@ -252,13 +229,21 @@ impl CTB {
 
         Ok(ctb)
     }
+
+    /// Returns the packet's tag.
+    pub fn tag(&self) -> Tag {
+        match self {
+            CTB::New(c) => c.tag(),
+            CTB::Old(c) => c.tag(),
+        }
+    }
 }
 
 #[test]
 fn ctb() {
     // 0x99 = public key packet
     if let CTB::Old(ctb) = CTB::from_ptag(0x99).unwrap() {
-        assert_eq!(ctb.tag, Tag::PublicKey);
+        assert_eq!(ctb.tag(), Tag::PublicKey);
         assert_eq!(ctb.length_type, PacketLengthType::TwoOctets);
     } else {
         panic!("Expected an old format packet.");
@@ -266,7 +251,7 @@ fn ctb() {
 
     // 0xa3 = old compressed packet
     if let CTB::Old(ctb) = CTB::from_ptag(0xa3).unwrap() {
-        assert_eq!(ctb.tag, Tag::CompressedData);
+        assert_eq!(ctb.tag(), Tag::CompressedData);
         assert_eq!(ctb.length_type, PacketLengthType::Indeterminate);
     } else {
         panic!("Expected an old format packet.");
@@ -274,7 +259,7 @@ fn ctb() {
 
     // 0xcb: new literal
     if let CTB::New(ctb) = CTB::from_ptag(0xcb).unwrap() {
-        assert_eq!(ctb.tag, Tag::Literal);
+        assert_eq!(ctb.tag(), Tag::Literal);
     } else {
         panic!("Expected a new format packet.");
     }

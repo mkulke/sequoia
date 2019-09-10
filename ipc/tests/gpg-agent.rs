@@ -7,7 +7,10 @@ use futures::future::Future;
 use futures::stream::Stream;
 
 extern crate sequoia_openpgp as openpgp;
-use crate::openpgp::constants::SymmetricAlgorithm;
+use crate::openpgp::constants::{
+    HashAlgorithm,
+    SymmetricAlgorithm,
+};
 use crate::openpgp::crypto::SessionKey;
 use crate::openpgp::packet::KeyFlags;
 use crate::openpgp::parse::stream::*;
@@ -101,13 +104,13 @@ fn sign() {
             let message = Message::new(&mut message);
 
             // We want to sign a literal data packet.
-            let signer = Signer::new(message, vec![&mut keypair], None)
+            let signer = Signer::new(message, vec![&mut keypair],
+                                     HashAlgorithm::SHA512)
                 .unwrap();
 
             // Emit a literal data packet.
             let mut literal_writer = LiteralWriter::new(
-                signer, openpgp::constants::DataFormat::Binary, None, None)
-                .unwrap();
+                signer, None, None, None).unwrap();
 
             // Sign the data.
             literal_writer.write_all(MESSAGE.as_bytes()).unwrap();
@@ -218,8 +221,7 @@ fn decrypt() {
 
             // Emit a literal data packet.
             let mut literal_writer = LiteralWriter::new(
-                encryptor, openpgp::constants::DataFormat::Binary, None, None)
-                .unwrap();
+                encryptor, None, None, None).unwrap();
 
             // Encrypt the data.
             literal_writer.write_all(MESSAGE.as_bytes()).unwrap();

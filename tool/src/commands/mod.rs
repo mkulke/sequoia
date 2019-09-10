@@ -10,7 +10,6 @@ extern crate sequoia_openpgp as openpgp;
 use sequoia_core::Context;
 use crate::openpgp::constants::{
     CompressionAlgorithm,
-    DataFormat,
 };
 use crate::openpgp::crypto;
 use crate::openpgp::{TPK, KeyID, Result};
@@ -95,7 +94,7 @@ pub fn encrypt(store: &mut store::Store,
     for r in recipients {
         tpks.push(store.lookup(r).context("No such key found")?.tpk()?);
     }
-    let mut passwords = Vec::with_capacity(npasswords);
+    let mut passwords: Vec<crypto::Password> = Vec::with_capacity(npasswords);
     for n in 0..npasswords {
         let nprompt = format!("Enter password {}: ", n + 1);
         passwords.push(rpassword::read_password_from_tty(Some(
@@ -125,15 +124,12 @@ pub fn encrypt(store: &mut store::Store,
         }
     }
 
-    let passwords_: Vec<&openpgp::crypto::Password> =
-        passwords.iter().collect();
-
     // Stream an OpenPGP message.
     let message = Message::new(output);
 
     // We want to encrypt a literal data packet.
     let mut sink = Encryptor::new(message,
-                                  &passwords_,
+                                  passwords,
                                   recipient_subkeys,
                                   None, None)
         .context("Failed to create encryptor")?;
@@ -160,8 +156,7 @@ pub fn encrypt(store: &mut store::Store,
             None)?;
     }
 
-    let mut literal_writer = LiteralWriter::new(sink, DataFormat::Binary,
-                                                None, None)
+    let mut literal_writer = LiteralWriter::new(sink, None, None, None)
         .context("Failed to create literal writer")?;
 
     // Finally, copy stdin to our writer stack to encrypt the data.
@@ -416,7 +411,7 @@ pub fn split(input: &mut io::Read, prefix: &str)
 
             // Write all the bytes.
             for field in map.iter() {
-                sink.write_all(field.data)?;
+                sink.write_all(field.data())?;
             }
         }
 
@@ -449,7 +444,7 @@ pub fn join(inputs: Option<clap::Values>, output: &mut io::Write)
             // We (ab)use the mapping feature to create byte-accurate
             // copies.
             for field in pp.map().expect("must be mapped").iter() {
-                output.write_all(field.data)?;
+                output.write_all(field.data())?;
             }
 
             ppr = pp.next()?.1;
