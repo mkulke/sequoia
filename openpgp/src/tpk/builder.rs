@@ -1,7 +1,6 @@
 use time;
 
 use crate::packet;
-use crate::packet::{Features, KeyFlags};
 use crate::packet::{
     key,
     Key,
@@ -16,7 +15,9 @@ use crate::conversions::Time;
 use crate::crypto::Password;
 use crate::autocrypt::Autocrypt;
 use crate::constants::{
+    Features,
     HashAlgorithm,
+    KeyFlags,
     SignatureType,
     SymmetricAlgorithm,
 };

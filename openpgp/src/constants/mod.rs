@@ -12,6 +12,13 @@ use quickcheck::{Arbitrary, Gen};
 use crate::Error;
 use crate::Result;
 
+mod features;
+pub use self::features::Features;
+mod key_flags;
+pub use self::key_flags::KeyFlags;
+mod server_preferences;
+pub use self::server_preferences::KeyServerPreferences;
+
 /// The OpenPGP public key algorithms as defined in [Section 9.1 of
 /// RFC 4880], and [Section 5 of RFC 6637].
 ///

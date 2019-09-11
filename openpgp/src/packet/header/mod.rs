@@ -3,10 +3,10 @@
 use crate::{
     Error,
     Result,
-    BodyLength,
 };
 use crate::packet::tag::Tag;
-use crate::packet::ctb::CTB;
+pub mod ctb;
+pub use self::ctb::CTB;
 
 /// An OpenPGP packet's header.
 #[derive(Clone, Debug)]
@@ -195,4 +195,28 @@ impl Header {
 
         Ok(())
     }
+}
+
+/// The size of a packet.
+///
+/// A packet's size can be expressed in three different ways.  Either
+/// the size of the packet is fully known (Full), the packet is
+/// chunked using OpenPGP's partial body encoding (Partial), or the
+/// packet extends to the end of the file (Indeterminate).  See
+/// [Section 4.2 of RFC 4880] for more details.
+///
+///   [Section 4.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-4.2
+#[derive(Debug)]
+// We need PartialEq so that assert_eq! works.
+#[derive(PartialEq)]
+#[derive(Clone, Copy)]
+pub enum BodyLength {
+    /// Packet size is fully known.
+    Full(u32),
+    /// The parameter is the number of bytes in the current chunk.
+    /// This type is only used with new format packets.
+    Partial(u32),
+    /// The packet extends until an EOF is encountered.  This type is
+    /// only used with old format packets.
+    Indeterminate,
 }

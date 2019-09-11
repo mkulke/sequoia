@@ -31,8 +31,8 @@ use crate::{
     },
     TPK,
 };
-use crate::packet::ctb::CTB;
-use crate::packet::BodyLength;
+use crate::packet::header::CTB;
+use crate::packet::header::BodyLength;
 use super::{
     PartialBodyFilter,
     Serialize,
@@ -921,7 +921,7 @@ impl<'a> Encryptor<'a> {
     /// ```
     /// use std::io::Write;
     /// extern crate sequoia_openpgp as openpgp;
-    /// use openpgp::packet::KeyFlags;
+    /// use openpgp::constants::KeyFlags;
     /// use openpgp::serialize::stream::{
     ///     Message, Encryptor, LiteralWriter,
     /// };
