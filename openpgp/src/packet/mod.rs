@@ -118,7 +118,7 @@ pub struct Common {
     ///   [`PacketPile`]: ../struct.PacketPile.html
     ///   [`PacketPile::from_file`]: ../struct.PacketPile.html#method.from_file
     ///   [`PacketParser`]: ../parse/struct.PacketParser.html
-    pub children: Option<Container>,
+    children: Option<Container>,
 
     /// Holds a packet's body.
     ///
@@ -163,7 +163,7 @@ pub struct Common {
     /// `PacketParser` is configured to buffer unread content, then
     /// this is not the packet's entire content; it is just the unread
     /// content.
-    pub body: Option<Vec<u8>>,
+    body: Option<Vec<u8>>,
 }
 
 impl fmt::Debug for Common {
@@ -186,16 +186,40 @@ impl Default for Common {
 }
 
 impl Common {
+    pub(crate) // for packet_pile.rs
+    fn children_ref(&self) -> Option<&Container> {
+        self.children.as_ref()
+    }
+
+    pub(crate) // for packet_pile.rs
+    fn children_mut(&mut self) -> Option<&mut Container> {
+        self.children.as_mut()
+    }
+
+    pub(crate) // for packet_pile.rs
+    fn set_children(&mut self, v: Option<Container>) -> Option<Container> {
+        std::mem::replace(&mut self.children, v)
+    }
+
+    fn children_iter<'a>(&'a self) -> slice::Iter<'a, Packet> {
+        if let Some(ref container) = self.children {
+            container.packets.iter()
+        } else {
+            let empty_packet_slice : &[Packet] = &[];
+            empty_packet_slice.iter()
+        }
+    }
+
+    /// Returns an iterator over the packet's immediate children.
+    pub fn children<'a>(&'a self) -> impl Iterator<Item = &'a Packet> {
+        self.children_iter()
+    }
+
     /// Returns an iterator over all of the packet's descendants, in
     /// depth-first order.
     pub fn descendants(&self) -> Iter {
         return Iter {
-            children: if let Some(ref container) = self.children {
-                container.packets.iter()
-            } else {
-                let empty_packet_slice : &[Packet] = &[];
-                empty_packet_slice.iter()
-            },
+            children: self.children_iter(),
             child: None,
             grandchildren: None,
             depth: 0,
@@ -221,6 +245,11 @@ impl Common {
                             if data.len() == 0 { None } else { Some(data) })
             .unwrap_or(Vec::new())
     }
+
+    pub(crate) // For parse.rs
+    fn body_mut(&mut self) -> Option<&mut Vec<u8>> {
+        self.body.as_mut()
+    }
 }
 
 /// Holds zero or more OpenPGP packets.
@@ -228,7 +257,7 @@ impl Common {
 /// This is used by OpenPGP container packets, like the compressed
 /// data packet, to store the containing packets.
 #[derive(PartialEq, Eq, Hash, Clone)]
-pub struct Container {
+pub(crate) struct Container {
     pub(crate) packets: Vec<Packet>,
 }
 

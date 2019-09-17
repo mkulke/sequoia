@@ -923,7 +923,7 @@ impl SerializeInto for S2K {
 
 impl Serialize for Unknown {
     fn serialize(&self, o: &mut dyn std::io::Write) -> Result<()> {
-        let body = if let Some(ref body) = self.common.body {
+        let body = if let Some(body) = self.body() {
             &body[..]
         } else {
             &b""[..]
@@ -1613,7 +1613,7 @@ impl Literal {
 
         if write_tag {
             let len = 1 + (1 + filename.len()) + 4
-                + self.common.body.as_ref().map(|b| b.len()).unwrap_or(0);
+                + self.body().as_ref().map(|b| b.len()).unwrap_or(0);
             CTB::new(Tag::Literal).serialize(o)?;
             BodyLength::Full(len as u32).serialize(o)?;
         }
@@ -1627,7 +1627,7 @@ impl Literal {
 
 impl Serialize for Literal {
     fn serialize(&self, o: &mut dyn std::io::Write) -> Result<()> {
-        let body = if let Some(ref body) = self.common.body {
+        let body = if let Some(body) = self.body() {
             &body[..]
         } else {
             &b""[..]
@@ -1651,7 +1651,7 @@ impl Serialize for Literal {
 impl NetLength for Literal {
     fn net_len(&self) -> usize {
         1 + (1 + self.filename().map(|f| f.len()).unwrap_or(0)) + 4
-            + self.common.body.as_ref().map(|b| b.len()).unwrap_or(0)
+            + self.body().as_ref().map(|b| b.len()).unwrap_or(0)
     }
 }
 
@@ -1676,9 +1676,8 @@ impl Serialize for CompressedData {
             eprintln!("CompressedData::serialize(\
                        algo: {}, {:?} children, {:?} bytes)",
                       self.algorithm(),
-                      self.common.children.as_ref().map(
-                          |cont| cont.children().len()),
-                      self.common.body.as_ref().map(|body| body.len()));
+                      self.children().count(),
+                      self.body().as_ref().map(|body| body.len()));
         }
 
         let o = stream::Message::new(o);
@@ -1686,14 +1685,12 @@ impl Serialize for CompressedData {
             o, self.algorithm(), Default::default(), 0)?;
 
         // Serialize the packets.
-        if let Some(ref children) = self.common.children {
-            for p in children.children() {
-                p.serialize(&mut o)?;
-            }
+        for p in self.children() {
+            p.serialize(&mut o)?;
         }
 
         // Append the data.
-        if let Some(ref data) = self.common.body {
+        if let Some(data) = self.body() {
             o.write_all(data)?;
         }
 
@@ -1704,11 +1701,8 @@ impl Serialize for CompressedData {
 impl NetLength for CompressedData {
     fn net_len(&self) -> usize {
         let inner_length =
-            self.common.children.as_ref().map(|children| {
-                children.packets.iter().map(|p| p.serialized_len())
-                    .sum()
-            }).unwrap_or(0)
-            + self.common.body.as_ref().map(|body| body.len()).unwrap_or(0);
+            self.children().map(|p| p.serialized_len()).sum::<usize>()
+            + self.body().as_ref().map(|body| body.len()).unwrap_or(0);
 
         // Worst case, the data gets larger.  Account for that.
         let inner_length = inner_length + cmp::max(inner_length / 2, 128);
@@ -1906,13 +1900,13 @@ impl Serialize for SEIP {
     /// To construct an encrypted message, use
     /// `serialize::stream::Encryptor`.
     fn serialize(&self, o: &mut dyn std::io::Write) -> Result<()> {
-        if let Some(ref _children) = self.common.children {
+        if self.children().next().is_some() {
             return Err(Error::InvalidOperation(
                 "Cannot encrypt, use serialize::stream::Encryptor".into())
                        .into());
         } else {
             o.write_all(&[self.version()])?;
-            if let Some(ref body) = self.common.body {
+            if let Some(body) = self.body() {
                 o.write_all(&body[..])?;
             }
         }
@@ -1924,13 +1918,13 @@ impl Serialize for SEIP {
 impl NetLength for SEIP {
     fn net_len(&self) -> usize {
         1 // Version.
-            + self.common.body.as_ref().map(|b| b.len()).unwrap_or(0)
+            + self.body().as_ref().map(|b| b.len()).unwrap_or(0)
     }
 }
 
 impl SerializeInto for SEIP {
     fn serialized_len(&self) -> usize {
-        if self.common.children.is_some() {
+        if self.children().next().is_some() {
             0 // XXX
         } else {
             self.gross_len()
@@ -2009,14 +2003,14 @@ impl Serialize for AED1 {
     /// To construct an encrypted message, use
     /// `serialize::stream::Encryptor`.
     fn serialize(&self, o: &mut dyn std::io::Write) -> Result<()> {
-        if let Some(ref _children) = self.common.children {
+        if self.children().next().is_some() {
             return Err(Error::InvalidOperation(
                 "Cannot encrypt, use serialize::stream::Encryptor".into())
                        .into());
         } else {
             self.serialize_headers(o)?;
 
-            if let Some(ref body) = self.common.body {
+            if let Some(body) = self.body() {
                 o.write_all(&body[..])?;
             }
         }
@@ -2027,12 +2021,12 @@ impl Serialize for AED1 {
 
 impl NetLength for AED1 {
     fn net_len(&self) -> usize {
-        if self.common.children.is_some() {
+        if self.children().next().is_some() {
             0
         } else {
             4 // Headers.
                 + self.iv().len()
-                + self.common.body.as_ref().map(|b| b.len()).unwrap_or(0)
+                + self.body().as_ref().map(|b| b.len()).unwrap_or(0)
         }
     }
 }
@@ -2541,12 +2535,12 @@ mod test {
         let expected = to_unknown_packet(expected).unwrap();
         let got = to_unknown_packet(got).unwrap();
 
-        let expected_body = if let Some(ref data) = expected.common.body {
+        let expected_body = if let Some(ref data) = expected.body() {
             &data[..]
         } else {
             &b""[..]
         };
-        let got_body = if let Some(ref data) = got.common.body {
+        let got_body = if let Some(ref data) = got.body() {
             &data[..]
         } else {
             &b""[..]
@@ -2727,14 +2721,14 @@ mod test {
                     eprintln!("Orig:");
                     let p = pile.children().next().unwrap();
                     eprintln!("{:?}", p);
-                    let body = &p.body.as_ref().unwrap()[..];
+                    let body = p.body().unwrap();
                     eprintln!("Body: {}", body.len());
                     eprintln!("{}", binary_pp(body));
 
                     eprintln!("Reparsed:");
                     let p = pile2.children().next().unwrap();
                     eprintln!("{:?}", p);
-                    let body = &p.body.as_ref().unwrap()[..];
+                    let body = p.body().unwrap();
                     eprintln!("Body: {}", body.len());
                     eprintln!("{}", binary_pp(body));
 
