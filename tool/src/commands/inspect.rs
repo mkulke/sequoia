@@ -149,9 +149,9 @@ fn inspect_tpk(output: &mut io::Write, tpk: &openpgp::TPK,
         writeln!(output, "         UserID: {}", uidb.userid())?;
         inspect_revocation(output, "", uidb.revoked(None))?;
         if let Some(sig) = uidb.binding_signature(None) {
-            if sig.signature_expired() {
+            if sig.signature_expired(None) {
                 writeln!(output, "                 Expired")?;
-            } else if ! sig.signature_alive() {
+            } else if ! sig.signature_alive(None) {
                 writeln!(output, "                 Not yet valid")?;
             }
         }
