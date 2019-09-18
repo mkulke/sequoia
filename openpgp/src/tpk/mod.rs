@@ -1286,7 +1286,7 @@ impl TPK {
         self.merge_packets(vec![sig.into()])
     }
 
-    /// Returns whether or not the key is expired at `t`.
+    /// Returns whether or not the TPK is expired at `t`.
     pub fn expired<T>(&self, t: T) -> bool
         where T: Into<Option<time::Tm>>
     {
@@ -1298,19 +1298,13 @@ impl TPK {
         }
     }
 
-    /// Returns whether or not the TPK is alive.
-    pub fn alive(&self) -> bool {
-        if let Some(sig) = self.primary_key_signature(None) {
-            sig.key_alive(self.primary().key())
-        } else {
-            false
-        }
-    }
-
-    /// Returns whether or not the key is alive at the given time.
-    pub fn alive_at(&self, tm: time::Tm) -> bool {
-        if let Some(sig) = self.primary_key_signature(tm) {
-            sig.key_alive_at(self.primary().key(), tm)
+    /// Returns whether or not the TPK is alive at `t`.
+    pub fn alive<T>(&self, t: T) -> bool
+        where T: Into<Option<time::Tm>>
+    {
+        let t = t.into();
+        if let Some(sig) = self.primary_key_signature(t) {
+            sig.key_alive(self.primary().key(), t)
         } else {
             false
         }
@@ -1367,10 +1361,7 @@ impl TPK {
         self.set_expiry_as_of(primary_signer, expiration, time::now())
     }
 
-    /// Returns an iterator over the TPK's valid `UserIDBinding`s.
-    ///
-    /// The primary user id is returned first.  A valid
-    /// `UserIDBinding` has at least one good self-signature.
+    /// Returns an iterator over the TPK's `UserIDBinding`s.
     pub fn userids(&self) -> UserIDBindingIter {
         UserIDBindingIter { iter: Some(self.userids.iter()) }
     }
@@ -1743,7 +1734,7 @@ impl TPK {
 
     /// Converts the TPK into a `PacketPile`.
     ///
-    /// This method discards an invalid components and bad signatures.
+    /// This method discards invalid components and bad signatures.
     pub fn into_packet_pile(self) -> PacketPile {
         PacketPile::from(self.into_packets().collect::<Vec<Packet>>())
     }

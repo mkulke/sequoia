@@ -405,21 +405,15 @@ bool pgp_signature_expired(pgp_signature_t signature);
 bool pgp_signature_expired_at(pgp_signature_t signature, time_t when);
 
 /*/
-/// Returns whether the signature is alive.
-///
-/// A signature is alive if the creation date is in the past, and the
-/// signature has not expired.
-/*/
-bool pgp_signature_key_alive(pgp_signature_t signature, pgp_key_t key);
-
-/*/
 /// Returns whether the signature is alive at the specified time.
 ///
 /// A signature is alive if the creation date is in the past, and the
 /// signature has not expired at the specified time.
+///
+/// If `when` is 0, then the current time is used.
 /*/
-bool pgp_signature_key_alive_at(pgp_signature_t signature, pgp_key_t key,
-                                time_t when);
+bool pgp_signature_key_alive(pgp_signature_t signature, pgp_key_t key,
+                             time_t when);
 
 /*/
 /// Returns whether the signature is expired at the specified time.
@@ -818,14 +812,11 @@ pgp_tpk_t pgp_tpk_revoke_in_place (pgp_error_t *errp,
 int pgp_tpk_expired(pgp_tpk_t tpk, time_t at);
 
 /*/
-/// Returns whether the TPK is alive.
-/*/
-int pgp_tpk_alive(pgp_tpk_t tpk);
-
-/*/
 /// Returns whether the TPK is alive at the specified time.
+///
+/// If `when` is 0, then the current time is used.
 /*/
-int pgp_tpk_alive_at(pgp_tpk_t tpk, time_t at);
+int pgp_tpk_alive(pgp_tpk_t tpk, time_t when);
 
 /*/
 /// Changes the TPK's expiration.
