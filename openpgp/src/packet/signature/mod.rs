@@ -113,7 +113,7 @@ impl Builder {
     }
 
     /// Creates a standalone signature.
-    pub fn sign_standalone<R>(mut self, signer: &mut Signer<R>,
+    pub fn sign_standalone<R>(mut self, signer: &mut dyn Signer<R>,
                               algo: HashAlgorithm)
                               -> Result<Signature>
         where R: key::KeyRole
@@ -125,7 +125,7 @@ impl Builder {
     }
 
     /// Creates a timestamp signature.
-    pub fn sign_timestamp<R>(mut self, signer: &mut Signer<R>,
+    pub fn sign_timestamp<R>(mut self, signer: &mut dyn Signer<R>,
                               algo: HashAlgorithm)
                               -> Result<Signature>
         where R: key::KeyRole
@@ -141,7 +141,7 @@ impl Builder {
     /// The Signature's public-key algorithm field is set to the
     /// algorithm used by `signer`, the hash-algorithm field is set to
     /// `hash_algo`.
-    pub fn sign_primary_key_binding<R>(mut self, signer: &mut Signer<R>,
+    pub fn sign_primary_key_binding<R>(mut self, signer: &mut dyn Signer<R>,
                                        algo: HashAlgorithm)
         -> Result<Signature>
         where R: key::KeyRole
@@ -161,7 +161,7 @@ impl Builder {
     /// The Signature's public-key algorithm field is set to the
     /// algorithm used by `signer`, the hash-algorithm field is set to
     /// `hash_algo`.
-    pub fn sign_userid_binding<R>(mut self, signer: &mut Signer<R>,
+    pub fn sign_userid_binding<R>(mut self, signer: &mut dyn Signer<R>,
                                  key: &key::PublicKey,
                                  userid: &UserID,
                                  algo: HashAlgorithm)
@@ -180,7 +180,7 @@ impl Builder {
     /// The Signature's public-key algorithm field is set to the
     /// algorithm used by `signer`, the hash-algorithm field is set to
     /// `hash_algo`.
-    pub fn sign_subkey_binding<R>(mut self, signer: &mut Signer<R>,
+    pub fn sign_subkey_binding<R>(mut self, signer: &mut dyn Signer<R>,
                                   primary: &key::PublicKey,
                                   subkey: &key::PublicSubkey,
                                   algo: HashAlgorithm)
@@ -199,7 +199,7 @@ impl Builder {
     /// The Signature's public-key algorithm field is set to the
     /// algorithm used by `signer`, the hash-algorithm field is set to
     /// `hash_algo`.
-    pub fn sign_user_attribute_binding<R>(mut self, signer: &mut Signer<R>,
+    pub fn sign_user_attribute_binding<R>(mut self, signer: &mut dyn Signer<R>,
                                           key: &key::PublicKey,
                                           ua: &UserAttribute,
                                           algo: HashAlgorithm)
@@ -219,7 +219,7 @@ impl Builder {
     /// The Signature's public-key algorithm field is set to the
     /// algorithm used by `signer`, the hash-algorithm field is set to
     /// `hash_algo`.
-    pub fn sign_hash<R>(mut self, signer: &mut Signer<R>,
+    pub fn sign_hash<R>(mut self, signer: &mut dyn Signer<R>,
                         hash_algo: HashAlgorithm, mut hash: hash::Context)
         -> Result<Signature>
         where R: key::KeyRole
@@ -241,7 +241,7 @@ impl Builder {
     /// The Signature's public-key algorithm field is set to the
     /// algorithm used by `signer`, the hash-algorithm field is set to
     /// `hash_algo`.
-    pub fn sign_message<R>(mut self, signer: &mut Signer<R>,
+    pub fn sign_message<R>(mut self, signer: &mut dyn Signer<R>,
                            hash_algo: HashAlgorithm, msg: &[u8])
         -> Result<Signature>
         where R: key::KeyRole
@@ -262,7 +262,7 @@ impl Builder {
         self.sign(signer, digest)
     }
 
-    fn sign<R>(self, signer: &mut Signer<R>, digest: Vec<u8>)
+    fn sign<R>(self, signer: &mut dyn Signer<R>, digest: Vec<u8>)
         -> Result<Signature>
         where R: key::KeyRole
     {
