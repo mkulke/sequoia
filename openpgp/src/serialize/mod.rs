@@ -394,10 +394,10 @@ impl BodyLength {
                 match l {
                     // One octet length.
                     // write_byte can't fail for a Vec.
-                    0 ... 0xFF =>
+                    0 ..= 0xFF =>
                         write_byte(&mut buffer, l as u8).unwrap(),
                     // Two octet length.
-                    0x1_00 ... 0xFF_FF =>
+                    0x1_00 ..= 0xFF_FF =>
                         write_be_u16(&mut buffer, l as u16).unwrap(),
                     // Four octet length,
                     _ =>
@@ -1312,7 +1312,7 @@ impl SerializeInto for OnePassSig3 {
 }
 
 impl<P: key::KeyParts, R: key::KeyRole> Serialize for Key<P, R> {
-    fn serialize(&self, o: &mut io::Write) -> Result<()> {
+    fn serialize(&self, o: &mut dyn io::Write) -> Result<()> {
         match self {
             &Key::V4(ref p) => p.serialize(o),
         }
@@ -1345,7 +1345,7 @@ impl<P, R> Serialize for Key4<P, R>
     where P: key::KeyParts,
           R: key::KeyRole,
 {
-    fn serialize(&self, o: &mut io::Write) -> Result<()> {
+    fn serialize(&self, o: &mut dyn io::Write) -> Result<()> {
         self.serialize_key(o, true)
     }
 }
@@ -1355,7 +1355,7 @@ impl<P, R> Key4<P, R>
           R: key::KeyRole,
 {
     pub(crate) // For tests in key.
-    fn serialize_key(&self, o: &mut io::Write, serialize_secrets: bool)
+    fn serialize_key(&self, o: &mut dyn io::Write, serialize_secrets: bool)
                      -> Result<()> {
         let have_secret_key = self.secret().is_some() && serialize_secrets;
 
