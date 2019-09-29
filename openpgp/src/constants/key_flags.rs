@@ -4,7 +4,7 @@ use std::ops::{BitAnd, BitOr};
 
 /// Describes how a key may be used, and stores additional
 /// information.
-#[derive(Clone)]
+#[derive(Clone, Hash)]
 pub struct KeyFlags{
     can_certify: bool,
     can_sign: bool,
@@ -40,10 +40,15 @@ impl fmt::Debug for KeyFlags {
             f.write_str("A")?;
         }
         if self.is_split_key() {
-            f.write_str("S")?;
+            f.write_str("D")?;
         }
         if self.is_group_key() {
             f.write_str("G")?;
+        }
+        if self.unknown.len() > 0 {
+            f.write_str("+0x")?;
+            f.write_str(
+                &crate::conversions::hex::encode_pretty(&self.unknown))?;
         }
 
         Ok(())
