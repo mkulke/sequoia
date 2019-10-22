@@ -1,6 +1,6 @@
 use std::cmp;
 use std::fmt;
-use std::io::{self, Read};
+use std::io;
 
 use nettle::{aead, cipher};
 use buffered_reader::BufferedReader;
@@ -16,69 +16,7 @@ use crate::Error;
 use crate::Result;
 use crate::crypto::SessionKey;
 use crate::crypto::mem::secure_cmp;
-
-// A helper to allow us to determine whether a Reader has reached EOF.
-struct Peekable<R> where R: io::Read {
-    data: Option<u8>,
-    inner: R,
-}
-
-impl<R> Peekable<R> where R: io::Read {
-    fn new(inner: R) -> Self {
-        Peekable {
-            data: None,
-            inner: inner,
-        }
-    }
-
-    // Returns the next byte in the file without consuming that byte.
-    //
-    // That is, the next call to read will still return that byte.
-    // Returns None if there is no data left to read.
-    fn peek(&mut self) -> Option<u8> {
-        if let Some(data) = self.data {
-            Some(data)
-        } else {
-            let mut buffer = Vec::new();
-            match (&mut self.inner).take(1).read_to_end(&mut buffer) {
-                Ok(0) => None, // EOF
-                Ok(1) => {
-                    self.data = Some(buffer[0]);
-                    self.data
-                }
-                Ok(_) => unreachable!(),
-                Err(_) => None,
-            }
-        }
-    }
-
-    // Returns whether the end of file has been reached.
-    fn eof(&mut self) -> bool {
-        self.peek().is_none()
-    }
-}
-
-impl<R> io::Read for Peekable<R> where R: io::Read {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if buf.len() == 0 {
-            // Zero length read.
-            return Ok(0);
-        }
-
-        let start = if let Some(data) = self.data.take() {
-            buf[0] = data;
-            1
-        } else {
-            0
-        };
-
-        match self.inner.read(&mut buf[start..]) {
-            Ok(n) => Ok(start + n),
-            Err(_) if start > 0 => Ok(start),
-            Err(e) => Err(e),
-        }
-    }
-}
+use crate::parse::Cookie;
 
 impl AEADAlgorithm {
     /// Returns the digest size of the AEAD algorithm.
@@ -140,9 +78,9 @@ impl AEADAlgorithm {
 const AD_PREFIX_LEN: usize = 5;
 
 /// A `Read`er for decrypting AEAD-encrypted data.
-pub struct Decryptor<R: io::Read> {
+pub struct Decryptor<'a> {
     // The encrypted data.
-    source: Peekable<R>,
+    source: Box<BufferedReader<Cookie> + 'a>,
 
     sym_algo: SymmetricAlgorithm,
     aead: AEADAlgorithm,
@@ -158,15 +96,30 @@ pub struct Decryptor<R: io::Read> {
     buffer: Vec<u8>,
 }
 
-impl<R: io::Read> Decryptor<R> {
+impl<'a> Decryptor<'a> {
     /// Instantiate a new AEAD decryptor.
     ///
     /// `source` is the source to wrap.
-    pub fn new(version: u8, sym_algo: SymmetricAlgorithm, aead: AEADAlgorithm,
-               chunk_size: usize, iv: &[u8], key: &SessionKey, source: R)
-               -> Result<Self> {
+    pub fn new<R: io::Read>(version: u8, sym_algo: SymmetricAlgorithm,
+                            aead: AEADAlgorithm, chunk_size: usize,
+                            iv: &[u8], key: &SessionKey, source: R)
+        -> Result<Self>
+        where R: 'a
+    {
+        Self::from_buffered_reader(
+            version, sym_algo, aead, chunk_size, iv, key,
+            Box::new(buffered_reader::Generic::with_cookie(
+                source, None, Default::default())))
+    }
+
+    fn from_buffered_reader(version: u8, sym_algo: SymmetricAlgorithm,
+                            aead: AEADAlgorithm, chunk_size: usize,
+                            iv: &[u8], key: &SessionKey,
+                            source: Box<'a + BufferedReader<Cookie>>)
+        -> Result<Self>
+    {
         Ok(Decryptor {
-            source: Peekable::new(source),
+            source: source,
             sym_algo: sym_algo,
             aead: aead,
             key: key.clone(),
@@ -245,221 +198,187 @@ impl<R: io::Read> Decryptor<R> {
 
         let mut pos = 0;
 
+        // Buffer to hold a digest.
+        let mut digest = vec![0u8; self.digest_size];
+
         // 1. Copy any buffered data.
         if self.buffer.len() > 0 {
             let to_copy = cmp::min(self.buffer.len(), plaintext.len());
             &plaintext[..to_copy].copy_from_slice(&self.buffer[..to_copy]);
             self.buffer.drain(..to_copy);
+
             pos = to_copy;
+            if pos == plaintext.len() {
+                return Ok(pos);
+            }
         }
 
-        if pos == plaintext.len() {
-            return Ok(pos);
-        }
+        // 2. Decrypt the data a chunk at a time until we've filled
+        // `plaintext`.
+        //
+        // Unfortunately, framing is hard.
+        //
+        // Recall: AEAD data is of the form:
+        //
+        //   [ chunk1 ][ tag1 ] ... [ chunkN ][ tagN ][ tagF ]
+        //
+        // And, all chunks are the same size except for the last
+        // chunk, which may be shorter.
+        //
+        // The naive approach to decryption is to read a chunk and a
+        // tag at a time.  Unfortunately, this may not work if the
+        // last chunk is a partial chunk.
+        //
+        // Assume that the chunk size is 32 bytes and the digest size
+        // is 16 bytes, and consider a message with 17 bytes of data.
+        // That message will be encrypted as follows:
+        //
+        //   [ chunk1 ][ tag1 ][ tagF ]
+        //       17B     16B     16B
+        //
+        // If we read a chunk and a digest, we'll successfully read 48
+        // bytes of data.  Unfortunately, we'll have over read: the
+        // last 15 bytes are from the final tag.
+        //
+        // To correctly handle this case, we have to make sure that
+        // there are at least a tag worth of bytes left over when we
+        // read a chunk and a tag.
 
-        // 2. Decrypt as many whole chunks as `plaintext` can hold.
-        let n_chunks = (plaintext.len() - pos) / self.chunk_size;
+        let n_chunks
+            = (plaintext.len() - pos + self.chunk_size - 1) / self.chunk_size;
         let chunk_digest_size = self.chunk_size + self.digest_size;
-        let mut to_copy = n_chunks * self.chunk_size;
-        let to_read =     n_chunks * chunk_digest_size;
+        let final_digest_size = self.digest_size;
 
-        let mut ciphertext = Vec::new();
-        let result = (&mut self.source).take(to_read as u64)
-            .read_to_end(&mut ciphertext);
-        let short_read;
-        match result {
-            Ok(amount) => {
-                if to_read != 0 && amount == 0 {
-                    // Exhausted source.
-                    return Ok(pos);
-                }
-
-                // Recall: AEAD data is of the form:
-                //
-                //   [ chunk1 ][ tag1 ] ... [ chunkN ][ tagN ][ tag ]
-                //
-                // And, all chunks are the same size except for the
-                // last chunk, which may be shorter.
-                //
-                // Because only the last chunk can be shorter, if the
-                // amount read is less than `chunk_size + tag_size`,
-                // then we know that we've read the last chunk.
-                //
-                // Unfortunately, this is not sufficient: if the last
-                // chunk is `chunk_size - tag size` bytes large, then
-                // when we read it, we'll read `chunk_size + tag_size`
-                // bytes, because we'll have also read the final tag!
-                //
-                // We can detect this by also checking for EOF.
-                short_read = amount < to_copy
-                    || (amount > 0 && self.source.eof());
-                to_copy = amount;
-                ciphertext.truncate(to_copy);
-            },
-            // We encountered an error, but we did read some.
-            Err(_) if pos > 0 => return Ok(pos),
-            Err(e) => return Err(e.into()),
-        }
-
-        // Buffer to hold digests.
-        let mut digest = vec![0u8; self.digest_size];
-
-        // At the end of the stream, there is an additional tag.  Be
-        // careful not to consume this tag.
-        let ciphertext_end = if short_read {
-            ciphertext.len() - self.digest_size
-        } else {
-            ciphertext.len()
-        };
-
-        for chunk in (&ciphertext[..ciphertext_end]).chunks(chunk_digest_size) {
+        for _ in 0..n_chunks {
             let mut aead = self.make_aead()?;
-
             // Digest the associated data.
             self.hash_associated_data(&mut aead, false);
 
-            // Decrypt the chunk.
-            aead.decrypt(
-                &mut plaintext[pos..pos + chunk.len() - self.digest_size],
-                &chunk[..chunk.len() - self.digest_size]);
-            self.bytes_decrypted += (chunk.len() - self.digest_size) as u64;
+            // Do a little dance to avoid exclusively locking
+            // `self.source`.
+            let to_read = chunk_digest_size + final_digest_size;
+            let result = {
+                match self.source.data(to_read) {
+                    Ok(_) => Ok(self.source.buffer()),
+                    Err(err) => Err(err),
+                }
+            };
 
-            // Check digest.
-            aead.digest(&mut digest);
-            let dig_ord = secure_cmp(&digest[..],
-                                     &chunk[chunk.len() - self.digest_size..]);
-            if dig_ord != Ordering::Equal {
-                return Err(Error::ManipulatedMessage.into());
-            }
+            let check_final_tag;
+            let chunk = match result {
+                Ok(chunk) => {
+                    if chunk.len() == 0 {
+                        // Exhausted source.
+                        return Ok(pos);
+                    }
 
-            // Increase index, update position in plaintext.
-            self.chunk_index += 1;
-            pos += chunk.len() - self.digest_size;
-        }
+                    if chunk.len() < final_digest_size {
+                        if pos > 0 {
+                            return Ok(pos);
+                        } else {
+                            return Err(Error::ManipulatedMessage.into());
+                        }
+                    }
 
-        if short_read {
-            // We read the whole ciphertext, now check the final digest.
-            let mut aead = self.make_aead()?;
-            self.hash_associated_data(&mut aead, true);
+                    check_final_tag = chunk.len() < to_read;
 
-            let mut nada = [0; 0];
-            aead.decrypt(&mut nada, b"");
-            aead.digest(&mut digest);
+                    // Return the chunk.
+                    &chunk[..cmp::min(chunk.len(), to_read) - final_digest_size]
+                },
+                // We encountered an error, but we've already read
+                // something, so return that.
+                Err(_) if pos > 0 => return Ok(pos),
+                Err(e) => return Err(e.into()),
+            };
 
-            let dig_ord = secure_cmp(&digest[..], &ciphertext[ciphertext_end..]);
-            if dig_ord != Ordering::Equal {
-                return Err(Error::ManipulatedMessage.into());
-            }
-        }
+            assert!(chunk.len() <= chunk_digest_size);
 
-        if short_read || pos == plaintext.len() {
-            return Ok(pos);
-        }
-
-        // 3. The last bit is a partial chunk.  Buffer it.
-        let mut to_copy = plaintext.len() - pos;
-        assert!(0 < to_copy);
-        assert!(to_copy < self.chunk_size);
-
-        let mut ciphertext = Vec::new();
-        let result = (&mut self.source).take(chunk_digest_size as u64)
-            .read_to_end(&mut ciphertext);
-        let short_read;
-        match result {
-            Ok(amount) => {
-                if amount == 0 {
+            if chunk.len() == 0 {
+                // There is nothing to decrypt: all that is left is
+                // the final tag.
+            } else if chunk.len() <= self.digest_size {
+                // A chunk has to include at least one byte and a tag.
+                if pos > 0 {
                     return Ok(pos);
+                } else {
+                    return Err(Error::ManipulatedMessage.into());
+                }
+            } else {
+                // Decrypt the chunk and check the tag.
+                let to_decrypt = chunk.len() - self.digest_size;
+
+                // If plaintext doesn't have enough room for the whole
+                // chunk, then we have to double buffer.
+                let double_buffer = to_decrypt > plaintext.len() - pos;
+                let buffer = if double_buffer {
+                    while self.buffer.len() < to_decrypt {
+                        self.buffer.push(0u8);
+                    }
+                    &mut self.buffer[..]
+                } else {
+                    &mut plaintext[pos..pos + to_decrypt]
+                };
+
+                aead.decrypt(buffer, &chunk[..to_decrypt]);
+
+                // Check digest.
+                aead.digest(&mut digest);
+                if secure_cmp(&digest[..], &chunk[to_decrypt..])
+                    != Ordering::Equal
+                {
+                    if pos > 0 {
+                        return Ok(pos);
+                    } else {
+                        return Err(Error::ManipulatedMessage.into());
+                    }
                 }
 
-                // Recall: AEAD data is of the form:
-                //
-                //   [ chunk1 ][ tag1 ] ... [ chunkN ][ tagN ][ tag ]
-                //
-                // And, all chunks are the same size except for the
-                // last chunk, which may be shorter.
-                //
-                // Because only the last chunk can be shorter, if the
-                // amount read is less than `chunk_size + tag_size`,
-                // then we know that we've read the last chunk.
-                //
-                // Unfortunately, this is not sufficient: if the last
-                // chunk is `chunk_size - tag size` bytes large, then
-                // when we read it, we'll read `chunk_size + tag_size`
-                // bytes, because we'll have also read the final tag!
-                //
-                // We can detect this by also checking for EOF.
-                short_read = amount < chunk_digest_size || self.source.eof();
+                if double_buffer {
+                    let to_copy = plaintext.len() - pos;
+                    assert!(0 < to_copy);
+                    assert!(to_copy < self.chunk_size);
 
-                // Make sure `ciphertext` is not larger than the
-                // amount of data that was actually read.
-                ciphertext.truncate(amount);
+                    &plaintext[pos..pos + to_copy]
+                        .copy_from_slice(&self.buffer[..to_copy]);
+                    self.buffer.drain(..to_copy);
+                    pos += to_copy;
+                } else {
+                    pos += to_decrypt;
+                }
 
-                // Make sure we don't read more than is available.
-                to_copy = cmp::min(to_copy,
-                                   ciphertext.len() - self.digest_size
-                                   - if short_read {
-                                       self.digest_size
-                                   } else {
-                                       0
-                                   });
-            },
-            // We encountered an error, but we did read some.
-            Err(_) if pos > 0 => return Ok(pos),
-            Err(e) => return Err(e.into()),
-        }
-        assert!(ciphertext.len() <= self.chunk_size + self.digest_size);
+                // Increase index, update position in plaintext.
+                self.chunk_index += 1;
+                self.bytes_decrypted += to_decrypt as u64;
 
-        let mut aead = self.make_aead()?;
+                // Consume the data only on success so that we keep
+                // returning the error.
+                self.source.consume(chunk.len());
+            }
 
-        // Digest the associated data.
-        self.hash_associated_data(&mut aead, false);
+            if check_final_tag {
+                // We read the whole ciphertext, now check the final digest.
+                let mut aead = self.make_aead()?;
+                self.hash_associated_data(&mut aead, true);
 
-        // At the end of the stream, there is an additional tag.  Be
-        // careful not to consume this tag.
-        let ciphertext_end = if short_read {
-            ciphertext.len() - self.digest_size
-        } else {
-            ciphertext.len()
-        };
+                let mut nada = [0; 0];
+                aead.decrypt(&mut nada, b"");
+                aead.digest(&mut digest);
 
-        while self.buffer.len() < ciphertext_end - self.digest_size {
-            self.buffer.push(0u8);
-        }
-        self.buffer.truncate(ciphertext_end - self.digest_size);
+                let final_digest = self.source.data(final_digest_size)?;
+                if final_digest.len() != final_digest_size
+                    || secure_cmp(&digest[..], final_digest) != Ordering::Equal
+                {
+                    if pos > 0 {
+                        return Ok(pos);
+                    } else {
+                        return Err(Error::ManipulatedMessage.into());
+                    }
+                }
 
-        // Decrypt the chunk.
-        aead.decrypt(&mut self.buffer,
-                     &ciphertext[..ciphertext_end - self.digest_size]);
-        self.bytes_decrypted += (ciphertext_end - self.digest_size) as u64;
-
-        // Check digest.
-        aead.digest(&mut digest);
-        let mac_ord = secure_cmp(
-            &digest[..],
-            &ciphertext[ciphertext_end - self.digest_size..ciphertext_end]);
-        if mac_ord != Ordering::Equal {
-            return Err(Error::ManipulatedMessage.into());
-        }
-
-        // Increase index.
-        self.chunk_index += 1;
-
-        &plaintext[pos..pos + to_copy].copy_from_slice(&self.buffer[..to_copy]);
-        self.buffer.drain(..to_copy);
-        pos += to_copy;
-
-        if short_read {
-            // We read the whole ciphertext, now check the final digest.
-            let mut aead = self.make_aead()?;
-            self.hash_associated_data(&mut aead, true);
-
-            let mut nada = [0; 0];
-            aead.decrypt(&mut nada, b"");
-            aead.digest(&mut digest);
-
-            let dig_ord = secure_cmp(&digest[..], &ciphertext[ciphertext_end..]);
-            if dig_ord != Ordering::Equal {
-                return Err(Error::ManipulatedMessage.into());
+                // Consume the data only on success so that we keep
+                // returning the error.
+                self.source.consume(final_digest_size);
+                break;
             }
         }
 
@@ -471,7 +390,7 @@ impl<R: io::Read> Decryptor<R> {
 // gratuitiously do a short read.  Specifically, if the return value
 // is less than `plaintext.len()`, then it is either because we
 // reached the end of the input or an error occured.
-impl<R: io::Read> io::Read for Decryptor<R> {
+impl<'a> io::Read for Decryptor<'a> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         match self.read_helper(buf) {
             Ok(n) => Ok(n),
@@ -488,17 +407,18 @@ impl<R: io::Read> io::Read for Decryptor<R> {
 
 /// A `BufferedReader` that decrypts AEAD-encrypted data as it is
 /// read.
-pub(crate) struct BufferedReaderDecryptor<R: BufferedReader<C>, C> {
-    reader: buffered_reader::Generic<Decryptor<R>, C>,
+pub(crate) struct BufferedReaderDecryptor<'a> {
+    reader: buffered_reader::Generic<Decryptor<'a>, Cookie>,
 }
 
-impl <R: BufferedReader<C>, C> BufferedReaderDecryptor<R, C> {
+impl<'a> BufferedReaderDecryptor<'a> {
     /// Like `new()`, but sets a cookie, which can be retrieved using
     /// the `cookie_ref` and `cookie_mut` methods, and set using
     /// the `cookie_set` method.
     pub fn with_cookie(version: u8, sym_algo: SymmetricAlgorithm,
                        aead: AEADAlgorithm, chunk_size: usize, iv: &[u8],
-                       key: &SessionKey, source: R, cookie: C)
+                       key: &SessionKey, source: Box<BufferedReader<Cookie> + 'a>,
+                       cookie: Cookie)
         -> Result<Self>
     {
         Ok(BufferedReaderDecryptor {
@@ -510,19 +430,19 @@ impl <R: BufferedReader<C>, C> BufferedReaderDecryptor<R, C> {
     }
 }
 
-impl<R: BufferedReader<C>, C> io::Read for BufferedReaderDecryptor<R, C> {
+impl<'a> io::Read for BufferedReaderDecryptor<'a> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.reader.read(buf)
     }
 }
 
-impl<R: BufferedReader<C>, C> fmt::Display for BufferedReaderDecryptor<R, C> {
+impl<'a> fmt::Display for BufferedReaderDecryptor<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "BufferedReaderDecryptor")
     }
 }
 
-impl<R: BufferedReader<C>, C> fmt::Debug for BufferedReaderDecryptor<R, C> {
+impl<'a> fmt::Debug for BufferedReaderDecryptor<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("BufferedReaderDecryptor")
             .field("reader", &self.get_ref().unwrap())
@@ -530,8 +450,7 @@ impl<R: BufferedReader<C>, C> fmt::Debug for BufferedReaderDecryptor<R, C> {
     }
 }
 
-impl<R: BufferedReader<C>, C> BufferedReader<C>
-        for BufferedReaderDecryptor<R, C> {
+impl<'a> BufferedReader<Cookie> for BufferedReaderDecryptor<'a> {
     fn buffer(&self) -> &[u8] {
         return self.reader.buffer();
     }
@@ -577,28 +496,28 @@ impl<R: BufferedReader<C>, C> BufferedReader<C>
         return self.reader.steal_eof();
     }
 
-    fn get_mut(&mut self) -> Option<&mut dyn BufferedReader<C>> {
-        Some(&mut self.reader.reader.source.inner)
+    fn get_mut(&mut self) -> Option<&mut dyn BufferedReader<Cookie>> {
+        Some(&mut self.reader.reader.source)
     }
 
-    fn get_ref(&self) -> Option<&dyn BufferedReader<C>> {
-        Some(&self.reader.reader.source.inner)
+    fn get_ref(&self) -> Option<&dyn BufferedReader<Cookie>> {
+        Some(&self.reader.reader.source)
     }
 
     fn into_inner<'b>(self: Box<Self>)
-            -> Option<Box<dyn BufferedReader<C> + 'b>> where Self: 'b {
-        Some(Box::new(self.reader.reader.source.inner))
+            -> Option<Box<dyn BufferedReader<Cookie> + 'b>> where Self: 'b {
+        Some(Box::new(self.reader.reader.source))
     }
 
-    fn cookie_set(&mut self, cookie: C) -> C {
+    fn cookie_set(&mut self, cookie: Cookie) -> Cookie {
         self.reader.cookie_set(cookie)
     }
 
-    fn cookie_ref(&self) -> &C {
+    fn cookie_ref(&self) -> &Cookie {
         self.reader.cookie_ref()
     }
 
-    fn cookie_mut(&mut self) -> &mut C {
+    fn cookie_mut(&mut self) -> &mut Cookie {
         self.reader.cookie_mut()
     }
 }
