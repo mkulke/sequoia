@@ -922,13 +922,13 @@ impl<'a> io::Read for Transformer<'a> {
 /// }
 ///
 /// let signature =
-///    b"-----BEGIN SIGNATURE-----
+///    b"-----BEGIN PGP SIGNATURE-----
 ///
 ///      wnUEABYKACcFglt+z/EWoQSOjDP6RiYzeXbZeXgGnAw0jdgsGQmQBpwMNI3YLBkA
 ///      AHmUAP9mpj2wV0/ekDuzxZrPQ0bnobFVaxZGg7YzdlksSOERrwEA6v6czXQjKcv2
 ///      KOwGTamb+ajTLQ3YRG9lh+ZYIXynvwE=
 ///      =IJ29
-///      -----END SIGNATURE-----";
+///      -----END PGP SIGNATURE-----";
 ///
 /// let data = b"Hello World!";
 /// let h = Helper {};
@@ -999,7 +999,7 @@ impl DetachedVerifier {
         let t = t.into().unwrap_or_else(time::now_utc);
         Self::from_buffered_reader(
             Box::new(buffered_reader::Memory::with_cookie(signature_bytes,
-                                                       Default::default())),
+                                                          Default::default())),
             Box::new(buffered_reader::Memory::new(bytes)),
             helper, t)
     }
