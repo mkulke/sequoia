@@ -53,7 +53,7 @@ use parse::{
 };
 
 /// Whether to trace execution by default (on stderr).
-const TRACE : bool = false;
+const TRACE : bool = true;
 
 /// How much data to buffer before giving it to the caller.
 const BUFFER_SIZE: usize = 25 * 1024 * 1024;
