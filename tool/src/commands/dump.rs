@@ -238,9 +238,15 @@ impl PacketDumper {
                   -> Result<()> {
         use self::openpgp::Packet::*;
 
+        if let Some(tag) = p.kind() {
+            write!(output, "{}", tag)?;
+        } else {
+            write!(output, "Unknown Packet")?;
+        }
+
         if let Some(h) = header {
-            write!(output, "{} CTB, {}: ",
-                   if let CTB::Old(_) = h.ctb() { "Old" } else { "New" },
+            write!(output, ", {} CTB, {}",
+                   if let CTB::Old(_) = h.ctb() { "old" } else { "new" },
                    match h.length() {
                        BodyLength::Full(n) =>
                            format!("{} bytes", n),
@@ -250,15 +256,15 @@ impl PacketDumper {
                            "indeterminate length".into(),
                    })?;
         }
+        writeln!(output)?;
 
         fn dump_key<P, R>(pd: &PacketDumper,
-                          output: &mut dyn io::Write, i: &str, p: &Packet,
+                          output: &mut dyn io::Write, i: &str,
                           k: &Key<P, R>)
             -> Result<()>
             where P: key::KeyParts,
                   R: key::KeyRole,
         {
-            writeln!(output, "{}", p.tag())?;
             writeln!(output, "{}  Version: {}", i, k.version())?;
             writeln!(output, "{}  Creation time: {}", i,
                      time::strftime(TIMEFMT, k.creation_time()).unwrap())?;
@@ -266,6 +272,8 @@ impl PacketDumper {
             if let Some(bits) = k.mpis().bits() {
                 writeln!(output, "{}  Pk size: {} bits", i, bits)?;
             }
+            writeln!(output, "{}  Fingerprint: {}", i, k.fingerprint())?;
+            writeln!(output, "{}  KeyID: {}", i, k.keyid())?;
             if pd.mpis {
                 writeln!(output, "{}", i)?;
                 writeln!(output, "{}  Public Key:", i)?;
@@ -386,18 +394,16 @@ impl PacketDumper {
 
         match p {
             Unknown(ref u) => {
-                writeln!(output, "Unknown Packet")?;
                 writeln!(output, "{}  Tag: {}", i, u.tag())?;
                 writeln!(output, "{}  Error: {}", i, u.error())?;
             },
 
-            PublicKey(ref k) => dump_key(self, output, i, p, k)?,
-            PublicSubkey(ref k) => dump_key(self, output, i, p, k)?,
-            SecretKey(ref k) => dump_key(self, output, i, p, k)?,
-            SecretSubkey(ref k) => dump_key(self, output, i, p, k)?,
+            PublicKey(ref k) => dump_key(self, output, i, k)?,
+            PublicSubkey(ref k) => dump_key(self, output, i, k)?,
+            SecretKey(ref k) => dump_key(self, output, i, k)?,
+            SecretSubkey(ref k) => dump_key(self, output, i, k)?,
 
             Signature(ref s) => {
-                writeln!(output, "Signature Packet")?;
                 writeln!(output, "{}  Version: {}", i, s.version())?;
                 writeln!(output, "{}  Type: {}", i, s.typ())?;
                 writeln!(output, "{}  Pk algo: {}", i, s.pk_algo())?;
@@ -470,7 +476,6 @@ impl PacketDumper {
             },
 
             OnePassSig(ref o) => {
-                writeln!(output, "One-Pass Signature Packet")?;
                 writeln!(output, "{}  Version: {}", i, o.version())?;
                 writeln!(output, "{}  Type: {}", i, o.typ())?;
                 writeln!(output, "{}  Pk algo: {}", i, o.pk_algo())?;
@@ -480,19 +485,16 @@ impl PacketDumper {
             },
 
             Trust(ref p) => {
-                writeln!(output, "Trust Packet")?;
                 writeln!(output, "{}  Value: {}", i, hex::encode(p.value()))?;
             },
 
             UserID(ref u) => {
-                writeln!(output, "User ID Packet")?;
                 writeln!(output, "{}  Value: {}", i,
                          String::from_utf8_lossy(u.value()))?;
             },
 
             UserAttribute(ref u) => {
                 use self::openpgp::packet::user_attribute::{Subpacket, Image};
-                writeln!(output, "User Attribute Packet")?;
 
                 for subpacket in u.subpackets() {
                     match subpacket {
@@ -522,11 +524,9 @@ impl PacketDumper {
             },
 
             Marker(_) => {
-                writeln!(output, "Marker Packet")?;
             },
 
             Literal(ref l) => {
-                writeln!(output, "Literal Data Packet")?;
                 writeln!(output, "{}  Format: {}", i, l.format())?;
                 if let Some(filename) = l.filename() {
                     writeln!(output, "{}  Filename: {}", i,
@@ -539,12 +539,10 @@ impl PacketDumper {
             },
 
             CompressedData(ref c) => {
-                writeln!(output, "Compressed Data Packet")?;
                 writeln!(output, "{}  Algorithm: {}", i, c.algorithm())?;
             },
 
             PKESK(ref p) => {
-                writeln!(output, "Public-key Encrypted Session Key Packet")?;
                 writeln!(output, "{}  Version: {}", i, p.version())?;
                 writeln!(output, "{}  Recipient: {}", i, p.recipient())?;
                 writeln!(output, "{}  Pk algo: {}", i, p.pk_algo())?;
@@ -586,7 +584,6 @@ impl PacketDumper {
             },
 
             SKESK(ref s) => {
-                writeln!(output, "Symmetric-key Encrypted Session Key Packet")?;
                 writeln!(output, "{}  Version: {}", i, s.version())?;
                 match s {
                     self::openpgp::packet::SKESK::V4(ref s) => {
@@ -620,12 +617,10 @@ impl PacketDumper {
             },
 
             SEIP(ref s) => {
-                writeln!(output, "Encrypted and Integrity Protected Data Packet")?;
                 writeln!(output, "{}  Version: {}", i, s.version())?;
             },
 
             MDC(ref m) => {
-                writeln!(output, "Modification Detection Code Packet")?;
                 writeln!(output, "{}  Hash: {}",
                          i, hex::encode(m.hash()))?;
                 writeln!(output, "{}  Computed hash: {}",
@@ -633,7 +628,6 @@ impl PacketDumper {
             },
 
             AED(ref a) => {
-                writeln!(output, "AEAD Encrypted Data Packet")?;
                 writeln!(output, "{}  Version: {}", i, a.version())?;
                 writeln!(output, "{}  Symmetric algo: {}", i, a.symmetric_algo())?;
                 writeln!(output, "{}  AEAD: {}", i, a.aead())?;
@@ -801,6 +795,7 @@ impl PacketDumper {
                 }
                 writeln!(output)?;
                 let indent = format!("{}      ", i);
+                write!(output, "{}", indent)?;
                 self.dump_packet(output, &indent, None, sig, None, None)?;
             },
             _ => {
