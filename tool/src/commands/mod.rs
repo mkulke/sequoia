@@ -137,12 +137,12 @@ pub fn encrypt(mapping: &mut store::Mapping,
     match compression {
         "none" => (),
         "pad" => sink = Padder::new(sink, padme)?,
-        "zip" =>
-            sink = Compressor::new(sink, CompressionAlgorithm::Zip, None)?,
-        "zlib" =>
-            sink = Compressor::new(sink, CompressionAlgorithm::Zlib, None)?,
-        "bzip2" =>
-            sink = Compressor::new(sink, CompressionAlgorithm::BZip2, None)?,
+        "zip" => sink =
+            Compressor::new(sink).algo(CompressionAlgorithm::Zip).build()?,
+        "zlib" => sink =
+            Compressor::new(sink).algo(CompressionAlgorithm::Zlib).build()?,
+        "bzip2" => sink =
+            Compressor::new(sink).algo(CompressionAlgorithm::BZip2).build()?,
         _ => unreachable!("all possible choices are handled")
     }
 
@@ -158,7 +158,7 @@ pub fn encrypt(mapping: &mut store::Mapping,
         sink = signer.build()?;
     }
 
-    let mut literal_writer = LiteralWriter::new(sink, None, None, None)
+    let mut literal_writer = LiteralWriter::new(sink).build()
         .context("Failed to create literal writer")?;
 
     // Finally, copy stdin to our writer stack to encrypt the data.
