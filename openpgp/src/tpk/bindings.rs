@@ -8,7 +8,7 @@ use crate::conversions::Time;
 use crate::crypto::Signer;
 use crate::packet::{UserID, UserAttribute, key, Key, signature, Signature};
 
-impl Key<key::PublicParts, key::SubordinateRole> {
+impl<P: key::KeyParts> Key<P, key::SubordinateRole> {
     /// Creates a binding signature.
     ///
     /// The signature binds this userid to `tpk`. `signer` will be used
@@ -33,15 +33,15 @@ impl Key<key::PublicParts, key::SubordinateRole> {
     /// // Generate a TPK, and create a keypair from the primary key.
     /// let (tpk, _) = TPKBuilder::new().generate()?;
     /// let mut keypair = tpk.primary().clone()
-    ///     .mark_parts_secret().into_keypair()?;
+    ///     .mark_parts_secret()?.into_keypair()?;
     ///
     /// // Let's add an encryption subkey.
     /// let flags = KeyFlags::default().set_encrypt_at_rest(true);
     /// assert_eq!(tpk.keys_valid().key_flags(flags.clone()).count(), 0);
     ///
     /// // Generate a subkey and a binding signature.
-    /// let subkey : key::PublicSubkey
-    ///     = Key::V4(Key4::generate_ecc(false, Curve::Cv25519)?);
+    /// let subkey : key::SecretSubkey
+    ///     = Key4::generate_ecc(false, Curve::Cv25519)?.into();
     /// let builder = signature::Builder::new(SignatureType::SubkeyBinding)
     ///     .set_key_flags(&flags)?;
     /// let binding = subkey.bind(&mut keypair, &tpk, builder, None)?;
@@ -96,7 +96,7 @@ impl UserID {
     /// // Generate a TPK, and create a keypair from the primary key.
     /// let (tpk, _) = TPKBuilder::new().generate()?;
     /// let mut keypair = tpk.primary().clone()
-    ///     .mark_parts_secret().into_keypair()?;
+    ///     .mark_parts_secret()?.into_keypair()?;
     /// assert_eq!(tpk.userids().len(), 0);
     ///
     /// // Generate a userid and a binding signature.
@@ -161,7 +161,7 @@ impl UserID {
     ///     .add_userid("alice@example.org")
     ///     .generate()?;
     /// let mut keypair = alice.primary().clone()
-    ///     .mark_parts_secret().into_keypair()?;
+    ///     .mark_parts_secret()?.into_keypair()?;
     ///
     /// // Generate a TPK for Bob.
     /// let (bob, _) = TPKBuilder::new()
@@ -240,7 +240,7 @@ impl UserAttribute {
     /// let (tpk, _) = TPKBuilder::new()
     ///     .generate()?;
     /// let mut keypair = tpk.primary().clone()
-    ///     .mark_parts_secret().into_keypair()?;
+    ///     .mark_parts_secret()?.into_keypair()?;
     /// assert_eq!(tpk.userids().len(), 0);
     ///
     /// // Generate a user attribute and a binding signature.
@@ -307,7 +307,7 @@ impl UserAttribute {
     ///     .add_userid("alice@example.org")
     ///     .generate()?;
     /// let mut keypair = alice.primary().clone()
-    ///     .mark_parts_secret().into_keypair()?;
+    ///     .mark_parts_secret()?.into_keypair()?;
     ///
     /// // Generate a TPK for Bob.
     /// let user_attr = UserAttribute::new(&[

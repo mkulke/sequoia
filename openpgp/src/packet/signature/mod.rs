@@ -172,11 +172,12 @@ impl Builder {
     /// The Signature's public-key algorithm field is set to the
     /// algorithm used by `signer`, the hash-algorithm field is set to
     /// `hash_algo`.
-    pub fn sign_subkey_binding<R>(mut self, signer: &mut dyn Signer<R>,
-                                  primary: &key::PublicKey,
-                                  subkey: &key::PublicSubkey)
+    pub fn sign_subkey_binding<P, R>(mut self, signer: &mut dyn Signer<R>,
+                                     primary: &key::PublicKey,
+                                     subkey: &Key<P, key::SubordinateRole>)
         -> Result<Signature>
-        where R: key::KeyRole
+        where P: key:: KeyParts,
+              R: key::KeyRole
     {
         self.pk_algo = signer.public().pk_algo();
         let digest = Signature::subkey_binding_hash(&self, primary, subkey)?;
@@ -1260,7 +1261,7 @@ mod test {
         ] {
             let tpk = TPK::from_bytes(crate::tests::key(key)).unwrap();
             let mut pair = tpk.primary().clone()
-                .mark_parts_secret()
+                .mark_parts_secret().unwrap()
                 .into_keypair()
                 .expect("secret key is encrypted/missing");
 
@@ -1342,9 +1343,9 @@ mod test {
             scalar: MPI::new(&sec[..]).into(),
         };
         let key : key::SecretKey
-            = Key4::new(std::time::SystemTime::now().canonicalize(),
-                        PublicKeyAlgorithm::EdDSA,
-                        public_mpis, Some(private_mpis.into()))
+            = Key4::with_secret(std::time::SystemTime::now().canonicalize(),
+                                PublicKeyAlgorithm::EdDSA,
+                                public_mpis, private_mpis.into())
             .unwrap()
             .into();
         let mut pair = key.into_keypair().unwrap();
