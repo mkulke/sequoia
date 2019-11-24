@@ -18,10 +18,6 @@ pub struct Generic<T: io::Read, C> {
     // XXX: This is pub for the decompressors.  It would be better to
     // change this to some accessor method.
     pub reader: Box<T>,
-    // Whether we saw an EOF.
-    saw_eof: bool,
-    // The last error that we encountered, but have not yet returned.
-    error: Option<io::Error>,
 
     // The user settable cookie.
     cookie: C,
@@ -44,8 +40,6 @@ impl<T: io::Read, C> fmt::Debug for Generic<T, C> {
         f.debug_struct("Generic")
             .field("preferred_chunk_size", &self.preferred_chunk_size)
             .field("buffer data", &buffered_data)
-            .field("saw eof", &self.saw_eof)
-            .field("error", &self.error)
             .finish()
     }
 }
@@ -74,8 +68,6 @@ impl<T: io::Read, C> Generic<T, C> {
                 if let Some(s) = preferred_chunk_size { s }
                 else { DEFAULT_BUF_SIZE },
             reader: Box::new(reader),
-            saw_eof: false,
-            error: None,
             cookie: cookie,
         }
     }
@@ -100,10 +92,11 @@ impl<T: io::Read, C> Generic<T, C> {
             assert_eq!(self.cursor, 0);
         }
 
-        let amount_buffered =
-            if let Some(ref buffer) = self.buffer { buffer.len() } else { 0 }
-            - self.cursor;
-        if !self.saw_eof && amount > amount_buffered {
+        let mut error = None;
+
+        let amount_buffered
+            = self.buffer.as_ref().map(|b| b.len() - self.cursor).unwrap_or(0);
+        if amount > amount_buffered {
             // The caller wants more data than we have readily
             // available.  Read some more.
 
@@ -119,8 +112,6 @@ impl<T: io::Read, C> Generic<T, C> {
                                        [amount_buffered + amount_read..]) {
                     Ok(read) => {
                         if read == 0 {
-                            // XXX: Likely EOF.
-                            self.saw_eof = true;
                             break;
                         } else {
                             amount_read += read;
@@ -132,8 +123,7 @@ impl<T: io::Read, C> Generic<T, C> {
                     Err(err) => {
                         // Don't return yet, because we may have
                         // actually read something.
-                        self.saw_eof = true;
-                        self.error = Some(err);
+                        error = Some(err);
                         break;
                     },
                 }
@@ -141,7 +131,6 @@ impl<T: io::Read, C> Generic<T, C> {
 
             if amount_read > 0 {
                 // We read something.
-
                 if let Some(ref buffer) = self.buffer {
                     // We need to copy in the old data.
                     buffer_new[0..amount_buffered]
@@ -149,7 +138,7 @@ impl<T: io::Read, C> Generic<T, C> {
                             &buffer[self.cursor..self.cursor + amount_buffered]);
                 }
 
-                buffer_new.truncate(amount_buffered + amount_read);
+                vec_truncate(&mut buffer_new, amount_buffered + amount_read);
                 buffer_new.shrink_to_fit();
 
                 self.buffer = Some(buffer_new.into_boxed_slice());
@@ -157,42 +146,33 @@ impl<T: io::Read, C> Generic<T, C> {
             }
         }
 
-        if self.error.is_some() {
-            // An error occured.  If we have enough data to fulfill
-            // the caller's request, then delay returning the error.
-            if let Some(ref buffer) = self.buffer {
-                if amount > buffer.len() {
-                    // We return an error at most once (Recall: take
-                    // clears self.error).
-                    return Err(self.error.take().unwrap());
-                }
+        let amount_buffered
+            = self.buffer.as_ref().map(|b| b.len() - self.cursor).unwrap_or(0);
+
+        if let Some(error) = error {
+            // An error occurred.  If we have enough data to fulfill
+            // the caller's request, then don't return the error.
+            if hard && amount > amount_buffered {
+                return Err(error);
+            }
+            if !hard && amount_buffered == 0 {
+                return Err(error);
             }
         }
 
-        match self.buffer {
-            Some(ref buffer) => {
-                let amount_buffered = buffer.len() - self.cursor;
-                if hard && amount_buffered < amount {
-                    return Err(Error::new(ErrorKind::UnexpectedEof, "EOF"));
-                }
-                if and_consume {
-                    let amount_consumed = cmp::min(amount_buffered, amount);
-                    self.cursor += amount_consumed;
-                    assert!(self.cursor <= buffer.len());
-                    return Ok(&buffer[self.cursor-amount_consumed..]);
-                } else {
-                    return Ok(&buffer[self.cursor..]);
-                }
-            },
-            None if self.saw_eof => {
-                if hard && amount > 0 {
-                    Err(Error::new(ErrorKind::UnexpectedEof, "EOF"))
-                } else {
-                    Ok(&b""[..])
-                }
-            },
-            None => {
-                unreachable!();
+        if hard && amount_buffered < amount {
+            Err(Error::new(ErrorKind::UnexpectedEof, "EOF"))
+        } else if amount == 0 || amount_buffered == 0 {
+            Ok(&b""[..])
+        } else {
+            let buffer = self.buffer.as_ref().unwrap();
+            if and_consume {
+                let amount_consumed = cmp::min(amount_buffered, amount);
+                self.cursor += amount_consumed;
+                assert!(self.cursor <= buffer.len());
+                Ok(&buffer[self.cursor-amount_consumed..])
+            } else {
+                Ok(&buffer[self.cursor..])
             }
         }
     }
@@ -252,15 +232,15 @@ impl<T: io::Read, C> BufferedReader<C> for Generic<T, C> {
         return self.data_helper(amount, true, true);
     }
 
-    fn get_mut(&mut self) -> Option<&mut BufferedReader<C>> {
+    fn get_mut(&mut self) -> Option<&mut dyn BufferedReader<C>> {
         None
     }
 
-    fn get_ref(&self) -> Option<&BufferedReader<C>> {
+    fn get_ref(&self) -> Option<&dyn BufferedReader<C>> {
         None
     }
 
-    fn into_inner<'b>(self: Box<Self>) -> Option<Box<BufferedReader<C> + 'b>>
+    fn into_inner<'b>(self: Box<Self>) -> Option<Box<dyn BufferedReader<C> + 'b>>
         where Self: 'b {
         None
     }

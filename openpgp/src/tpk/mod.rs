@@ -1,513 +1,141 @@
 //! Transferable public keys.
 
 use std::io;
+use std::cmp;
 use std::cmp::Ordering;
 use std::path::Path;
 use std::slice;
 use std::mem;
 use std::fmt;
-use std::vec;
-use time;
-use failure;
+use std::ops::{Deref, DerefMut};
+use std::time;
 
-use {
+use crate::{
+    conversions::Time,
     crypto::{hash::Hash, Signer},
     Error,
     Result,
     RevocationStatus,
     SignatureType,
     HashAlgorithm,
-    packet::Tag,
+    packet,
     packet::Signature,
     packet::signature,
     packet::Key,
-    packet::key::SecretKey,
+    packet::key,
     packet::UserID,
     packet::UserAttribute,
     packet::Unknown,
-    packet::KeyFlags,
     Packet,
     PacketPile,
-    TPK,
     KeyID,
     Fingerprint,
 };
-use parse::{Parse, PacketParserResult, PacketParser};
-use serialize::SerializeInto;
-use constants::ReasonForRevocation;
+use crate::parse::{Parse, PacketParserResult, PacketParser};
+use crate::constants::{
+    ReasonForRevocation,
+    RevocationType,
+};
 
-pub mod armor;
-mod lexer;
-mod grammar;
 mod builder;
 mod bindings;
+mod keyiter;
+mod parser;
+mod revoke;
 
-use self::lexer::Lexer;
-pub use self::lexer::Token;
 pub use self::builder::{TPKBuilder, CipherSuite};
 
-use lalrpop_util::ParseError;
+pub use keyiter::KeyIter;
 
-use self::grammar::TPKParser as TPKLowLevelParser;
+pub use parser::{
+    KeyringValidity,
+    KeyringValidator,
+    TPKParser,
+    TPKValidity,
+    TPKValidator,
+};
 
-// Converts a ParseError<usize, Token, Error> to a
-// ParseError<usize, Tag, Error>.
-//
-// Justification: a Token is a tuple containing a Tag and a Packet.
-// This function essentially drops the Packet.  Dropping the packet is
-// necessary, because packets are not async, but Fail, which we want
-// to convert ParseErrors to, is.  Since we don't need the packet in
-// general anyways, changing the Token to a Tag is a simple and
-// sufficient fix.  Unfortunately, this conversion is a bit ugly and
-// will break if lalrpop ever extends ParseError.
-fn parse_error_downcast(e: ParseError<usize, Token, Error>)
-    -> ParseError<usize, Tag, Error>
-{
-    match e {
-        ParseError::UnrecognizedToken {
-            token: (start, t, end),
-            expected,
-        } => ParseError::UnrecognizedToken {
-            token: (start, t.into(), end),
-            expected,
-        },
-
-        ParseError::ExtraToken {
-            token: (start, t, end),
-        } => ParseError::ExtraToken {
-            token: (start, t.into(), end),
-        },
-
-        ParseError::InvalidToken { location }
-        => ParseError::InvalidToken { location },
-
-        ParseError::User { error }
-        => ParseError::User { error },
-
-        ParseError::UnrecognizedEOF { location, expected }
-        => ParseError::UnrecognizedEOF { location, expected },
-    }
-}
-
-fn parse_error_to_openpgp_error(e: ParseError<usize, Tag, Error>) -> Error
-{
-    match e {
-        ParseError::User { error } => error,
-        e => Error::MalformedTPK(format!("{}", e)),
-    }
-}
-
-/// Errors that TPKValidator::check may return.
-#[derive(Debug, Clone)]
-pub enum TPKParserError {
-    /// A parser error.
-    Parser(ParseError<usize, Tag, Error>),
-    /// An OpenPGP error.
-    OpenPGP(Error),
-}
-
-impl From<TPKParserError> for failure::Error {
-    fn from(err: TPKParserError) -> Self {
-        match err {
-            TPKParserError::Parser(p) => p.into(),
-            TPKParserError::OpenPGP(p) => p.into(),
-        }
-    }
-}
-
-/// Whether a packet sequence is a valid key ring.
-#[derive(Debug)]
-pub enum KeyringValidity {
-    /// The packet sequence is a valid key ring.
-    Keyring,
-    /// The packet sequence is a valid key ring prefix.
-    KeyringPrefix,
-    /// The packet sequence is definitely not a key ring.
-    Error(failure::Error),
-}
-
-impl KeyringValidity {
-    /// Returns whether the packet sequence is a valid key ring.
-    ///
-    /// Note: a `KeyringValidator` will only return this after
-    /// `KeyringValidator::finish` has been called.
-    pub fn is_keyring(&self) -> bool {
-        if let KeyringValidity::Keyring = self {
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Returns whether the packet sequence is a valid Keyring prefix.
-    ///
-    /// Note: a `KeyringValidator` will only return this before
-    /// `KeyringValidator::finish` has been called.
-    pub fn is_keyring_prefix(&self) -> bool {
-        if let KeyringValidity::KeyringPrefix = self {
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Returns whether the packet sequence is definitely not a valid
-    /// key ring.
-    pub fn is_err(&self) -> bool {
-        if let KeyringValidity::Error(_) = self {
-            true
-        } else {
-            false
-        }
-    }
-}
-
-/// Used to help validate that a packet sequence is a valid key ring.
-#[derive(Debug)]
-pub struct KeyringValidator {
-    tokens: Vec<Token>,
-    n_keys: usize,
-    n_packets: usize,
-    finished: bool,
-
-    // If we know that the packet sequence is invalid.
-    error: Option<TPKParserError>,
-}
-
-impl Default for KeyringValidator {
-    fn default() -> Self {
-        KeyringValidator::new()
-    }
-}
-
-impl KeyringValidator {
-    /// Instantiates a new `KeyringValidator`.
-    pub fn new() -> Self {
-        KeyringValidator {
-            tokens: vec![],
-            n_keys: 0,
-            n_packets: 0,
-            finished: false,
-            error: None,
-        }
-    }
-
-    /// Returns whether the packet sequence is a valid keyring.
-    ///
-    /// Note: a `KeyringValidator` will only return this after
-    /// `KeyringValidator::finish` has been called.
-    pub fn is_keyring(&self) -> bool {
-        self.check().is_keyring()
-    }
-
-    /// Returns whether the packet sequence forms a valid keyring
-    /// prefix.
-    ///
-    /// Note: a `KeyringValidator` will only return this before
-    /// `KeyringValidator::finish` has been called.
-    pub fn is_keyring_prefix(&self) -> bool {
-        self.check().is_keyring_prefix()
-    }
-
-    /// Returns whether the packet sequence is definitely not a valid
-    /// keyring.
-    pub fn is_err(&self) -> bool {
-        self.check().is_err()
-    }
-
-    /// Add the token `token` to the token stream.
-    pub fn push_token(&mut self, token: Token) {
-        assert!(!self.finished);
-
-        if self.error.is_some() {
-            return;
-        }
-
-        match token {
-            Token::PublicKey(_) | Token::SecretKey(_) => {
-                self.tokens.clear();
-                self.n_keys += 1;
-            },
-            _ => (),
-        }
-
-        self.n_packets += 1;
-        self.tokens.push(token);
-    }
-
-    /// Add a packet of type `tag` to the token stream.
-    pub fn push(&mut self, tag: Tag) {
-        let token = match tag {
-            Tag::PublicKey => Token::PublicKey(None),
-            Tag::SecretKey => Token::SecretKey(None),
-            Tag::PublicSubkey => Token::PublicSubkey(None),
-            Tag::SecretSubkey => Token::SecretSubkey(None),
-            Tag::UserID => Token::UserID(None),
-            Tag::UserAttribute => Token::UserAttribute(None),
-            Tag::Signature => Token::Signature(None),
-            Tag::Trust => Token::Trust(None),
-            _ => {
-                // Unknown token.
-                self.error = Some(TPKParserError::OpenPGP(
-                    Error::MalformedMessage(
-                        format!("Invalid TPK: {:?} packet (at {}) not expected",
-                                tag, self.n_packets).into())));
-                self.tokens.clear();
-                return;
-            }
-        };
-
-        self.push_token(token)
-    }
-
-    /// Note that the entire message has been seen.
-    ///
-    /// This function may only be called once.
-    ///
-    /// Once called, this function will no longer return
-    /// `KeyringValidity::KeyringPrefix`.
-    pub fn finish(&mut self) {
-        assert!(!self.finished);
-        self.finished = true;
-    }
-
-    /// Returns whether the token stream corresponds to a valid
-    /// keyring.
-    ///
-    /// This returns a tri-state: if the packet sequence is a valid
-    /// Keyring, it returns KeyringValidity::Keyring, if the packet sequence is
-    /// invalid, then it returns KeyringValidity::Error.  If the packet
-    /// sequence could be valid, then it returns
-    /// KeyringValidity::KeyringPrefix.
-    ///
-    /// Note: if KeyringValidator::finish() *hasn't* been called, then
-    /// this function will only ever return either
-    /// KeyringValidity::KeyringPrefix or KeyringValidity::Error.  Once
-    /// KeyringValidity::finish() has been called, then only
-    /// KeyringValidity::Keyring or KeyringValidity::Bad will be called.
-    pub fn check(&self) -> KeyringValidity {
-        if let Some(ref err) = self.error {
-            return KeyringValidity::Error((*err).clone().into());
-        }
-
-        let r = TPKLowLevelParser::new().parse(
-            Lexer::from_tokens(&self.tokens));
-
-        if self.finished {
-            match r {
-                Ok(_) => KeyringValidity::Keyring,
-                Err(err) =>
-                    KeyringValidity::Error(
-                        TPKParserError::Parser(parse_error_downcast(err)).into()),
-            }
-        } else {
-            match r {
-                Ok(_) => KeyringValidity::KeyringPrefix,
-                Err(ParseError::UnrecognizedEOF { .. }) =>
-                    KeyringValidity::KeyringPrefix,
-                Err(err) =>
-                    KeyringValidity::Error(
-                        TPKParserError::Parser(parse_error_downcast(err)).into()),
-            }
-        }
-    }
-}
-
-/// Whether a packet sequence is a valid TPK.
-#[derive(Debug)]
-pub enum TPKValidity {
-    /// The packet sequence is a valid TPK.
-    TPK,
-    /// The packet sequence is a valid TPK prefix.
-    TPKPrefix,
-    /// The packet sequence is definitely not a TPK.
-    Error(failure::Error),
-}
-
-impl TPKValidity {
-    /// Returns whether the packet sequence is a valid TPK.
-    ///
-    /// Note: a `TPKValidator` will only return this after
-    /// `TPKValidator::finish` has been called.
-    pub fn is_tpk(&self) -> bool {
-        if let TPKValidity::TPK = self {
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Returns whether the packet sequence is a valid TPK prefix.
-    ///
-    /// Note: a `TPKValidator` will only return this before
-    /// `TPKValidator::finish` has been called.
-    pub fn is_tpk_prefix(&self) -> bool {
-        if let TPKValidity::TPKPrefix = self {
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Returns whether the packet sequence is definitely not a valid
-    /// TPK.
-    pub fn is_err(&self) -> bool {
-        if let TPKValidity::Error(_) = self {
-            true
-        } else {
-            false
-        }
-    }
-}
-
-/// Used to help validate that a packet sequence is a valid TPK.
-#[derive(Debug)]
-pub struct TPKValidator(KeyringValidator);
-
-impl Default for TPKValidator {
-    fn default() -> Self {
-        TPKValidator::new()
-    }
-}
-
-impl TPKValidator {
-    /// Instantiates a new `TPKValidator`.
-    pub fn new() -> Self {
-        TPKValidator(Default::default())
-    }
-
-    /// Returns whether the packet sequence is a valid TPK.
-    ///
-    /// Note: a `TPKValidator` will only return this after
-    /// `TPKValidator::finish` has been called.
-    pub fn is_tpk(&self) -> bool {
-        self.check().is_tpk()
-    }
-
-    /// Returns whether the packet sequence forms a valid TPK
-    /// prefix.
-    ///
-    /// Note: a `TPKValidator` will only return this before
-    /// `TPKValidator::finish` has been called.
-    pub fn is_tpk_prefix(&self) -> bool {
-        self.check().is_tpk_prefix()
-    }
-
-    /// Returns whether the packet sequence is definitely not a valid
-    /// TPK.
-    pub fn is_err(&self) -> bool {
-        self.check().is_err()
-    }
-
-    /// Add the token `token` to the token stream.
-    pub fn push_token(&mut self, token: Token) {
-        self.0.push_token(token)
-    }
-
-    /// Add a packet of type `tag` to the token stream.
-    pub fn push(&mut self, tag: Tag) {
-        self.0.push(tag)
-    }
-
-    /// Note that the entire message has been seen.
-    ///
-    /// This function may only be called once.
-    ///
-    /// Once called, this function will no longer return
-    /// `TPKValidity::TPKPrefix`.
-    pub fn finish(&mut self) {
-        self.0.finish()
-    }
-
-    /// Returns whether the token stream corresponds to a valid
-    /// TPK.
-    ///
-    /// This returns a tri-state: if the packet sequence is a valid
-    /// TPK, it returns TPKValidity::TPK, if the packet sequence is
-    /// invalid, then it returns TPKValidity::Error.  If the packet
-    /// sequence could be valid, then it returns
-    /// TPKValidity::TPKPrefix.
-    ///
-    /// Note: if TPKValidator::finish() *hasn't* been called, then
-    /// this function will only ever return either
-    /// TPKValidity::TPKPrefix or TPKValidity::Error.  Once
-    /// TPKValidity::finish() has been called, then only
-    /// TPKValidity::TPK or TPKValidity::Bad will be called.
-    pub fn check(&self) -> TPKValidity {
-        if self.0.n_keys > 1 {
-            return TPKValidity::Error(Error::MalformedMessage(
-                    "More than one key found, this is a keyring".into()).into());
-        }
-
-        match self.0.check() {
-            KeyringValidity::Keyring => TPKValidity::TPK,
-            KeyringValidity::KeyringPrefix => TPKValidity::TPKPrefix,
-            KeyringValidity::Error(e) => TPKValidity::Error(e),
-        }
-    }
-}
+pub use revoke::{
+    SubkeyRevocationBuilder,
+    TPKRevocationBuilder,
+    UserAttributeRevocationBuilder,
+    UserIDRevocationBuilder,
+};
 
 const TRACE : bool = false;
 
+// Helper functions.
+
 /// Compare the creation time of two signatures.  Order them so that
 /// the more recent signature is first.
-fn canonical_signature_order(a: Option<time::Tm>, b: Option<time::Tm>)
+fn canonical_signature_order(a: Option<time::SystemTime>, b: Option<time::SystemTime>)
                              -> Ordering {
-    match (a, b) {
-        (None, None) => Ordering::Equal,
-        (None, Some(_)) => Ordering::Greater,
-        (Some(_), None) => Ordering::Less,
-        (Some(ref a), Some(ref b)) => a.cmp(b),
+    // Note: None < Some, so the normal ordering is:
+    //
+    //   None, Some(old), Some(new)
+    //
+    // Reversing the ordering puts the signatures without a creation
+    // time at the end, which is where they belong.
+    a.cmp(&b).reverse()
+}
+
+fn sig_cmp(a: &Signature, b: &Signature) -> Ordering {
+    match canonical_signature_order(a.signature_creation_time(),
+                                    b.signature_creation_time()) {
+        Ordering::Equal => a.mpis().cmp(b.mpis()),
+        r => r
     }
 }
 
-/// Returns the first signature with creation time not less than `t`.
-fn greatest_lower_bound<'a>(t: time::Tm, sigs: &'a [Signature])
-    -> Option<&'a Signature>
+/// A key (primary or subkey, public or private) and any associated
+/// signatures.
+pub type KeyBinding<KeyPart, KeyRole> = ComponentBinding<Key<KeyPart, KeyRole>>;
+
+impl<K: key::KeyParts, R: key::KeyRole> KeyBinding<K, R>
 {
-    let idx = sigs
-        .binary_search_by(|s| {
-            canonical_signature_order(s.signature_creation_time(), Some(t))
-        });
-
-    match idx {
-        Ok(i) => sigs.get(i),
-        Err(0) => None,
-        Err(i) => sigs.get(i - 1),
+    /// Gets the key packet's `SecretKeyMaterial`.
+    ///
+    /// Note: The key module installs conversion functions on
+    /// KeyBinding.  They need to access the key's secret.
+    pub(crate) fn secret(&self)
+                         -> Option<&crate::packet::key::SecretKeyMaterial> {
+        self.key().secret()
     }
 }
 
-/// Returns true if latest revocation signature in `revs` is newer than the
-/// latest self signature in sigs. Signatures _must_ be sorted by
-/// `canonical_signature_order`.
-///
-/// Signatures are expected to have the right signature types and be
-/// cryptographically sound.
-fn active_revocation(sigs: &[Signature], revs: &[Signature], t: time::Tm)
-    -> bool
-{
-    let sig = greatest_lower_bound(t, sigs);
-    let rev = greatest_lower_bound(t, revs);
-
-    match (sig, rev) {
-        (None, Some(_)) => true,
-        (Some(_), None) => false,
-        (None, None) => false,
-        (Some(ref sig), Some(ref revc)) => {
-            canonical_signature_order(
-                sig.signature_creation_time(),
-                revc.signature_creation_time()) != Ordering::Greater
-        }
-    }
-}
+/// A primary key and any associated signatures.
+pub type PrimaryKeyBinding<KeyPart> = KeyBinding<KeyPart, key::PrimaryRole>;
 
 /// A subkey and any associated signatures.
+pub type SubkeyBinding<KeyPart> = KeyBinding<KeyPart, key::SubordinateRole>;
+
+/// A key (primary or subkey, public or private) and any associated
+/// signatures.
+pub type GenericKeyBinding
+    = ComponentBinding<Key<key::UnspecifiedParts, key::UnspecifiedRole>>;
+
+/// A User ID and any associated signatures.
+pub type UserIDBinding = ComponentBinding<UserID>;
+
+/// A User Attribute and any associated signatures.
+pub type UserAttributeBinding = ComponentBinding<UserAttribute>;
+
+/// An unknown component and any associated signatures.
+///
+/// Note: all signatures are stored as certifications.
+pub type UnknownBinding = ComponentBinding<Unknown>;
+
+/// A TPK component binding.
+///
+/// A TPK component is a primary key, a subkey, a user id, or a user
+/// attribute.  A binding is a TPK component and any related
+/// signatures.
 #[derive(Debug, Clone, PartialEq)]
-pub struct SubkeyBinding {
-    subkey: Key,
+pub struct ComponentBinding<C> {
+    component: C,
 
     // Self signatures.
-    selfsigs: Vec<Signature>,
+    self_signatures: Vec<Signature>,
 
     // Third-party certifications.  (In general, this will only be by
     // designated revokers.)
@@ -520,1009 +148,353 @@ pub struct SubkeyBinding {
     other_revocations: Vec<Signature>,
 }
 
-impl SubkeyBinding {
-    /// The key.
-    pub fn subkey(&self) -> &Key {
-        &self.subkey
+impl<C> ComponentBinding<C> {
+    /// Returns a reference to the component.
+    pub fn component(&self) -> &C {
+        &self.component
     }
 
-    /// Returns the most recent binding signature.
-    ///
-    /// This will never return a revocation certificate.
-    ///
-    /// Normally, we ignore subkeys that don't have a binding
-    /// signature.  However, if there is a valid revocation
-    /// certificate for the subkey, we keep it.  In such cases, this
-    /// function will return None.
-    pub fn binding_signature(&self) -> Option<&Signature> {
-        self.selfsigs.last()
+    /// Returns a mutable reference to the component.
+    fn component_mut(&mut self) -> &mut C {
+        &mut self.component
     }
 
-    /// The self-signatures.
+    /// Returns the active binding signature at time `t`.
     ///
-    /// All self-signatures have been validated, and the newest
-    /// self-signature is last.
-    pub fn selfsigs(&self) -> &[Signature] {
-        &self.selfsigs
-    }
-
-    /// Any third-party certifications.
+    /// An active binding signature is a non-revoked, self-signature
+    /// that is alive at time `t` (`creation time <= t`, `t <=
+    /// expiry`).
     ///
-    /// The signatures have *not* been validated.
-    pub fn certifications(&self) -> &[Signature] {
-        &self.certifications
-    }
-
-    /// Revocations issued by the key itself.
-    ///
-    /// The revocations have been validated, and the newest is last.
-    pub fn self_revocations(&self) -> &[Signature] {
-        &self.self_revocations
-    }
-
-    /// Revocations issued by other keys.
-    ///
-    /// The revocations have *not* been validated.
-    pub fn other_revocations(&self) -> &[Signature] {
-        &self.other_revocations
-    }
-
-    /// Returns the subkey's revocation status.
-    ///
-    /// Note: this only returns whether the subkey is revoked.  If you
-    /// want to know whether the key, subkey, etc., is revoked, then
-    /// you need to query them separately.
-    pub fn revoked<T>(&self, t: T) -> RevocationStatus
-        where T: Into<Option<time::Tm>>
+    /// This function returns None if there are no active binding
+    /// signatures at time `t`.
+    pub fn binding_signature<T>(&self, t: T) -> Option<&Signature>
+        where T: Into<Option<time::SystemTime>>
     {
-        let t = t.into().unwrap_or_else(time::now_utc);
-        let has_self_revs =
-            active_revocation(&self.selfsigs,
-                              &self.self_revocations, t);
+        let t = t.into().unwrap_or_else(|| time::SystemTime::now().canonicalize());
 
-        if has_self_revs {
-            return RevocationStatus::Revoked(&self.self_revocations);
-        }
+        // Recall: the signatures are sorted by their creation time in
+        // descending order, i.e., newest first.
+        //
+        // We want the newest signature that is older than t.  So,
+        // search for `t`.
 
-        let has_other_revs =
-            active_revocation(&self.selfsigs,
-                              &self.other_revocations, t);
-
-        if has_other_revs {
-            RevocationStatus::CouldBe(&self.other_revocations)
-        } else {
-            RevocationStatus::NotAsFarAsWeKnow
-        }
-    }
-}
-
-/// A User ID and any associated signatures.
-#[derive(Debug, Clone, PartialEq)]
-pub struct UserIDBinding {
-    userid: UserID,
-
-    // Self signatures.
-    selfsigs: Vec<Signature>,
-
-    // Third-party certifications.
-    certifications: Vec<Signature>,
-
-    // Self revocations.
-    self_revocations: Vec<Signature>,
-
-    // Third-party revocations (e.g., designated revokers).
-    other_revocations: Vec<Signature>,
-}
-
-impl UserIDBinding {
-    /// Returns the user id certified by this binding.
-    pub fn userid(&self) -> &UserID {
-        &self.userid
-    }
-
-    /// Returns the most recent binding signature.
-    ///
-    /// This will never return a revocation certificate.
-    ///
-    /// Normally, we ignore user ids that don't have a binding
-    /// signature.  However, if there is a valid revocation
-    /// certificate for the user id, we keep it.  In such cases, this
-    /// function will return None.
-    pub fn binding_signature(&self) -> Option<&Signature> {
-        self.selfsigs.last()
-    }
-
-    /// The self-signatures.
-    ///
-    /// All self-signatures have been validated, and the newest
-    /// self-signature is last.
-    pub fn selfsigs(&self) -> &[Signature] {
-        &self.selfsigs
-    }
-
-    /// Any third-party certifications.
-    ///
-    /// The signatures have *not* been validated.
-    pub fn certifications(&self) -> &[Signature] {
-        &self.certifications
-    }
-
-    /// Revocations issued by the key itself.
-    ///
-    /// The revocations have been validated, and the newest is last.
-    pub fn self_revocations(&self) -> &[Signature] {
-        &self.self_revocations
-    }
-
-    /// Revocations issued by other keys.
-    ///
-    /// The revocations have *not* been validated.
-    pub fn other_revocations(&self) -> &[Signature] {
-        &self.other_revocations
-    }
-
-    /// Returns the user id's revocation status at time `t`. If `t` is None,
-    /// the current time is used.
-    ///
-    /// Note: this only returns whether the user id is revoked.  If
-    /// you want to know whether the key, subkey, etc., is revoked,
-    /// then you need to query them separately.
-    pub fn revoked<T>(&self, t: T) -> RevocationStatus
-        where T: Into<Option<time::Tm>>
-    {
-        let t = t.into().unwrap_or_else(time::now_utc);
-        let has_self_revs =
-            active_revocation(&self.selfsigs,
-                              &self.self_revocations, t);
-
-        if has_self_revs {
-            return RevocationStatus::Revoked(&self.self_revocations);
-        }
-
-        let has_other_revs =
-            active_revocation(&self.selfsigs,
-                              &self.other_revocations, t);
-
-        if has_other_revs {
-            RevocationStatus::CouldBe(&self.other_revocations)
-        } else {
-            RevocationStatus::NotAsFarAsWeKnow
-        }
-    }
-}
-
-/// A User Attribute and any associated signatures.
-#[derive(Debug, Clone, PartialEq)]
-pub struct UserAttributeBinding {
-    user_attribute: UserAttribute,
-
-    // Self signatures.
-    selfsigs: Vec<Signature>,
-
-    // Third-party certifications.
-    certifications: Vec<Signature>,
-
-    // Self revocations.
-    self_revocations: Vec<Signature>,
-
-    // Third-party revocations (e.g., designated revokers).
-    other_revocations: Vec<Signature>,
-}
-
-impl UserAttributeBinding {
-    /// The User attribute.
-    pub fn user_attribute(&self) -> &UserAttribute {
-        &self.user_attribute
-    }
-
-    /// Returns the most recent binding signature.
-    ///
-    /// This will never return a revocation certificate.
-    ///
-    /// Normally, we ignore user attributes that don't have a binding
-    /// signature.  However, if there is a valid revocation
-    /// certificate for the user attribute, we keep it.  In such
-    /// cases, this function will return None.
-    pub fn binding_signature(&self) -> Option<&Signature> {
-        self.selfsigs.last()
-    }
-
-    /// The self-signatures.
-    ///
-    /// All self-signatures have been validated, and the newest
-    /// self-signature is last.
-    pub fn selfsigs(&self) -> &[Signature] {
-        &self.selfsigs
-    }
-
-    /// Any third-party certifications.
-    ///
-    /// The signatures have *not* been validated.
-    pub fn certifications(&self) -> &[Signature] {
-        &self.certifications
-    }
-
-    /// Revocations issued by the key itself.
-    ///
-    /// The revocations have been validated, and the newest is last.
-    pub fn self_revocations(&self) -> &[Signature] {
-        &self.self_revocations
-    }
-
-    /// Revocations issued by other keys.
-    ///
-    /// The revocations have *not* been validated.
-    pub fn other_revocations(&self) -> &[Signature] {
-        &self.other_revocations
-    }
-
-    /// Returns the `UserAttribute`'s revocation status.
-    ///
-    /// Note: this only returns whether the user attribute is revoked.
-    /// If you want to know whether the key, subkey, etc., is revoked,
-    /// then you need to query them separately.
-    pub fn revoked<T>(&self, t: T) -> RevocationStatus
-        where T: Into<Option<time::Tm>>
-    {
-        let t = t.into().unwrap_or_else(time::now_utc);
-        let has_self_revs =
-            active_revocation(&self.selfsigs,
-                              &self.self_revocations, t);
-
-        if has_self_revs {
-            return RevocationStatus::Revoked(&self.self_revocations);
-        }
-
-        let has_other_revs =
-            active_revocation(&self.selfsigs,
-                              &self.other_revocations, t);
-
-        if has_other_revs {
-            RevocationStatus::CouldBe(&self.other_revocations)
-        } else {
-            RevocationStatus::NotAsFarAsWeKnow
-        }
-    }
-}
-
-/// An unknown component and any associated signatures.
-#[derive(Debug, Clone, PartialEq)]
-pub struct UnknownBinding {
-    pub(crate) // XXX for serialization, see #245
-    unknown: Unknown,
-
-    pub(crate) // XXX for serialization, see #245
-    sigs: Vec<Signature>,
-}
-
-/// An iterator over all `Key`s (both the primary key and any subkeys)
-/// in a TPK.
-///
-/// Returned by `TPK::keys_all()` and `TPK::keys_valid()`.
-///
-/// `KeyIter` follows the builder pattern.  There is no need to
-/// explicitly finalize it, however: it already implements the
-/// `Iterator` interface.
-///
-/// By default, `KeyIter` will only return live, non-revoked keys.  It
-/// is possible to control how `KeyIter` filters using, for instance,
-/// `KeyIter::flags` to only return keys with particular flags set.
-pub struct KeyIter<'a> {
-    // This is an option to make it easier to create an empty KeyIter.
-    tpk: Option<&'a TPK>,
-    primary: bool,
-    subkey_iter: SubkeyBindingIter<'a>,
-
-    // If not None, only returns keys with the specified flags.
-    flags: Option<KeyFlags>,
-
-    // If not None, only returns keys that are live at the specified
-    // time.
-    alive_at: Option<time::Tm>,
-
-    // If not None, filters by revocation status.
-    revoked: Option<bool>,
-
-    // If not None, filters by whether a key has a secret.
-    secret: Option<bool>,
-
-    // If not None, filters by whether a key has an unencrypted
-    // secret.
-    unencrypted_secret: Option<bool>,
-}
-
-impl<'a> fmt::Debug for KeyIter<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("KeyIter")
-            .field("flags", &self.flags)
-            .field("alive_at", &self.alive_at)
-            .field("revoked", &self.revoked)
-            .field("secret", &self.secret)
-            .field("unencrypted_secret", &self.unencrypted_secret)
-            .finish()
-    }
-}
-
-impl<'a> Iterator for KeyIter<'a> {
-    type Item = (Option<&'a Signature>, RevocationStatus<'a>, &'a Key);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        tracer!(false, "KeyIter::next", 0);
-        t!("KeyIter: {:?}", self);
-
-        if self.tpk.is_none() {
-            return None;
-        }
-        let tpk = self.tpk.unwrap();
-
-        if let Some(flags) = self.flags.as_ref() {
-            if flags.is_empty() {
-                // Nothing to do.
-                t!("short circuiting: flags is empty");
-                return None;
-            }
-        }
-
-        loop {
-            let (sigo, revoked, key) = if ! self.primary {
-                self.primary = true;
-
-                (tpk.primary_key_signature(),
-                 tpk.revocation_status(),
-                 tpk.primary())
+        let i =
+            // Usually, the first signature is what we are looking for.
+            // Short circuit the binary search.
+            if Some(t) >= self.self_signatures.get(0)
+                              .and_then(|s| s.signature_creation_time())
+            {
+                0
             } else {
-                self.subkey_iter.next()
-                    .map(|sk_binding| (sk_binding.binding_signature(),
-                                       sk_binding.revoked(None),
-                                       &sk_binding.subkey,))?
+                match self.self_signatures.binary_search_by(
+                    |s| canonical_signature_order(
+                        s.signature_creation_time(), Some(t)))
+                {
+                    // If there are multiple matches, then we need to search
+                    // backwards to find the first one.  Consider:
+                    //
+                    //     t: 9 8 8 8 8 7
+                    //     i: 0 1 2 3 4 5
+                    //
+                    // If we are looking for t == 8, then binary_search could
+                    // return index 1, 2, 3 or 4.
+                    Ok(mut i) => {
+                        // XXX: we use PartialOrd to compare Tms due to
+                        // https://github.com/rust-lang-deprecated/time/issues/180
+                        while i > 0
+                            && self.self_signatures[i - 1].signature_creation_time()
+                            .cmp(&Some(t)) == Ordering::Equal
+                        {
+                            i -= 1;
+                        }
+                        i
+                    }
+
+                    // There was no match.  `i` is where a new element could
+                    // be inserted while maintaining the sorted order.
+                    // Consider:
+                    //
+                    //    t: 9 8 6 5
+                    //    i: 0 1 2 3
+                    //
+                    // If we are looing for t == 7, then binary_search will
+                    // return i == 2.  That's exactly where we should start
+                    // looking.
+                    Err(i) => i,
+                }
             };
 
-            t!("Considering key: {:?}", key);
+        self.self_signatures[i..].iter().filter(|s| {
+            s.signature_alive(t, time::Duration::new(0, 0))
+        }).nth(0)
+    }
 
-            if let Some(flags) = self.flags.as_ref() {
-                if let Some(sig) = sigo {
-                    if (&sig.key_flags() & &flags).is_empty() {
-                        t!("Have flags: {:?}, want flags: {:?}... skipping.",
-                           sig.key_flags(), flags);
-                        continue;
-                    }
-                } else {
-                    // No self-signature, skip it.
-                    t!("No self-signature... skipping.");
-                    continue;
-                }
-            }
+    /// The self-signatures.
+    ///
+    /// The signatures are validated, and they are reverse sorted by
+    /// their creation time (newest first).
+    pub fn self_signatures(&self) -> &[Signature] {
+        &self.self_signatures
+    }
 
-            if let Some(alive_at) = self.alive_at {
-                if let Some(sig) = sigo {
-                    if ! sig.key_alive_at(key, alive_at) {
-                        t!("Key not alive... skipping.");
-                        continue;
-                    }
-                } else {
-                    // No self-signature, skip it.
-                    t!("No self-signature... skipping.");
-                    continue;
-                }
-            }
+    /// Any third-party certifications.
+    ///
+    /// The signatures are *not* validated.  They are reverse sorted by
+    /// their creation time (newest first).
+    pub fn certifications(&self) -> &[Signature] {
+        &self.certifications
+    }
 
-            if let Some(want_revoked) = self.revoked {
-                if let RevocationStatus::Revoked(_) = revoked {
-                    // The key is definitely revoked.
-                    if ! want_revoked {
-                        t!("Key revoked... skipping.");
-                        continue;
-                    }
-                } else {
-                    // The key is probably not revoked.
-                    if want_revoked {
-                        t!("Key not revoked... skipping.");
-                        continue;
-                    }
-                }
-            }
+    /// Revocations issued by the key itself.
+    ///
+    /// The revocations are validated, and they are reverse sorted by
+    /// their creation time (newest first).
+    pub fn self_revocations(&self) -> &[Signature] {
+        &self.self_revocations
+    }
 
-            if let Some(want_secret) = self.secret {
-                if key.secret().is_some() {
-                    // We have a secret.
-                    if ! want_secret {
-                        t!("Have a secret... skipping.");
-                        continue;
-                    }
-                } else {
-                    if want_secret {
-                        t!("No secret... skipping.");
-                        continue;
-                    }
-                }
-            }
+    /// Revocations issued by other keys.
+    ///
+    /// The revocations are *not* validated.  They are reverse sorted
+    /// by their creation time (newest first).
+    pub fn other_revocations(&self) -> &[Signature] {
+        &self.other_revocations
+    }
 
-            if let Some(want_unencrypted_secret) = self.unencrypted_secret {
-                if let Some(secret) = key.secret() {
-                    if let SecretKey::Unencrypted { .. } = secret {
-                        if ! want_unencrypted_secret {
-                            t!("Unencrypted secret... skipping.");
-                            continue;
-                        }
+    /// Returns the component's revocation status at time `t`.
+    ///
+    /// A component is considered to be revoked at time `t` if:
+    ///
+    ///   - There is a live revocation at time `t` that is newer than
+    ///     all live self signatures at time `t`.
+    ///
+    ///   - `hard_revocations_are_final` is true, and there is a hard
+    ///     revocation (even if it is not live at time `t`, and even
+    ///     if there is a newer self-signature).
+    ///
+    /// selfsig must be the newest live self signature at time `t`.
+    fn _revoked<'a, T>(&'a self, hard_revocations_are_final: bool,
+                       selfsig: Option<&Signature>, t: T)
+        -> RevocationStatus<'a>
+        where T: Into<Option<time::SystemTime>>
+    {
+        // Fallback time.
+        let time_zero = || time::UNIX_EPOCH;
+        let t = t.into()
+            .unwrap_or_else(|| time::SystemTime::now().canonicalize());
+        let selfsig_creation_time
+            = selfsig.and_then(|s| s.signature_creation_time())
+                     .unwrap_or_else(time_zero);
+
+        tracer!(TRACE, "ComponentBinding::_revoked", 0);
+        t!("hard_revocations_are_final: {}, selfsig: {:?}, t: {:?}",
+           hard_revocations_are_final,
+           selfsig_creation_time,
+           t);
+        if let Some(selfsig) = selfsig {
+            assert!(selfsig.signature_alive(t, time::Duration::new(0, 0)));
+        }
+
+        macro_rules! check {
+            ($revs:expr) => ({
+                let revs = $revs.iter().filter_map(|rev| {
+                    if hard_revocations_are_final
+                        && rev.reason_for_revocation()
+                               .map(|(r, _)| {
+                                   r.revocation_type() == RevocationType::Hard
+                               })
+                               // If there is no Reason for Revocation
+                               // packet, assume that it is a hard
+                               // revocation.
+                               .unwrap_or(true)
+                    {
+                        t!("  got a hard revocation: {:?}, {:?}",
+                           rev.signature_creation_time()
+                               .unwrap_or_else(time_zero),
+                           rev.reason_for_revocation()
+                               .map(|r| (r.0, String::from_utf8_lossy(r.1))));
+                        Some(rev)
+                    } else if selfsig_creation_time
+                              > rev.signature_creation_time()
+                                    .unwrap_or_else(time_zero)
+                    {
+                        t!("  ignoring out of date revocation ({:?})",
+                           rev.signature_creation_time()
+                               .unwrap_or_else(time_zero));
+                        None
+                    } else if !rev.signature_alive(t, time::Duration::new(0, 0)) {
+                        t!("  ignoring revocation that is not alive ({:?} - {:?})",
+                           rev.signature_creation_time()
+                               .unwrap_or_else(time_zero),
+                           rev.signature_expiration_time()
+                               .unwrap_or_else(|| time::Duration::new(0, 0)));
+                        None
                     } else {
-                        if want_unencrypted_secret {
-                            t!("Encrypted secret... skipping.");
-                            continue;
-                        }
+                        t!("  got a revocation: {:?} ({:?})",
+                           rev.signature_creation_time()
+                               .unwrap_or_else(time_zero),
+                           rev.reason_for_revocation()
+                               .map(|r| (r.0, String::from_utf8_lossy(r.1))));
+                        Some(rev)
                     }
+                }).collect::<Vec<&Signature>>();
+
+                if revs.len() == 0 {
+                    None
                 } else {
-                    // No secret.
-                    t!("No secret... skipping.");
-                    continue;
+                    Some(revs)
                 }
-            }
-
-            return Some((sigo, revoked, key));
+            })
         }
-    }
-}
 
-impl<'a> KeyIter<'a> {
-    /// Returns a new `KeyIter` instance with no filters enabled.
-    fn new(tpk: &'a TPK) -> Self where Self: 'a {
-        KeyIter {
-            tpk: Some(tpk),
-            primary: false,
-            subkey_iter: tpk.subkeys(),
-
-            // The filters.
-            flags: None,
-            alive_at: None,
-            revoked: None,
-            secret: None,
-            unencrypted_secret: None,
-        }
-    }
-
-    /// Clears all filters.
-    ///
-    /// This causes the `KeyIter` to return all keys in the TPK.
-    pub fn unfiltered(self) -> Self {
-        KeyIter::new(self.tpk.unwrap())
-    }
-
-    /// Returns an empty KeyIter.
-    pub fn empty() -> Self {
-        KeyIter {
-            tpk: None,
-            primary: false,
-            subkey_iter: SubkeyBindingIter { iter: None },
-
-            // The filters.
-            flags: None,
-            alive_at: None,
-            revoked: None,
-            secret: None,
-            unencrypted_secret: None,
-        }
-    }
-
-    /// Returns keys that have the at least one of the flags specified
-    /// in `flags`.
-    ///
-    /// If you call this function (or one of `certification_capable`
-    /// or `signing_capable` functions) multiple times, the *union* of
-    /// the values is used.  Thus,
-    /// `tpk.flags().certification_capable().signing_capable()` will
-    /// return keys that are certification capable or signing capable.
-    ///
-    /// If you need more complex filtering, e.g., you want a key that
-    /// is both certification and signing capable, then just use a
-    /// normal [`Iterator::filter`].
-    ///
-    ///   [`Iterator::filter`]: https://doc.rust-lang.org/std/iter/trait.Iterator.html#method.filter
-    pub fn key_flags(mut self, flags: KeyFlags) -> Self {
-        if let Some(flags_old) = self.flags {
-            self.flags = Some(&flags | &flags_old);
+        if let Some(revs) = check!(&self.self_revocations) {
+            RevocationStatus::Revoked(revs)
+        } else if let Some(revs) = check!(&self.other_revocations) {
+            RevocationStatus::CouldBe(revs)
         } else {
-            self.flags = Some(flags);
-        }
-        self
-    }
-
-    /// Returns keys that are certification capable.
-    ///
-    /// See `key_flags` for caveats.
-    pub fn certification_capable(self) -> Self {
-        self.key_flags(KeyFlags::default().set_certify(true))
-    }
-
-    /// Returns keys that are signing capable.
-    ///
-    /// See `key_flags` for caveats.
-    pub fn signing_capable(self) -> Self {
-        self.key_flags(KeyFlags::default().set_sign(true))
-    }
-
-    /// Only returns keys that are live as of `now`.
-    ///
-    /// If `now` is none, then all keys are returned whether they are
-    /// live or not.
-    ///
-    /// A value of None disables this filter, which is set by default
-    /// to only return live keys at the current time.
-    ///
-    /// If you call this function (or `alive`) multiple times, only
-    /// the last value is used.
-    pub fn alive_at<T>(mut self, alive_at: T) -> Self
-        where T: Into<Option<time::Tm>>
-    {
-        self.alive_at = alive_at.into();
-        self
-    }
-
-    /// Only returns keys that are live right now.
-    ///
-    /// If you call this function (or `alive_at`) multiple times, only
-    /// the last value is used.
-    pub fn alive(mut self) -> Self
-    {
-        self.alive_at = Some(time::now());
-        self
-    }
-
-    /// If not None, filters by whether a key is definitely revoked.
-    ///
-    /// That is, whether it's revocation status is
-    /// `RevocationStatus::Revoked`.
-    ///
-    /// A value of None disables this filter, which is set by default
-    /// to not return revoked keys.
-    ///
-    /// If you call this function multiple times, only the last value
-    /// is used.
-    pub fn revoked<T>(mut self, revoked: T) -> Self
-        where T: Into<Option<bool>>
-    {
-        self.revoked = revoked.into();
-        self
-    }
-
-    /// If not None, filters by whether a key has a secret.
-    ///
-    /// If you call this function multiple times, only the last value
-    /// is used.
-    pub fn secret<T>(mut self, secret: T) -> Self
-        where T: Into<Option<bool>>
-    {
-        self.secret = secret.into();
-        self
-    }
-
-    /// If not None, filters by whether a key has an unencrypted
-    /// secret.
-    ///
-    /// If you call this function multiple times, only the last value
-    /// is used.
-    pub fn unencrypted_secret<T>(mut self, unencrypted_secret: T) -> Self
-        where T: Into<Option<bool>>
-    {
-        self.unencrypted_secret = unencrypted_secret.into();
-        self
-    }
-}
-
-// A TPKParser can read packets from either an Iterator or a
-// PacketParser.  Ideally, we would just take an iterator, but we
-// want to be able to handle errors, which iterators hide.
-enum PacketSource<'a, I: Iterator<Item=Packet>> {
-    EOF,
-    PacketParser(PacketParser<'a>),
-    Iter(I),
-}
-
-/// An iterator over a sequence of TPKs (e.g., an OpenPGP keyring).
-///
-/// The source of packets can either be a `PacketParser` or an
-/// iterator over `Packet`s.  (In the latter case, the underlying
-/// parser is not able to propagate errors.  Thus, this is only
-/// appropriate for in-memory structures, like a vector of `Packet`s
-/// or a `PacketPile`.)
-///
-/// # Example
-///
-/// ```rust
-/// # extern crate sequoia_openpgp as openpgp;
-/// # use openpgp::Result;
-/// # use openpgp::parse::{Parse, PacketParserResult, PacketParser};
-/// use openpgp::tpk::TPKParser;
-///
-/// # fn main() { f().unwrap(); }
-/// # fn f() -> Result<()> {
-/// #     let ppr = PacketParser::from_bytes(b"")?;
-/// for tpko in TPKParser::from_packet_parser(ppr) {
-///     match tpko {
-///         Ok(tpk) => {
-///             println!("Key: {}", tpk.primary());
-///             for binding in tpk.userids() {
-///                 println!("User ID: {}", binding.userid());
-///             }
-///         }
-///         Err(err) => {
-///             eprintln!("Error reading keyring: {}", err);
-///         }
-///     }
-/// }
-/// #     Ok(())
-/// # }
-/// ```
-pub struct TPKParser<'a, I: Iterator<Item=Packet>> {
-    source: PacketSource<'a, I>,
-    packets: Vec<Packet>,
-    saw_error: bool,
-    filter: Vec<Box<Fn(&TPK, bool) -> bool + 'a>>,
-}
-
-impl<'a, I: Iterator<Item=Packet>> Default for TPKParser<'a, I> {
-    fn default() -> Self {
-        TPKParser {
-            source: PacketSource::EOF,
-            packets: vec![],
-            saw_error: false,
-            filter: vec![],
+            RevocationStatus::NotAsFarAsWeKnow
         }
     }
-}
 
-// When using a `PacketParser`, we never use the `Iter` variant.
-// Nevertheless, we need to provide a concrete type.
-// vec::IntoIter<Packet> is about as good as any other.
-impl<'a> TPKParser<'a, vec::IntoIter<Packet>> {
-    /// Initializes a `TPKParser` from a `PacketParser`.
-    pub fn from_packet_parser(ppr: PacketParserResult<'a>) -> Self {
-        let mut parser : Self = Default::default();
-        if let PacketParserResult::Some(pp) = ppr {
-            parser.source = PacketSource::PacketParser(pp);
-        }
-        parser
-    }
-}
-
-impl<'a> Parse<'a, TPKParser<'a, vec::IntoIter<Packet>>>
-    for TPKParser<'a, vec::IntoIter<Packet>>
-{
-    /// Initializes a `TPKParser` from a `Read`er.
-    fn from_reader<R: 'a + io::Read>(reader: R) -> Result<Self> {
-        Ok(Self::from_packet_parser(PacketParser::from_reader(reader)?))
-    }
-
-    /// Initializes a `TPKParser` from a `File`.
-    fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
-        Ok(Self::from_packet_parser(PacketParser::from_file(path)?))
-    }
-
-    /// Initializes a `TPKParser` from a byte string.
-    fn from_bytes(data: &'a [u8]) -> Result<Self> {
-        Ok(Self::from_packet_parser(PacketParser::from_bytes(data)?))
-    }
-}
-
-impl<'a, I: Iterator<Item=Packet>> TPKParser<'a, I> {
-    /// Initializes a TPKParser from an iterator over Packets.
-    pub fn from_iter(iter: I) -> Self {
-        let mut parser : Self = Default::default();
-        parser.source = PacketSource::Iter(iter);
-        parser
-    }
-
-    /// Filters the TPKs prior to validation.
-    ///
-    /// By default, the `TPKParser` only returns valdiated `TPK`s.
-    /// Checking that a `TPK`'s self-signatures are valid, however, is
-    /// computationally expensive, and not always necessary.  For
-    /// example, when looking for a small number of `TPK`s in a large
-    /// keyring, most `TPK`s can be immediately discarded.  That is,
-    /// it is more efficient to filter, validate, and double check,
-    /// than to validate and filter.  (It is necessary to double
-    /// check, because the check might have been on an invalid part.
-    /// For example, if searching for a key with a particular key ID,
-    /// a matching subkey might not have any self signatures.)
-    ///
-    /// If the `TPKParser` gave out unvalidated `TPK`s, and provided
-    /// an interface to validate them, then the caller could implement
-    /// this first-validate-double-check pattern.  Giving out
-    /// unvalidated `TPK`s, however, is too dangerous: inevitably, a
-    /// `TPK` will be used without having been validated in a context
-    /// where it should have been.
-    ///
-    /// This function avoids this class of bugs while still providing
-    /// a mechanism to filter `TPK`s prior to validation: the caller
-    /// provides a callback, that is invoked on the *unvalidated*
-    /// `TPK`.  If the callback returns `true`, then the parser
-    /// validates the `TPK`, and invokes the callback *a second time*
-    /// to make sure the `TPK` is really wanted.  If the callback
-    /// returns false, then the `TPK` is skipped.
-    ///
-    /// Note: calling this function multiple times on a single
-    /// `TPKParser` will install multiple filters.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// # extern crate sequoia_openpgp as openpgp;
-    /// # use openpgp::Result;
-    /// # use openpgp::parse::{Parse, PacketParser};
-    /// use openpgp::tpk::TPKParser;
-    /// use openpgp::TPK;
-    /// use openpgp::KeyID;
-    ///
-    /// # fn main() { f().unwrap(); }
-    /// # fn f() -> Result<()> {
-    /// #     let ppr = PacketParser::from_bytes(b"")?;
-    /// #     let some_keyid = KeyID::from_hex("C2B819056C652598").unwrap();
-    /// for tpkr in TPKParser::from_packet_parser(ppr)
-    ///     .unvalidated_tpk_filter(|tpk, _| {
-    ///         if tpk.primary().keyid() == some_keyid {
-    ///             return true;
-    ///         }
-    ///         for binding in tpk.subkeys() {
-    ///             if binding.subkey().keyid() == some_keyid {
-    ///                 return true;
-    ///             }
-    ///         }
-    ///         false
-    ///     })
-    /// {
-    ///     match tpkr {
-    ///         Ok(tpk) => {
-    ///             // The TPK contains the subkey.
-    ///         }
-    ///         Err(err) => {
-    ///             eprintln!("Error reading keyring: {}", err);
-    ///         }
-    ///     }
-    /// }
-    /// #     Ok(())
-    /// # }
-    /// ```
-    pub fn unvalidated_tpk_filter<F: 'a>(mut self, filter: F) -> Self
-        where F: Fn(&TPK, bool) -> bool
+    // Converts the component into an iterator over the contained
+    // packets.
+    fn into_packets<'a>(self) -> impl Iterator<Item=Packet>
+        where Packet: From<C>
     {
-        self.filter.push(Box::new(filter));
-        self
+        let p : Packet = self.component.into();
+        std::iter::once(p)
+            .chain(self.self_signatures.into_iter().map(|s| s.into()))
+            .chain(self.certifications.into_iter().map(|s| s.into()))
+            .chain(self.self_revocations.into_iter().map(|s| s.into()))
+            .chain(self.other_revocations.into_iter().map(|s| s.into()))
     }
 
-    // Parses the next packet in the packet stream.
+    // Sorts and dedups the binding's signatures.
     //
-    // If we complete parsing a TPK, returns the TPK.  Otherwise,
-    // returns None.
-    fn parse(&mut self, p: Packet) -> Result<Option<TPK>> {
-        if self.packets.len() > 0 {
-            match p.tag() {
-                Tag::PublicKey | Tag::SecretKey => {
-                    return self.tpk(Some(p));
-                },
-                _ => {},
-            }
-        }
-
-        self.packets.push(p);
-        Ok(None)
-    }
-
-    // Resets the parser so that it starts parsing a new packet.
+    // This function assumes that the signatures have already been
+    // cryptographically checked.
     //
-    // Returns the old state.  Note: the packet iterator is preserved.
-    fn reset(&mut self) -> Self {
-        // We need to preserve `source`.
-        let mut orig = mem::replace(self, Default::default());
-        self.source = mem::replace(&mut orig.source, PacketSource::EOF);
-        orig
-    }
+    // Note: this uses Signature::eq to compare signatures.  That
+    // function ignores unhashed packets.  If there are two signatures
+    // that only differ in their unhashed subpackets, they will be
+    // deduped.  The unhashed areas are *not* merged; the one that is
+    // kept is undefined.
+    fn sort_and_dedup(&mut self)
+    {
+        self.self_signatures.sort_by(sig_cmp);
+        self.self_signatures.dedup();
 
-    // Finalizes the current TPK and returns it.  Sets the parser up to
-    // begin parsing the next TPK.
-    fn tpk(&mut self, pk: Option<Packet>) -> Result<Option<TPK>> {
-        let orig = self.reset();
+        // There is no need to sort the certifications, but we do
+        // want to remove dups and sorting is a prerequisite.
+        self.certifications.sort_by(sig_cmp);
+        self.certifications.dedup();
 
-        if let Some(pk) = pk {
-            self.packets.push(pk);
-        }
+        self.self_revocations.sort_by(sig_cmp);
+        self.self_revocations.dedup();
 
-        let packets = orig.packets.len();
-        let tokens = orig.packets
-            .into_iter()
-            .filter_map(|p| p.into())
-            .collect::<Vec<Token>>();
-        if tokens.len() != packets {
-            // There was at least one packet that doesn't belong in a
-            // TPK.  Fail now.
-            return Err(Error::UnsupportedTPK(
-                "Packet sequence includes non-TPK packets.".into()).into());
-        }
-
-        let tpko = match TPKLowLevelParser::new()
-            .parse(Lexer::from_tokens(&tokens))
-        {
-            Ok(tpko) => tpko,
-            Err(e) => return Err(
-                parse_error_to_openpgp_error(
-                    parse_error_downcast(e)).into()),
-        }.and_then(|tpk| {
-            for filter in &self.filter {
-                if !filter(&tpk, true) {
-                    return None;
-                }
-            }
-
-            Some(tpk)
-        }).and_then(|mut tpk| {
-            fn split_sigs(primary: &Fingerprint, primary_keyid: &KeyID,
-                          sigs: Vec<Signature>)
-                          -> (Vec<Signature>, Vec<Signature>,
-                              Vec<Signature>, Vec<Signature>)
-            {
-                let mut selfsigs = vec![];
-                let mut certifications = vec![];
-                let mut self_revs = vec![];
-                let mut other_revs = vec![];
-
-                for sig in sigs.into_iter() {
-                    match sig {
-                        Signature::V4(sig) => {
-                            let sigtype = sig.sigtype();
-
-                            let is_selfsig =
-                                sig.issuer_fingerprint()
-                                .map(|fp| fp == *primary)
-                                .unwrap_or(false)
-                                || sig.issuer()
-                                .map(|keyid| keyid == *primary_keyid)
-                                .unwrap_or(false);
-
-                            use self::SignatureType::*;
-                            if sigtype == KeyRevocation
-                                || sigtype == SubkeyRevocation
-                                || sigtype == CertificateRevocation
-                            {
-                                if is_selfsig {
-                                    self_revs.push(sig.into());
-                                } else {
-                                    other_revs.push(sig.into());
-                                }
-                            } else {
-                                if is_selfsig {
-                                    selfsigs.push(sig.into());
-                                } else {
-                                    certifications.push(sig.into());
-                                }
-                            }
-                        },
-                    }
-                }
-
-                (selfsigs, certifications, self_revs, other_revs)
-            }
-
-            let primary_fp = tpk.primary().fingerprint();
-            let primary_keyid = primary_fp.to_keyid();
-
-            // The parser puts all of the signatures on the
-            // certifications field.  Split them now.
-
-            let (selfsigs, certifications, self_revs, other_revs)
-                = split_sigs(
-                    &primary_fp, &primary_keyid,
-                    mem::replace(&mut tpk.primary_certifications, vec![]));
-            tpk.primary_selfsigs = selfsigs;
-            tpk.primary_certifications = certifications;
-            tpk.primary_self_revocations = self_revs;
-            tpk.primary_other_revocations = other_revs;
-
-            for mut b in tpk.userids.iter_mut() {
-                let (selfsigs, certifications, self_revs, other_revs)
-                    = split_sigs(&primary_fp, &primary_keyid,
-                                 mem::replace(&mut b.certifications, vec![]));
-                b.selfsigs = selfsigs;
-                b.certifications = certifications;
-                b.self_revocations = self_revs;
-                b.other_revocations = other_revs;
-            }
-            for mut b in tpk.user_attributes.iter_mut() {
-                let (selfsigs, certifications, self_revs, other_revs)
-                    = split_sigs(&primary_fp, &primary_keyid,
-                                 mem::replace(&mut b.certifications, vec![]));
-                b.selfsigs = selfsigs;
-                b.certifications = certifications;
-                b.self_revocations = self_revs;
-                b.other_revocations = other_revs;
-            }
-            for mut b in tpk.subkeys.iter_mut() {
-                let (selfsigs, certifications, self_revs, other_revs)
-                    = split_sigs(&primary_fp, &primary_keyid,
-                                 mem::replace(&mut b.certifications, vec![]));
-                b.selfsigs = selfsigs;
-                b.certifications = certifications;
-                b.self_revocations = self_revs;
-                b.other_revocations = other_revs;
-            }
-
-            let tpk = tpk.canonicalize();
-
-            // Make sure it is still wanted.
-            for filter in &self.filter {
-                if !filter(&tpk, true) {
-                    return None;
-                }
-            }
-
-            Some(tpk)
-        });
-
-        Ok(tpko)
+        self.other_revocations.sort_by(sig_cmp);
+        self.other_revocations.dedup();
     }
 }
 
-impl<'a, I: Iterator<Item=Packet>> Iterator for TPKParser<'a, I> {
-    type Item = Result<TPK>;
+impl<P: key::KeyParts, R: key::KeyRole> ComponentBinding<Key<P, R>> {
+    /// Returns a reference to the key.
+    pub fn key(&self) -> &Key<P, R> {
+        self.component()
+    }
 
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            match mem::replace(&mut self.source, PacketSource::EOF) {
-                PacketSource::EOF => {
-                    if TRACE {
-                        eprintln!("TPKParser::next: EOF.");
-                    }
-
-                    if self.packets.len() == 0 {
-                        return None;
-                    }
-                    match self.tpk(None) {
-                        Ok(Some(tpk)) => return Some(Ok(tpk)),
-                        Ok(None) => return None,
-                        Err(err) => return Some(Err(err)),
-                    }
-                },
-                PacketSource::PacketParser(pp) => {
-                    match pp.next() {
-                        Ok((packet, ppr)) => {
-                            if let PacketParserResult::Some(pp) = ppr {
-                                self.source = PacketSource::PacketParser(pp);
-                            }
-
-                            match self.parse(packet) {
-                                Ok(Some(tpk)) => return Some(Ok(tpk)),
-                                Ok(None) => (),
-                                Err(err) => return Some(Err(err)),
-                            }
-                        },
-                        Err(err) => {
-                            self.saw_error = true;
-                            return Some(Err(err));
-                        }
-                    }
-                },
-                PacketSource::Iter(mut iter) => {
-                    let r = match iter.next() {
-                        Some(packet) => {
-                            self.source = PacketSource::Iter(iter);
-                            self.parse(packet)
-                        }
-                        None if self.packets.len() == 0 => Ok(None),
-                        None => self.tpk(None),
-                    };
-
-                    match r {
-                        Ok(Some(tpk)) => {
-                            if TRACE {
-                                eprintln!("TPKParser::next => {}",
-                                          tpk.primary().fingerprint());
-                            }
-                            return Some(Ok(tpk));
-                        }
-                        Ok(None) => (),
-                        Err(err) => return Some(Err(err)),
-                    }
-                },
-            }
-        }
+    /// Returns a mut reference to the key.
+    fn key_mut(&mut self) -> &mut Key<P, R> {
+        self.component_mut()
     }
 }
+
+impl<P: key::KeyParts> ComponentBinding<Key<P, key::SubordinateRole>> {
+    /// Returns the subkey's revocation status at time `t`.
+    ///
+    /// A subkey is revoked at time `t` if:
+    ///
+    ///   - There is a live revocation at time `t` that is newer than
+    ///     all live self signatures at time `t`, or
+    ///
+    ///   - There is a hard revocation (even if it is not live at
+    ///     time `t`, and even if there is a newer self-signature).
+    ///
+    /// Note: TPKs and subkeys have different criteria from User IDs
+    /// and User Attributes.
+    ///
+    /// Note: this only returns whether this subkey is revoked; it
+    /// does not imply anything about the TPK or other components.
+    pub fn revoked<T>(&self, t: T)
+        -> RevocationStatus
+        where T: Into<Option<time::SystemTime>>
+    {
+        let t = t.into();
+        self._revoked(true, self.binding_signature(t), t)
+    }
+}
+
+impl ComponentBinding<UserID> {
+    /// Returns a reference to the User ID.
+    pub fn userid(&self) -> &UserID {
+        self.component()
+    }
+
+    /// Returns the User ID's revocation status at time `t`.
+    ///
+    /// A User ID is revoked at time `t` if:
+    ///
+    ///   - There is a live revocation at time `t` that is newer than
+    ///     all live self signatures at time `t`, or
+    ///
+    /// Note: TPKs and subkeys have different criteria from User IDs
+    /// and User Attributes.
+    ///
+    /// Note: this only returns whether this User ID is revoked; it
+    /// does not imply anything about the TPK or other components.
+    pub fn revoked<T>(&self, t: T)
+        -> RevocationStatus
+        where T: Into<Option<time::SystemTime>>
+    {
+        let t = t.into();
+        self._revoked(false, self.binding_signature(t), t)
+    }
+}
+
+impl ComponentBinding<UserAttribute> {
+    /// Returns a reference to the User Attribute.
+    pub fn user_attribute(&self) -> &UserAttribute {
+        self.component()
+    }
+
+    /// Returns the User Attribute's revocation status at time `t`.
+    ///
+    /// A User Attribute is revoked at time `t` if:
+    ///
+    ///   - There is a live revocation at time `t` that is newer than
+    ///     all live self signatures at time `t`, or
+    ///
+    /// Note: TPKs and subkeys have different criteria from User IDs
+    /// and User Attributes.
+    ///
+    /// Note: this only returns whether this User Attribute is revoked;
+    /// it does not imply anything about the TPK or other components.
+    pub fn revoked<T>(&self, t: T)
+        -> RevocationStatus
+        where T: Into<Option<time::SystemTime>>
+    {
+        let t = t.into();
+        self._revoked(false, self.binding_signature(t), t)
+    }
+}
+
+impl ComponentBinding<Unknown> {
+    /// Returns a reference to the unknown component.
+    pub fn unknown(&self) -> &Unknown {
+        self.component()
+    }
+}
+
 
 impl fmt::Display for TPK {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -1530,47 +502,23 @@ impl fmt::Display for TPK {
     }
 }
 
+/// An iterator over `ComponentBinding`s.
+pub struct ComponentBindingIter<'a, C> {
+    iter: Option<slice::Iter<'a, ComponentBinding<C>>>,
+}
+
+/// An iterator over `KeyBinding`s.
+pub type KeyBindingIter<'a, P, R> = ComponentBindingIter<'a, Key<P, R>>;
 /// An iterator over `UserIDBinding`s.
-pub struct UserIDBindingIter<'a> {
-    iter: slice::Iter<'a, UserIDBinding>,
-}
-
-impl<'a> Iterator for UserIDBindingIter<'a> {
-    type Item = &'a UserIDBinding;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next()
-    }
-}
-
-impl<'a> ExactSizeIterator for UserIDBindingIter<'a> {
-    fn len(&self) -> usize { self.iter.len() }
-}
-
+pub type UserIDBindingIter<'a> = ComponentBindingIter<'a, UserID>;
 /// An iterator over `UserAttributeBinding`s.
-pub struct UserAttributeBindingIter<'a> {
-    iter: slice::Iter<'a, UserAttributeBinding>,
-}
+pub type UserAttributeBindingIter<'a> = ComponentBindingIter<'a, UserAttribute>;
+/// An iterator over `UnknownBinding`s.
+pub type UnknownBindingIter<'a> = ComponentBindingIter<'a, Unknown>;
 
-impl<'a> Iterator for UserAttributeBindingIter<'a> {
-    type Item = &'a UserAttributeBinding;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next()
-    }
-}
-
-impl<'a> ExactSizeIterator for UserAttributeBindingIter<'a> {
-    fn len(&self) -> usize { self.iter.len() }
-}
-
-/// An iterator over `SubkeyBinding`s.
-pub struct SubkeyBindingIter<'a> {
-    iter: Option<slice::Iter<'a, SubkeyBinding>>,
-}
-
-impl<'a> Iterator for SubkeyBindingIter<'a> {
-    type Item = &'a SubkeyBinding;
+impl<'a, C> Iterator for ComponentBindingIter<'a, C>
+{
+    type Item = &'a ComponentBinding<C>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.iter {
@@ -1580,7 +528,8 @@ impl<'a> Iterator for SubkeyBindingIter<'a> {
     }
 }
 
-impl<'a> ExactSizeIterator for SubkeyBindingIter<'a> {
+impl<'a, C> ExactSizeIterator for ComponentBindingIter<'a, C>
+{
     fn len(&self) -> usize {
         match self.iter {
             Some(ref iter) => iter.len(),
@@ -1589,6 +538,204 @@ impl<'a> ExactSizeIterator for SubkeyBindingIter<'a> {
     }
 }
 
+/// A collection of `ComponentBindings`.
+///
+/// Note: we need this, because we can't `impl Vec<ComponentBindings>`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ComponentBindings<C>
+    where ComponentBinding<C>: cmp::PartialEq
+{
+    bindings: Vec<ComponentBinding<C>>,
+}
+
+impl<C> Deref for ComponentBindings<C>
+    where ComponentBinding<C>: cmp::PartialEq
+{
+    type Target = Vec<ComponentBinding<C>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.bindings
+    }
+}
+
+impl<C> DerefMut for ComponentBindings<C>
+    where ComponentBinding<C>: cmp::PartialEq
+{
+    fn deref_mut(&mut self) -> &mut Vec<ComponentBinding<C>> {
+        &mut self.bindings
+    }
+}
+
+impl<C> Into<Vec<ComponentBinding<C>>> for ComponentBindings<C>
+    where ComponentBinding<C>: cmp::PartialEq
+{
+    fn into(self) -> Vec<ComponentBinding<C>> {
+        self.bindings
+    }
+}
+
+impl<C> IntoIterator for ComponentBindings<C>
+    where ComponentBinding<C>: cmp::PartialEq
+{
+    type Item = ComponentBinding<C>;
+    type IntoIter = std::vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.bindings.into_iter()
+    }
+}
+
+impl<C> ComponentBindings<C>
+    where ComponentBinding<C>: cmp::PartialEq
+{
+    fn new() -> Self {
+        Self { bindings: vec![] }
+    }
+}
+
+impl<C> ComponentBindings<C>
+    where ComponentBinding<C>: cmp::PartialEq
+{
+    // Sort and dedup the components.
+    //
+    // `cmp` is a function to sort the components for deduping.
+    //
+    // `merge` is a function that merges the first component into the
+    // second component.
+    fn sort_and_dedup<F, F2>(&mut self, cmp: F, merge: F2)
+        where F: Fn(&C, &C) -> Ordering,
+              F2: Fn(&mut C, &mut C)
+    {
+        // We dedup by component (not bindings!).  To do this, we need
+        // to sort the bindings by their components.
+
+        self.bindings.sort_unstable_by(
+            |a, b| cmp(&a.component, &b.component));
+
+        self.bindings.dedup_by(|a, b| {
+            if cmp(&a.component, &b.component) == Ordering::Equal {
+                // Merge.
+                merge(&mut a.component, &mut b.component);
+
+                // Recall: if a and b are equal, a will be dropped.
+                b.self_signatures.append(&mut a.self_signatures);
+                b.certifications.append(&mut a.certifications);
+                b.self_revocations.append(&mut a.self_revocations);
+                b.other_revocations.append(&mut a.self_revocations);
+
+                true
+            } else {
+                false
+            }
+        });
+
+        // And sort the certificates.
+        for b in self.bindings.iter_mut() {
+            b.sort_and_dedup();
+        }
+    }
+}
+
+/// A vecor of key (primary or subkey, public or private) and any
+/// associated signatures.
+pub type KeyBindings<KeyPart, KeyRole> = ComponentBindings<Key<KeyPart, KeyRole>>;
+
+/// A vector of subkeys and any associated signatures.
+pub type SubkeyBindings<KeyPart> = KeyBindings<KeyPart, key::SubordinateRole>;
+
+/// A vector of key (primary or subkey, public or private) and any
+/// associated signatures.
+pub type GenericKeyBindings
+    = ComponentBindings<Key<key::UnspecifiedParts, key::UnspecifiedRole>>;
+
+/// A vector of User ID bindings and any associated signatures.
+pub type UserIDBindings = ComponentBindings<UserID>;
+
+/// A vector of User Attribute bindings and any associated signatures.
+pub type UserAttributeBindings = ComponentBindings<UserAttribute>;
+
+/// A vector of unknown components and any associated signatures.
+///
+/// Note: all signatures are stored as certifications.
+pub type UnknownBindings = ComponentBindings<Unknown>;
+
+
+/// A transferable public key (TPK).
+///
+/// A TPK (see [RFC 4880, section 11.1]) can be used to verify
+/// signatures and encrypt data.  It can be stored in a keystore and
+/// uploaded to keyservers.
+///
+/// TPKs are always canonicalized in the sense that only elements
+/// (user id, user attribute, subkey) with at least one valid
+/// self-signature are preserved.  Also, invalid self-signatures are
+/// dropped.  The self-signatures are sorted so that the newest
+/// self-signature comes first.  Components are sorted, but in an
+/// undefined manner (i.e., when parsing the same TPK multiple times,
+/// the components will be in the same order, but we reserve the right
+/// to change the sort function between versions).  Third-party
+/// certifications are *not* validated, as the keys are not available;
+/// they are simply passed through as is.
+///
+/// [RFC 4880, section 11.1]: https://tools.ietf.org/html/rfc4880#section-11.1
+///
+/// # Secret keys
+///
+/// Any key in a `TPK` may have a secret key attached to it.  To
+/// protect secret keys from being leaked, secret keys are not written
+/// out if a `TPK` is serialized.  To also serialize the secret keys,
+/// you need to use [`TPK::as_tsk()`] to get an object that writes
+/// them out during serialization.
+///
+/// [`TPK::as_tsk()`]: #method.as_tsk
+///
+/// # Example
+///
+/// ```rust
+/// # extern crate sequoia_openpgp as openpgp;
+/// # use openpgp::Result;
+/// # use openpgp::parse::{Parse, PacketParserResult, PacketParser};
+/// use openpgp::TPK;
+///
+/// # fn main() { f().unwrap(); }
+/// # fn f() -> Result<()> {
+/// #     let ppr = PacketParser::from_bytes(&b""[..])?;
+/// match TPK::from_packet_parser(ppr) {
+///     Ok(tpk) => {
+///         println!("Key: {}", tpk.primary());
+///         for binding in tpk.userids() {
+///             println!("User ID: {}", binding.userid());
+///         }
+///     }
+///     Err(err) => {
+///         eprintln!("Error parsing TPK: {}", err);
+///     }
+/// }
+///
+/// #     Ok(())
+/// # }
+#[derive(Debug, Clone, PartialEq)]
+pub struct TPK {
+    primary: PrimaryKeyBinding<key::PublicParts>,
+
+    userids: UserIDBindings,
+    user_attributes: UserAttributeBindings,
+    subkeys: SubkeyBindings<key::PublicParts>,
+
+    // Unknown components, e.g., some UserAttribute++ packet from the
+    // future.
+    unknowns: UnknownBindings,
+    // Signatures that we couldn't find a place for.
+    bad: Vec<packet::Signature>,
+}
+
+impl std::str::FromStr for TPK {
+    type Err = failure::Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Self::from_bytes(s.as_bytes())
+    }
+}
 
 impl<'a> Parse<'a, TPK> for TPK {
     /// Returns the first TPK encountered in the reader.
@@ -1604,51 +751,150 @@ impl<'a> Parse<'a, TPK> for TPK {
     /// Returns the first TPK found in `buf`.
     ///
     /// `buf` must be an OpenPGP-encoded message.
-    fn from_bytes(buf: &[u8]) -> Result<Self> {
-        TPK::from_packet_parser(PacketParser::from_bytes(buf)?)
+    fn from_bytes<D: AsRef<[u8]> + ?Sized>(data: &'a D) -> Result<Self> {
+        TPK::from_packet_parser(PacketParser::from_bytes(data)?)
     }
 }
 
 impl TPK {
-    /// Returns a reference to the primary key.
-    pub fn primary(&self) -> &Key {
-        &self.primary
-    }
-
-    #[cfg(test)]
-    pub(crate) fn primary_mut(&mut self) -> &mut Key {
-        &mut self.primary
-    }
-
-    /// Returns the primary key's current self-signature and, if it
-    /// belong to a user id, a reference to the `UserIDBinding`.
+    /// Returns a reference to the primary key binding.
     ///
-    /// Normally, the primary key's current self-signature is the
-    /// primary user id's newest, non-revoked self-signature.
-    /// However, if all user ids are revoked and there is a direct
-    /// signature, that is returned.  If there is no direct signature,
-    /// then we return the newest self-signature on the most recently
-    /// revoked user id (i.e., the binding signature that was last
-    /// valid).  If there are no user ids at all and no direct
-    /// signatures, then we return None.
-    pub fn primary_key_signature_full(&self)
-        -> Option<(Option<&UserIDBinding>, &Signature)>
+    /// Note: information about the primary key is often stored on the
+    /// primary User ID's self signature.  Since these signatures are
+    /// associated with the UserID and not the primary key, that
+    /// information is not contained in the key binding.  Instead, you
+    /// should use methods like `TPK::primary_key_signature()` to get
+    /// information about the primary key.
+    pub fn primary(&self) -> &key::PublicKey {
+        &self.primary.key()
+    }
+
+    /// Returns the binding for the primary User ID at time `t`.
+    ///
+    /// See `TPK::primary_userid_full` for a description of how the
+    /// primary user id is determined.
+    pub fn primary_userid<T>(&self, t: T) -> Option<&UserIDBinding>
+        where T: Into<Option<time::SystemTime>>
     {
-        // 1. Self-signature from a non-revoked UserID.
-        if let Some(userid) = self.userids.get(0) {
-            if userid.self_revocations.len() == 0 {
-                return Some((Some(&userid), userid.selfsigs.last()?));
+        self.primary_userid_full(t).map(|r| r.0)
+    }
+
+    /// Returns the binding for the primary User ID at time `t` and
+    /// some associated data.
+    ///
+    /// In addition to the User ID binding, this also returns the
+    /// binding signature and the User ID's `RevocationStatus` at time
+    /// `t`.
+    ///
+    /// The primary User ID is determined by taking the User IDs that
+    /// are alive at time `t`, and sorting them as follows:
+    ///
+    ///   - non-revoked first
+    ///   - primary first
+    ///   - signature creation first
+    ///
+    /// If there is more than one, than one is selected in a
+    /// deterministic, but undefined manner.
+    pub fn primary_userid_full<T>(&self, t: T)
+        -> Option<(&UserIDBinding, &Signature, RevocationStatus)>
+        where T: Into<Option<time::SystemTime>>
+    {
+        let t = t.into()
+            .unwrap_or_else(|| time::SystemTime::now().canonicalize());
+        self.userids()
+            // Filter out User IDs that are not alive at time `t`.
+            //
+            // While we have the binding signature, extract a few
+            // properties to avoid recomputing the same thing multiple
+            // times.
+            .filter_map(|b| {
+                // No binding signature at time `t` => not alive.
+                let selfsig = b.binding_signature(t)?;
+
+                if !selfsig.signature_alive(t, time::Duration::new(0, 0)) {
+                    return None;
+                }
+
+                let revoked = b.revoked(t);
+                let primary = selfsig.primary_userid().unwrap_or(false);
+                let signature_creation_time = selfsig.signature_creation_time()?;
+
+                Some(((b, selfsig, revoked), primary, signature_creation_time))
+            })
+            .max_by(|(a, a_primary, a_signature_creation_time),
+                    (b, b_primary, b_signature_creation_time)| {
+                match (destructures_to!(RevocationStatus::Revoked(_) = &a.2),
+                       destructures_to!(RevocationStatus::Revoked(_) = &b.2)) {
+                    (true, false) => return Ordering::Less,
+                    (false, true) => return Ordering::Greater,
+                    _ => (),
+                }
+                match (a_primary, b_primary) {
+                    (true, false) => return Ordering::Greater,
+                    (false, true) => return Ordering::Less,
+                    _ => (),
+                }
+                match a_signature_creation_time.cmp(&b_signature_creation_time) {
+                    Ordering::Less => return Ordering::Less,
+                    Ordering::Greater => return Ordering::Greater,
+                    Ordering::Equal => (),
+                }
+
+                // Fallback to a lexographical comparison.  Prefer
+                // the "smaller" one.
+                match a.0.userid().value().cmp(&b.0.userid().value()) {
+                    Ordering::Less => return Ordering::Greater,
+                    Ordering::Greater => return Ordering::Less,
+                    Ordering::Equal =>
+                        panic!("non-canonicalized TPK (duplicate User IDs)"),
+                }
+            })
+            .map(|b| b.0)
+    }
+
+    /// Returns the primary key's current self-signature as of `t`.
+    ///
+    /// If the current self-signature is from a User ID binding (and
+    /// not a direct signature), this also returns the User ID binding
+    /// and its revocation status as of `t`.
+    ///
+    /// The primary key's current self-signature as of `t` is, in
+    /// order of preference:
+    ///
+    ///   - The binding signature of the primary User ID at time `t`,
+    ///     if the primary User ID is not revoked at time `t`.
+    ///
+    ///   - The newest, live, direct self signature at time `t`.
+    ///
+    ///   - The binding signature of the primary User ID at time `t`
+    ///     (this can only happen if there are only revoked User IDs
+    ///     at time `t`).
+    ///
+    /// If there are no applicable signatures, `None` is returned.
+    pub fn primary_key_signature_full<T>(&self, t: T)
+        -> Option<(&Signature, Option<(&UserIDBinding, RevocationStatus)>)>
+        where T: Into<Option<time::SystemTime>>
+    {
+        let t = t.into()
+            .unwrap_or_else(|| time::SystemTime::now().canonicalize());
+
+        // 1. Self-signature from the non-revoked primary UserID.
+        let primary_userid = self.primary_userid_full(t);
+        if let Some((ref u, ref s, ref r)) = primary_userid {
+            if !destructures_to!(RevocationStatus::Revoked(_) = r) {
+                return Some((s, Some((u, r.clone()))));
             }
         }
 
         // 2. Direct signature.
-        if let Some(sig) = self.primary_selfsigs.last() {
-            return Some((None, sig));
+        if let Some(s) = self.primary.binding_signature(t) {
+            return Some((s, None));
         }
 
-        // 3. Treat User IDs as if they were not revoked.
-        if let Some(userid) = self.userids.get(0) {
-            return Some((Some(&userid), userid.selfsigs.last()?));
+        // 3. All User IDs are revoked.
+        if let Some((u, s, r)) = primary_userid {
+            assert!(destructures_to!(RevocationStatus::Revoked(_) = &r));
+            return Some((s, Some((u, r))));
         }
 
         // 4. No user ids and no direct signatures.
@@ -1660,135 +906,78 @@ impl TPK {
     /// This function is identical to
     /// `TPK::primary_key_signature_full()`, but it doesn't return the
     /// `UserIDBinding`.
-    pub fn primary_key_signature(&self) -> Option<&Signature> {
-        if let Some((_, sig)) = self.primary_key_signature_full() {
+    pub fn primary_key_signature<T>(&self, t: T) -> Option<&Signature>
+        where T: Into<Option<time::SystemTime>>
+    {
+        if let Some((sig, _)) = self.primary_key_signature_full(t) {
             Some(sig)
         } else {
             None
         }
     }
 
-    /// The self-signatures.
+    /// The direct signatures.
     ///
-    /// All self-signatures have been validated, and the newest
-    /// self-signature is last.
-    pub fn selfsigs(&self) -> &[Signature] {
-        &self.primary_selfsigs
+    /// The signatures are validated, and they are reverse sorted by
+    /// their creation time (newest first).
+    pub fn direct_signatures(&self) -> &[Signature] {
+        &self.primary.self_signatures
     }
 
-    /// Any third-party certifications.
+    /// Third-party certifications.
     ///
-    /// The signatures have *not* been validated.
+    /// The signatures are *not* validated.  They are reverse sorted by
+    /// their creation time (newest first).
     pub fn certifications(&self) -> &[Signature] {
-        &self.primary_certifications
+        &self.primary.certifications
     }
 
     /// Revocations issued by the key itself.
     ///
-    /// The revocations have been validated, and the newest is last.
+    /// The revocations are validated, and they are reverse sorted by
+    /// their creation time (newest first).
     pub fn self_revocations(&self) -> &[Signature] {
-        &self.primary_self_revocations
+        &self.primary.self_revocations
     }
 
     /// Revocations issued by other keys.
     ///
-    /// The revocations have *not* been validated.
+    /// The revocations are *not* validated.  They are reverse sorted
+    /// by their creation time (newest first).
     pub fn other_revocations(&self) -> &[Signature] {
-        &self.primary_other_revocations
+        &self.primary.other_revocations
     }
 
-    /// Returns the TPK's revocation status at the specified time.
+    /// Returns the TPK's revocation status at time `t`.
     ///
-    /// Note: this only returns whether the primary key is revoked.  If you
-    /// want to know whether a subkey, user id, etc., is revoked, then
-    /// you need to query them separately.
-    pub fn revocation_status_at<T>(&self, t: T) -> RevocationStatus
-        where T: Into<Option<time::Tm>>
+    /// A TPK is revoked at time `t` if:
+    ///
+    ///   - There is a live revocation at time `t` that is newer than
+    ///     all live self signatures at time `t`, or
+    ///
+    ///   - There is a hard revocation (even if it is not live at
+    ///     time `t`, and even if there is a newer self-signature).
+    ///
+    /// Note: TPKs and subkeys have different criteria from User IDs
+    /// and User Attributes.
+    ///
+    /// Note: this only returns whether this TPK is revoked; it does
+    /// not imply anything about the TPK or other components.
+    pub fn revoked<T>(&self, t: T) -> RevocationStatus
+        where T: Into<Option<time::SystemTime>>
     {
-        let t = t.into().unwrap_or_else(time::now_utc);
-        let has_self_revs =
-            active_revocation(&self.primary_selfsigs,
-                              &self.primary_self_revocations, t);
-
-        if has_self_revs {
-            return RevocationStatus::Revoked(&self.primary_self_revocations);
-        }
-
-        let has_other_revs =
-            active_revocation(&self.primary_selfsigs,
-                              &self.primary_other_revocations, t);
-
-        if has_other_revs {
-            RevocationStatus::CouldBe(&self.primary_other_revocations)
-        } else {
-            RevocationStatus::NotAsFarAsWeKnow
-        }
+        let t = t.into();
+        self.primary._revoked(true, self.primary_key_signature(t), t)
     }
 
-    /// Returns the TPK's current revocation status.
+    /// Revokes the TPK in place.
     ///
-    /// Note: this only returns whether the primary key is revoked.  If you
-    /// want to know whether a subkey, user id, etc., is revoked, then
-    /// you need to query them separately.
-    pub fn revocation_status(&self) -> RevocationStatus {
-        self.revocation_status_at(None)
-    }
-
-    /// Returns a revocation certificate for the TPK.
+    /// Note: to just generate a revocation certificate, use the
+    /// `TPKRevocationBuilder`.
     ///
-    /// # Example
-    ///
-    /// ```rust
-    /// # extern crate sequoia_openpgp as openpgp;
-    /// # use openpgp::Result;
-    /// use openpgp::RevocationStatus;
-    /// use openpgp::constants::{ReasonForRevocation, SignatureType};
-    /// use openpgp::tpk::{CipherSuite, TPKBuilder};
-    /// use openpgp::crypto::KeyPair;
-    /// use openpgp::parse::Parse;
-    /// # fn main() { f().unwrap(); }
-    /// # fn f() -> Result<()>
-    /// # {
-    /// let (tpk, _) = TPKBuilder::new()
-    ///     .set_cipher_suite(CipherSuite::Cv25519)
-    ///     .generate()?;
-    /// assert_eq!(RevocationStatus::NotAsFarAsWeKnow,
-    ///            tpk.revocation_status());
-    ///
-    /// let mut keypair = tpk.primary().clone().into_keypair()?;
-    /// let sig = tpk.revoke(&mut keypair, ReasonForRevocation::KeyCompromised,
-    ///                      b"It was the maid :/")?;
-    /// assert_eq!(sig.sigtype(), SignatureType::KeyRevocation);
-    ///
-    /// let tpk = tpk.merge_packets(vec![sig.clone().into()])?;
-    /// assert_eq!(RevocationStatus::Revoked(&[sig]),
-    ///            tpk.revocation_status());
-    /// # Ok(())
-    /// # }
-    pub fn revoke(&self, primary_signer: &mut Signer,
-                  code: ReasonForRevocation, reason: &[u8])
-        -> Result<Signature>
-    {
-        if primary_signer.public().fingerprint() != self.fingerprint() {
-            return Err(Error::InvalidArgument(
-                "signer is not the primary key".into()).into());
-        }
-
-        // Recompute the signature.
-        let hash_algo = HashAlgorithm::SHA512;
-        let mut hash = hash_algo.context()?;
-        let pair = self.primary();
-        pair.hash(&mut hash);
-
-        signature::Builder::new(SignatureType::KeyRevocation)
-            .set_signature_creation_time(time::now_utc())?
-            .set_issuer_fingerprint(self.primary().fingerprint())?
-            .set_issuer(self.primary().keyid())?
-            .set_reason_for_revocation(code, reason)?
-            .sign_hash(primary_signer, hash_algo, hash)
-    }
-
-    /// Revokes the TPK.
+    /// If you want to revoke an individual component, use
+    /// `SubkeyRevocationBuilder`, `UserIDRevocationBuilder`, or
+    /// `UserAttributeRevocationBuilder`, as appropriate.
     ///
     /// # Example
     ///
@@ -1807,15 +996,16 @@ impl TPK {
     ///     .set_cipher_suite(CipherSuite::Cv25519)
     ///     .generate()?;
     /// assert_eq!(RevocationStatus::NotAsFarAsWeKnow,
-    ///            tpk.revocation_status());
+    ///            tpk.revoked(None));
     ///
-    /// let mut keypair = tpk.primary().clone().into_keypair()?;
+    /// let mut keypair = tpk.primary().clone()
+    ///     .mark_parts_secret()?.into_keypair()?;
     /// let tpk = tpk.revoke_in_place(&mut keypair,
     ///                               ReasonForRevocation::KeyCompromised,
     ///                               b"It was the maid :/")?;
-    /// if let RevocationStatus::Revoked(sigs) = tpk.revocation_status() {
+    /// if let RevocationStatus::Revoked(sigs) = tpk.revoked(None) {
     ///     assert_eq!(sigs.len(), 1);
-    ///     assert_eq!(sigs[0].sigtype(), SignatureType::KeyRevocation);
+    ///     assert_eq!(sigs[0].typ(), SignatureType::KeyRevocation);
     ///     assert_eq!(sigs[0].reason_for_revocation(),
     ///                Some((ReasonForRevocation::KeyCompromised,
     ///                      "It was the maid :/".as_bytes())));
@@ -1825,45 +1015,36 @@ impl TPK {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn revoke_in_place(self, primary_signer: &mut Signer,
-                           code: ReasonForRevocation, reason: &[u8])
+    pub fn revoke_in_place<R>(self, primary_signer: &mut dyn Signer<R>,
+                              code: ReasonForRevocation, reason: &[u8])
         -> Result<TPK>
+        where R: key::KeyRole
     {
-        let sig = self.revoke(primary_signer, code, reason)?;
+        let sig = TPKRevocationBuilder::new()
+            .set_reason_for_revocation(code, reason)?
+            .build(primary_signer, &self, None)?;
         self.merge_packets(vec![sig.into()])
     }
 
-    /// Returns whether or not the TPK has expired.
-    pub fn expired(&self) -> bool {
-        if let Some(Signature::V4(sig)) = self.primary_key_signature() {
-            sig.key_expired(self.primary())
+    /// Returns whether or not the TPK is expired at `t`.
+    pub fn expired<T>(&self, t: T) -> bool
+        where T: Into<Option<time::SystemTime>>
+    {
+        let t = t.into();
+        if let Some(Signature::V4(sig)) = self.primary_key_signature(t) {
+            sig.key_expired(self.primary(), t)
         } else {
             false
         }
     }
 
-    /// Returns whether or not the key is expired at the given time.
-    pub fn expired_at(&self, tm: time::Tm) -> bool {
-        if let Some(Signature::V4(sig)) = self.primary_key_signature() {
-            sig.key_expired_at(self.primary(), tm)
-        } else {
-            false
-        }
-    }
-
-    /// Returns whether or not the TPK is alive.
-    pub fn alive(&self) -> bool {
-        if let Some(sig) = self.primary_key_signature() {
-            sig.key_alive(self.primary())
-        } else {
-            false
-        }
-    }
-
-    /// Returns whether or not the key is alive at the given time.
-    pub fn alive_at(&self, tm: time::Tm) -> bool {
-        if let Some(sig) = self.primary_key_signature() {
-            sig.key_alive_at(self.primary(), tm)
+    /// Returns whether or not the TPK is alive at `t`.
+    pub fn alive<T>(&self, t: T) -> bool
+        where T: Into<Option<time::SystemTime>>
+    {
+        let t = t.into();
+        if let Some(sig) = self.primary_key_signature(t) {
+            sig.key_alive(self.primary(), t)
         } else {
             false
         }
@@ -1876,14 +1057,15 @@ impl TPK {
     ///
     /// This function exists to facilitate testing, which is why it is
     /// not exported.
-    fn set_expiry_as_of(self, primary_signer: &mut Signer,
-                        expiration: Option<time::Duration>,
-                        now: time::Tm)
+    fn set_expiry_as_of<R>(self, primary_signer: &mut dyn Signer<R>,
+                           expiration: Option<time::Duration>,
+                           now: time::SystemTime)
         -> Result<TPK>
+        where R: key::KeyRole
     {
         let sig = {
-            let (userid, template) = self
-                .primary_key_signature_full()
+            let (template, userid) = self
+                .primary_key_signature_full(Some(now))
                 .ok_or(Error::MalformedTPK("No self-signature".into()))?;
 
             // Recompute the signature.
@@ -1891,10 +1073,10 @@ impl TPK {
             let mut hash = hash_algo.context()?;
 
             self.primary().hash(&mut hash);
-            if let Some(userid) = userid {
+            if let Some((userid, _)) = userid {
                 userid.userid().hash(&mut hash);
             } else {
-                assert_eq!(template.sigtype(), SignatureType::DirectKey);
+                assert_eq!(template.typ(), SignatureType::DirectKey);
             }
 
             // Generate the signature.
@@ -1911,19 +1093,18 @@ impl TPK {
     ///
     /// Note: the time is relative to the key's creation time, not the
     /// current time!
-    pub fn set_expiry(self, primary_signer: &mut Signer,
-                      expiration: Option<time::Duration>)
+    pub fn set_expiry<R>(self, primary_signer: &mut dyn Signer<R>,
+                         expiration: Option<time::Duration>)
         -> Result<TPK>
+        where R: key::KeyRole
     {
-        self.set_expiry_as_of(primary_signer, expiration, time::now())
+        self.set_expiry_as_of(primary_signer, expiration,
+                              time::SystemTime::now().canonicalize())
     }
 
-    /// Returns an iterator over the TPK's valid `UserIDBinding`s.
-    ///
-    /// The primary user id is returned first.  A valid
-    /// `UserIDBinding` has at least one good self-signature.
+    /// Returns an iterator over the TPK's `UserIDBinding`s.
     pub fn userids(&self) -> UserIDBindingIter {
-        UserIDBindingIter { iter: self.userids.iter() }
+        UserIDBindingIter { iter: Some(self.userids.iter()) }
     }
 
     /// Returns an iterator over the TPK's valid `UserAttributeBinding`s.
@@ -1931,14 +1112,31 @@ impl TPK {
     /// A valid `UserIDAttributeBinding` has at least one good
     /// self-signature.
     pub fn user_attributes(&self) -> UserAttributeBindingIter {
-        UserAttributeBindingIter { iter: self.user_attributes.iter() }
+        UserAttributeBindingIter { iter: Some(self.user_attributes.iter()) }
     }
 
     /// Returns an iterator over the TPK's valid subkeys.
     ///
-    /// A valid `SubkeyBinding` has at least one good self-signature.
-    pub fn subkeys(&self) -> SubkeyBindingIter {
-        SubkeyBindingIter { iter: Some(self.subkeys.iter()) }
+    /// A valid `KeyBinding` has at least one good self-signature.
+    pub fn subkeys(&self) -> KeyBindingIter<key::PublicParts,
+                                            key::SubordinateRole>
+    {
+        KeyBindingIter { iter: Some(self.subkeys.iter()) }
+    }
+
+    /// Returns an iterator over the TPK's valid unknown components.
+    ///
+    /// A valid `UnknownBinding` has at least one good self-signature.
+    pub fn unknowns(&self) -> UnknownBindingIter {
+        UnknownBindingIter { iter: Some(self.unknowns.iter()) }
+    }
+
+    /// Returns a slice containing all bad signatures.
+    ///
+    /// Bad signatures are signatures that we could not associate with
+    /// one of the components.
+    pub fn bad_signatures(&self) -> &[Signature] {
+        &self.bad
     }
 
     /// Returns an iterator over the TPK's valid keys (live and
@@ -1948,7 +1146,7 @@ impl TPK {
     /// subkeys, along with the corresponding signatures.
     ///
     /// Note: since a primary key is different from a binding, the
-    /// iterator is over `Key`s and not `SubkeyBindings`.
+    /// iterator is over `Key`s and not `KeyBindings`.
     /// Furthermore, the primary key has no binding signature.  Here,
     /// the signature carrying the primary key's key flags is
     /// returned.  There are corner cases where no such signature
@@ -1960,7 +1158,9 @@ impl TPK {
     /// To return all keys, do `keys_all().unfiltered()`.  See the
     /// documentation of `keys` for how to control what keys are
     /// returned.
-    pub fn keys_valid(&self) -> KeyIter {
+    pub fn keys_valid(&self)
+        -> KeyIter<key::PublicParts, key::UnspecifiedRole>
+    {
         KeyIter::new(self).alive().revoked(false)
     }
 
@@ -1968,15 +1168,27 @@ impl TPK {
     ///
     /// Unlike `TPK::keys_valid()`, this iterator also returns expired
     /// and revoked keys.
-    pub fn keys_all(&self) -> KeyIter {
+    pub fn keys_all(&self)
+        -> KeyIter<key::PublicParts, key::UnspecifiedRole>
+    {
         KeyIter::new(self)
     }
 
-    /// Returns the first TPK found in the packet stream.
+    /// Returns the TPK found in the packet stream.
+    ///
+    /// If there are more packets after the TPK, e.g. because the
+    /// packet stream is a keyring, this function will return
+    /// `Error::MalformedTPK`.
     pub fn from_packet_parser(ppr: PacketParserResult) -> Result<Self> {
-        let mut parser = TPKParser::from_packet_parser(ppr);
+        let mut parser = parser::TPKParser::from_packet_parser(ppr);
         if let Some(tpk_result) = parser.next() {
-            tpk_result
+            if parser.next().is_some() {
+                Err(Error::MalformedTPK(
+                    "Additional packets found, is this a keyring?".into()
+                ).into())
+            } else {
+                tpk_result
+            }
         } else {
             Err(Error::MalformedTPK("No data".into()).into())
         }
@@ -1984,7 +1196,7 @@ impl TPK {
 
     /// Returns the first TPK found in the `PacketPile`.
     pub fn from_packet_pile(p: PacketPile) -> Result<Self> {
-        let mut i = TPKParser::from_iter(p.into_children());
+        let mut i = parser::TPKParser::from_iter(p.into_children());
         match i.next() {
             Some(Ok(tpk)) => Ok(tpk),
             Some(Err(err)) => Err(err),
@@ -1993,24 +1205,15 @@ impl TPK {
     }
 
     fn canonicalize(mut self) -> Self {
-        // Helper functions.
-        // Turn a signature into a key for use by dedup.
-        fn sig_key(a: &mut Signature) -> Box<[u8]> {
-            a.to_vec().expect("XXX: this better not fail")
-                .into_boxed_slice()
-        }
-
-        // Fallback time.
-        let time_zero = time::at_utc(time::Timespec::new(0, 0));
-
+        tracer!(TRACE, "canonicalize", 0);
 
         // The very first thing that we do is verify the
         // self-signatures.  There are a few things that we need to be
         // aware of:
         //
-        //  - Signature may be invalid.  These should be dropped.
+        //  - Signatures may be invalid.  These should be dropped.
         //
-        //  - Signature may be out of order.  These should be
+        //  - Signatures may be out of order.  These should be
         //    reordered so that we have the latest self-signature and
         //    we don't drop a userid or subkey that is actually
         //    valid.
@@ -2028,20 +1231,20 @@ impl TPK {
         macro_rules! check {
             ($desc:expr, $binding:expr, $sigs:ident,
              $verify_method:ident, $($verify_args:expr),*) => ({
+                t!("check!({}, {}, {:?}, {}, ...)",
+                   $desc, stringify!($binding), $binding.$sigs,
+                   stringify!($verify_method));
                 for sig in mem::replace(&mut $binding.$sigs, Vec::new())
                     .into_iter()
                 {
-                    if let Ok(true) = sig.$verify_method(&self.primary,
-                                                         &self.primary,
+                    if let Ok(true) = sig.$verify_method(self.primary.key(),
+                                                         self.primary.key(),
                                                          $($verify_args),*) {
                         $binding.$sigs.push(sig);
                     } else {
-                        if TRACE {
-                            eprintln!("Sig {:02X}{:02X}, type = {} \
-                                       doesn't belong to {}",
-                                      sig.hash_prefix()[0], sig.hash_prefix()[1],
-                                      sig.sigtype(), $desc);
-                        }
+                        t!("Sig {:02X}{:02X}, type = {} doesn't belong to {}",
+                           sig.hash_prefix()[0], sig.hash_prefix()[1],
+                           sig.typ(), $desc);
 
                         self.bad.push(sig);
                     }
@@ -2054,37 +1257,37 @@ impl TPK {
         }
 
         check!("primary key",
-               self, primary_selfsigs, verify_primary_key_binding);
+               self.primary, self_signatures, verify_primary_key_binding);
         check!("primary key",
-               self, primary_self_revocations, verify_primary_key_revocation);
+               self.primary, self_revocations, verify_primary_key_revocation);
 
         for binding in self.userids.iter_mut() {
             check!(format!("userid \"{}\"",
-                           String::from_utf8_lossy(binding.userid.value())),
-                   binding, selfsigs, verify_userid_binding,
-                   &binding.userid);
+                           String::from_utf8_lossy(binding.userid().value())),
+                   binding, self_signatures, verify_userid_binding,
+                   binding.userid());
             check!(format!("userid \"{}\"",
-                           String::from_utf8_lossy(binding.userid.value())),
+                           String::from_utf8_lossy(binding.userid().value())),
                    binding, self_revocations, verify_userid_revocation,
-                   &binding.userid);
+                   binding.userid());
         }
 
         for binding in self.user_attributes.iter_mut() {
             check!("user attribute",
-                   binding, selfsigs, verify_user_attribute_binding,
-                   &binding.user_attribute);
+                   binding, self_signatures, verify_user_attribute_binding,
+                   binding.user_attribute());
             check!("user attribute",
                    binding, self_revocations, verify_user_attribute_revocation,
-                   &binding.user_attribute);
+                   binding.user_attribute());
         }
 
         for binding in self.subkeys.iter_mut() {
-            check!(format!("subkey {}", binding.subkey.keyid()),
-                   binding, selfsigs, verify_subkey_binding,
-                   &binding.subkey);
-            check!(format!("subkey {}", binding.subkey.keyid()),
+            check!(format!("subkey {}", binding.key().keyid()),
+                   binding, self_signatures, verify_subkey_binding,
+                   binding.key());
+            check!(format!("subkey {}", binding.key().keyid()),
                    binding, self_revocations, verify_subkey_revocation,
-                   &binding.subkey);
+                   binding.key());
         }
 
         // See if the signatures that didn't validate are just out of
@@ -2094,18 +1297,19 @@ impl TPK {
             macro_rules! check_one {
                 ($desc:expr, $sigs:expr, $sig:expr,
                  $verify_method:ident, $($verify_args:expr),*) => ({
+                     t!("check!({}, {:?}, {:?}, {}, ...)",
+                        $desc, $sigs, $sig,
+                        stringify!($verify_method));
                      if let Ok(true)
-                         = $sig.$verify_method(&self.primary,
-                                               &self.primary,
+                         = $sig.$verify_method(self.primary.key(),
+                                               self.primary.key(),
                                                $($verify_args),*)
                      {
-                         if TRACE {
-                             eprintln!("Sig {:02X}{:02X}, {:?} \
-                                        was out of place.  Belongs to {}.",
-                                       $sig.hash_prefix()[0],
-                                       $sig.hash_prefix()[1],
-                                       $sig.sigtype(), $desc);
-                         }
+                         t!("Sig {:02X}{:02X}, {:?} \
+                             was out of place.  Belongs to {}.",
+                            $sig.hash_prefix()[0],
+                            $sig.hash_prefix()[1],
+                            $sig.typ(), $desc);
 
                          $sigs.push($sig);
                          continue 'outer;
@@ -2117,511 +1321,111 @@ impl TPK {
                 });
             }
 
-            check_one!("primary key", self.primary_selfsigs, sig,
+            check_one!("primary key", self.primary.self_signatures, sig,
                        verify_primary_key_binding);
-            check_one!("primary key", self.primary_self_revocations, sig,
+            check_one!("primary key", self.primary.self_revocations, sig,
                        verify_primary_key_revocation);
 
             for binding in self.userids.iter_mut() {
                 check_one!(format!("userid \"{}\"",
                                    String::from_utf8_lossy(
-                                       binding.userid.value())),
-                           binding.selfsigs, sig,
-                           verify_userid_binding, &binding.userid);
+                                       binding.userid().value())),
+                           binding.self_signatures, sig,
+                           verify_userid_binding, binding.userid());
                 check_one!(format!("userid \"{}\"",
                                    String::from_utf8_lossy(
-                                       binding.userid.value())),
+                                       binding.userid().value())),
                            binding.self_revocations, sig,
-                           verify_userid_revocation, &binding.userid);
+                           verify_userid_revocation, binding.userid());
             }
 
             for binding in self.user_attributes.iter_mut() {
                 check_one!("user attribute",
-                           binding.selfsigs, sig,
+                           binding.self_signatures, sig,
                            verify_user_attribute_binding,
-                           &binding.user_attribute);
+                           binding.user_attribute());
                 check_one!("user attribute",
                            binding.self_revocations, sig,
                            verify_user_attribute_revocation,
-                           &binding.user_attribute);
+                           binding.user_attribute());
             }
 
             for binding in self.subkeys.iter_mut() {
-                check_one!(format!("subkey {}", binding.subkey.keyid()),
-                           binding.selfsigs, sig,
-                           verify_subkey_binding, &binding.subkey);
-                check_one!(format!("subkey {}", binding.subkey.keyid()),
+                check_one!(format!("subkey {}", binding.key().keyid()),
+                           binding.self_signatures, sig,
+                           verify_subkey_binding, binding.key());
+                check_one!(format!("subkey {}", binding.key().keyid()),
                            binding.self_revocations, sig,
-                           verify_subkey_revocation, &binding.subkey);
+                           verify_subkey_revocation, binding.key());
             }
 
             // Keep them for later.
-            if TRACE {
-                eprintln!("Self-sig {:02X}{:02X}, {:?} doesn't belong \
-                           to any known component or is bad.",
-                          sig.hash_prefix()[0], sig.hash_prefix()[1],
-                          sig.sigtype());
-            }
+            t!("Self-sig {:02X}{:02X}, {:?} doesn't belong \
+                to any known component or is bad.",
+               sig.hash_prefix()[0], sig.hash_prefix()[1],
+               sig.typ());
             self.bad.push(sig);
         }
 
-        if self.bad.len() > 0 && TRACE {
-            eprintln!("{}: ignoring {} bad self-signatures",
-                      self.primary().keyid(), self.bad.len());
+        if self.bad.len() > 0 {
+            t!("{}: ignoring {} bad self-signatures",
+               self.primary().keyid(), self.bad.len());
         }
 
         // Only keep user ids / user attributes / subkeys with at
         // least one valid self-signature or self-revocation.
         self.userids.retain(|userid| {
-            userid.selfsigs.len() > 0 || userid.self_revocations.len() > 0
+            userid.self_signatures.len() > 0 || userid.self_revocations.len() > 0
         });
+        t!("Retained {} userids", self.userids.len());
 
         self.user_attributes.retain(|ua| {
-            ua.selfsigs.len() > 0 || ua.self_revocations.len() > 0
+            ua.self_signatures.len() > 0 || ua.self_revocations.len() > 0
         });
+        t!("Retained {} user_attributes", self.user_attributes.len());
 
         self.subkeys.retain(|subkey| {
-            subkey.selfsigs.len() > 0 || subkey.self_revocations.len() > 0
+            subkey.self_signatures.len() > 0 || subkey.self_revocations.len() > 0
         });
+        t!("Retained {} subkeys", self.subkeys.len());
 
-        fn sig_cmp(a: &Signature, b: &Signature) -> Ordering {
-            canonical_signature_order(a.signature_creation_time(),
-                                      b.signature_creation_time())
-        }
 
-        // Sort and dedup the primary key's signatures.
-        self.primary_selfsigs.sort_by(sig_cmp);
-        self.primary_selfsigs.dedup_by_key(sig_key);
-
-        // There is no need to sort the certifications, but we do
-        // want to remove dups and sorting is a prerequisite.
-        self.primary_certifications.sort_by(sig_cmp);
-        self.primary_certifications.dedup_by_key(sig_key);
-
-        self.primary_self_revocations.sort_by(sig_cmp);
-        self.primary_self_revocations.dedup_by_key(sig_key);
-
-        self.primary_other_revocations.sort_by(sig_cmp);
-        self.primary_other_revocations.dedup_by_key(sig_key);
+        self.primary.sort_and_dedup();
 
         self.bad.sort_by(sig_cmp);
-        self.bad.dedup_by_key(sig_key);
+        self.bad.dedup();
 
-
-        // Sort the signatures so that the current valid
-        // self-signature is last.
-        for userid in &mut self.userids {
-            userid.selfsigs.sort_by(sig_cmp);
-            userid.selfsigs.dedup_by_key(sig_key);
-
-            // There is no need to sort the certifications, but we do
-            // want to remove dups and sorting is a prerequisite.
-            userid.certifications.sort_by(sig_cmp);
-            userid.certifications.dedup_by_key(sig_key);
-
-            userid.self_revocations.sort_by(sig_cmp);
-            userid.self_revocations.dedup_by_key(sig_key);
-
-            userid.other_revocations.sort_by(sig_cmp);
-            userid.other_revocations.dedup_by_key(sig_key);
-        }
-
-        // First, we sort the bindings lexographically by user id in
-        // preparation for a dedup.
+        self.userids.sort_and_dedup(UserID::cmp, |_, _| {});
+        self.user_attributes.sort_and_dedup(UserAttribute::cmp, |_, _| {});
+        // XXX: If we have two keys with the same public parts and
+        // different non-empty secret parts, then one will be dropped
+        // (non-deterministicly)!
         //
-        // Note: we cannot do the final sort here, because a user ID
-        // might appear multiple times, sometimes being marked as
-        // primary and sometimes not, for example.  In such a case,
-        // one copy might be sorted to the front and the other to the
-        // back, and the following dedup wouldn't combine the user
-        // ids!
-        self.userids.sort_by(|a, b| a.userid.value().cmp(&b.userid.value()));
-
-        // Then, we dedup them.
-        self.userids.dedup_by(|a, b| {
-            if a.userid == b.userid {
-                // Merge the content of duplicate user ids.
-
+        // This can happen if:
+        //
+        //   - One is corrupted
+        //   - There are two versions that are encrypted differently
+        self.subkeys.sort_and_dedup(Key::public_cmp,
+            |ref mut a, ref mut b| {
                 // Recall: if a and b are equal, a will be dropped.
-                b.selfsigs.append(&mut a.selfsigs);
-                b.selfsigs.sort_by(sig_cmp);
-                b.selfsigs.dedup_by_key(sig_key);
-
-                b.certifications.append(&mut a.certifications);
-                b.certifications.sort_by(sig_cmp);
-                b.certifications.dedup_by_key(sig_key);
-
-                b.self_revocations.append(&mut a.self_revocations);
-                b.self_revocations.sort_by(sig_cmp);
-                b.self_revocations.dedup_by_key(sig_key);
-
-                b.other_revocations.append(&mut a.self_revocations);
-                b.other_revocations.sort_by(sig_cmp);
-                b.other_revocations.dedup_by_key(sig_key);
-
-                true
-            } else {
-                false
-            }
-        });
-
-        // Now, resort using the information provided in the self-sig.
-        //
-        // Recall: we know that there are no duplicates, and that
-        // self-signatures have been sorted.
-        //
-        // Order by:
-        //
-        //  - Whether the User IDs are marked as primary.
-        //
-        //  - The timestamp (reversed).
-        //
-        //  - The User IDs' lexographical order.
-        //
-        // Note: Comparing the lexographical order of the serialized form
-        // is useless since that will be the same as the User IDs'
-        // lexographical order.
-        self.userids.sort_by(|a, b| {
-            // Compare their revocation status.  Components known be
-            // revoked come last.
-            let a_revoked = a.self_revocations.len() > 0;
-            let b_revoked = b.self_revocations.len() > 0;
-
-            if a_revoked && ! b_revoked {
-                return Ordering::Greater;
-            }
-            if ! a_revoked && b_revoked {
-                return Ordering::Less;
-            }
-
-            let a_selfsig = a.binding_signature();
-            let b_selfsig = b.binding_signature();
-
-            if a_revoked && b_revoked {
-                // Both are revoked.
-
-                // Sort user ids that have at least one self signature
-                // towards the front.
-                if a_selfsig.is_some() && b_selfsig.is_none() {
-                    return Ordering::Less;
+                if b.secret().is_none() && a.secret().is_some() {
+                    b.set_secret(a.set_secret(None));
                 }
-                if a_selfsig.is_none() && b_selfsig.is_some() {
-                    return Ordering::Greater;
-                }
-
-                // Sort by reversed revocation time (i.e., most
-                // recently revoked user id first).
-                let cmp = b.self_revocations[0].signature_creation_time().cmp(
-                    &a.self_revocations[0].signature_creation_time());
-                if cmp != Ordering::Equal {
-                    return cmp;
-                }
-
-                // They were revoked at the same time.  This is
-                // unlikely.  We just need to do something
-                // deterministic.
-            }
-
-            // Compare their primary status.
-            let a_primary =
-                a_selfsig.map(|sig| sig.primary_userid()).unwrap_or(None);
-            let b_primary =
-                b_selfsig.map(|sig| sig.primary_userid()).unwrap_or(None);
-
-            if a_primary.is_some() && b_primary.is_none() {
-                return Ordering::Less;
-            } else if a_primary.is_none() && b_primary.is_some() {
-                return Ordering::Greater;
-            } else if a_primary.is_some() && b_primary.is_some() {
-                // Both are marked as primary.  Fallback to the date.
-                let mut a_timestamp = time_zero;
-                if let Some(sig) = a_selfsig {
-                    if let Some(ts) = sig.signature_creation_time() {
-                        a_timestamp = ts;
-                    }
-                }
-                let mut b_timestamp = time_zero;
-                if let Some(sig) = a_selfsig {
-                    if let Some(ts) = sig.signature_creation_time() {
-                        b_timestamp = ts;
-                    }
-                }
-
-                // We want the more recent date first.
-                let cmp = b_timestamp.cmp(&a_timestamp);
-                if cmp != Ordering::Equal {
-                    return cmp;
-                }
-            }
-
-            // Fallback to a lexicographical comparison.
-            a.userid.value().cmp(&b.userid.value())
-        });
-
-        // Sort the signatures so that the current valid
-        // self-signature is last.
-        for attribute in &mut self.user_attributes {
-            attribute.selfsigs.sort_by(sig_cmp);
-            attribute.selfsigs.dedup_by_key(sig_key);
-
-            // There is no need to sort the certifications, but we do
-            // want to remove dups and sorting is a prerequisite.
-            attribute.certifications.sort_by(sig_cmp);
-            attribute.certifications.dedup_by_key(sig_key);
-
-            attribute.self_revocations.sort_by(sig_cmp);
-            attribute.self_revocations.dedup_by_key(sig_key);
-
-            attribute.other_revocations.sort_by(sig_cmp);
-            attribute.other_revocations.dedup_by_key(sig_key);
-        }
-
-        // Sort the user attributes in preparation for a dedup.  As
-        // for the user ids, we can't do the final sort here, because
-        // we rely on the self-signatures.
-        self.user_attributes.sort_by(
-            |a, b| a.user_attribute.value()
-                .cmp(&b.user_attribute.value()));
-
-        // And, dedup them.
-        self.user_attributes.dedup_by(|a, b| {
-            if a.user_attribute == b.user_attribute {
-                // Recall: if a and b are equal, a will be dropped.
-                b.selfsigs.append(&mut a.selfsigs);
-                b.selfsigs.sort_by(sig_cmp);
-                b.selfsigs.dedup_by_key(sig_key);
-
-                b.certifications.append(&mut a.certifications);
-                b.certifications.sort_by(sig_cmp);
-                b.certifications.dedup_by_key(sig_key);
-
-                b.self_revocations.append(&mut a.self_revocations);
-                b.self_revocations.sort_by(sig_cmp);
-                b.self_revocations.dedup_by_key(sig_key);
-
-                b.other_revocations.append(&mut a.self_revocations);
-                b.other_revocations.sort_by(sig_cmp);
-                b.other_revocations.dedup_by_key(sig_key);
-
-                true
-            } else {
-                false
-            }
-        });
-
-        self.user_attributes.sort_by(|a, b| {
-            // Compare their revocation status.  Components known be
-            // revoked come last.
-            let a_revoked = a.self_revocations.len() > 0;
-            let b_revoked = b.self_revocations.len() > 0;
-
-            if a_revoked && ! b_revoked {
-                return Ordering::Greater;
-            }
-            if ! a_revoked && b_revoked {
-                return Ordering::Less;
-            }
-
-            let a_selfsig = a.binding_signature();
-            let b_selfsig = b.binding_signature();
-
-            if a_revoked && b_revoked {
-                // Both are revoked.
-
-                // Sort user attributes that have at least one self
-                // signature towards the front.
-                if a_selfsig.is_some() && b_selfsig.is_none() {
-                    return Ordering::Less;
-                }
-                if a_selfsig.is_none() && b_selfsig.is_some() {
-                    return Ordering::Greater;
-                }
-
-                // Sort by reversed revocation time (i.e., most
-                // recently revoked user attribute first).
-                let cmp = b.self_revocations[0].signature_creation_time().cmp(
-                    &a.self_revocations[0].signature_creation_time());
-                if cmp != Ordering::Equal {
-                    return cmp;
-                }
-
-                // They were revoked at the same time.  This is
-                // unlikely.  We just need to do something
-                // deterministic.
-            }
-
-            // Compare their primary status.
-            let a_primary =
-                a_selfsig.map(|sig| sig.primary_userid()).unwrap_or(None);
-            let b_primary =
-                b_selfsig.map(|sig| sig.primary_userid()).unwrap_or(None);
-
-            if a_primary.is_some() && b_primary.is_none() {
-                return Ordering::Less;
-            } else if a_primary.is_none() && b_primary.is_some() {
-                return Ordering::Greater;
-            } else if a_primary.is_some() && b_primary.is_some() {
-                // Both are marked as primary.  Fallback to the date.
-                let mut a_timestamp = time_zero;
-                if let Some(sig) = a_selfsig {
-                    if let Some(ts) = sig.signature_creation_time() {
-                        a_timestamp = ts;
-                    }
-                }
-                let mut b_timestamp = time_zero;
-                if let Some(sig) = a_selfsig {
-                    if let Some(ts) = sig.signature_creation_time() {
-                        b_timestamp = ts;
-                    }
-                }
-
-                // We want the more recent date first.
-                let cmp = b_timestamp.cmp(&a_timestamp);
-                if cmp != Ordering::Equal {
-                    return cmp;
-                }
-            }
-
-            // Fallback to a lexicographical comparison.
-            a.user_attribute.value()
-                .cmp(&b.user_attribute.value())
-        });
-
-
-        // Sort the signatures so that the current valid
-        // self-signature is last.
-        for subkey in &mut self.subkeys {
-            subkey.selfsigs.sort_by(sig_cmp);
-            subkey.selfsigs.dedup_by_key(sig_key);
-
-            // There is no need to sort the certifications, but we do
-            // want to remove dups and sorting is a prerequisite.
-            subkey.certifications.sort_by(sig_cmp);
-            subkey.certifications.dedup_by_key(sig_key);
-
-            subkey.self_revocations.sort_by(sig_cmp);
-            subkey.self_revocations.dedup_by_key(sig_key);
-
-            subkey.other_revocations.sort_by(sig_cmp);
-            subkey.other_revocations.dedup_by_key(sig_key);
-        }
-
-        // Sort the subkeys in preparation for a dedup.  As for the
-        // user ids, we can't do the final sort here, because we rely
-        // on the self-signatures.
-        self.subkeys.sort_by(
-            |a, b| Key::public_cmp(&a.subkey, &b.subkey));
-
-        // And, dedup them.
-        //
-        // If the public keys match, but only one of them has a secret
-        // key, then merge the key and keep the secret key.
-        self.subkeys.dedup_by(|a, b| {
-            if Key::public_cmp(&a.subkey, &b.subkey) == Ordering::Equal
-                && (a.subkey.secret() == b.subkey.secret()
-                    || a.subkey.secret().is_none()
-                    || b.subkey.secret().is_none())
-            {
-                // Recall: if a and b are equal, a will be dropped.
-                if b.subkey.secret().is_none() && a.subkey.secret().is_some() {
-                    b.subkey.set_secret(a.subkey.set_secret(None));
-                }
-
-                b.selfsigs.append(&mut a.selfsigs);
-                b.selfsigs.sort_by(sig_cmp);
-                b.selfsigs.dedup_by_key(sig_key);
-
-                b.certifications.append(&mut a.certifications);
-                b.certifications.sort_by(sig_cmp);
-                b.certifications.dedup_by_key(sig_key);
-
-                b.self_revocations.append(&mut a.self_revocations);
-                b.self_revocations.sort_by(sig_cmp);
-                b.self_revocations.dedup_by_key(sig_key);
-
-                b.other_revocations.append(&mut a.self_revocations);
-                b.other_revocations.sort_by(sig_cmp);
-                b.other_revocations.dedup_by_key(sig_key);
-
-                true
-            } else {
-                false
-            }
-        });
-
-        self.subkeys.sort_by(|a, b| {
-            // Compare their revocation status.  Components known to be
-            // revoked come last.
-            let a_revoked = a.self_revocations.len() > 0;
-            let b_revoked = b.self_revocations.len() > 0;
-
-            if a_revoked && ! b_revoked {
-                return Ordering::Greater;
-            }
-            if ! a_revoked && b_revoked {
-                return Ordering::Less;
-            }
-
-            let a_selfsig = a.binding_signature();
-            let b_selfsig = b.binding_signature();
-
-            if a_revoked && b_revoked {
-                // Both are revoked.
-
-                // Sort keys that have at least one self signature
-                // towards the front.
-                if a_selfsig.is_some() && b_selfsig.is_none() {
-                    return Ordering::Less;
-                }
-                if a_selfsig.is_none() && b_selfsig.is_some() {
-                    return Ordering::Greater;
-                }
-
-                // Sort by reversed revocation time (i.e., most
-                // recently revoked key first).
-                let cmp = b.self_revocations[0].signature_creation_time().cmp(
-                    &a.self_revocations[0].signature_creation_time());
-                if cmp != Ordering::Equal {
-                    return cmp;
-                }
-
-                // They were revoked at the same time.  This is
-                // unlikely.  We just need to do something
-                // deterministic.
-            }
-
-            // Features.
-            let a_features =
-                a_selfsig.map(|sig| sig.features()).unwrap_or(Default::default());
-            let b_features =
-                b_selfsig.map(|sig| sig.features()).unwrap_or(Default::default());
-
-            let cmp = a_features.as_vec().cmp(&b_features.as_vec());
-            if cmp != Ordering::Equal {
-                return cmp;
-            }
-
-            // Creation time (more recent first).
-            let cmp = b.subkey.creation_time().cmp(&a.subkey.creation_time());
-            if cmp != Ordering::Equal {
-                return cmp;
-            }
-
-            // Fallback to the lexicographical comparison.
-            a.subkey.mpis().cmp(&b.subkey.mpis())
-        });
+            });
+        self.unknowns.sort_and_dedup(Unknown::cmp, |_, _| {});
 
         // In case we have subkeys bound to the primary, it must be
         // certification capable.
         if ! self.subkeys.is_empty() {
             let pk_can_certify =
-                self.primary_key_signature()
+                self.primary_key_signature(None)
                 .map(|sig| sig.key_flags().can_certify())
                 .unwrap_or(true);
 
             if ! pk_can_certify {
                 // Primary not certification capable, all binding sigs
                 // are invalid.
+                t!("Primary key not certification capable, dropping subkeys");
                 self.subkeys.clear();
             }
         }
@@ -2639,7 +1443,7 @@ impl TPK {
         // Note: just because the TPK doesn't indicate that a key is a
         // designed revoker doesn't mean that it isn't---we might just
         // be missing the signature.  In other words, this is a policy
-        // decision, but given how easy it could be to create rouge
+        // decision, but given how easy it could be to create rogue
         // revocations, is probably the better to reject such
         // signatures than to keep them around and have many keys
         // being shown as "potentially revoked".
@@ -2659,110 +1463,48 @@ impl TPK {
         self.primary().keyid()
     }
 
-    /// Converts the TPK into a sequence of packets.
+    /// Converts the TPK into an iterator over a sequence of packets.
     ///
-    /// This method discards an invalid components and bad signatures.
-    pub fn into_packets(self) -> Vec<Packet> {
-        let mut p : Vec<Packet> = Vec::new();
-
-        p.push(Packet::PublicKey(self.primary));
-
-        for s in self.primary_selfsigs.into_iter() {
-            p.push(Packet::Signature(s));
-        }
-        for s in self.primary_self_revocations.into_iter() {
-            p.push(Packet::Signature(s));
-        }
-        for s in self.primary_certifications.into_iter() {
-            p.push(Packet::Signature(s));
-        }
-        for s in self.primary_other_revocations.into_iter() {
-            p.push(Packet::Signature(s));
-        }
-
-        for u in self.userids.into_iter() {
-            p.push(Packet::UserID(u.userid));
-            for s in u.self_revocations.into_iter() {
-                p.push(Packet::Signature(s));
-            }
-            for s in u.selfsigs.into_iter() {
-                p.push(Packet::Signature(s));
-            }
-            for s in u.other_revocations.into_iter() {
-                p.push(Packet::Signature(s));
-            }
-            for s in u.certifications.into_iter() {
-                p.push(Packet::Signature(s));
-            }
-        }
-
-        for u in self.user_attributes.into_iter() {
-            p.push(Packet::UserAttribute(u.user_attribute));
-            for s in u.self_revocations.into_iter() {
-                p.push(Packet::Signature(s));
-            }
-            for s in u.selfsigs.into_iter() {
-                p.push(Packet::Signature(s));
-            }
-            for s in u.other_revocations.into_iter() {
-                p.push(Packet::Signature(s));
-            }
-            for s in u.certifications.into_iter() {
-                p.push(Packet::Signature(s));
-            }
-        }
-
-        let subkeys = self.subkeys;
-        for k in subkeys.into_iter() {
-            p.push(Packet::PublicSubkey(k.subkey));
-            for s in k.self_revocations.into_iter() {
-                p.push(Packet::Signature(s));
-            }
-            for s in k.selfsigs.into_iter() {
-                p.push(Packet::Signature(s));
-            }
-            for s in k.other_revocations.into_iter() {
-                p.push(Packet::Signature(s));
-            }
-            for s in k.certifications.into_iter() {
-                p.push(Packet::Signature(s));
-            }
-        }
-
-        p
+    /// This method discards invalid components and bad signatures.
+    pub fn into_packets(self) -> impl Iterator<Item=Packet> {
+        self.primary.into_packets()
+            .chain(self.userids.into_iter().flat_map(|b| b.into_packets()))
+            .chain(self.user_attributes.into_iter().flat_map(|b| b.into_packets()))
+            .chain(self.subkeys.into_iter().flat_map(|b| b.into_packets()))
     }
 
     /// Converts the TPK into a `PacketPile`.
     ///
-    /// This method discards an invalid components and bad signatures.
+    /// This method discards invalid components and bad signatures.
     pub fn into_packet_pile(self) -> PacketPile {
-        PacketPile::from(self.into_packets())
+        PacketPile::from(self.into_packets().collect::<Vec<Packet>>())
     }
 
     /// Merges `other` into `self`.
     ///
-    /// If `other` is a different key, then nothing is merged into
-    /// `self`, but `self` is still canonicalized.
+    /// If `other` is a different key, then an error is returned.
     pub fn merge(mut self, mut other: TPK) -> Result<Self> {
-        if self.primary().fingerprint() != other.primary().fingerprint() {
+        if self.primary().fingerprint()
+            != other.primary().fingerprint()
+        {
             // The primary key is not the same.  There is nothing to
             // do.
             return Err(Error::InvalidArgument(
                 "Primary key mismatch".into()).into());
         }
 
-        if self.primary.secret().is_none() && other.primary.secret().is_some() {
-            self.primary.set_secret(other.primary.set_secret(None));
+        if self.primary.key().secret().is_none() && other.primary.key().secret().is_some() {
+            self.primary.key_mut().set_secret(other.primary.key_mut().set_secret(None));
         }
 
-        self.primary_selfsigs.append(
-            &mut other.primary_selfsigs);
-        self.primary_certifications.append(
-            &mut other.primary_certifications);
-        self.primary_self_revocations.append(
-            &mut other.primary_self_revocations);
-        self.primary_other_revocations.append(
-            &mut other.primary_other_revocations);
+        self.primary.self_signatures.append(
+            &mut other.primary.self_signatures);
+        self.primary.certifications.append(
+            &mut other.primary.certifications);
+        self.primary.self_revocations.append(
+            &mut other.primary.self_revocations);
+        self.primary.other_revocations.append(
+            &mut other.primary.other_revocations);
 
         self.userids.append(&mut other.userids);
         self.user_attributes.append(&mut other.user_attributes);
@@ -2777,7 +1519,7 @@ impl TPK {
     /// This recanonicalizes the TPK.  If the packets are invalid,
     /// they are dropped.
     pub fn merge_packets(self, mut packets: Vec<Packet>) -> Result<Self> {
-        let mut combined = self.into_packets();
+        let mut combined = self.into_packets().collect::<Vec<_>>();
         combined.append(&mut packets);
         TPK::from_packet_pile(PacketPile::from(combined))
     }
@@ -2789,158 +1531,20 @@ impl TPK {
             return true;
         }
         self.subkeys().any(|sk| {
-            sk.binding_signature().is_some() && sk.subkey().secret().is_some()
+            sk.binding_signature(None).is_some() && sk.key().secret().is_some()
         })
     }
 }
 
 #[cfg(test)]
 mod test {
-    use serialize::Serialize;
+    use crate::serialize::Serialize;
     use super::*;
 
-    use KeyID;
-
-    #[test]
-    fn tokens() {
-        use self::lexer::{Token, Lexer};
-        use self::lexer::Token::*;
-        use self::grammar::TPKParser;
-
-        struct TestVector<'a> {
-            s: &'a [Token],
-            result: bool,
-        }
-
-        let test_vectors = [
-            TestVector {
-                s: &[ PublicKey(None) ],
-                result: true,
-            },
-            TestVector {
-                s: &[ SecretKey(None) ],
-                result: true,
-            },
-            TestVector {
-                s: &[ PublicKey(None), Signature(None) ],
-                result: true,
-            },
-            TestVector {
-                s: &[ PublicKey(None), Signature(None), Signature(None) ],
-                result: true,
-            },
-
-            TestVector {
-                s: &[ PublicKey(None), Signature(None), Signature(None),
-                     UserID(None) ],
-                result: true,
-            },
-            TestVector {
-                s: &[ PublicKey(None), Signature(None), Signature(None),
-                     UserID(None), Signature(None) ],
-                result: true,
-            },
-            TestVector {
-                s: &[ PublicKey(None), Signature(None), Signature(None),
-                     UserAttribute(None) ],
-                result: true,
-            },
-            TestVector {
-                s: &[ PublicKey(None), Signature(None), Signature(None),
-                     UserAttribute(None), Signature(None) ],
-                result: true,
-            },
-            TestVector {
-                s: &[ PublicKey(None), Signature(None), Signature(None),
-                     PublicSubkey(None) ],
-                result: true,
-            },
-            TestVector {
-                s: &[ PublicKey(None), Signature(None), Signature(None),
-                     PublicSubkey(None), Signature(None) ],
-                result: true,
-            },
-            TestVector {
-                s: &[ PublicKey(None), Signature(None), Signature(None),
-                     SecretSubkey(None) ],
-                result: true,
-            },
-            TestVector {
-                s: &[ PublicKey(None), Signature(None), Signature(None),
-                     SecretSubkey(None), Signature(None) ],
-                result: true,
-            },
-
-            TestVector {
-                s: &[ PublicKey(None), Signature(None), Signature(None),
-                      SecretSubkey(None), Signature(None),
-                      SecretSubkey(None), Signature(None),
-                      SecretSubkey(None), Signature(None),
-                      SecretSubkey(None), Signature(None),
-                      SecretSubkey(None), Signature(None),
-                      UserID(None), Signature(None),
-                        Signature(None), Signature(None),
-                      SecretSubkey(None), Signature(None),
-                      UserAttribute(None), Signature(None),
-                      Signature(None), Signature(None),
-                      SecretSubkey(None), Signature(None),
-                      UserID(None),
-                      UserAttribute(None), Signature(None),
-                        Signature(None), Signature(None),
-                ],
-                result: true,
-            },
-
-            TestVector {
-                s: &[ PublicKey(None), Signature(None), Signature(None),
-                      PublicKey(None), Signature(None), Signature(None),
-                ],
-                result: false,
-            },
-            TestVector {
-                s: &[ PublicKey(None), Signature(None), Signature(None),
-                      SecretKey(None), Signature(None), Signature(None),
-                ],
-                result: false,
-            },
-            TestVector {
-                s: &[ SecretKey(None), Signature(None), Signature(None),
-                      SecretKey(None), Signature(None), Signature(None),
-                ],
-                result: false,
-            },
-            TestVector {
-                s: &[ SecretKey(None), Signature(None), Signature(None),
-                      PublicKey(None), Signature(None), Signature(None),
-                ],
-                result: false,
-            },
-            TestVector {
-                s: &[ SecretSubkey(None), Signature(None), Signature(None),
-                      PublicSubkey(None), Signature(None), Signature(None),
-                ],
-                result: false,
-            },
-        ];
-
-        for v in test_vectors.into_iter() {
-            if v.result {
-                let mut l = TPKValidator::new();
-                for token in v.s.into_iter() {
-                    l.push_token((*token).clone());
-                    assert_match!(TPKValidity::TPKPrefix = l.check());
-                }
-
-                l.finish();
-                assert_match!(TPKValidity::TPK = l.check());
-            }
-
-            match TPKParser::new().parse(Lexer::from_tokens(v.s)) {
-                Ok(r) => assert!(v.result, "Parsing: {:?} => {:?}", v.s, r),
-                Err(e) => assert!(! v.result, "Parsing: {:?} => {:?}", v.s, e),
-            }
-        }
-    }
+    use crate::{
+        KeyID,
+        constants::KeyFlags,
+    };
 
     fn parse_tpk(data: &[u8], as_message: bool) -> Result<TPK> {
         if as_message {
@@ -2953,30 +1557,30 @@ mod test {
 
     #[test]
     fn broken() {
-        use conversions::Time;
+        use crate::conversions::Time;
         for i in 0..2 {
-            let tpk = parse_tpk(::tests::key("testy-broken-no-pk.pgp"),
+            let tpk = parse_tpk(crate::tests::key("testy-broken-no-pk.pgp"),
                                 i == 0);
             assert_match!(Error::MalformedTPK(_)
                           = tpk.err().unwrap().downcast::<Error>().unwrap());
 
             // According to 4880, a TPK must have a UserID.  But, we
             // don't require it.
-            let tpk = parse_tpk(::tests::key("testy-broken-no-uid.pgp"),
+            let tpk = parse_tpk(crate::tests::key("testy-broken-no-uid.pgp"),
                                 i == 0);
             assert!(tpk.is_ok());
 
             // We have:
             //
             //   [ pk, user id, sig, subkey ]
-            let tpk = parse_tpk(::tests::key("testy-broken-no-sig-on-subkey.pgp"),
+            let tpk = parse_tpk(crate::tests::key("testy-broken-no-sig-on-subkey.pgp"),
                                 i == 0).unwrap();
-            assert_eq!(tpk.primary.creation_time().to_pgp().unwrap(), 1511355130);
+            assert_eq!(tpk.primary.key().creation_time().to_pgp().unwrap(), 1511355130);
             assert_eq!(tpk.userids.len(), 1);
-            assert_eq!(tpk.userids[0].userid.value(),
+            assert_eq!(tpk.userids[0].userid().value(),
                        &b"Testy McTestface <testy@example.org>"[..]);
-            assert_eq!(tpk.userids[0].selfsigs.len(), 1);
-            assert_eq!(tpk.userids[0].selfsigs[0].hash_prefix(),
+            assert_eq!(tpk.userids[0].self_signatures.len(), 1);
+            assert_eq!(tpk.userids[0].self_signatures[0].hash_prefix(),
                        &[ 0xc6, 0x8f ]);
             assert_eq!(tpk.user_attributes.len(), 0);
             assert_eq!(tpk.subkeys.len(), 0);
@@ -2985,47 +1589,47 @@ mod test {
 
     #[test]
     fn basics() {
-        use conversions::Time;
+        use crate::conversions::Time;
         for i in 0..2 {
-            let tpk = parse_tpk(::tests::key("testy.pgp"),
+            let tpk = parse_tpk(crate::tests::key("testy.pgp"),
                                 i == 0).unwrap();
-            assert_eq!(tpk.primary.creation_time().to_pgp().unwrap(), 1511355130);
+            assert_eq!(tpk.primary.key().creation_time().to_pgp().unwrap(), 1511355130);
             assert_eq!(tpk.fingerprint().to_hex(),
                        "3E8877C877274692975189F5D03F6F865226FE8B");
 
             assert_eq!(tpk.userids.len(), 1, "number of userids");
-            assert_eq!(tpk.userids[0].userid.value(),
+            assert_eq!(tpk.userids[0].userid().value(),
                        &b"Testy McTestface <testy@example.org>"[..]);
-            assert_eq!(tpk.userids[0].selfsigs.len(), 1);
-            assert_eq!(tpk.userids[0].selfsigs[0].hash_prefix(),
+            assert_eq!(tpk.userids[0].self_signatures.len(), 1);
+            assert_eq!(tpk.userids[0].self_signatures[0].hash_prefix(),
                        &[ 0xc6, 0x8f ]);
 
             assert_eq!(tpk.user_attributes.len(), 0);
 
             assert_eq!(tpk.subkeys.len(), 1, "number of subkeys");
-            assert_eq!(tpk.subkeys[0].subkey.creation_time().to_pgp().unwrap(),
+            assert_eq!(tpk.subkeys[0].key().creation_time().to_pgp().unwrap(),
                        1511355130);
-            assert_eq!(tpk.subkeys[0].selfsigs[0].hash_prefix(),
+            assert_eq!(tpk.subkeys[0].self_signatures[0].hash_prefix(),
                        &[ 0xb7, 0xb9 ]);
 
-            let tpk = parse_tpk(::tests::key("testy-no-subkey.pgp"),
+            let tpk = parse_tpk(crate::tests::key("testy-no-subkey.pgp"),
                                 i == 0).unwrap();
-            assert_eq!(tpk.primary.creation_time().to_pgp().unwrap(), 1511355130);
+            assert_eq!(tpk.primary.key().creation_time().to_pgp().unwrap(), 1511355130);
             assert_eq!(tpk.fingerprint().to_hex(),
                        "3E8877C877274692975189F5D03F6F865226FE8B");
 
             assert_eq!(tpk.user_attributes.len(), 0);
 
             assert_eq!(tpk.userids.len(), 1, "number of userids");
-            assert_eq!(tpk.userids[0].userid.value(),
+            assert_eq!(tpk.userids[0].userid().value(),
                        &b"Testy McTestface <testy@example.org>"[..]);
-            assert_eq!(tpk.userids[0].selfsigs.len(), 1);
-            assert_eq!(tpk.userids[0].selfsigs[0].hash_prefix(),
+            assert_eq!(tpk.userids[0].self_signatures.len(), 1);
+            assert_eq!(tpk.userids[0].self_signatures[0].hash_prefix(),
                        &[ 0xc6, 0x8f ]);
 
             assert_eq!(tpk.subkeys.len(), 0, "number of subkeys");
 
-            let tpk = parse_tpk(::tests::key("testy.asc"), i == 0).unwrap();
+            let tpk = parse_tpk(crate::tests::key("testy.asc"), i == 0).unwrap();
             assert_eq!(tpk.fingerprint().to_hex(),
                        "3E8877C877274692975189F5D03F6F865226FE8B");
         }
@@ -3035,7 +1639,7 @@ mod test {
     fn only_a_public_key() {
         // Make sure the TPK parser can parse a key that just consists
         // of a public key---no signatures, no user ids, nothing.
-        let tpk = TPK::from_bytes(::tests::key("testy-only-a-pk.pgp")).unwrap();
+        let tpk = TPK::from_bytes(crate::tests::key("testy-only-a-pk.pgp")).unwrap();
         assert_eq!(tpk.userids.len(), 0);
         assert_eq!(tpk.user_attributes.len(), 0);
         assert_eq!(tpk.subkeys.len(), 0);
@@ -3043,7 +1647,7 @@ mod test {
 
     #[test]
     fn merge() {
-        use ::tests::key;
+        use crate::tests::key;
         let tpk_base = TPK::from_bytes(key("bannon-base.gpg")).unwrap();
 
         // When we merge it with itself, we should get the exact same
@@ -3104,7 +1708,7 @@ mod test {
             .merge(tpk_add_subkey_1.clone()).unwrap();
         assert_eq!(tpk_all_subkeys, merged);
 
-        // Merge alot.
+        // Merge a lot.
         let merged = tpk_base.clone()
             .merge(tpk_add_subkey_1.clone()).unwrap()
             .merge(tpk_add_subkey_1.clone()).unwrap()
@@ -3159,20 +1763,20 @@ mod test {
             .unwrap();
 
         assert!(tpk_donald_signs_base.userids.len() == 1);
-        assert!(tpk_donald_signs_base.userids[0].selfsigs.len() == 1);
+        assert!(tpk_donald_signs_base.userids[0].self_signatures.len() == 1);
         assert!(tpk_base.userids[0].certifications.len() == 0);
         assert!(tpk_donald_signs_base.userids[0].certifications.len() == 1);
 
         let merged = tpk_donald_signs_base.clone()
             .merge(tpk_ivanka_signs_base.clone()).unwrap();
         assert!(merged.userids.len() == 1);
-        assert!(merged.userids[0].selfsigs.len() == 1);
+        assert!(merged.userids[0].self_signatures.len() == 1);
         assert!(merged.userids[0].certifications.len() == 2);
 
         let merged = tpk_donald_signs_base.clone()
             .merge(tpk_donald_signs_all.clone()).unwrap();
         assert!(merged.userids.len() == 3);
-        assert!(merged.userids[0].selfsigs.len() == 1);
+        assert!(merged.userids[0].self_signatures.len() == 1);
         // There should be two certifications from the Donald on the
         // first user id.
         assert!(merged.userids[0].certifications.len() == 2);
@@ -3184,7 +1788,7 @@ mod test {
             .merge(tpk_ivanka_signs_base.clone()).unwrap()
             .merge(tpk_ivanka_signs_all.clone()).unwrap();
         assert!(merged.userids.len() == 3);
-        assert!(merged.userids[0].selfsigs.len() == 1);
+        assert!(merged.userids[0].self_signatures.len() == 1);
         // There should be two certifications from each of the Donald
         // and Ivanka on the first user id, and one each on the rest.
         assert!(merged.userids[0].certifications.len() == 4);
@@ -3202,19 +1806,12 @@ mod test {
             .merge(tpk_donald_signs_all.clone()).unwrap()
             .merge(tpk_ivanka_signs_all.clone()).unwrap();
         assert!(merged.userids.len() == 3);
-        assert!(merged.userids[0].selfsigs.len() == 1);
+        assert!(merged.userids[0].self_signatures.len() == 1);
         // There should be two certifications from each of the Donald
         // and Ivanka on the first user id, and one each on the rest.
         assert!(merged.userids[0].certifications.len() == 4);
         assert!(merged.userids[1].certifications.len() == 2);
         assert!(merged.userids[2].certifications.len() == 2);
-    }
-
-    #[test]
-    fn key_iter_test() {
-        let key = TPK::from_bytes(::tests::key("neal.pgp")).unwrap();
-        assert_eq!(1 + key.subkeys().count(),
-                   key.keys_all().count());
     }
 
     #[test]
@@ -3258,11 +1855,11 @@ mod test {
         // 21/20. auth subkey #3: A3506AFB820ABD08 (bad)
         // 22/19. sig over subkey #2
 
-        let tpk = TPK::from_bytes(::tests::key("neal-sigs-out-of-order.pgp"))
+        let tpk = TPK::from_bytes(crate::tests::key("neal-sigs-out-of-order.pgp"))
             .unwrap();
 
         let mut userids = tpk.userids()
-            .map(|u| String::from_utf8_lossy(u.userid.value()).into_owned())
+            .map(|u| String::from_utf8_lossy(u.userid().value()).into_owned())
             .collect::<Vec<String>>();
         userids.sort();
 
@@ -3276,7 +1873,7 @@ mod test {
                    ]);
 
         let mut subkeys = tpk.subkeys()
-            .map(|sk| Some(sk.subkey.keyid()))
+            .map(|sk| Some(sk.key().keyid()))
             .collect::<Vec<Option<KeyID>>>();
         subkeys.sort();
         assert_eq!(subkeys,
@@ -3288,10 +1885,10 @@ mod test {
         // DKG's key has all of the self-signatures moved to the last
         // subkey; all user ids/user attributes/subkeys have nothing.
         let tpk =
-            TPK::from_bytes(::tests::key("dkg-sigs-out-of-order.pgp")).unwrap();
+            TPK::from_bytes(crate::tests::key("dkg-sigs-out-of-order.pgp")).unwrap();
 
         let mut userids = tpk.userids()
-            .map(|u| String::from_utf8_lossy(u.userid.value()).into_owned())
+            .map(|u| String::from_utf8_lossy(u.userid().value()).into_owned())
             .collect::<Vec<String>>();
         userids.sort();
 
@@ -3307,7 +1904,7 @@ mod test {
         assert_eq!(tpk.user_attributes.len(), 1);
 
         let mut subkeys = tpk.subkeys()
-            .map(|sk| Some(sk.subkey.keyid()))
+            .map(|sk| Some(sk.key().keyid()))
             .collect::<Vec<Option<KeyID>>>();
         subkeys.sort();
         assert_eq!(subkeys,
@@ -3333,8 +1930,8 @@ mod test {
     // dkg's includes some v3 signatures.
     #[test]
     fn v3_packets() {
-        let dkg = ::tests::key("dkg.gpg");
-        let lutz = ::tests::key("lutz.gpg");
+        let dkg = crate::tests::key("dkg.gpg");
+        let lutz = crate::tests::key("lutz.gpg");
 
         // v3 primary keys are not supported.
         let tpk = TPK::from_bytes(lutz);
@@ -3347,8 +1944,8 @@ mod test {
 
     #[test]
     fn keyring_with_v3_public_keys() {
-        let dkg = ::tests::key("dkg.gpg");
-        let lutz = ::tests::key("lutz.gpg");
+        let dkg = crate::tests::key("dkg.gpg");
+        let lutz = crate::tests::key("lutz.gpg");
 
         let tpk = TPK::from_bytes(dkg);
         assert!(tpk.is_ok(), "dkg.gpg: {:?}", tpk);
@@ -3414,17 +2011,17 @@ mod test {
 
     #[test]
     fn merge_with_incomplete_update() {
-        let tpk = TPK::from_bytes(::tests::key("about-to-expire.expired.pgp"))
+        let tpk = TPK::from_bytes(crate::tests::key("about-to-expire.expired.pgp"))
             .unwrap();
-        assert!(tpk.primary_key_signature().unwrap()
-                .key_expired(tpk.primary()));
+        assert!(tpk.primary_key_signature(None).unwrap()
+                .key_expired(tpk.primary(), None));
 
         let update =
-            TPK::from_bytes(::tests::key("about-to-expire.update-no-uid.pgp"))
+            TPK::from_bytes(crate::tests::key("about-to-expire.update-no-uid.pgp"))
             .unwrap();
         let tpk = tpk.merge(update).unwrap();
-        assert!(! tpk.primary_key_signature().unwrap()
-                .key_expired(tpk.primary()));
+        assert!(! tpk.primary_key_signature(None).unwrap()
+                .key_expired(tpk.primary(), None));
     }
 
     #[test]
@@ -3432,25 +2029,25 @@ mod test {
         // Make sure TPK::from_packet_pile(TPK::to_packet_pile(tpk))
         // does a clean round trip.
 
-        let tpk = TPK::from_bytes(::tests::key("already-revoked.pgp")).unwrap();
+        let tpk = TPK::from_bytes(crate::tests::key("already-revoked.pgp")).unwrap();
         let tpk2
             = TPK::from_packet_pile(tpk.clone().into_packet_pile()).unwrap();
         assert_eq!(tpk, tpk2);
 
         let tpk = TPK::from_bytes(
-            ::tests::key("already-revoked-direct-revocation.pgp")).unwrap();
+            crate::tests::key("already-revoked-direct-revocation.pgp")).unwrap();
         let tpk2
             = TPK::from_packet_pile(tpk.clone().into_packet_pile()).unwrap();
         assert_eq!(tpk, tpk2);
 
         let tpk = TPK::from_bytes(
-            ::tests::key("already-revoked-userid-revocation.pgp")).unwrap();
+            crate::tests::key("already-revoked-userid-revocation.pgp")).unwrap();
         let tpk2
             = TPK::from_packet_pile(tpk.clone().into_packet_pile()).unwrap();
         assert_eq!(tpk, tpk2);
 
         let tpk = TPK::from_bytes(
-            ::tests::key("already-revoked-subkey-revocation.pgp")).unwrap();
+            crate::tests::key("already-revoked-subkey-revocation.pgp")).unwrap();
         let tpk2
             = TPK::from_packet_pile(tpk.clone().into_packet_pile()).unwrap();
         assert_eq!(tpk, tpk2);
@@ -3458,13 +2055,14 @@ mod test {
 
     #[test]
     fn merge_packets() {
-        use armor;
+        use crate::armor;
+        use crate::packet::Tag;
 
         // Merge the revocation certificate into the TPK and make sure
         // it shows up.
-        let tpk = TPK::from_bytes(::tests::key("already-revoked.pgp")).unwrap();
+        let tpk = TPK::from_bytes(crate::tests::key("already-revoked.pgp")).unwrap();
 
-        let rev = ::tests::key("already-revoked.rev");
+        let rev = crate::tests::key("already-revoked.rev");
         let rev = PacketPile::from_reader(armor::Reader::new(&rev[..], None))
             .unwrap();
 
@@ -3472,55 +2070,83 @@ mod test {
         assert_eq!(rev.len(), 1);
         assert_eq!(rev[0].tag(), Tag::Signature);
 
-        let packets_pre_merge = tpk.clone().into_packets().len();
+        let packets_pre_merge = tpk.clone().into_packets().count();
         let tpk = tpk.merge_packets(rev).unwrap();
-        let packets_post_merge = tpk.clone().into_packets().len();
+        let packets_post_merge = tpk.clone().into_packets().count();
         assert_eq!(packets_post_merge, packets_pre_merge + 1);
     }
 
     #[test]
     fn set_expiry() {
-        let now = time::now_utc();
+        let now = time::SystemTime::now().canonicalize();
+        let a_sec = time::Duration::new(1, 0);
 
         let (tpk, _) = TPKBuilder::autocrypt(None, Some("Test"))
             .generate().unwrap();
-        let expiry_orig = tpk.primary_key_signature().unwrap()
+        let expiry_orig = tpk.primary_key_signature(None).unwrap()
             .key_expiration_time()
             .expect("Keys expire by default.");
 
-        let mut keypair = tpk.primary().clone().into_keypair().unwrap();
+        let mut keypair = tpk.primary().clone().mark_parts_secret()
+            .unwrap().into_keypair().unwrap();
 
         // Clear the expiration.
+        let as_of1 = now + time::Duration::new(10, 0);
         let tpk = tpk.set_expiry_as_of(
             &mut keypair,
             None,
-            now + time::Duration::seconds(10)).unwrap();
+            as_of1).unwrap();
         {
-            let expiry = tpk.primary_key_signature().unwrap()
-                .key_expiration_time();
-            assert_eq!(expiry, None);
+            // If t < as_of1, we should get the original expiry.
+            assert_eq!(tpk.primary_key_signature(now).unwrap()
+                           .key_expiration_time(),
+                       Some(expiry_orig));
+            assert_eq!(tpk.primary_key_signature(as_of1 - a_sec).unwrap()
+                           .key_expiration_time(),
+                       Some(expiry_orig));
+            // If t >= as_of1, we should get the new expiry.
+            assert_eq!(tpk.primary_key_signature(as_of1).unwrap()
+                           .key_expiration_time(),
+                       None);
         }
 
         // Shorten the expiry.  (The default expiration should be at
         // least a few weeks, so removing an hour should still keep us
         // over 0.)
-        let expiry_expected = expiry_orig - time::Duration::hours(1);
-        assert!(expiry_expected > time::Duration::seconds(0));
+        let expiry_new = expiry_orig - time::Duration::new(60 * 60, 0);
+        assert!(expiry_new > time::Duration::new(0, 0));
 
+        let as_of2 = as_of1 + time::Duration::new(10, 0);
         let tpk = tpk.set_expiry_as_of(
             &mut keypair,
-            Some(expiry_expected),
-            now + time::Duration::seconds(20)).unwrap();
+            Some(expiry_new),
+            as_of2).unwrap();
         {
-            let expiry = tpk.primary_key_signature().unwrap()
-                .key_expiration_time();
-            assert_eq!(expiry.unwrap(), expiry_expected);
+            // If t < as_of1, we should get the original expiry.
+            assert_eq!(tpk.primary_key_signature(now).unwrap()
+                           .key_expiration_time(),
+                       Some(expiry_orig));
+            assert_eq!(tpk.primary_key_signature(as_of1 - a_sec).unwrap()
+                           .key_expiration_time(),
+                       Some(expiry_orig));
+            // If as_of1 <= t < as_of2, we should get the second
+            // expiry (None).
+            assert_eq!(tpk.primary_key_signature(as_of1).unwrap()
+                           .key_expiration_time(),
+                       None);
+            assert_eq!(tpk.primary_key_signature(as_of2 - a_sec).unwrap()
+                           .key_expiration_time(),
+                       None);
+            // If t <= as_of2, we should get the new expiry.
+            assert_eq!(tpk.primary_key_signature(as_of2).unwrap()
+                           .key_expiration_time(),
+                       Some(expiry_new));
         }
     }
 
     #[test]
     fn direct_key_sig() {
-        use constants::SignatureType;
+        use crate::constants::SignatureType;
         // XXX: testing sequoia against itself isn't optimal, but I couldn't
         // find a tool to generate direct key signatures :-(
 
@@ -3530,7 +2156,8 @@ mod test {
         tpk1.serialize(&mut buf).unwrap();
         let tpk2 = TPK::from_bytes(&buf).unwrap();
 
-        assert_eq!(tpk2.primary_key_signature().unwrap().sigtype(), SignatureType::DirectKey);
+        assert_eq!(tpk2.primary_key_signature(None).unwrap().typ(),
+                   SignatureType::DirectKey);
         assert_eq!(tpk2.userids().count(), 0);
     }
 
@@ -3540,11 +2167,11 @@ mod test {
                  userid_revoked: bool, subkey_revoked: bool) {
             // If we have a user id---even if it is revoked---we have
             // a primary key signature.
-            let sigtype = tpk.primary_key_signature().unwrap().sigtype();
-            assert_eq!(sigtype, SignatureType::PositiveCertificate,
+            let typ = tpk.primary_key_signature(None).unwrap().typ();
+            assert_eq!(typ, SignatureType::PositiveCertificate,
                        "{:#?}", tpk);
 
-            let revoked = tpk.revocation_status();
+            let revoked = tpk.revoked(None);
             if direct_revoked {
                 assert_match!(RevocationStatus::Revoked(_) = revoked,
                               "{:#?}", tpk);
@@ -3554,8 +2181,8 @@ mod test {
             }
 
             for userid in tpk.userids() {
-                let sigtype = userid.binding_signature().unwrap().sigtype();
-                assert_eq!(sigtype, SignatureType::PositiveCertificate,
+                let typ = userid.binding_signature(None).unwrap().typ();
+                assert_eq!(typ, SignatureType::PositiveCertificate,
                            "{:#?}", tpk);
 
                 let revoked = userid.revoked(None);
@@ -3568,8 +2195,8 @@ mod test {
             }
 
             for subkey in tpk.subkeys() {
-                let sigtype = subkey.binding_signature().unwrap().sigtype();
-                assert_eq!(sigtype, SignatureType::SubkeyBinding,
+                let typ = subkey.binding_signature(None).unwrap().typ();
+                assert_eq!(typ, SignatureType::SubkeyBinding,
                            "{:#?}", tpk);
 
                 let revoked = subkey.revoked(None);
@@ -3582,11 +2209,11 @@ mod test {
             }
         }
 
-        let tpk = TPK::from_bytes(::tests::key("already-revoked.pgp")).unwrap();
+        let tpk = TPK::from_bytes(crate::tests::key("already-revoked.pgp")).unwrap();
         check(&tpk, false, false, false);
 
         let d = TPK::from_bytes(
-            ::tests::key("already-revoked-direct-revocation.pgp")).unwrap();
+            crate::tests::key("already-revoked-direct-revocation.pgp")).unwrap();
         check(&d, true, false, false);
 
         check(&tpk.clone().merge(d.clone()).unwrap(), true, false, false);
@@ -3594,14 +2221,14 @@ mod test {
         check(&d.clone().merge(tpk.clone()).unwrap(), true, false, false);
 
         let u = TPK::from_bytes(
-            ::tests::key("already-revoked-userid-revocation.pgp")).unwrap();
+            crate::tests::key("already-revoked-userid-revocation.pgp")).unwrap();
         check(&u, false, true, false);
 
         check(&tpk.clone().merge(u.clone()).unwrap(), false, true, false);
         check(&u.clone().merge(tpk.clone()).unwrap(), false, true, false);
 
         let k = TPK::from_bytes(
-            ::tests::key("already-revoked-subkey-revocation.pgp")).unwrap();
+            crate::tests::key("already-revoked-subkey-revocation.pgp")).unwrap();
         check(&k, false, false, true);
 
         check(&tpk.clone().merge(k.clone()).unwrap(), false, false, true);
@@ -3631,16 +2258,75 @@ mod test {
         let (tpk, _) = TPKBuilder::autocrypt(None, Some("Test"))
             .generate().unwrap();
         assert_eq!(RevocationStatus::NotAsFarAsWeKnow,
-                   tpk.revocation_status());
+                   tpk.revoked(None));
 
-        let mut keypair = tpk.primary().clone().into_keypair().unwrap();
-        let sig = tpk.revoke(&mut keypair,
-                             ReasonForRevocation::KeyCompromised,
-                             b"It was the maid :/").unwrap();
-        assert_eq!(sig.sigtype(), SignatureType::KeyRevocation);
+        let mut keypair = tpk.primary().clone().mark_parts_secret()
+            .unwrap().into_keypair().unwrap();
+
+        let sig = TPKRevocationBuilder::new()
+            .set_reason_for_revocation(
+                ReasonForRevocation::KeyCompromised,
+                b"It was the maid :/").unwrap()
+            .build(&mut keypair, &tpk, None)
+            .unwrap();
+        assert_eq!(sig.typ(), SignatureType::KeyRevocation);
+        assert_eq!(sig.issuer(), Some(tpk.primary().keyid()));
+        assert_eq!(sig.issuer_fingerprint(),
+                   Some(tpk.primary().fingerprint()));
 
         let tpk = tpk.merge_packets(vec![sig.into()]).unwrap();
-        assert_match!(RevocationStatus::Revoked(_) = tpk.revocation_status());
+        assert_match!(RevocationStatus::Revoked(_) = tpk.revoked(None));
+
+
+        // Have other revoke tpk.
+        let (other, _) = TPKBuilder::autocrypt(None, Some("Test 2"))
+            .generate().unwrap();
+
+        let mut keypair = other.primary().clone().mark_parts_secret()
+            .unwrap().into_keypair().unwrap();
+
+        let sig = TPKRevocationBuilder::new()
+            .set_reason_for_revocation(
+                ReasonForRevocation::KeyCompromised,
+                b"It was the maid :/").unwrap()
+            .build(&mut keypair, &tpk, None)
+            .unwrap();
+
+        assert_eq!(sig.typ(), SignatureType::KeyRevocation);
+        assert_eq!(sig.issuer(), Some(other.primary().keyid()));
+        assert_eq!(sig.issuer_fingerprint(),
+                   Some(other.primary().fingerprint()));
+    }
+
+    #[test]
+    fn revoke_subkey() {
+        use std::{thread, time};
+
+        let (tpk, _) = TPKBuilder::new()
+            .add_encryption_subkey()
+            .generate().unwrap();
+
+        thread::sleep(time::Duration::from_secs(2));
+        let sig = {
+            let subkey = tpk.subkeys().nth(0).unwrap();
+            assert_eq!(RevocationStatus::NotAsFarAsWeKnow, subkey.revoked(None));
+
+            let mut keypair = tpk.primary().clone().mark_parts_secret()
+                .unwrap().into_keypair().unwrap();
+            SubkeyRevocationBuilder::new()
+                .set_reason_for_revocation(
+                    ReasonForRevocation::UIDRetired,
+                    b"It was the maid :/").unwrap()
+                .build(&mut keypair, &tpk, subkey.key(), None)
+                .unwrap()
+        };
+        assert_eq!(sig.typ(), SignatureType::SubkeyRevocation);
+        let tpk = tpk.merge_packets(vec![sig.into()]).unwrap();
+        assert_eq!(RevocationStatus::NotAsFarAsWeKnow,
+                   tpk.revoked(None));
+
+        let subkey = tpk.subkeys().nth(0).unwrap();
+        assert_match!(RevocationStatus::Revoked(_) = subkey.revoked(None));
     }
 
     #[test]
@@ -3657,100 +2343,329 @@ mod test {
             let uid = tpk.userids().skip(1).next().unwrap();
             assert_eq!(RevocationStatus::NotAsFarAsWeKnow, uid.revoked(None));
 
-            let mut keypair = tpk.primary().clone().into_keypair().unwrap();
-            uid.userid()
-                .revoke(&mut keypair, &tpk,
-                        ReasonForRevocation::UIDRetired,
-                        b"It was the maid :/", None, None).unwrap()
+            let mut keypair = tpk.primary().clone().mark_parts_secret()
+                .unwrap().into_keypair().unwrap();
+            UserIDRevocationBuilder::new()
+                .set_reason_for_revocation(
+                    ReasonForRevocation::UIDRetired,
+                    b"It was the maid :/").unwrap()
+                .build(&mut keypair, &tpk, uid.userid(), None)
+                .unwrap()
         };
-        assert_eq!(sig.sigtype(), SignatureType::CertificateRevocation);
+        assert_eq!(sig.typ(), SignatureType::CertificateRevocation);
         let tpk = tpk.merge_packets(vec![sig.into()]).unwrap();
         assert_eq!(RevocationStatus::NotAsFarAsWeKnow,
-                   tpk.revocation_status());
+                   tpk.revoked(None));
 
         let uid = tpk.userids().skip(1).next().unwrap();
         assert_match!(RevocationStatus::Revoked(_) = uid.revoked(None));
     }
 
     #[test]
-    fn revoked_time() {
-        use packet::Features;
-        use packet::key::Key4;
-        use constants::Curve;
+    fn key_revoked() {
+        use crate::constants::Features;
+        use crate::packet::key::Key4;
+        use crate::constants::Curve;
         use rand::{thread_rng, Rng, distributions::Open01};
         /*
          * t1: 1st binding sig ctime
-         * t2: rev sig ctime
+         * t2: soft rev sig ctime
          * t3: 2nd binding sig ctime
+         * t4: hard rev sig ctime
          *
          * [0,t1): invalid, but not revoked
-         * [t1,t2): valid
-         * [t2,t3): revoked
-         * [t3,inf): valid again
+         * [t1,t2): valid (not revocations)
+         * [t2,t3): revoked (soft revocation)
+         * [t3,t4): valid again (new self sig)
+         * [t4,inf): hard revocation (hard revocation)
+         *
+         * One the hard revocation is merged, then the TPK is
+         * considered revoked at all times.
          */
-        let t1 = time::strptime("2000-1-1", "%F").unwrap();
-        let t2 = time::strptime("2001-1-1", "%F").unwrap();
-        let t3 = time::strptime("2002-1-1", "%F").unwrap();
-        let key: Key = Key4::generate_ecc(true, Curve::Ed25519).unwrap().into();
+        let t1 = time::UNIX_EPOCH + time::Duration::new(946681200, 0);  // 2000-1-1
+        let t2 = time::UNIX_EPOCH + time::Duration::new(978303600, 0);  // 2001-1-1
+        let t3 = time::UNIX_EPOCH + time::Duration::new(1009839600, 0); // 2002-1-1
+        let t4 = time::UNIX_EPOCH + time::Duration::new(1041375600, 0); // 2003-1-1
+
+        let key: key::SecretKey
+            = Key4::generate_ecc(true, Curve::Ed25519).unwrap().into();
         let mut pair = key.clone().into_keypair().unwrap();
-        let (bind1, rev, bind2) = {
+        let (bind1, rev1, bind2, rev2) = {
             let bind1 = signature::Builder::new(SignatureType::DirectKey)
                 .set_features(&Features::sequoia()).unwrap()
                 .set_key_flags(&KeyFlags::default()).unwrap()
                 .set_signature_creation_time(t1).unwrap()
-                .set_key_expiration_time(Some(time::Duration::weeks(10 * 52))).unwrap()
+                .set_key_expiration_time(Some(time::Duration::new(10 * 52 * 7 * 24 * 60 * 60, 0))).unwrap()
                 .set_issuer_fingerprint(key.fingerprint()).unwrap()
                 .set_issuer(key.keyid()).unwrap()
                 .set_preferred_hash_algorithms(vec![HashAlgorithm::SHA512]).unwrap()
-                .sign_primary_key_binding(&mut pair,
-                                          HashAlgorithm::SHA512).unwrap();
+                .sign_primary_key_binding(&mut pair).unwrap();
 
-            let rev = signature::Builder::new(SignatureType::KeyRevocation)
+            let rev1 = signature::Builder::new(SignatureType::KeyRevocation)
                 .set_signature_creation_time(t2).unwrap()
+                .set_reason_for_revocation(ReasonForRevocation::KeySuperseded,
+                                           &b""[..]).unwrap()
                 .set_issuer_fingerprint(key.fingerprint()).unwrap()
                 .set_issuer(key.keyid()).unwrap()
-                .sign_primary_key_binding(&mut pair,
-                                          HashAlgorithm::SHA512).unwrap();
+                .sign_primary_key_binding(&mut pair).unwrap();
 
             let bind2 = signature::Builder::new(SignatureType::DirectKey)
                 .set_features(&Features::sequoia()).unwrap()
                 .set_key_flags(&KeyFlags::default()).unwrap()
                 .set_signature_creation_time(t3).unwrap()
-                .set_key_expiration_time(Some(time::Duration::weeks(10 * 52))).unwrap()
+                .set_key_expiration_time(Some(time::Duration::new(10 * 52 * 7 * 24 * 60 * 60, 0))).unwrap()
                 .set_issuer_fingerprint(key.fingerprint()).unwrap()
                 .set_issuer(key.keyid()).unwrap()
                 .set_preferred_hash_algorithms(vec![HashAlgorithm::SHA512]).unwrap()
-                .sign_primary_key_binding(&mut pair,
-                                          HashAlgorithm::SHA512).unwrap();
+                .sign_primary_key_binding(&mut pair).unwrap();
 
-            (bind1, rev, bind2)
+            let rev2 = signature::Builder::new(SignatureType::KeyRevocation)
+                .set_signature_creation_time(t4).unwrap()
+                .set_reason_for_revocation(ReasonForRevocation::KeyCompromised,
+                                           &b""[..]).unwrap()
+                .set_issuer_fingerprint(key.fingerprint()).unwrap()
+                .set_issuer(key.keyid()).unwrap()
+                .sign_primary_key_binding(&mut pair).unwrap();
+
+            (bind1, rev1, bind2, rev2)
         };
+        let pk : key::PublicKey = key.into();
         let tpk = TPK::from_packet_pile(PacketPile::from(vec![
-            key.into_packet(Tag::PublicKey).unwrap(),
+            pk.into(),
             bind1.into(),
             bind2.into(),
-            rev.into()
+            rev1.into()
         ])).unwrap();
 
         let f1: f32 = thread_rng().sample(Open01);
         let f2: f32 = thread_rng().sample(Open01);
         let f3: f32 = thread_rng().sample(Open01);
-        let te1 = t1 - time::Duration::days((300.0 * f1) as i64);
-        let t12 = t1 + time::Duration::days((300.0 * f2) as i64);
-        let t23 = t2 + time::Duration::days((300.0 * f3) as i64);
-        assert_eq!(tpk.revocation_status_at(te1), RevocationStatus::NotAsFarAsWeKnow);
-        assert_eq!(tpk.revocation_status_at(t12), RevocationStatus::NotAsFarAsWeKnow);
-        match tpk.revocation_status_at(t23) {
-            RevocationStatus::Revoked(_) => {}
-            _ => unreachable!(),
+        let te1 = t1 - time::Duration::new((60. * 60. * 24. * 300.0 * f1) as u64, 0);
+        let t12 = t1 + time::Duration::new((60. * 60. * 24. * 300.0 * f2) as u64, 0);
+        let t23 = t2 + time::Duration::new((60. * 60. * 24. * 300.0 * f3) as u64, 0);
+        let t34 = t3 + time::Duration::new((60. * 60. * 24. * 300.0 * f3) as u64, 0);
+
+        assert_eq!(tpk.revoked(te1), RevocationStatus::NotAsFarAsWeKnow);
+        assert_eq!(tpk.revoked(t12), RevocationStatus::NotAsFarAsWeKnow);
+        assert_match!(RevocationStatus::Revoked(_) = tpk.revoked(t23));
+        assert_eq!(tpk.revoked(t34), RevocationStatus::NotAsFarAsWeKnow);
+
+        // Merge in the hard revocation.
+        let tpk = tpk.merge_packets(vec![ rev2.into() ]).unwrap();
+        assert_match!(RevocationStatus::Revoked(_) = tpk.revoked(te1));
+        assert_match!(RevocationStatus::Revoked(_) = tpk.revoked(t12));
+        assert_match!(RevocationStatus::Revoked(_) = tpk.revoked(t23));
+        assert_match!(RevocationStatus::Revoked(_) = tpk.revoked(t34));
+        assert_match!(RevocationStatus::Revoked(_) = tpk.revoked(t4));
+        assert_match!(RevocationStatus::Revoked(_)
+                      = tpk.revoked(time::SystemTime::now()));
+    }
+
+    #[test]
+    fn key_revoked2() {
+        tracer!(true, "tpk_revoked2", 0);
+
+        fn tpk_revoked<T>(tpk: &TPK, t: T) -> bool
+            where T: Into<Option<time::SystemTime>>
+        {
+            !destructures_to!(RevocationStatus::NotAsFarAsWeKnow
+                              = tpk.revoked(t))
         }
-        assert_eq!(tpk.revocation_status_at(time::now_utc()), RevocationStatus::NotAsFarAsWeKnow);
+
+        fn subkey_revoked<T>(tpk: &TPK, t: T) -> bool
+            where T: Into<Option<time::SystemTime>>
+        {
+            !destructures_to!(RevocationStatus::NotAsFarAsWeKnow
+                              = tpk.subkeys().nth(0).unwrap().revoked(t))
+        }
+
+        let tests : [(&str, Box<dyn Fn(&TPK, _) -> bool>); 2] = [
+            ("tpk", Box::new(tpk_revoked)),
+            ("subkey", Box::new(subkey_revoked)),
+        ];
+
+        for (f, revoked) in tests.iter()
+        {
+            t!("Checking {} revocation", f);
+
+            t!("Normal key");
+            let tpk = TPK::from_bytes(
+                crate::tests::key(
+                    &format!("really-revoked-{}-0-public.pgp", f))).unwrap();
+            let selfsig0 = tpk.primary_key_signature(None).unwrap()
+                .signature_creation_time().unwrap();
+
+            assert!(!revoked(&tpk, Some(selfsig0)));
+            assert!(!revoked(&tpk, None));
+
+            t!("Soft revocation");
+            let tpk = tpk.merge(
+                TPK::from_bytes(
+                    crate::tests::key(
+                        &format!("really-revoked-{}-1-soft-revocation.pgp", f))
+                ).unwrap()).unwrap();
+            // A soft revocation made after `t` is ignored when
+            // determining whether the key is revoked at time `t`.
+            assert!(!revoked(&tpk, Some(selfsig0)));
+            assert!(revoked(&tpk, None));
+
+            t!("New self signature");
+            let tpk = tpk.merge(
+                TPK::from_bytes(
+                    crate::tests::key(
+                        &format!("really-revoked-{}-2-new-self-sig.pgp", f))
+                ).unwrap()).unwrap();
+            assert!(!revoked(&tpk, Some(selfsig0)));
+            // Newer self-sig override older soft revocations.
+            assert!(!revoked(&tpk, None));
+
+            t!("Hard revocation");
+            let tpk = tpk.merge(
+                TPK::from_bytes(
+                    crate::tests::key(
+                        &format!("really-revoked-{}-3-hard-revocation.pgp", f))
+                ).unwrap()).unwrap();
+            // Hard revocations trump all.
+            assert!(revoked(&tpk, Some(selfsig0)));
+            assert!(revoked(&tpk, None));
+
+            t!("New self signature");
+            let tpk = tpk.merge(
+                TPK::from_bytes(
+                    crate::tests::key(
+                        &format!("really-revoked-{}-4-new-self-sig.pgp", f))
+                ).unwrap()).unwrap();
+            assert!(revoked(&tpk, Some(selfsig0)));
+            assert!(revoked(&tpk, None));
+        }
+    }
+
+    #[test]
+    fn userid_revoked2() {
+        fn check_userids<T>(tpk: &TPK, revoked: bool, t: T)
+            where T: Into<Option<time::SystemTime>>, T: Copy
+        {
+            assert_match!(RevocationStatus::NotAsFarAsWeKnow
+                          = tpk.revoked(None));
+
+            let mut slim_shady = false;
+            let mut eminem = false;
+            for b in tpk.userids() {
+                if b.userid().value() == b"Slim Shady" {
+                    assert!(!slim_shady);
+                    slim_shady = true;
+
+                    if revoked {
+                        assert_match!(RevocationStatus::Revoked(_)
+                                      = b.revoked(t));
+                    } else {
+                        assert_match!(RevocationStatus::NotAsFarAsWeKnow
+                                      = b.revoked(t));
+                    }
+                } else {
+                    assert!(!eminem);
+                    eminem = true;
+
+                    assert_match!(RevocationStatus::NotAsFarAsWeKnow
+                                  = b.revoked(t));
+                }
+            }
+
+            assert!(slim_shady);
+            assert!(eminem);
+        }
+
+        fn check_uas<T>(tpk: &TPK, revoked: bool, t: T)
+            where T: Into<Option<time::SystemTime>>, T: Copy
+        {
+            assert_match!(RevocationStatus::NotAsFarAsWeKnow
+                          = tpk.revoked(None));
+
+            assert_eq!(tpk.user_attributes().count(), 1);
+            let ua = tpk.user_attributes().nth(0).unwrap();
+            if revoked {
+                assert_match!(RevocationStatus::Revoked(_)
+                              = ua.revoked(t));
+            } else {
+                assert_match!(RevocationStatus::NotAsFarAsWeKnow
+                              = ua.revoked(t));
+            }
+        }
+
+        tracer!(true, "userid_revoked2", 0);
+
+        let tests : [(&str, Box<dyn Fn(&TPK, bool, _)>); 2] = [
+            ("userid", Box::new(check_userids)),
+            ("user-attribute", Box::new(check_uas)),
+        ];
+
+        for (f, check) in tests.iter()
+        {
+            t!("Checking {} revocation", f);
+
+            t!("Normal key");
+            let tpk = TPK::from_bytes(
+                crate::tests::key(
+                    &format!("really-revoked-{}-0-public.pgp", f))).unwrap();
+
+            let now = time::SystemTime::now().canonicalize();
+            let selfsig0
+                = tpk.userids().map(|b| {
+                    b.binding_signature(now).unwrap()
+                        .signature_creation_time().unwrap()
+                })
+                .max().unwrap();
+
+            check(&tpk, false, selfsig0);
+            check(&tpk, false, now);
+
+            // A soft-revocation.
+            let tpk = tpk.merge(
+                TPK::from_bytes(
+                    crate::tests::key(
+                        &format!("really-revoked-{}-1-soft-revocation.pgp", f))
+                ).unwrap()).unwrap();
+
+            check(&tpk, false, selfsig0);
+            check(&tpk, true, now);
+
+            // A new self signature.  This should override the soft-revocation.
+            let tpk = tpk.merge(
+                TPK::from_bytes(
+                    crate::tests::key(
+                        &format!("really-revoked-{}-2-new-self-sig.pgp", f))
+                ).unwrap()).unwrap();
+
+            check(&tpk, false, selfsig0);
+            check(&tpk, false, now);
+
+            // A hard revocation.  Unlike for TPKs, this does NOT trumps
+            // everything.
+            let tpk = tpk.merge(
+                TPK::from_bytes(
+                    crate::tests::key(
+                        &format!("really-revoked-{}-3-hard-revocation.pgp", f))
+                ).unwrap()).unwrap();
+
+            check(&tpk, false, selfsig0);
+            check(&tpk, true, now);
+
+            // A newer self siganture.
+            let tpk = tpk.merge(
+                TPK::from_bytes(
+                    crate::tests::key(
+                        &format!("really-revoked-{}-4-new-self-sig.pgp", f))
+                ).unwrap()).unwrap();
+
+            check(&tpk, false, selfsig0);
+            check(&tpk, false, now);
+        }
     }
 
     #[test]
     fn unrevoked() {
         let tpk =
-            TPK::from_bytes(::tests::key("un-revoked-userid.pgp")).unwrap();
+            TPK::from_bytes(crate::tests::key("un-revoked-userid.pgp")).unwrap();
 
         for uid in tpk.userids() {
             assert_eq!(uid.revoked(None), RevocationStatus::NotAsFarAsWeKnow);
@@ -3760,76 +2675,24 @@ mod test {
     #[test]
     fn is_tsk() {
         let tpk = TPK::from_bytes(
-            ::tests::key("already-revoked.pgp")).unwrap();
+            crate::tests::key("already-revoked.pgp")).unwrap();
         assert!(! tpk.is_tsk());
 
         let tpk = TPK::from_bytes(
-            ::tests::key("already-revoked-private.pgp")).unwrap();
+            crate::tests::key("already-revoked-private.pgp")).unwrap();
         assert!(tpk.is_tsk());
     }
 
     #[test]
     fn export_only_exports_public_key() {
         let tpk = TPK::from_bytes(
-            ::tests::key("testy-new-private.pgp")).unwrap();
+            crate::tests::key("testy-new-private.pgp")).unwrap();
         assert!(tpk.is_tsk());
 
         let mut v = Vec::new();
         tpk.serialize(&mut v).unwrap();
         let tpk = TPK::from_bytes(&v).unwrap();
         assert!(! tpk.is_tsk());
-    }
-
-    #[test]
-    fn select_no_keys() {
-        let (tpk, _) = TPKBuilder::new()
-            .generate().unwrap();
-        let flags = KeyFlags::default().set_encrypt_for_transport(true);
-
-        assert_eq!(tpk.keys_all().key_flags(flags).count(), 0);
-    }
-
-    #[test]
-    fn select_valid_and_right_flags() {
-        let (tpk, _) = TPKBuilder::new()
-            .add_encryption_subkey()
-            .generate().unwrap();
-        let flags = KeyFlags::default().set_encrypt_for_transport(true);
-
-        assert_eq!(tpk.keys_all().key_flags(flags).count(), 1);
-    }
-
-    #[test]
-    fn select_valid_and_wrong_flags() {
-        let (tpk, _) = TPKBuilder::new()
-            .add_encryption_subkey()
-            .add_signing_subkey()
-            .generate().unwrap();
-        let flags = KeyFlags::default().set_encrypt_for_transport(true);
-
-        assert_eq!(tpk.keys_all().key_flags(flags).count(), 1);
-    }
-
-    #[test]
-    fn select_invalid_and_right_flags() {
-        let (tpk, _) = TPKBuilder::new()
-            .add_encryption_subkey()
-            .generate().unwrap();
-        let mut now = time::now();
-        let flags = KeyFlags::default().set_encrypt_for_transport(true);
-
-        now.tm_year -= 1;
-        assert_eq!(tpk.keys_all().key_flags(flags).alive_at(now).count(), 0);
-    }
-
-    #[test]
-    fn select_primary() {
-        let (tpk, _) = TPKBuilder::new()
-            .add_certification_subkey()
-            .generate().unwrap();
-        let flags = KeyFlags::default().set_certify(true);
-
-        assert_eq!(tpk.keys_all().key_flags(flags).count(), 2);
     }
 
     // Make sure that when merging two TPKs, the primary key and
@@ -3839,11 +2702,11 @@ mod test {
         let (tsk, _) = TPKBuilder::autocrypt(None, Some("foo@example.com"))
             .generate().unwrap();
         // tsk is now a tpk, but it still has its private bits.
-        assert!(tsk.primary.secret().is_some());
+        assert!(tsk.primary.key().secret().is_some());
         assert!(tsk.is_tsk());
         let subkey_count = tsk.subkeys().len();
         assert!(subkey_count > 0);
-        assert!(tsk.subkeys().all(|k| k.subkey.secret().is_some()));
+        assert!(tsk.subkeys().all(|k| k.key().secret().is_some()));
 
         // This will write out the tsk as a tpk, i.e., without any
         // private bits.
@@ -3852,26 +2715,26 @@ mod test {
 
         // Reading it back in, the private bits have been stripped.
         let tpk = TPK::from_bytes(&tpk_bytes[..]).unwrap();
-        assert!(tpk.primary.secret().is_none());
+        assert!(tpk.primary.key().secret().is_none());
         assert!(!tpk.is_tsk());
-        assert!(tpk.subkeys().all(|k| k.subkey.secret().is_none()));
+        assert!(tpk.subkeys().all(|k| k.key().secret().is_none()));
 
         let merge1 = tpk.clone().merge(tsk.clone()).unwrap();
         assert!(merge1.is_tsk());
-        assert!(merge1.primary.secret().is_some());
+        assert!(merge1.primary.key().secret().is_some());
         assert_eq!(merge1.subkeys().len(), subkey_count);
-        assert!(merge1.subkeys().all(|k| k.subkey.secret().is_some()));
+        assert!(merge1.subkeys().all(|k| k.key().secret().is_some()));
 
         let merge2 = tsk.clone().merge(tpk.clone()).unwrap();
         assert!(merge2.is_tsk());
-        assert!(merge2.primary.secret().is_some());
+        assert!(merge2.primary.key().secret().is_some());
         assert_eq!(merge2.subkeys().len(), subkey_count);
-        assert!(merge2.subkeys().all(|k| k.subkey.secret().is_some()));
+        assert!(merge2.subkeys().all(|k| k.key().secret().is_some()));
     }
 
     #[test]
     fn issue_120() {
-        let tpk = b"
+        let tpk = "
 -----BEGIN PGP ARMORED FILE-----
 
 xcBNBFoVcvoBCACykTKOJddF8SSUAfCDHk86cNTaYnjCoy72rMgWJsrMLnz/V16B
@@ -3922,8 +2785,8 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
                 match pkt {
                     &Packet::PublicKey(_) | &Packet::PublicSubkey(_) => true,
                     &Packet::Signature(ref sig) => {
-                        sig.sigtype() == SignatureType::DirectKey
-                            || sig.sigtype() == SignatureType::SubkeyBinding
+                        sig.typ() == SignatureType::DirectKey
+                            || sig.typ() == SignatureType::SubkeyBinding
                     }
                     e => {
                         eprintln!("{:?}", e);
@@ -3940,14 +2803,313 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
 
     #[test]
     fn signature_order() {
-        let neal = TPK::from_bytes(::tests::key("neal.pgp")).unwrap();
-        let uidb = neal.userids().nth(0).unwrap();
-        // Signatures are sorted in ascending order wrt the signature
-        // creation time.
-        assert!(uidb.selfsigs()[0].signature_creation_time()
-                < uidb.selfsigs()[1].signature_creation_time());
-        // Make sure we return the most recent here.
-        assert_eq!(uidb.selfsigs().last().unwrap(),
-                   uidb.binding_signature().unwrap());
+        let neal = TPK::from_bytes(crate::tests::key("neal.pgp")).unwrap();
+
+        // This test is useless if we don't have some lists with more
+        // than one signature.
+        let mut cmps = 0;
+
+        for uid in neal.userids() {
+            for sigs in [
+                uid.self_signatures(),
+                    uid.certifications(),
+                uid.self_revocations(),
+                uid.other_revocations()
+            ].iter() {
+                for sigs in sigs.windows(2) {
+                    cmps += 1;
+                    assert!(sigs[0].signature_creation_time()
+                            >= sigs[1].signature_creation_time());
+                }
+            }
+
+            // Make sure we return the most recent first.
+            assert_eq!(uid.self_signatures().first().unwrap(),
+                       uid.binding_signature(None).unwrap());
+        }
+
+        assert!(cmps > 0);
     }
+
+    #[test]
+    fn tpk_reject_keyrings() {
+        let mut keyring = Vec::new();
+        keyring.extend_from_slice(crate::tests::key("neal.pgp"));
+        keyring.extend_from_slice(crate::tests::key("neal.pgp"));
+        assert!(TPK::from_bytes(&keyring).is_err());
+    }
+
+    #[test]
+    fn tpk_is_send_and_sync() {
+        fn f<T: Send + Sync>(_: T) {}
+        f(TPK::from_bytes(crate::tests::key("testy-new.pgp")).unwrap());
+    }
+
+    #[test]
+    fn primary_userid() {
+        // 'really-revoked-userid' has two user ids.  One of them is
+        // revoked and then restored.  Neither of the user ids has the
+        // primary userid bit set.
+        //
+        // This test makes sure that TPK::primary_userid prefers
+        // unrevoked user ids to revoked user ids, even if the latter
+        // have newer self signatures.
+
+        let tpk = TPK::from_bytes(
+            crate::tests::key("really-revoked-userid-0-public.pgp")).unwrap();
+
+        let now = time::SystemTime::now().canonicalize();
+        let selfsig0
+            = tpk.userids().map(|b| {
+                b.binding_signature(now).unwrap()
+                    .signature_creation_time().unwrap()
+            })
+            .max().unwrap();
+
+        // The self-sig for:
+        //
+        //   Slim Shady: 2019-09-14T14:21
+        //   Eminem:     2019-09-14T14:22
+        assert_eq!(tpk.primary_userid(selfsig0).unwrap().userid().value(), b"Eminem");
+        assert_eq!(tpk.primary_userid(now).unwrap().userid().value(), b"Eminem");
+
+        // A soft-revocation for "Slim Shady".
+        let tpk = tpk.merge(
+            TPK::from_bytes(
+                crate::tests::key("really-revoked-userid-1-soft-revocation.pgp")
+            ).unwrap()).unwrap();
+
+        assert_eq!(tpk.primary_userid(selfsig0).unwrap().userid().value(), b"Eminem");
+        assert_eq!(tpk.primary_userid(now).unwrap().userid().value(), b"Eminem");
+
+        // A new self signature for "Slim Shady".  This should
+        // override the soft-revocation.
+        let tpk = tpk.merge(
+            TPK::from_bytes(
+                crate::tests::key("really-revoked-userid-2-new-self-sig.pgp")
+            ).unwrap()).unwrap();
+
+        assert_eq!(tpk.primary_userid(selfsig0).unwrap().userid().value(), b"Eminem");
+        assert_eq!(tpk.primary_userid(now).unwrap().userid().value(), b"Slim Shady");
+
+        // A hard revocation for "Slim Shady".
+        let tpk = tpk.merge(
+            TPK::from_bytes(
+                crate::tests::key("really-revoked-userid-3-hard-revocation.pgp")
+            ).unwrap()).unwrap();
+
+        assert_eq!(tpk.primary_userid(selfsig0).unwrap().userid().value(), b"Eminem");
+        assert_eq!(tpk.primary_userid(now).unwrap().userid().value(), b"Eminem");
+
+        // A newer self siganture for "Slim Shady". Unlike for TPKs, this
+        // does NOT trump everything.
+        let tpk = tpk.merge(
+            TPK::from_bytes(
+                crate::tests::key("really-revoked-userid-4-new-self-sig.pgp")
+            ).unwrap()).unwrap();
+
+        assert_eq!(tpk.primary_userid(selfsig0).unwrap().userid().value(), b"Eminem");
+        assert_eq!(tpk.primary_userid(now).unwrap().userid().value(), b"Slim Shady");
+
+        // Play with the primary user id flag.
+
+        let tpk = TPK::from_bytes(
+            crate::tests::key("primary-key-0-public.pgp")).unwrap();
+        let selfsig0
+            = tpk.userids().map(|b| {
+                b.binding_signature(now).unwrap()
+                    .signature_creation_time().unwrap()
+            })
+            .max().unwrap();
+
+        // There is only a single User ID.
+        assert_eq!(tpk.primary_userid(selfsig0).unwrap().userid().value(), b"aaaaa");
+        assert_eq!(tpk.primary_userid(now).unwrap().userid().value(), b"aaaaa");
+
+
+        // Add a second user id.  Since neither is marked primary, the
+        // newer one should be considered primary.
+        let tpk = tpk.merge(
+            TPK::from_bytes(
+                crate::tests::key("primary-key-1-add-userid-bbbbb.pgp")
+            ).unwrap()).unwrap();
+
+        assert_eq!(tpk.primary_userid(selfsig0).unwrap().userid().value(), b"aaaaa");
+        assert_eq!(tpk.primary_userid(now).unwrap().userid().value(), b"bbbbb");
+
+        // Mark aaaaa as primary.  It is now primary and the newest one.
+        let tpk = tpk.merge(
+            TPK::from_bytes(
+                crate::tests::key("primary-key-2-make-aaaaa-primary.pgp")
+            ).unwrap()).unwrap();
+
+        assert_eq!(tpk.primary_userid(selfsig0).unwrap().userid().value(), b"aaaaa");
+        assert_eq!(tpk.primary_userid(now).unwrap().userid().value(), b"aaaaa");
+
+        // Update the preferences on bbbbb.  It is now the newest, but
+        // it is not marked as primary.
+        let tpk = tpk.merge(
+            TPK::from_bytes(
+                crate::tests::key("primary-key-3-make-bbbbb-new-self-sig.pgp")
+            ).unwrap()).unwrap();
+
+        assert_eq!(tpk.primary_userid(selfsig0).unwrap().userid().value(), b"aaaaa");
+        assert_eq!(tpk.primary_userid(now).unwrap().userid().value(), b"aaaaa");
+
+        // Mark bbbbb as primary.  It is now the newest and marked as
+        // primary.
+        let tpk = tpk.merge(
+            TPK::from_bytes(
+                crate::tests::key("primary-key-4-make-bbbbb-primary.pgp")
+            ).unwrap()).unwrap();
+
+        assert_eq!(tpk.primary_userid(selfsig0).unwrap().userid().value(), b"aaaaa");
+        assert_eq!(tpk.primary_userid(now).unwrap().userid().value(), b"bbbbb");
+
+        // Update the preferences on aaaaa.  It is now has the newest
+        // self sig, but that self sig does not say that it is
+        // primary.
+        let tpk = tpk.merge(
+            TPK::from_bytes(
+                crate::tests::key("primary-key-5-make-aaaaa-self-sig.pgp")
+            ).unwrap()).unwrap();
+
+        assert_eq!(tpk.primary_userid(selfsig0).unwrap().userid().value(), b"aaaaa");
+        assert_eq!(tpk.primary_userid(now).unwrap().userid().value(), b"bbbbb");
+
+        // Hard revoke aaaaa.  Unlike with TPKs, a hard revocation is
+        // not treated specially.
+        let tpk = tpk.merge(
+            TPK::from_bytes(
+                crate::tests::key("primary-key-6-revoked-aaaaa.pgp")
+            ).unwrap()).unwrap();
+
+        assert_eq!(tpk.primary_userid(selfsig0).unwrap().userid().value(), b"aaaaa");
+        assert_eq!(tpk.primary_userid(now).unwrap().userid().value(), b"bbbbb");
+    }
+
+    #[test]
+    fn binding_signature_lookup() {
+        // Check that searching for the right binding signature works
+        // even when there are signatures with the same time.
+
+        use crate::constants::Features;
+        use crate::packet::key::Key4;
+        use crate::constants::Curve;
+
+        let a_sec = time::Duration::new(1, 0);
+        let time_zero = time::UNIX_EPOCH;
+
+        let t1 = time::UNIX_EPOCH + time::Duration::new(946681200, 0);  // 2000-1-1
+        let t2 = time::UNIX_EPOCH + time::Duration::new(978303600, 0);  // 2001-1-1
+        let t3 = time::UNIX_EPOCH + time::Duration::new(1009839600, 0); // 2002-1-1
+        let t4 = time::UNIX_EPOCH + time::Duration::new(1041375600, 0); // 2003-1-1
+
+        let key: key::SecretKey
+            = Key4::generate_ecc(true, Curve::Ed25519).unwrap().into();
+        let mut pair = key.clone().into_keypair().unwrap();
+        let pk : key::PublicKey = key.clone().into();
+        let mut tpk = TPK::from_packet_pile(PacketPile::from(vec![
+            pk.into(),
+        ])).unwrap();
+
+        for (ref t, ref offset) in [ (t2, 0), (t4, 0), (t3, 100), (t1, 300) ].into_iter() {
+            for i in 0..100 {
+                let binding = signature::Builder::new(SignatureType::DirectKey)
+                    .set_features(&Features::sequoia()).unwrap()
+                    .set_key_flags(&KeyFlags::default()).unwrap()
+                    .set_signature_creation_time(t1).unwrap()
+                    // Vary this...
+                    .set_key_expiration_time(Some(
+                        time::Duration::new((1 + i) * 24 * 60 * 60, 0)))
+                    .unwrap()
+                    .set_issuer_fingerprint(key.fingerprint()).unwrap()
+                    .set_issuer(key.keyid()).unwrap()
+                    .set_preferred_hash_algorithms(vec![HashAlgorithm::SHA512]).unwrap()
+                    .set_signature_creation_time(*t).unwrap()
+                    .sign_primary_key_binding(&mut pair).unwrap();
+
+                let binding : Packet = binding.into();
+
+                tpk = tpk.merge_packets(vec![ binding ]).unwrap();
+                // A time that matches multiple signatures.
+                assert_eq!(tpk.primary_key_signature(*t),
+                           tpk.direct_signatures().get(*offset));
+                // A time that doesn't match any signature.
+                assert_eq!(tpk.primary_key_signature(*t + a_sec),
+                           tpk.direct_signatures().get(*offset));
+
+                // The current time, which should use the first signature.
+                assert_eq!(tpk.primary_key_signature(None),
+                           tpk.direct_signatures().get(0));
+
+                // The beginning of time, which should return no
+                // binding signatures.
+                assert_eq!(tpk.primary_key_signature(time_zero), None);
+            }
+        }
+    }
+
+    #[test]
+    fn keysigning_party() {
+        use crate::tpk::packet::signature;
+
+        for cs in &[ CipherSuite::Cv25519,
+                     CipherSuite::RSA3k,
+                     CipherSuite::P256,
+                     CipherSuite::P384,
+                     CipherSuite::P521,
+                     CipherSuite::RSA2k,
+                     CipherSuite::RSA4k ]
+        {
+            let (alice, _) = TPKBuilder::new()
+                .set_cipher_suite(*cs)
+                .add_userid("alice@foo.com")
+                .generate().unwrap();
+
+            let (bob, _) = TPKBuilder::new()
+                .set_cipher_suite(*cs)
+                .add_userid("bob@bar.com")
+                .generate().unwrap();
+
+            assert_eq!(bob.userids().len(), 1);
+            let bob_userid_binding = bob.userids().nth(0).unwrap();
+            assert_eq!(bob_userid_binding.userid().value(), b"bob@bar.com");
+
+            let sig_template
+                = signature::Builder::new(SignatureType::GenericCertificate)
+                      .set_trust_signature(255, 120)
+                      .unwrap();
+
+            // Have alice cerify the binding "bob@bar.com" and bob's key.
+            let alice_certifies_bob
+                = bob_userid_binding.userid().bind(
+                    &mut alice.primary().clone().mark_parts_secret()
+                        .unwrap().into_keypair().unwrap(),
+                    &bob,
+                    sig_template,
+                    None).unwrap();
+
+            let bob
+                = bob.merge_packets(vec![ alice_certifies_bob.clone().into() ])
+                .unwrap();
+
+            // Make sure the certification is merged, and put in the right
+            // place.
+            assert_eq!(bob.userids().len(), 1);
+            let bob_userid_binding = bob.userids().nth(0).unwrap();
+            assert_eq!(bob_userid_binding.userid().value(), b"bob@bar.com");
+            assert_eq!(bob_userid_binding.certifications(),
+                       &[ alice_certifies_bob.clone() ]);
+
+            // Make sure the certification is correct.
+            assert_eq!(
+                alice_certifies_bob
+                    .verify_userid_binding(&alice.primary().clone(),
+                                           &bob.primary().clone(),
+                                           bob_userid_binding.userid())
+                    .unwrap(),
+                true);
+        }
+   }
 }

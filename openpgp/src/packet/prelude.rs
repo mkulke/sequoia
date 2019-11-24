@@ -1,7 +1,7 @@
 //! Conveniently re-exports everything below openpgp::packet.
 
-pub use Packet;
-pub use packet::{
+pub use crate::Packet;
+pub use crate::packet::{
     Tag,
     Header,
     Unknown,
@@ -11,9 +11,9 @@ pub use packet::{
     OnePassSig,
     one_pass_sig::OnePassSig3,
     Key,
-    KeyFlags,
+    key,
     key::Key4,
-    key::SecretKey,
+    key::SecretKeyMaterial,
     Marker,
     Trust,
     UserID,

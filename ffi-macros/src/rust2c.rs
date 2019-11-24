@@ -21,6 +21,7 @@ fn ident2c(ident: &syn::Ident) -> (String, bool) {
             return ("pgp_user_id_binding_iter_t".into(), true),
 
         // Types from the libc crate.
+        "c_void" => return ("void".into(), false),
         "c_char" => return ("char".into(), false),
         "c_int" => return ("int".into(), false),
         "c_uint" => return ("uint".into(), false),
@@ -134,18 +135,17 @@ fn type2c<T: ToTokens>(typ: T) -> String {
 }
 
 pub fn rust2c(fun: &syn::ItemFn) -> String {
-    let decl = &fun.decl;
-    let return_type = match &decl.output {
+    let return_type = match &fun.sig.output {
         syn::ReturnType::Default => "void".into(),
         syn::ReturnType::Type(_, ref typ) => type2c(typ).trim_end().to_string(),
     };
-    let fun_ident = format!("{}", fun.ident);
+    let fun_ident = format!("{}", fun.sig.ident);
 
     let mut s = String::new();
     s += &format!("{}\n{} (", return_type, fun_ident);
     let indent = fun_ident.len() + 2;
 
-    for (i, arg) in decl.inputs.iter().enumerate() {
+    for (i, arg) in fun.sig.inputs.iter().enumerate() {
         // All but the first line need to be indented.
         if i > 0 {
             for _ in 0..indent {
@@ -154,9 +154,9 @@ pub fn rust2c(fun: &syn::ItemFn) -> String {
         }
 
         match arg {
-            &syn::FnArg::Captured(ref cap) => {
-                let pat_ident = match &cap.pat {
-                    &syn::Pat::Ident(ref i) => i,
+            &syn::FnArg::Typed(ref cap) => {
+                let pat_ident = match *cap.pat {
+                    syn::Pat::Ident(ref i) => i,
                     _ => unimplemented!(),
                 };
                 s += &format!("{}{}", type2c(&cap.ty), pat_ident.ident);
@@ -165,7 +165,7 @@ pub fn rust2c(fun: &syn::ItemFn) -> String {
         }
 
         // All but the last one need a comma.
-        if i < decl.inputs.len() - 1 {
+        if i < fun.sig.inputs.len() - 1 {
             s += ",\n";
         }
     }

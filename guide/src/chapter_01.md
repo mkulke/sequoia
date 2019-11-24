@@ -10,10 +10,12 @@ fragments yields the [`openpgp/examples/generate-sign-verify.rs`].
 
 ```rust
 use std::io::{self, Write};
+use std::convert::TryInto;
 
 extern crate failure;
 extern crate sequoia_openpgp as openpgp;
 use openpgp::serialize::stream::*;
+use openpgp::packet::prelude::*;
 use openpgp::parse::stream::*;
 
 const MESSAGE: &'static str = "дружба";
@@ -49,18 +51,18 @@ fn main() {
 # fn sign(sink: &mut Write, plaintext: &str, tsk: &openpgp::TPK)
 #            -> openpgp::Result<()> {
 #     // Get the keypair to do the signing from the TPK.
-#     let mut keypair = tsk.keys_valid().signing_capable().nth(0).unwrap().2
-#         .clone().into_keypair()?;
+#     let key : key::UnspecifiedSecret
+#         = tsk.keys_valid().signing_capable().nth(0).unwrap().2.clone().try_into()?;
+#     let keypair = key.into_keypair()?;
 #
 #     // Start streaming an OpenPGP message.
 #     let message = Message::new(sink);
 #
 #     // We want to sign a literal data packet.
-#     let signer = Signer::new(message, vec![&mut keypair], None)?;
+#     let signer = Signer::new(message, keypair).build()?;
 #
 #     // Emit a literal data packet.
-#     let mut literal_writer = LiteralWriter::new(
-#         signer, openpgp::constants::DataFormat::Binary, None, None)?;
+#     let mut literal_writer = LiteralWriter::new(signer).build()?;
 #
 #     // Sign the data.
 #     literal_writer.write_all(plaintext.as_bytes())?;
@@ -118,6 +120,9 @@ fn main() {
 #                     match results.get(0) {
 #                         Some(VerificationResult::GoodChecksum(..)) =>
 #                             good = true,
+#                         Some(VerificationResult::NotAlive(_)) =>
+#                             return Err(failure::err_msg(
+#                                 "Good, but not alive signature")),
 #                         Some(VerificationResult::MissingKey(_)) =>
 #                             return Err(failure::err_msg(
 #                                 "Missing key to verify signature")),
@@ -151,11 +156,13 @@ create it:
 
 ```rust
 # use std::io::{self, Write};
+# use std::convert::TryInto;
 #
 # extern crate failure;
 # extern crate sequoia_openpgp as openpgp;
 # use openpgp::serialize::stream::*;
 # use openpgp::parse::stream::*;
+# use openpgp::packet::prelude::*;
 #
 # const MESSAGE: &'static str = "дружба";
 #
@@ -190,18 +197,18 @@ fn generate() -> openpgp::Result<openpgp::TPK> {
 # fn sign(sink: &mut Write, plaintext: &str, tsk: &openpgp::TPK)
 #            -> openpgp::Result<()> {
 #     // Get the keypair to do the signing from the TPK.
-#     let mut keypair = tsk.keys_valid().signing_capable().nth(0).unwrap().2
-#         .clone().into_keypair()?;
+#     let key : key::UnspecifiedSecret
+#         = tsk.keys_valid().signing_capable().nth(0).unwrap().2.clone().try_into()?;
+#     let keypair = key.into_keypair()?;
 #
 #     // Start streaming an OpenPGP message.
 #     let message = Message::new(sink);
 #
 #     // We want to sign a literal data packet.
-#     let signer = Signer::new(message, vec![&mut keypair], None)?;
+#     let signer = Signer::new(message, keypair).build()?;
 #
 #     // Emit a literal data packet.
-#     let mut literal_writer = LiteralWriter::new(
-#         signer, openpgp::constants::DataFormat::Binary, None, None)?;
+#     let mut literal_writer = LiteralWriter::new(signer).build()?;
 #
 #     // Sign the data.
 #     literal_writer.write_all(plaintext.as_bytes())?;
@@ -259,6 +266,9 @@ fn generate() -> openpgp::Result<openpgp::TPK> {
 #                     match results.get(0) {
 #                         Some(VerificationResult::GoodChecksum(..)) =>
 #                             good = true,
+#                         Some(VerificationResult::NotAlive(_)) =>
+#                             return Err(failure::err_msg(
+#                                 "Good, but not alive signature")),
 #                         Some(VerificationResult::MissingKey(_)) =>
 #                             return Err(failure::err_msg(
 #                                 "Missing key to verify signature")),
@@ -292,10 +302,12 @@ implements [`io::Write`], and we simply write the plaintext to it.
 
 ```rust
 # use std::io::{self, Write};
+# use std::convert::TryInto;
 #
 # extern crate failure;
 # extern crate sequoia_openpgp as openpgp;
 # use openpgp::serialize::stream::*;
+# use openpgp::packet::prelude::*;
 # use openpgp::parse::stream::*;
 #
 # const MESSAGE: &'static str = "дружба";
@@ -331,18 +343,18 @@ implements [`io::Write`], and we simply write the plaintext to it.
 fn sign(sink: &mut Write, plaintext: &str, tsk: &openpgp::TPK)
            -> openpgp::Result<()> {
     // Get the keypair to do the signing from the TPK.
-    let mut keypair = tsk.keys_valid().signing_capable().nth(0).unwrap().2
-        .clone().into_keypair()?;
+    let key : key::UnspecifiedSecret
+        = tsk.keys_valid().signing_capable().nth(0).unwrap().2.clone().try_into()?;
+    let keypair = key.into_keypair()?;
 
     // Start streaming an OpenPGP message.
     let message = Message::new(sink);
 
     // We want to sign a literal data packet.
-    let signer = Signer::new(message, vec![&mut keypair], None)?;
+    let signer = Signer::new(message, keypair).build()?;
 
     // Emit a literal data packet.
-    let mut literal_writer = LiteralWriter::new(
-        signer, openpgp::constants::DataFormat::Binary, None, None)?;
+    let mut literal_writer = LiteralWriter::new(signer).build()?;
 
     // Sign the data.
     literal_writer.write_all(plaintext.as_bytes())?;
@@ -400,6 +412,9 @@ fn sign(sink: &mut Write, plaintext: &str, tsk: &openpgp::TPK)
 #                     match results.get(0) {
 #                         Some(VerificationResult::GoodChecksum(..)) =>
 #                             good = true,
+#                         Some(VerificationResult::NotAlive(_)) =>
+#                             return Err(failure::err_msg(
+#                                 "Good, but not alive signature")),
 #                         Some(VerificationResult::MissingKey(_)) =>
 #                             return Err(failure::err_msg(
 #                                 "Missing key to verify signature")),
@@ -444,10 +459,12 @@ Verified data can be read from this using [`io::Read`].
 
 ```rust
 # use std::io::{self, Write};
-# 
+# use std::convert::TryInto;
+#
 # extern crate failure;
 # extern crate sequoia_openpgp as openpgp;
 # use openpgp::serialize::stream::*;
+# use openpgp::packet::prelude::*;
 # use openpgp::parse::stream::*;
 # 
 # const MESSAGE: &'static str = "дружба";
@@ -483,18 +500,18 @@ Verified data can be read from this using [`io::Read`].
 # fn sign(sink: &mut Write, plaintext: &str, tsk: &openpgp::TPK)
 #            -> openpgp::Result<()> {
 #     // Get the keypair to do the signing from the TPK.
-#     let mut keypair = tsk.keys_valid().signing_capable().nth(0).unwrap().2
-#         .clone().into_keypair()?;
+#     let key : key::UnspecifiedSecret
+#         = tsk.keys_valid().signing_capable().nth(0).unwrap().2.clone().try_into()?;
+#     let keypair = key.into_keypair()?;
 # 
 #     // Start streaming an OpenPGP message.
 #     let message = Message::new(sink);
 # 
 #     // We want to sign a literal data packet.
-#     let signer = Signer::new(message, vec![&mut keypair], None)?;
+#     let signer = Signer::new(message, keypair).build()?;
 # 
 #     // Emit a literal data packet.
-#     let mut literal_writer = LiteralWriter::new(
-#         signer, openpgp::constants::DataFormat::Binary, None, None)?;
+#     let mut literal_writer = LiteralWriter::new(signer).build()?;
 # 
 #     // Sign the data.
 #     literal_writer.write_all(plaintext.as_bytes())?;
@@ -552,6 +569,9 @@ impl<'a> VerificationHelper for Helper<'a> {
                     match results.get(0) {
                         Some(VerificationResult::GoodChecksum(..)) =>
                             good = true,
+                        Some(VerificationResult::NotAlive(_)) =>
+                            return Err(failure::err_msg(
+                                "Good, but not alive signature")),
                         Some(VerificationResult::MissingKey(_)) =>
                             return Err(failure::err_msg(
                                 "Missing key to verify signature")),

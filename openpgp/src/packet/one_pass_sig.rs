@@ -7,16 +7,16 @@
 use std::fmt;
 use quickcheck::{Arbitrary, Gen};
 
-use Error;
-use Packet;
-use packet;
-use packet::Signature;
-use Result;
-use KeyID;
-use HashAlgorithm;
-use PublicKeyAlgorithm;
-use SignatureType;
-use serialize::SerializeInto;
+use crate::Error;
+use crate::Packet;
+use crate::packet;
+use crate::packet::Signature;
+use crate::Result;
+use crate::KeyID;
+use crate::HashAlgorithm;
+use crate::PublicKeyAlgorithm;
+use crate::SignatureType;
+use crate::serialize::SerializeInto;
 
 /// Holds a one-pass signature packet.
 ///
@@ -28,7 +28,7 @@ pub struct OnePassSig3 {
     /// CTB packet header fields.
     pub(crate) common: packet::Common,
     /// Type of the signature.
-    sigtype: SignatureType,
+    typ: SignatureType,
     /// Hash algorithm used to compute the signature.
     hash_algo: HashAlgorithm,
     /// Public key algorithm of this signature.
@@ -43,7 +43,7 @@ pub struct OnePassSig3 {
 impl fmt::Debug for OnePassSig3 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("OnePassSig3")
-            .field("sigtype", &self.sigtype)
+            .field("typ", &self.typ)
             .field("hash_algo", &self.hash_algo)
             .field("pk_algo", &self.pk_algo)
             .field("issuer", &self.issuer)
@@ -67,10 +67,10 @@ impl PartialEq for OnePassSig3 {
 
 impl OnePassSig3 {
     /// Returns a new `Signature` packet.
-    pub fn new(sigtype: SignatureType) ->  Self {
+    pub fn new(typ: SignatureType) ->  Self {
         OnePassSig3 {
             common: Default::default(),
-            sigtype: sigtype,
+            typ: typ,
             hash_algo: HashAlgorithm::Unknown(0),
             pk_algo: PublicKeyAlgorithm::Unknown(0),
             issuer: KeyID::new(0),
@@ -79,13 +79,13 @@ impl OnePassSig3 {
     }
 
     /// Gets the signature type.
-    pub fn sigtype(&self) -> SignatureType {
-        self.sigtype
+    pub fn typ(&self) -> SignatureType {
+        self.typ
     }
 
     /// Sets the signature type.
-    pub fn set_sigtype(&mut self, t: SignatureType) -> SignatureType {
-        ::std::mem::replace(&mut self.sigtype, t)
+    pub fn set_type(&mut self, t: SignatureType) -> SignatureType {
+        ::std::mem::replace(&mut self.typ, t)
     }
 
     /// Gets the public key algorithm.
@@ -151,8 +151,10 @@ impl From<OnePassSig3> for Packet {
     }
 }
 
-impl<'a> From<&'a Signature> for Result<OnePassSig3> {
-    fn from(s: &'a Signature) -> Self {
+impl<'a> std::convert::TryFrom<&'a Signature> for OnePassSig3 {
+    type Error = failure::Error;
+
+    fn try_from(s: &'a Signature) -> Result<Self> {
         let issuer = match s.issuer() {
             Some(i) => i,
             None =>
@@ -162,7 +164,7 @@ impl<'a> From<&'a Signature> for Result<OnePassSig3> {
 
         Ok(OnePassSig3 {
             common: Default::default(),
-            sigtype: s.sigtype(),
+            typ: s.typ(),
             hash_algo: s.hash_algo(),
             pk_algo: s.pk_algo(),
             issuer: issuer,
@@ -185,8 +187,8 @@ impl Arbitrary for OnePassSig3 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use parse::Parse;
-    use serialize::SerializeInto;
+    use crate::parse::Parse;
+    use crate::serialize::SerializeInto;
 
     quickcheck! {
         fn roundtrip(p: OnePassSig3) -> bool {

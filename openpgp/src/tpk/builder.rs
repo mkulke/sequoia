@@ -1,19 +1,24 @@
-use time;
+use std::time;
 
-use packet;
-use packet::{Features, KeyFlags};
-use packet::Key;
-use packet::key::Key4;
-use Result;
-use packet::Signature;
-use packet::signature;
-use TPK;
-use Error;
-use conversions::Time;
-use crypto::Password;
-use autocrypt::Autocrypt;
-use constants::{
+use crate::packet;
+use crate::packet::{
+    key,
+    Key,
+    key::Key4,
+};
+use crate::Result;
+use crate::packet::Signature;
+use crate::packet::signature;
+use crate::TPK;
+use crate::tpk::TPKRevocationBuilder;
+use crate::Error;
+use crate::conversions::Time;
+use crate::crypto::Password;
+use crate::autocrypt::Autocrypt;
+use crate::constants::{
+    Features,
     HashAlgorithm,
+    KeyFlags,
     SignatureType,
     SymmetricAlgorithm,
 };
@@ -33,6 +38,8 @@ pub enum CipherSuite {
     P521,
     /// 2048 bit RSA with SHA512 and AES256
     RSA2k,
+    /// 4096 bit RSA with SHA512 and AES256
+    RSA4k,
 }
 
 impl Default for CipherSuite {
@@ -42,17 +49,23 @@ impl Default for CipherSuite {
 }
 
 impl CipherSuite {
-    fn generate_key(self, flags: &KeyFlags) -> Result<Key> {
-        use constants::Curve;
+    fn generate_key<R>(self, flags: &KeyFlags)
+        -> Result<Key<key::SecretParts, R>>
+        where R: key::KeyRole
+    {
+        use crate::constants::Curve;
 
         match self {
             CipherSuite::RSA2k =>
                 Key4::generate_rsa(2048),
             CipherSuite::RSA3k =>
                 Key4::generate_rsa(3072),
+            CipherSuite::RSA4k =>
+                Key4::generate_rsa(4096),
             CipherSuite::Cv25519 | CipherSuite::P256 |
             CipherSuite::P384 | CipherSuite::P521 => {
-                let sign = flags.can_certify() || flags.can_sign();
+                let sign = flags.can_certify() || flags.can_sign()
+                    || flags.can_authenticate();
                 let encrypt = flags.can_encrypt_for_transport()
                     || flags.can_encrypt_at_rest();
                 let curve = match self {
@@ -153,7 +166,8 @@ impl TPKBuilder {
             userids: userids.into_iter().map(|x| x.into()).collect(),
             user_attributes: vec![],
             password: None,
-            expiration: Some(time::Duration::weeks(3 * 52)),
+            expiration: Some(
+                time::Duration::new(3 * 52 * 7 * 24 * 60 * 60, 0)),
         }
     }
 
@@ -190,7 +204,8 @@ impl TPKBuilder {
             userids: vec![],
             user_attributes: vec![],
             password: None,
-            expiration: Some(time::Duration::weeks(3 * 52)),
+            expiration: Some(
+                time::Duration::new(3 * 52 * 7 * 24 * 60 * 60, 0)),
         };
 
         if let Some(userid) = userid {
@@ -239,6 +254,11 @@ impl TPKBuilder {
         self.add_subkey(KeyFlags::default().set_certify(true))
     }
 
+    /// Adds an authentication capable subkey.
+    pub fn add_authentication_subkey(self) -> Self {
+        self.add_subkey(KeyFlags::default().set_authenticate(true))
+    }
+
     /// Adds a custom subkey
     pub fn add_subkey(mut self, flags: KeyFlags) -> Self {
         self.subkeys.push(KeyBlueprint{
@@ -272,8 +292,8 @@ impl TPKBuilder {
 
     /// Generates the actual TPK.
     pub fn generate(mut self) -> Result<(TPK, Signature)> {
-        use {PacketPile, Packet};
-        use constants::ReasonForRevocation;
+        use crate::{PacketPile, Packet};
+        use crate::constants::ReasonForRevocation;
 
         let mut packets = Vec::<Packet>::with_capacity(
             1 + 1 + self.subkeys.len() + self.userids.len()
@@ -286,7 +306,8 @@ impl TPKBuilder {
 
         // Generate & and self-sign primary key.
         let (primary, sig) = self.primary_key()?;
-        let mut signer = primary.clone().into_keypair().unwrap();
+        let mut signer = primary.clone().mark_parts_secret().unwrap()
+            .into_keypair().unwrap();
 
         packets.push(Packet::PublicKey({
             let mut primary = primary.clone();
@@ -303,16 +324,20 @@ impl TPKBuilder {
         // Sign UserIDs.
         for uid in self.userids.into_iter() {
             let builder = signature::Builder::from(sig.clone())
-                .set_sigtype(SignatureType::PositiveCertificate);
-            let signature = uid.bind(&mut signer, &tpk, builder, None, None)?;
+                .set_type(SignatureType::PositiveCertificate)
+                // GnuPG wants at least a 512-bit hash for P521 keys.
+                .set_hash_algo(HashAlgorithm::SHA512);
+            let signature = uid.bind(&mut signer, &tpk, builder, None)?;
             tpk = tpk.merge_packets(vec![uid.into(), signature.into()])?;
         }
 
         // Sign UserAttributes.
         for ua in self.user_attributes.into_iter() {
             let builder = signature::Builder::from(sig.clone())
-                .set_sigtype(SignatureType::PositiveCertificate);
-            let signature = ua.bind(&mut signer, &tpk, builder, None, None)?;
+                .set_type(SignatureType::PositiveCertificate)
+            // GnuPG wants at least a 512-bit hash for P521 keys.
+                .set_hash_algo(HashAlgorithm::SHA512);
+            let signature = ua.bind(&mut signer, &tpk, builder, None)?;
             tpk = tpk.merge_packets(vec![ua.into(), signature.into()])?;
         }
 
@@ -321,12 +346,10 @@ impl TPKBuilder {
             let flags = &blueprint.flags;
             let mut subkey = self.ciphersuite.generate_key(flags)?;
 
-            if let Some(ref password) = self.password {
-                subkey.secret_mut().unwrap().encrypt_in_place(password)?;
-            }
-
             let mut builder =
                 signature::Builder::new(SignatureType::SubkeyBinding)
+                // GnuPG wants at least a 512-bit hash for P521 keys.
+                .set_hash_algo(HashAlgorithm::SHA512)
                 .set_features(&Features::sequoia())?
                 .set_key_flags(flags)?
                 .set_key_expiration_time(self.expiration)?;
@@ -347,23 +370,31 @@ impl TPKBuilder {
                 let mut subkey_signer = subkey.clone().into_keypair().unwrap();
                 let backsig =
                     signature::Builder::new(SignatureType::PrimaryKeyBinding)
-                    .set_signature_creation_time(time::now().canonicalize())?
+                    // GnuPG wants at least a 512-bit hash for P521 keys.
+                    .set_hash_algo(HashAlgorithm::SHA512)
+                    .set_signature_creation_time(
+                        time::SystemTime::now().canonicalize())?
                     .set_issuer_fingerprint(subkey.fingerprint())?
                     .set_issuer(subkey.keyid())?
-                    .sign_subkey_binding(&mut subkey_signer, &primary, &subkey,
-                                         HashAlgorithm::SHA512)?;
+                    .sign_subkey_binding(&mut subkey_signer, &primary,
+                                         &subkey.mark_parts_public_ref())?;
                 builder = builder.set_embedded_signature(backsig)?;
             }
 
-            let signature =
-                subkey.bind(&mut signer, &tpk, builder, None, None)?;
+            let signature = subkey.mark_parts_public_ref()
+                .bind(&mut signer, &tpk, builder, None)?;
+
+            if let Some(ref password) = self.password {
+                subkey.secret_mut().unwrap().encrypt_in_place(password)?;
+            }
             tpk = tpk.merge_packets(vec![Packet::SecretSubkey(subkey),
                                          signature.into()])?;
         }
 
-        let revocation = tpk.revoke(&mut signer,
-                                    ReasonForRevocation::Unspecified,
-                                    b"Unspecified")?;
+        let revocation = TPKRevocationBuilder::new()
+            .set_reason_for_revocation(
+                ReasonForRevocation::Unspecified, b"Unspecified")?
+            .build(&mut signer, &tpk, None)?;
 
         // keys generated by the builder are never invalid
         assert!(tpk.bad.is_empty());
@@ -373,16 +404,17 @@ impl TPKBuilder {
     }
 
     fn primary_key(&self)
-        -> Result<(Key, Signature)>
+        -> Result<(key::PublicKey, Signature)>
     {
-        use SignatureType;
-
         let key = self.ciphersuite.generate_key(
             &KeyFlags::default().set_certify(true))?;
         let sig = signature::Builder::new(SignatureType::DirectKey)
+            // GnuPG wants at least a 512-bit hash for P521 keys.
+            .set_hash_algo(HashAlgorithm::SHA512)
             .set_features(&Features::sequoia())?
             .set_key_flags(&self.primary.flags)?
-            .set_signature_creation_time(time::now().canonicalize())?
+            .set_signature_creation_time(
+                time::SystemTime::now().canonicalize())?
             .set_key_expiration_time(self.expiration)?
             .set_issuer_fingerprint(key.fingerprint())?
             .set_issuer(key.keyid())?
@@ -390,18 +422,17 @@ impl TPKBuilder {
 
         let mut signer = key.clone().into_keypair()
             .expect("key generated above has a secret");
-        let sig = sig.sign_primary_key_binding(&mut signer,
-                                               HashAlgorithm::SHA512)?;
+        let sig = sig.sign_primary_key_binding(&mut signer)?;
 
-        Ok((key, sig.into()))
+        Ok((key.mark_parts_public(), sig.into()))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use packet::signature::subpacket::{SubpacketTag, Subpacket, SubpacketValue};
-    use constants::PublicKeyAlgorithm;
+    use crate::packet::signature::subpacket::{SubpacketTag, SubpacketValue};
+    use crate::constants::PublicKeyAlgorithm;
 
     #[test]
     fn all_opts() {
@@ -415,7 +446,7 @@ mod tests {
             .generate().unwrap();
 
         let mut userids = tpk.userids()
-            .map(|u| String::from_utf8_lossy(u.userid.value()).into_owned())
+            .map(|u| String::from_utf8_lossy(u.userid().value()).into_owned())
             .collect::<Vec<String>>();
         userids.sort();
 
@@ -436,12 +467,11 @@ mod tests {
             .generate().unwrap();
 
         assert_eq!(tpk.userids().count(), 0);
-        assert_eq!(tpk.primary_key_signature().unwrap().sigtype(),
-                   ::constants::SignatureType::DirectKey);
+        assert_eq!(tpk.primary_key_signature(None).unwrap().typ(),
+                   crate::constants::SignatureType::DirectKey);
         assert_eq!(tpk.subkeys().count(), 3);
-        if let Some(sig) = tpk.primary_key_signature() {
+        if let Some(sig) = tpk.primary_key_signature(None) {
             assert!(sig.features().supports_mdc());
-            assert!(sig.features().supports_aead());
         } else {
             panic!();
         }
@@ -463,7 +493,7 @@ mod tests {
             .generate().unwrap();
         assert_eq!(tpk2.primary().pk_algo(),
                    PublicKeyAlgorithm::RSAEncryptSign);
-        assert_eq!(tpk2.subkeys().next().unwrap().subkey().pk_algo(),
+        assert_eq!(tpk2.subkeys().next().unwrap().key().pk_algo(),
                    PublicKeyAlgorithm::RSAEncryptSign);
     }
 
@@ -475,9 +505,8 @@ mod tests {
         assert_eq!(tpk1.primary().pk_algo(),
                    PublicKeyAlgorithm::EdDSA);
         assert!(tpk1.subkeys().next().is_none());
-        if let Some(sig) = tpk1.primary_key_signature() {
+        if let Some(sig) = tpk1.primary_key_signature(None) {
             assert!(sig.features().supports_mdc());
-            assert!(sig.features().supports_aead());
         } else {
             panic!();
         }
@@ -490,7 +519,7 @@ mod tests {
             .generate().unwrap();
         assert_eq!(tpk1.primary().pk_algo(),
                    PublicKeyAlgorithm::RSAEncryptSign);
-        assert_eq!(tpk1.subkeys().next().unwrap().subkey().pk_algo(),
+        assert_eq!(tpk1.subkeys().next().unwrap().key().pk_algo(),
                    PublicKeyAlgorithm::RSAEncryptSign);
         assert_eq!(tpk1.userids().count(), 1);
     }
@@ -502,12 +531,12 @@ mod tests {
             .generate().unwrap();
         assert_eq!(tpk1.primary().pk_algo(),
                    PublicKeyAlgorithm::EdDSA);
-        assert_eq!(tpk1.subkeys().next().unwrap().subkey().pk_algo(),
+        assert_eq!(tpk1.subkeys().next().unwrap().key().pk_algo(),
                    PublicKeyAlgorithm::ECDH);
         assert_match!(
-            ::crypto::mpis::PublicKey::ECDH {
-                curve: ::constants::Curve::Cv25519, ..
-            } = tpk1.subkeys().next().unwrap().subkey().mpis());
+            crate::crypto::mpis::PublicKey::ECDH {
+                curve: crate::constants::Curve::Cv25519, ..
+            } = tpk1.subkeys().next().unwrap().key().mpis());
         assert_eq!(tpk1.userids().count(), 1);
     }
 
@@ -518,13 +547,11 @@ mod tests {
             .primary_keyflags(KeyFlags::default())
             .add_encryption_subkey()
             .generate().unwrap();
-        let sig_pkts = &tpk1.primary_key_signature().unwrap().hashed_area();
+        let sig_pkts = &tpk1.primary_key_signature(None).unwrap().hashed_area();
 
-        match sig_pkts.lookup(SubpacketTag::KeyFlags) {
-            Some(Subpacket{ value: SubpacketValue::KeyFlags(ref ks),.. }) => {
-                assert!(ks.can_certify());
-            }
-            _ => {}
+        match sig_pkts.lookup(SubpacketTag::KeyFlags).unwrap().value() {
+            SubpacketValue::KeyFlags(ref ks) => assert!(ks.can_certify()),
+            v => panic!("Unexpected subpacket: {:?}", v),
         }
 
         assert_eq!(tpk1.subkeys().count(), 1);
@@ -537,13 +564,11 @@ mod tests {
             .primary_keyflags(KeyFlags::default())
             .add_subkey(KeyFlags::default().set_certify(true))
             .generate().unwrap();
-        let sig_pkts = tpk1.subkeys().next().unwrap().selfsigs[0].hashed_area();
+        let sig_pkts = tpk1.subkeys().next().unwrap().self_signatures[0].hashed_area();
 
-        match sig_pkts.lookup(SubpacketTag::KeyFlags) {
-            Some(Subpacket{ value: SubpacketValue::KeyFlags(ref ks),.. }) => {
-                assert!(ks.can_certify());
-            }
-            _ => {}
+        match sig_pkts.lookup(SubpacketTag::KeyFlags).unwrap().value() {
+            SubpacketValue::KeyFlags(ref ks) => assert!(ks.can_certify()),
+            v => panic!("Unexpected subpacket: {:?}", v),
         }
 
         assert_eq!(tpk1.subkeys().count(), 1);
@@ -551,21 +576,21 @@ mod tests {
 
     #[test]
     fn generate_revocation_certificate() {
-        use RevocationStatus;
+        use crate::RevocationStatus;
         let (tpk, revocation) = TPKBuilder::new()
             .set_cipher_suite(CipherSuite::Cv25519)
             .generate().unwrap();
-        assert_eq!(tpk.revocation_status(),
+        assert_eq!(tpk.revoked(None),
                    RevocationStatus::NotAsFarAsWeKnow);
 
         let tpk = tpk.merge_packets(vec![revocation.clone().into()]).unwrap();
-        assert_eq!(tpk.revocation_status(),
-                   RevocationStatus::Revoked(&[revocation]));
+        assert_eq!(tpk.revoked(None),
+                   RevocationStatus::Revoked(vec![ &revocation ]));
     }
 
     #[test]
     fn builder_roundtrip() {
-        use PacketPile;
+        use crate::PacketPile;
 
         let (tpk,_) = TPKBuilder::new()
             .set_cipher_suite(CipherSuite::Cv25519)
@@ -591,7 +616,7 @@ mod tests {
     fn all_ciphersuites() {
         use self::CipherSuite::*;
 
-        for cs in vec![Cv25519, RSA3k, P256, P384, P521, RSA2k] {
+        for cs in vec![Cv25519, RSA3k, P256, P384, P521, RSA2k, RSA4k] {
             assert!(TPKBuilder::new()
                 .set_cipher_suite(cs)
                 .generate().is_ok());

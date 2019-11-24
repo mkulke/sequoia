@@ -5,9 +5,9 @@ use std::fmt;
 use std::io;
 use std::cmp;
 
-use Error;
-use Result;
-use ::BodyLength;
+use crate::Error;
+use crate::Result;
+use crate::packet::header::BodyLength;
 use super::{writer, write_byte, Serialize};
 
 pub struct PartialBodyFilter<'a, C: 'a> {
@@ -30,6 +30,9 @@ pub struct PartialBodyFilter<'a, C: 'a> {
     // The maximum size of a partial body chunk.  The standard allows
     // for chunks up to 1 GB in size.
     max_chunk_size: usize,
+
+    // The number of bytes written to this filter.
+    position: u64,
 }
 
 const PARTIAL_BODY_FILTER_MAX_CHUNK_SIZE : usize = 1 << 30;
@@ -74,6 +77,7 @@ impl<'a, C: 'a> PartialBodyFilter<'a, C> {
             buffer: Vec::with_capacity(buffer_threshold),
             buffer_threshold: buffer_threshold,
             max_chunk_size: max_chunk_size,
+            position: 0,
         })))
     }
 
@@ -100,26 +104,17 @@ impl<'a, C: 'a> PartialBodyFilter<'a, C> {
                 unimplemented!();
             }
             BodyLength::Full(l as u32).serialize(inner).map_err(
-                |e| {
-                    match e.downcast::<io::Error>() {
+                |e| match e.downcast::<io::Error>() {
+                        // An io::Error.  Pass as-is.
                         Ok(err) => err,
-                        Err(e) => {
-                            match e.downcast::<Error>()
-                                .expect("Unexpected error encoding full length")
-                            {
-                                Error::InvalidArgument(s) =>
-                                    panic!("Error encoding full length: {}", s),
-                                _ =>
-                                    panic!("Unexpected error encoding \
-                                            full length"),
-                            }
-                        }
-                    }
-                })?;
+                        // A failure.  Create a compat object and wrap it.
+                        Err(e) => io::Error::new(io::ErrorKind::Other,
+                                                 e.compat()),
+                    })?;
 
             // Write the body.
             inner.write_all(&self.buffer[..])?;
-            self.buffer.clear();
+            crate::vec_truncate(&mut self.buffer, 0);
             inner.write_all(other)?;
         } else {
             while self.buffer.len() + other.len() > self.buffer_threshold {
@@ -168,6 +163,7 @@ impl<'a, C: 'a> io::Write for PartialBodyFilter<'a, C> {
         } else {
             self.buffer.append(buf.to_vec().as_mut());
         }
+        self.position += buf.len() as u64;
         Ok(buf.len())
     }
 
@@ -205,14 +201,14 @@ impl<'a, C: 'a> writer::Stackable<'a, C> for PartialBodyFilter<'a, C> {
     fn mount(&mut self, new: writer::BoxStack<'a, C>) {
         self.inner = Some(new);
     }
-    fn inner_mut(&mut self) -> Option<&mut writer::Stackable<'a, C>> {
+    fn inner_mut(&mut self) -> Option<&mut dyn writer::Stackable<'a, C>> {
         if let Some(ref mut i) = self.inner {
             Some(i)
         } else {
             None
         }
     }
-    fn inner_ref(&self) -> Option<&writer::Stackable<'a, C>> {
+    fn inner_ref(&self) -> Option<&dyn writer::Stackable<'a, C>> {
         if let Some(ref i) = self.inner {
             Some(i)
         } else {
@@ -228,13 +224,16 @@ impl<'a, C: 'a> writer::Stackable<'a, C> for PartialBodyFilter<'a, C> {
     fn cookie_mut(&mut self) -> &mut C {
         &mut self.cookie
     }
+    fn position(&self) -> u64 {
+        self.position
+    }
 }
 
 #[cfg(test)]
 mod test {
     use std::io::Write;
     use super::*;
-    use serialize::stream::Message;
+    use crate::serialize::stream::Message;
 
     #[test]
     fn basic() {

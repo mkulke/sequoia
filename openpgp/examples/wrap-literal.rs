@@ -7,9 +7,8 @@ use std::env;
 use std::io;
 
 extern crate sequoia_openpgp as openpgp;
-use openpgp::armor;
-use openpgp::constants::DataFormat;
-use openpgp::serialize::stream::{Message, LiteralWriter};
+use crate::openpgp::armor;
+use crate::openpgp::serialize::stream::{Message, LiteralWriter};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -29,8 +28,7 @@ fn main() {
 
     // Then, create a literal writer to wrap the data in a literal
     // message packet.
-    let mut literal = LiteralWriter::new(message, DataFormat::Binary,
-                                         None, None)
+    let mut literal = LiteralWriter::new(message).build()
         .expect("Failed to create literal writer");
 
     // Copy all the data.

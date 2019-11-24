@@ -3,30 +3,32 @@ use failure::Fail;
 use clap::ArgMatches;
 use itertools::Itertools;
 
-use openpgp::Packet;
-use openpgp::tpk::{TPKBuilder, CipherSuite};
-use openpgp::packet::KeyFlags;
-use openpgp::armor::{Writer, Kind};
-use openpgp::serialize::Serialize;
+use crate::openpgp::Packet;
+use crate::openpgp::tpk::{TPKBuilder, CipherSuite};
+use crate::openpgp::constants::KeyFlags;
+use crate::openpgp::armor::{Writer, Kind};
+use crate::openpgp::serialize::Serialize;
 
-use ::create_or_stdout;
+use crate::create_or_stdout;
 
 pub fn generate(m: &ArgMatches, force: bool) -> failure::Fallible<()> {
     let mut builder = TPKBuilder::new();
 
     // User ID
-    match m.value_of("userid") {
-        Some(uid) => { builder = builder.add_userid(uid); }
+    match m.values_of("userid") {
+        Some(uids) => for uid in uids {
+            builder = builder.add_userid(uid);
+        },
         None => {
             eprintln!("No user ID given, using direct key signature");
         }
     }
 
     // Expiration.
-    const SECONDS_IN_DAY : i64 = 24 * 60 * 60;
-    const SECONDS_IN_YEAR : i64 =
+    const SECONDS_IN_DAY : u64 = 24 * 60 * 60;
+    const SECONDS_IN_YEAR : u64 =
         // Average number of days in a year.
-        (365.2422222 * SECONDS_IN_DAY as f64) as i64;
+        (365.2422222 * SECONDS_IN_DAY as f64) as u64;
 
     let even_off = |s| {
         if s < 7 * SECONDS_IN_DAY {
@@ -66,11 +68,11 @@ pub fn generate(m: &ArgMatches, force: bool) -> failure::Fallible<()> {
                      (try: '2y' for 2 years)"));
             }
 
-            let count : i64 = match digits.parse::<i32>() {
+            let count = match digits.parse::<i32>() {
                 Ok(count) if count < 0 =>
                     return Err(format_err!(
                         "--expiry: Expiration can't be in the past")),
-                Ok(count) => count as i64,
+                Ok(count) => count as u64,
                 Err(err) =>
                     return Err(err.context(
                         "--expiry: count is out of range").into()),
@@ -101,20 +103,24 @@ pub fn generate(m: &ArgMatches, force: bool) -> failure::Fallible<()> {
             }
 
             builder = builder.set_expiration(
-                Some(time::Duration::seconds(even_off(count * factor))));
+                Some(std::time::Duration::new(even_off(count * factor), 0)));
         }
 
         // Not specified.  Use the default.
         None => {
             builder = builder.set_expiration(
-                Some(time::Duration::seconds(even_off(3 * SECONDS_IN_YEAR))));
+                Some(std::time::Duration::new(even_off(3 * SECONDS_IN_YEAR), 0))
+            );
         }
     };
 
     // Cipher Suite
     match m.value_of("cipher-suite") {
-        None | Some("rsa3k") => {
+        Some("rsa3k") => {
             builder = builder.set_cipher_suite(CipherSuite::RSA3k);
+        }
+        Some("rsa4k") => {
+            builder = builder.set_cipher_suite(CipherSuite::RSA4k);
         }
         Some("cv25519") => {
             builder = builder.set_cipher_suite(CipherSuite::Cv25519);
@@ -122,6 +128,7 @@ pub fn generate(m: &ArgMatches, force: bool) -> failure::Fallible<()> {
         Some(ref cs) => {
             return Err(format_err!("Unknown cipher suite '{}'", cs));
         }
+        None => panic!("argument has a default value"),
     }
 
     // Signing Capability
@@ -201,17 +208,28 @@ pub fn generate(m: &ArgMatches, force: bool) -> failure::Fallible<()> {
                                      --export")),
             };
 
+        let headers = tpk.armor_headers();
+
         // write out key
         {
+            let headers: Vec<_> = headers.iter()
+                .map(|value| ("Comment", value.as_str()))
+                .collect();
+
             let w = create_or_stdout(Some(&key_path), force)?;
-            let mut w = Writer::new(w, Kind::SecretKey, &[])?;
+            let mut w = Writer::new(w, Kind::SecretKey, &headers)?;
             tpk.as_tsk().serialize(&mut w)?;
         }
 
         // write out rev cert
         {
+            let mut headers: Vec<_> = headers.iter()
+                .map(|value| ("Comment", value.as_str()))
+                .collect();
+            headers.insert(0, ("Comment", "Revocation certificate for"));
+
             let w = create_or_stdout(Some(&rev_path), force)?;
-            let mut w = Writer::new(w, Kind::Signature, &[])?;
+            let mut w = Writer::new(w, Kind::Signature, &headers)?;
             Packet::Signature(rev).serialize(&mut w)?;
         }
     } else {

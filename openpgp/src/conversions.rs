@@ -1,14 +1,13 @@
 //! Conversions for primitive OpenPGP types.
 
-use time;
 
-use Error;
-use Result;
+use crate::Error;
+use crate::Result;
 
 /// Conversions for OpenPGP time stamps.
 pub trait Time {
     /// Converts an OpenPGP time stamp to broken-down time.
-    fn from_pgp(u32) -> Self;
+    fn from_pgp(_: u32) -> Self;
     /// Converts broken-down time to an OpenPGP time stamp.
     fn to_pgp(&self) -> Result<u32>;
     /// Strips off any subseconds that OpenPGP cannot represent, and
@@ -16,54 +15,58 @@ pub trait Time {
     fn canonicalize(self) -> Self;
 }
 
-impl Time for time::Tm {
+impl Time for std::time::SystemTime {
     fn from_pgp(timestamp: u32) -> Self {
-        time::at_utc(time::Timespec::new(timestamp as i64, 0))
+        std::time::UNIX_EPOCH + std::time::Duration::new(timestamp as u64, 0)
     }
 
     fn to_pgp(&self) -> Result<u32> {
-        let epoch = self.to_timespec().sec;
-        if epoch > ::std::u32::MAX as i64 {
-            return Err(Error::InvalidArgument(
+        match self.duration_since(std::time::UNIX_EPOCH) {
+            Ok(d) if d.as_secs() <= std::u32::MAX as u64 =>
+                Ok(d.as_secs() as u32),
+            _ => Err(Error::InvalidArgument(
                 format!("Time exceeds u32 epoch: {:?}", self))
-                       .into());
+                     .into()),
         }
-        Ok(epoch as u32)
     }
 
-    fn canonicalize(mut self) -> Self {
-        self.tm_nsec = 0;
-        self.to_utc()
+    fn canonicalize(self) -> Self {
+        match self.duration_since(std::time::UNIX_EPOCH) {
+            Ok(d) if d.as_secs() <= std::u32::MAX as u64 =>
+                Self::from_pgp(d.as_secs() as u32),
+            _ =>
+                Self::from_pgp(0), // XXX
+        }
     }
 }
 
 /// Conversions for OpenPGP durations.
 pub trait Duration {
     /// Converts an OpenPGP duration to ISO 8601 time duration.
-    fn from_pgp(u32) -> Self;
+    fn from_pgp(_: u32) -> Self;
     /// Converts ISO 8601 time duration to an OpenPGP duration.
     fn to_pgp(&self) -> Result<u32>;
     /// Strips off any subseconds that OpenPGP cannot represent.
     fn canonicalize(self) -> Self;
 }
 
-impl Duration for time::Duration {
+impl Duration for std::time::Duration {
     fn from_pgp(duration: u32) -> Self {
-        time::Duration::seconds(duration as i64)
+        std::time::Duration::new(duration as u64, 0)
     }
 
     fn to_pgp(&self) -> Result<u32> {
-        let secs = self.num_seconds();
-        if secs > ::std::u32::MAX as i64 {
-            return Err(Error::InvalidArgument(
+        if self.as_secs() <= std::u32::MAX as u64 {
+            Ok(self.as_secs() as u32)
+        } else {
+            Err(Error::InvalidArgument(
                 format!("Duration exceeds u32: {:?}", self))
-                       .into());
+                       .into())
         }
-        Ok(secs as u32)
     }
 
     fn canonicalize(self) -> Self {
-        time::Duration::seconds(self.num_seconds())
+        std::time::Duration::new(self.as_secs(), 0)
     }
 }
 
@@ -82,12 +85,12 @@ pub mod hex {
     }
 
     /// Decodes the given hexadecimal number.
-    pub fn decode<H: AsRef<str>>(hex: H) -> ::Result<Vec<u8>> {
+    pub fn decode<H: AsRef<str>>(hex: H) -> crate::Result<Vec<u8>> {
         super::from_hex(hex.as_ref(), false)
     }
 
     /// Decodes the given hexadecimal number, ignoring whitespace.
-    pub fn decode_pretty<H: AsRef<str>>(hex: H) -> ::Result<Vec<u8>> {
+    pub fn decode_pretty<H: AsRef<str>>(hex: H) -> crate::Result<Vec<u8>> {
         super::from_hex(hex.as_ref(), true)
     }
 
@@ -101,14 +104,14 @@ pub mod hex {
     /// let mut dumper = hex::Dumper::new(Vec::new(), "");
     /// dumper.write(&[0x89, 0x01, 0x33], "frame").unwrap();
     /// dumper.write(&[0x04], "version").unwrap();
-    /// dumper.write(&[0x00], "sigtype").unwrap();
+    /// dumper.write(&[0x00], "type").unwrap();
     ///
     /// let buf = dumper.into_inner();
     /// assert_eq!(
     ///     ::std::str::from_utf8(&buf[..]).unwrap(),
     ///     "00000000  89 01 33                                           frame\n\
     ///      00000003           04                                        version\n\
-    ///      00000004              00                                     sigtype\n\
+    ///      00000004              00                                     type\n\
     ///      ");
     /// ```
     pub struct Dumper<W: io::Write> {
@@ -137,9 +140,31 @@ pub mod hex {
 
         /// Writes a chunk of data.
         ///
-        /// The `label` is printed at the end of the first line.
+        /// The `msg` is printed at the end of the first line.
         pub fn write(&mut self, buf: &[u8], msg: &str) -> io::Result<()> {
-            let mut msg_printed = false;
+            let mut first = true;
+            self.write_labeled(buf, move |_, _| {
+                if first {
+                    first = false;
+                    Some(msg.into())
+                } else {
+                    None
+                }
+            })
+        }
+
+        /// Writes a chunk of data.
+        ///
+        /// For each line, the given function is called to compute a
+        /// label that printed at the end of the first line.  The
+        /// functions first argument is the offset in the current line
+        /// (0..16), the second the slice of the displayed data.
+        pub fn write_labeled<L>(&mut self, buf: &[u8], mut labeler: L)
+                                -> io::Result<()>
+            where L: FnMut(usize, &[u8]) -> Option<String>
+        {
+            let mut first_label_offset = self.offset % 16;
+
             write!(self.inner, "{}{:08x} ", self.indent, self.offset)?;
             for i in 0 .. self.offset % 16 {
                 if i != 7 {
@@ -150,7 +175,8 @@ pub mod hex {
             }
 
             let mut offset_printed = true;
-            for c in buf {
+            let mut data_start = 0;
+            for (i, c) in buf.iter().enumerate() {
                 if ! offset_printed {
                     write!(self.inner,
                            "\n{}{:08x} ", self.indent, self.offset)?;
@@ -161,10 +187,14 @@ pub mod hex {
                 self.offset += 1;
                 match self.offset % 16 {
                     0 => {
-                        if ! msg_printed {
+                        if let Some(msg) = labeler(
+                            first_label_offset, &buf[data_start..i + 1])
+                        {
                             write!(self.inner, "   {}", msg)?;
-                            msg_printed = true;
+                            // Only the first label is offset.
+                            first_label_offset = 0;
                         }
+                        data_start = i + 1;
                         offset_printed = false;
                     },
                     8 => write!(self.inner, " ")?,
@@ -172,7 +202,9 @@ pub mod hex {
                 }
             }
 
-            if ! msg_printed {
+            if let Some(msg) = labeler(
+                first_label_offset, &buf[data_start..])
+            {
                 for i in self.offset % 16 .. 16 {
                     if i != 7 {
                         write!(self.inner, "   ")?;
@@ -403,7 +435,7 @@ mod test {
         let mut dumper = Dumper::new(Vec::new(), "");
         dumper.write(&[0x89, 0x01, 0x33], "frame").unwrap();
         dumper.write(&[0x04], "version").unwrap();
-        dumper.write(&[0x00], "sigtype").unwrap();
+        dumper.write(&[0x00], "type").unwrap();
         let buf = dumper.into_inner();
         assert_eq!(
             ::std::str::from_utf8(&buf[..]).unwrap(),
@@ -412,7 +444,7 @@ mod test {
              00000003           04                                        \
              version\n\
              00000004              00                                     \
-             sigtype\n\
+             type\n\
              ");
     }
 

@@ -3,17 +3,17 @@ use std::path::Path;
 
 use buffered_reader::BufferedReader;
 
-use Result;
-use parse::PacketParserResult;
-use parse::PacketParser;
-use parse::PacketParserEOF;
-use parse::PacketParserState;
-use parse::PacketParserSettings;
-use parse::ParserResult;
-use parse::Parse;
-use parse::Cookie;
-use armor;
-use packet;
+use crate::Result;
+use crate::parse::PacketParserResult;
+use crate::parse::PacketParser;
+use crate::parse::PacketParserEOF;
+use crate::parse::PacketParserState;
+use crate::parse::PacketParserSettings;
+use crate::parse::ParserResult;
+use crate::parse::Parse;
+use crate::parse::Cookie;
+use crate::armor;
+use crate::packet;
 
 /// How to decode the input.
 #[derive(PartialEq)]
@@ -36,7 +36,7 @@ pub enum Dearmor {
 /// for instance, `PacketParser::from_file` or
 /// `PacketParser::from_reader` to start parsing an OpenPGP message.
 pub struct PacketParserBuilder<'a> {
-    bio: Box<'a + BufferedReader<Cookie>>,
+    bio: Box<dyn BufferedReader<Cookie> + 'a>,
     dearmor: Dearmor,
     settings: PacketParserSettings,
 }
@@ -59,10 +59,10 @@ impl<'a> Parse<'a, PacketParserBuilder<'a>> for PacketParserBuilder<'a> {
 
     /// Creates a `PacketParserBuilder` for an OpenPGP message stored
     /// in the specified buffer.
-    fn from_bytes(bytes: &'a [u8]) -> Result<PacketParserBuilder> {
+    fn from_bytes<D: AsRef<[u8]> + ?Sized>(data: &'a D) -> Result<PacketParserBuilder<'a>> {
         PacketParserBuilder::from_buffered_reader(
             Box::new(buffered_reader::Memory::with_cookie(
-                bytes, Cookie::default())))
+                data.as_ref(), Cookie::default())))
     }
 }
 
@@ -72,7 +72,7 @@ impl<'a> PacketParserBuilder<'a> {
     //
     // Note: this clears the `level` field of the
     // `Cookie` cookie.
-    pub(crate) fn from_buffered_reader(mut bio: Box<'a + BufferedReader<Cookie>>)
+    pub(crate) fn from_buffered_reader(mut bio: Box<dyn BufferedReader<Cookie> + 'a>)
             -> Result<Self> {
         bio.cookie_mut().level = None;
         Ok(PacketParserBuilder {
@@ -92,6 +92,23 @@ impl<'a> PacketParserBuilder<'a> {
     /// to a maximum recursion depth of 32.)
     pub fn max_recursion_depth(mut self, value: u8) -> Self {
         self.settings.max_recursion_depth = value;
+        self
+    }
+
+    /// Sets the maximum size of non-container packets.
+    ///
+    /// Packets that exceed this limit will be returned as
+    /// `Packet::Unknown`, with the error set to
+    /// `Error::PacketTooLarge`.
+    ///
+    /// This limit applies to any packet type that is *not* a
+    /// container packet, i.e. any packet that is not a literal data
+    /// packet, a compressed data packet, a symmetrically encrypted
+    /// data packet, or an AEAD encrypted data packet.
+    ///
+    /// The default is 1 MiB.
+    pub fn max_packet_size(mut self, value: u32) -> Self {
+        self.settings.max_packet_size = value;
         self
     }
 
@@ -153,22 +170,26 @@ impl<'a> PacketParserBuilder<'a> {
             Dearmor::Enabled(mode) => Some(mode),
             Dearmor::Disabled => None,
             Dearmor::Auto(mode) => {
-                let mut reader = buffered_reader::Dup::with_cookie(
-                    self.bio, Cookie::default());
-                let header = packet::Header::parse(&mut reader);
-                self.bio = Box::new(reader).into_inner().unwrap();
-                if let Ok(header) = header {
-                    if let Err(_) = header.valid(false) {
-                        // Invalid header: better try an ASCII armor
-                        // decoder.
-                        Some(mode)
-                    } else {
-                        None
-                    }
+                if self.bio.eof() {
+                    None
                 } else {
-                    // Failed to parse the header: better try an ASCII
-                    // armor decoder.
-                    Some(mode)
+                    let mut reader = buffered_reader::Dup::with_cookie(
+                        self.bio, Cookie::default());
+                    let header = packet::Header::parse(&mut reader);
+                    self.bio = Box::new(reader).into_inner().unwrap();
+                    if let Ok(header) = header {
+                        if let Err(_) = header.valid(false) {
+                            // Invalid header: better try an ASCII armor
+                            // decoder.
+                            Some(mode)
+                        } else {
+                            None
+                        }
+                    } else {
+                        // Failed to parse the header: better try an ASCII
+                        // armor decoder.
+                        Some(mode)
+                    }
                 }
             }
         };
@@ -204,7 +225,7 @@ mod tests {
     #[test]
     fn armor() {
         // Not ASCII armor encoded data.
-        let msg = ::tests::message("sig.gpg");
+        let msg = crate::tests::message("sig.gpg");
 
         // Make sure we can read the first packet.
         let ppr = PacketParserBuilder::from_bytes(msg).unwrap()
@@ -220,16 +241,10 @@ mod tests {
         let ppr = PacketParserBuilder::from_bytes(msg).unwrap()
             .dearmor(Dearmor::Enabled(Default::default()))
             .finalize();
-        // XXX: If the dearmorer doesn't find a header and has no
-        // data, then it should return an error.  Fix this when
-        // https://gitlab.com/sequoia-pgp/sequoia/issues/174 is
-        // resolved.
-        //
-        // assert_match!(Err(_) = ppr);
-        assert_match!(Ok(PacketParserResult::EOF(ref _pp)) = ppr);
+        assert_match!(Err(_) = ppr);
 
         // ASCII armor encoded data.
-        let msg = ::tests::message("a-cypherpunks-manifesto.txt.ed25519.sig");
+        let msg = crate::tests::message("a-cypherpunks-manifesto.txt.ed25519.sig");
 
         // Make sure we can read the first packet.
         let ppr = PacketParserBuilder::from_bytes(msg).unwrap()

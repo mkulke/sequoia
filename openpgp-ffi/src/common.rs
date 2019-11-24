@@ -112,7 +112,7 @@ macro_rules! ffi_return_string {
     ($name:expr) => {{
         let string = $name;
         let bytes: &[u8] = string.as_ref();
-        ::strndup(bytes).expect(
+        crate::strndup(bytes).expect(
             &format!("Returned string {} contains a 0 byte.", stringify!($name))
         )
     }};
@@ -128,7 +128,7 @@ macro_rules! ffi_return_maybe_string {
     ($name:expr) => {{
         let string = $name;
         let bytes: &[u8] = string.as_ref();
-        ::strndup(bytes).unwrap_or(::std::ptr::null_mut())
+        crate::strndup(bytes).unwrap_or(::std::ptr::null_mut())
     }};
 }
 
@@ -147,16 +147,40 @@ macro_rules! ffi_make_fry_from_errp {
         macro_rules! ffi_try_status {
             ($expr:expr) => {
                 match $expr {
-                    Ok(_) => ::error::Status::Success,
+                    Ok(_) => crate::error::Status::Success,
                     Err(e) => {
-                        use MoveIntoRaw;
+                        use crate::MoveIntoRaw;
                         use failure::Error;
-                        let status = ::error::Status::from(&e);
+                        let status = crate::error::Status::from(&e);
                         if let Some(errp) = $errp {
                             let e : Error = e.into();
                             *errp = e.move_into_raw();
                         }
                         status
+                    },
+                }
+            };
+        }
+
+        /// Like try! for ffi glue.
+        ///
+        /// Evaluates the given expression.  `Ok(v)` evaluates to `v`.
+        /// On failure, stashes the error in the context and returns
+        /// the appropriate Status code.
+        #[allow(unused_macros)]
+        macro_rules! ffi_try_or_status {
+            ($expr:expr) => {
+                match $expr {
+                    Ok(v) => v,
+                    Err(e) => {
+                        use crate::MoveIntoRaw;
+                        use failure::Error;
+                        let status = crate::error::Status::from(&e);
+                        if let Some(errp) = $errp {
+                            let e : Error = e.into();
+                            *errp = e.move_into_raw();
+                        }
+                        return status;
                     },
                 }
             };
@@ -172,7 +196,7 @@ macro_rules! ffi_make_fry_from_errp {
                 match $expr {
                     Ok(v) => v,
                     Err(e) => {
-                        use MoveIntoRaw;
+                        use crate::MoveIntoRaw;
                         use failure::Error;
                         if let Some(errp) = $errp {
                             let e : Error = e.into();
@@ -277,6 +301,32 @@ pub(crate) fn build_hasher() -> DefaultHasher {
         static ref RANDOM_STATE: RandomState = RandomState::new();
     }
     RANDOM_STATE.build_hasher()
+}
+
+/* time_t support.  */
+
+/// Converts a time_t for use in Sequoia.
+pub(crate) fn maybe_time(t: libc::time_t) -> Option<std::time::SystemTime> {
+    if t == 0 {
+        None
+    } else {
+        Some(std::time::UNIX_EPOCH + std::time::Duration::new(t as u64, 0))
+    }
+}
+
+/// Converts a time_t for use in C.
+#[allow(dead_code)]
+pub(crate) fn to_time_t<T>(t: T) -> libc::time_t
+    where T: Into<Option<std::time::SystemTime>>
+{
+    if let Some(t) = t.into() {
+        match t.duration_since(std::time::UNIX_EPOCH) {
+            Ok(d) => d.as_secs() as libc::time_t,
+            Err(_) => 0, // Unrepresentable.
+        }
+    } else {
+        0
+    }
 }
 
 pub mod armor;

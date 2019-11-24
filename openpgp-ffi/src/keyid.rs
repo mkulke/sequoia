@@ -15,9 +15,9 @@ use libc::{c_char};
 
 extern crate sequoia_openpgp as openpgp;
 
-use Maybe;
-use RefRaw;
-use MoveIntoRaw;
+use crate::Maybe;
+use crate::RefRaw;
+use crate::MoveIntoRaw;
 
 /// Holds a KeyID.
 ///
@@ -30,7 +30,7 @@ use MoveIntoRaw;
 /// Wraps [`sequoia-openpgp::KeyID`].
 ///
 /// [`sequoia-openpgp::KeyID`]: ../../sequoia_openpgp/enum.KeyID.html
-#[::ffi_wrapper_type(prefix = "pgp_", name = "keyid",
+#[crate::ffi_wrapper_type(prefix = "pgp_", name = "keyid",
                      derive = "Clone, Debug, Display, Hash, PartialEq")]
 pub struct KeyID(openpgp::KeyID);
 
@@ -44,7 +44,8 @@ pub struct KeyID(openpgp::KeyID);
 /// #include <string.h>
 /// #include <sequoia/openpgp.h>
 ///
-/// pgp_keyid_t mr_b = pgp_keyid_from_bytes ("\xbb\xbb\xbb\xbb\xbb\xbb\xbb\xbb");
+/// pgp_keyid_t mr_b =
+///     pgp_keyid_from_bytes ((uint8_t *) "\xbb\xbb\xbb\xbb\xbb\xbb\xbb\xbb");
 ///
 /// char *mr_b_as_string = pgp_keyid_to_string (mr_b);
 /// assert (strcmp (mr_b_as_string, "BBBB BBBB BBBB BBBB") == 0);

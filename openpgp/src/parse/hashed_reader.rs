@@ -6,8 +6,8 @@ use std::fmt;
 use buffered_reader::BufferedReader;
 use buffered_reader::buffered_reader_generic_read_impl;
 
-use HashAlgorithm;
-use parse::{Cookie, HashesFor, Hashing};
+use crate::HashAlgorithm;
+use crate::parse::{Cookie, HashesFor, Hashing};
 
 const TRACE : bool = false;
 
@@ -39,7 +39,8 @@ impl<R: BufferedReader<Cookie>> HashedReader<R> {
             -> Self {
         let mut cookie = Cookie::default();
         for &algo in &algos {
-            cookie.sig_group_mut().hashes.insert(algo, algo.context().unwrap());
+            cookie.sig_group_mut().hashes
+                .push((algo, algo.context().unwrap()));
         }
         cookie.hashes_for = hashes_for;
 
@@ -87,7 +88,7 @@ impl Cookie {
 
         if self.hashing == Hashing::Disabled {
             t!("    hash_update: NOT hashing {} bytes: {}.",
-               data.len(), ::conversions::to_hex(data, true));
+               data.len(), crate::conversions::to_hex(data, true));
             return;
         }
 
@@ -95,7 +96,7 @@ impl Cookie {
         for (i, sig_group) in self.sig_groups.iter_mut().enumerate() {
             if topmost_group(i) && self.hashing != Hashing::Enabled {
                 t!("topmost group {} NOT hashing {} bytes: {}.",
-                   i, data.len(), ::conversions::to_hex(data, true));
+                   i, data.len(), crate::conversions::to_hex(data, true));
 
                 return;
             }
@@ -194,16 +195,16 @@ impl<R: BufferedReader<Cookie>>
         result
     }
 
-    fn get_mut(&mut self) -> Option<&mut BufferedReader<Cookie>> {
+    fn get_mut(&mut self) -> Option<&mut dyn BufferedReader<Cookie>> {
         Some(&mut self.reader)
     }
 
-    fn get_ref(&self) -> Option<&BufferedReader<Cookie>> {
+    fn get_ref(&self) -> Option<&dyn BufferedReader<Cookie>> {
         Some(&self.reader)
     }
 
     fn into_inner<'b>(self: Box<Self>)
-            -> Option<Box<BufferedReader<Cookie> + 'b>>
+            -> Option<Box<dyn BufferedReader<Cookie> + 'b>>
             where Self: 'b {
         Some(Box::new(self.reader))
     }
@@ -279,7 +280,7 @@ mod test {
                 hash.digest(&mut digest);
 
                 assert_eq!(digest,
-                           &::conversions::from_hex(test.expected.get(algo)
+                           &crate::conversions::from_hex(test.expected.get(algo)
                                                     .unwrap(), true)
                            .unwrap()[..],
                            "Algo: {:?}", algo);

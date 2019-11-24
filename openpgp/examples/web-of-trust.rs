@@ -10,8 +10,8 @@
 use std::env;
 
 extern crate sequoia_openpgp as openpgp;
-use openpgp::tpk::TPKParser;
-use openpgp::parse::Parse;
+use crate::openpgp::tpk::TPKParser;
+use crate::openpgp::parse::Parse;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -30,7 +30,7 @@ fn main() {
     // For each input file, create a parser.
     for input in &args[1..] {
         eprintln!("Parsing {}...", input);
-        let mut parser = TPKParser::from_file(input)
+        let parser = TPKParser::from_file(input)
             .expect("Failed to create reader");
 
         for tpk in parser {

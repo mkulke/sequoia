@@ -3,11 +3,11 @@
 extern crate sequoia_openpgp as openpgp;
 extern crate sequoia;
 use sequoia::{core, store};
-use openpgp::parse::Parse;
+use crate::openpgp::parse::Parse;
 
 fn main() {
     let tpk =
-       b"-----BEGIN PGP PUBLIC KEY BLOCK-----
+        "-----BEGIN PGP PUBLIC KEY BLOCK-----
 
          mQENBFpxtsABCADZcBa1Q3ZLZnju18o0+t8LoQuIIeyeUQ0H45y6xUqyrD5HSkVM
          VGQs6IHLq70mAizBJ4VznUVqVOh/NhOlapXi6/TKpjHvttdg45o6Pgqa0Kx64luT
@@ -44,14 +44,14 @@ fn main() {
     // Parse TPK.
     let tpk = openpgp::TPK::from_bytes(tpk).unwrap();
 
-    // Open a store.
-    let store =
-        store::Store::open(&ctx, store::REALM_CONTACTS, "default").unwrap();
+    // Open a mapping.
+    let mapping =
+        store::Mapping::open(&ctx, store::REALM_CONTACTS, "default").unwrap();
 
     // Store the TPK.
-    store.import("Ἀριστοτέλης", &tpk).unwrap();
+    mapping.import("Ἀριστοτέλης", &tpk).unwrap();
 
     // Now let's get it back.
-    let tpk_ = store.lookup("Ἀριστοτέλης").unwrap().tpk().unwrap();
+    let tpk_ = mapping.lookup("Ἀριστοτέλης").unwrap().tpk().unwrap();
     assert_eq!(tpk.fingerprint(), tpk_.fingerprint());
 }

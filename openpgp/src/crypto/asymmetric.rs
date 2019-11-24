@@ -2,13 +2,13 @@
 
 use nettle::{dsa, ecc, ecdsa, ed25519, rsa, Yarrow};
 
-use packet::{self, Key};
-use crypto::SessionKey;
-use crypto::mpis::{self, MPI};
-use constants::{Curve, HashAlgorithm};
+use crate::packet::{self, key, Key};
+use crate::crypto::SessionKey;
+use crate::crypto::mpis::{self, MPI};
+use crate::constants::{Curve, HashAlgorithm};
 
-use Error;
-use Result;
+use crate::Error;
+use crate::Result;
 
 /// Creates a signature.
 ///
@@ -16,13 +16,26 @@ use Result;
 /// signature.  Using this trait allows Sequoia to perform all
 /// operations involving signing to use a variety of secret key
 /// storage mechanisms (e.g. smart cards).
-pub trait Signer {
+pub trait Signer<R>
+    where R: key::KeyRole
+{
     /// Returns a reference to the public key.
-    fn public(&self) -> &Key;
+    fn public(&self) -> &Key<key::PublicParts, R>;
 
     /// Creates a signature over the `digest` produced by `hash_algo`.
     fn sign(&mut self, hash_algo: HashAlgorithm, digest: &[u8])
             -> Result<mpis::Signature>;
+}
+
+impl<R: key::KeyRole> Signer<R> for Box<dyn Signer<R>> {
+    fn public(&self) -> &Key<key::PublicParts, R> {
+        self.as_ref().public()
+    }
+
+    fn sign(&mut self, hash_algo: HashAlgorithm, digest: &[u8])
+            -> Result<mpis::Signature> {
+        self.as_mut().sign(hash_algo, digest)
+    }
 }
 
 /// Decrypts a message.
@@ -31,9 +44,11 @@ pub trait Signer {
 /// ciphertext.  Using this trait allows Sequoia to perform all
 /// operations involving decryption to use a variety of secret key
 /// storage mechanisms (e.g. smart cards).
-pub trait Decryptor {
+pub trait Decryptor<R>
+    where R: key::KeyRole
+{
     /// Returns a reference to the public key.
-    fn public(&self) -> &Key;
+    fn public(&self) -> &Key<key::PublicParts, R>;
 
     /// Decrypts `ciphertext`, returning the plain session key.
     fn decrypt(&mut self, ciphertext: &mpis::Ciphertext)
@@ -49,14 +64,21 @@ pub trait Decryptor {
 /// [`Signer`]: trait.Signer.html
 /// [`Decryptor`]: trait.Decryptor.html
 #[derive(Clone)]
-pub struct KeyPair {
-    public: Key,
+pub struct KeyPair<R>
+    where R: key::KeyRole
+{
+    public: Key<key::PublicParts, R>,
     secret: packet::key::Unencrypted,
 }
 
-impl KeyPair {
+impl<R> KeyPair<R>
+    where R: key::KeyRole
+{
     /// Creates a new key pair.
-    pub fn new(public: Key, secret: packet::key::Unencrypted) -> Result<Self> {
+    pub fn new(public: Key<key::PublicParts, R>,
+               secret: packet::key::Unencrypted)
+        -> Result<Self>
+    {
         Ok(Self {
             public: public,
             secret: secret,
@@ -64,7 +86,7 @@ impl KeyPair {
     }
 
     /// Returns a reference to the public key.
-    pub fn public(&self) -> &Key {
+    pub fn public(&self) -> &Key<key::PublicParts, R> {
         &self.public
     }
 
@@ -74,29 +96,31 @@ impl KeyPair {
     }
 }
 
-impl Signer for KeyPair {
-    fn public(&self) -> &Key {
+impl<R> Signer<R> for KeyPair<R>
+    where R: key::KeyRole
+{
+    fn public(&self) -> &Key<key::PublicParts, R> {
         &self.public
     }
 
     fn sign(&mut self, hash_algo: HashAlgorithm, digest: &[u8])
             -> Result<mpis::Signature>
     {
-        use PublicKeyAlgorithm::*;
-        use crypto::mpis::PublicKey;
-        use memsec;
+        use crate::PublicKeyAlgorithm::*;
+        use crate::crypto::mpis::PublicKey;
 
         let mut rng = Yarrow::default();
 
-        #[allow(deprecated)]
-        match (self.public.pk_algo(), self.public.mpis(), &self.secret.mpis())
+        self.secret.map(|secret| {
+            #[allow(deprecated)]
+            match (self.public.pk_algo(), self.public.mpis(), secret)
         {
             (RSASign,
              &PublicKey::RSA { ref e, ref n },
-             &mpis::SecretKey::RSA { ref p, ref q, ref d, .. }) |
+             &mpis::SecretKeyMaterial::RSA { ref p, ref q, ref d, .. }) |
             (RSAEncryptSign,
              &PublicKey::RSA { ref e, ref n },
-             &mpis::SecretKey::RSA { ref p, ref q, ref d, .. }) => {
+             &mpis::SecretKeyMaterial::RSA { ref p, ref q, ref d, .. }) => {
                 let public = rsa::PublicKey::new(n.value(), e.value())?;
                 let secret = rsa::PrivateKey::new(d.value(), p.value(),
                                                   q.value(), Option::None)?;
@@ -121,7 +145,7 @@ impl Signer for KeyPair {
 
             (DSA,
              &PublicKey::DSA { ref p, ref q, ref g, .. },
-             &mpis::SecretKey::DSA { ref x }) => {
+             &mpis::SecretKeyMaterial::DSA { ref x }) => {
                 let params = dsa::Params::new(p.value(), q.value(), g.value());
                 let secret = dsa::PrivateKey::new(x.value());
 
@@ -135,7 +159,7 @@ impl Signer for KeyPair {
 
             (EdDSA,
              &PublicKey::EdDSA { ref curve, ref q },
-             &mpis::SecretKey::EdDSA { ref scalar }) => match curve {
+             &mpis::SecretKeyMaterial::EdDSA { ref scalar }) => match curve {
                 Curve::Ed25519 => {
                     let public = q.decode_point(&Curve::Ed25519)?.0;
 
@@ -144,8 +168,8 @@ impl Signer for KeyPair {
                     // Nettle expects the private key to be exactly
                     // ED25519_KEY_SIZE bytes long but OpenPGP allows leading
                     // zeros to be stripped.
-                    // Padding has to be unconditionaly, otherwise we have a
-                    // secret-dependant branch.
+                    // Padding has to be unconditional; otherwise we have a
+                    // secret-dependent branch.
                     let missing = ed25519::ED25519_KEY_SIZE
                         .saturating_sub(scalar.value().len());
                     let mut sec = [0u8; ed25519::ED25519_KEY_SIZE];
@@ -169,7 +193,7 @@ impl Signer for KeyPair {
 
             (ECDSA,
              &PublicKey::ECDSA { ref curve, .. },
-             &mpis::SecretKey::ECDSA { ref scalar }) => {
+             &mpis::SecretKeyMaterial::ECDSA { ref scalar }) => {
                 let secret = match curve {
                     Curve::NistP256 =>
                         ecc::Scalar::new::<ecc::Secp256r1>(
@@ -198,12 +222,14 @@ impl Signer for KeyPair {
                 "unsupported combination of algorithm {:?}, key {:?}, \
                  and secret key {:?}",
                 pk_algo, self.public, self.secret)).into()),
-        }
+        }})
     }
 }
 
-impl Decryptor for KeyPair {
-    fn public(&self) -> &Key {
+impl<R> Decryptor<R> for KeyPair<R>
+    where R: key::KeyRole
+{
+    fn public(&self) -> &Key<key::PublicParts, R> {
         &self.public
     }
 
@@ -211,14 +237,14 @@ impl Decryptor for KeyPair {
     fn decrypt(&mut self, ciphertext: &mpis::Ciphertext)
                -> Result<SessionKey>
     {
-        use PublicKeyAlgorithm::*;
-        use crypto::mpis::PublicKey;
-        use nettle::rsa;
+        use crate::PublicKeyAlgorithm::*;
+        use crate::crypto::mpis::PublicKey;
 
-        Ok(match (self.public.mpis(), &self.secret.mpis(), ciphertext)
+        self.secret.map(
+            |secret| Ok(match (self.public.mpis(), secret, ciphertext)
         {
             (PublicKey::RSA{ ref e, ref n },
-             mpis::SecretKey::RSA{ ref p, ref q, ref d, .. },
+             mpis::SecretKeyMaterial::RSA{ ref p, ref q, ref d, .. },
              mpis::Ciphertext::RSA{ ref c }) => {
                 let public = rsa::PublicKey::new(n.value(), e.value())?;
                 let secret = rsa::PrivateKey::new(d.value(), p.value(),
@@ -229,31 +255,31 @@ impl Decryptor for KeyPair {
             }
 
             (PublicKey::Elgamal{ .. },
-             mpis::SecretKey::Elgamal{ .. },
+             mpis::SecretKeyMaterial::Elgamal{ .. },
              mpis::Ciphertext::Elgamal{ .. }) =>
                 return Err(
                     Error::UnsupportedPublicKeyAlgorithm(ElgamalEncrypt).into()),
 
             (PublicKey::ECDH{ .. },
-             mpis::SecretKey::ECDH { .. },
+             mpis::SecretKeyMaterial::ECDH { .. },
              mpis::Ciphertext::ECDH { .. }) =>
-                ::crypto::ecdh::decrypt(&self.public, &self.secret.mpis(),
-                                        ciphertext)?,
+                crate::crypto::ecdh::decrypt(&self.public, secret, ciphertext)?,
 
             (public, secret, ciphertext) =>
                 return Err(Error::InvalidOperation(format!(
                     "unsupported combination of key pair {:?}/{:?} \
                      and ciphertext {:?}",
                     public, secret, ciphertext)).into()),
-        })
+        }))
     }
 }
 
-impl From<KeyPair> for packet::Key {
-    fn from(p: KeyPair) -> Self {
+impl<R> From<KeyPair<R>> for Key<key::SecretParts, R>
+    where R: key::KeyRole
+{
+    fn from(p: KeyPair<R>) -> Self {
         let (mut key, secret) = (p.public, p.secret);
         key.set_secret(Some(secret.into()));
-        key
+        key.mark_parts_secret().expect("XXX")
     }
-
 }

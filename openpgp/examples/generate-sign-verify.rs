@@ -4,8 +4,8 @@ use std::io::{self, Write};
 
 extern crate failure;
 extern crate sequoia_openpgp as openpgp;
-use openpgp::serialize::stream::*;
-use openpgp::parse::stream::*;
+use crate::openpgp::serialize::stream::*;
+use crate::openpgp::parse::stream::*;
 
 const MESSAGE: &'static str = "дружба";
 
@@ -37,21 +37,20 @@ fn generate() -> openpgp::Result<openpgp::TPK> {
 }
 
 /// Signs the given message.
-fn sign(sink: &mut Write, plaintext: &str, tsk: &openpgp::TPK)
+fn sign(sink: &mut dyn Write, plaintext: &str, tsk: &openpgp::TPK)
            -> openpgp::Result<()> {
     // Get the keypair to do the signing from the TPK.
-    let mut keypair = tsk.keys_valid().signing_capable().nth(0).unwrap().2
-        .clone().into_keypair()?;
+    let keypair = tsk.keys_valid().signing_capable().nth(0).unwrap().2
+        .clone().mark_parts_secret().unwrap().into_keypair()?;
 
     // Start streaming an OpenPGP message.
     let message = Message::new(sink);
 
     // We want to sign a literal data packet.
-    let signer = Signer::new(message, vec![&mut keypair], None)?;
+    let signer = Signer::new(message, keypair).build()?;
 
     // Emit a literal data packet.
-    let mut literal_writer = LiteralWriter::new(
-        signer, openpgp::constants::DataFormat::Binary, None, None)?;
+    let mut literal_writer = LiteralWriter::new(signer).build()?;
 
     // Sign the data.
     literal_writer.write_all(plaintext.as_bytes())?;
@@ -64,7 +63,7 @@ fn sign(sink: &mut Write, plaintext: &str, tsk: &openpgp::TPK)
 }
 
 /// Verifies the given message.
-fn verify(sink: &mut Write, signed_message: &[u8], sender: &openpgp::TPK)
+fn verify(sink: &mut dyn Write, signed_message: &[u8], sender: &openpgp::TPK)
           -> openpgp::Result<()> {
     // Make a helper that that feeds the sender's public key to the
     // verifier.
@@ -109,6 +108,9 @@ impl<'a> VerificationHelper for Helper<'a> {
                     match results.get(0) {
                         Some(VerificationResult::GoodChecksum(..)) =>
                             good = true,
+                        Some(VerificationResult::NotAlive(..)) =>
+                            return Err(failure::err_msg(
+                                "Signature good, but not alive")),
                         Some(VerificationResult::MissingKey(_)) =>
                             return Err(failure::err_msg(
                                 "Missing key to verify signature")),

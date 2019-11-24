@@ -1,29 +1,28 @@
 [package]
 name = "sequoia-net"
 description = "Network services for OpenPGP"
-version = "0.9.0"
+version = "0.11.0"
 authors = [
-    "Juga <juga@sequoia-pgp.org>",
     "Justus Winter <justus@sequoia-pgp.org>",
     "Kai Michaelis <kai@sequoia-pgp.org>",
     "Neal H. Walfield <neal@sequoia-pgp.org>",
 ]
-documentation = "https://docs.sequoia-pgp.org/0.9.0/sequoia_net"
+documentation = "https://docs.sequoia-pgp.org/0.11.0/sequoia_net"
 homepage = "https://sequoia-pgp.org/"
 repository = "https://gitlab.com/sequoia-pgp/sequoia"
 readme = "../README.md"
 keywords = ["cryptography", "openpgp", "pgp", "hkp", "keyserver"]
 categories = ["cryptography", "authentication", "email"]
-license = "GPL-3.0"
+license = "GPL-2.0-or-later"
+edition = "2018"
 
 [badges]
 gitlab = { repository = "sequoia-pgp/sequoia" }
 maintenance = { status = "actively-developed" }
 
 [dependencies]
-sequoia-openpgp = { path = "../openpgp", version = "0.9", default-features = false }
-sequoia-core = { path = "../core", version = "0.9" }
-sequoia-rfc2822 = { path = "../rfc2822", version = "0.9" }
+sequoia-openpgp = { path = "../openpgp", version = "0.11", default-features = false }
+sequoia-core = { path = "../core", version = "0.11" }
 
 failure = "0.1.2"
 futures = "0.1"
@@ -33,14 +32,15 @@ hyper-tls = "0.3"
 libc = "0.2.33"
 native-tls = "0.2.0"
 nettle = "5.0"
-percent-encoding = "1.0.1"
+percent-encoding = "2.1"
+tempfile = "3.1"
 tokio-core = "0.1"
 tokio-io = "0.1.4"
-url = "1.6.0"
+url = "2.1"
 zbase32 = "0.1.2"
 
 [dev-dependencies]
-rand = "0.6"
+rand = { version = "0.7", default-features = false }
 
 [features]
 default = ["compression"]

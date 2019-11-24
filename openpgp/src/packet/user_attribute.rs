@@ -5,27 +5,29 @@
 //!   [Section 5.12 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.12
 
 use std::fmt;
+use std::cmp::Ordering;
+
 use quickcheck::{Arbitrary, Gen};
 use rand::Rng;
 
 use buffered_reader::BufferedReader;
 
-use Error;
-use Result;
-use packet::{
+use crate::Error;
+use crate::Result;
+use crate::packet::{
     self,
-    BodyLength,
+    header::BodyLength,
 };
-use Packet;
-use serialize::Serialize;
-use serialize::SerializeInto;
+use crate::Packet;
+use crate::serialize::Serialize;
+use crate::serialize::SerializeInto;
 
 /// Holds a UserAttribute packet.
 ///
 /// See [Section 5.12 of RFC 4880] for details.
 ///
 ///   [Section 5.12 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.12
-#[derive(PartialEq, Eq, Hash, Clone)]
+#[derive(Hash, Clone)]
 pub struct UserAttribute {
     /// CTB packet header fields.
     pub(crate) common: packet::Common,
@@ -48,6 +50,27 @@ impl fmt::Debug for UserAttribute {
         f.debug_struct("UserAttribute")
             .field("value (bytes)", &self.value.len())
             .finish()
+    }
+}
+
+impl PartialEq for UserAttribute {
+    fn eq(&self, other: &UserAttribute) -> bool {
+        self.value == other.value
+    }
+}
+
+impl Eq for UserAttribute {
+}
+
+impl PartialOrd for UserAttribute {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for UserAttribute {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.value.cmp(&other.value)
     }
 }
 
@@ -151,7 +174,7 @@ impl<'a> Iterator for SubpacketIterator<'a> {
                 Some(Ok(Subpacket::Image(match image_kind {
                     1 =>
                         Image::JPEG(Vec::from(&raw[16..]).into_boxed_slice()),
-                    n @ 100...110 =>
+                    n @ 100..=110 =>
                         Image::Private(
                             n, Vec::from(&raw[16..]).into_boxed_slice()),
                     n =>
@@ -240,8 +263,8 @@ impl Arbitrary for Image {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use parse::Parse;
-    use serialize::SerializeInto;
+    use crate::parse::Parse;
+    use crate::serialize::SerializeInto;
 
     quickcheck! {
         fn roundtrip(p: UserAttribute) -> bool {
@@ -253,8 +276,8 @@ mod tests {
 
     #[test]
     fn image() {
-        use Packet;
-        let p = Packet::from_bytes(b"
+        use crate::Packet;
+        let p = Packet::from_bytes("
 -----BEGIN PGP ARMORED FILE-----
 
 0cFuwWwBEAABAQAAAAAAAAAAAAAAAP/Y/+AAEEpGSUYAAQEBASwBLAAA//4AE0Ny

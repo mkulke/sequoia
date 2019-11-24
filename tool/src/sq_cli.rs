@@ -14,11 +14,11 @@ pub fn build() -> App<'static, 'static> {
         .arg(Arg::with_name("home").value_name("DIRECTORY")
              .long("home")
              .help("Sets the home directory to use"))
-        .arg(Arg::with_name("store").value_name("STORE")
-             .long("store")
-             .short("s")
+        .arg(Arg::with_name("mapping").value_name("MAPPING")
+             .long("mapping")
+             .short("m")
              .default_value("org.sequoia-pgp.contacts/default")
-             .help("Sets the realm and store to use"))
+             .help("Sets the realm and mapping to use"))
         .arg(Arg::with_name("policy").value_name("NETWORK-POLICY")
              .long("policy")
              .short("p")
@@ -111,7 +111,25 @@ pub fn build() -> App<'static, 'static> {
                          .short("s")
                          .multiple(true)
                          .help("Encrypt with a password \
-                                (can be given multiple times)")))
+                                (can be given multiple times)"))
+                    .arg(Arg::with_name("mode").value_name("MODE")
+                         .long("mode")
+                         .possible_values(&["transport", "rest", "all"])
+                         .default_value("all")
+                         .help("Selects what kind of keys are considered for \
+                                encryption.  Transport select subkeys marked \
+                                as suitable for transport encryption, rest \
+                                selects those for encrypting data at rest, \
+                                and all selects all encryption-capable \
+                                subkeys"))
+                    .arg(Arg::with_name("compression")
+                         .value_name("KIND")
+                         .long("compression")
+                         .possible_values(&["none", "pad", "zip", "zlib",
+                                            "bzip2"])
+                         .default_value("pad")
+                         .help("Selects compression scheme to use")))
+
         .subcommand(SubCommand::with_name("sign")
                     .display_order(25)
                     .about("Signs a message")
@@ -266,12 +284,12 @@ pub fn build() -> App<'static, 'static> {
                                 .about("Sends a key")
                                 .arg(Arg::with_name("input").value_name("FILE")
                                      .help("Sets the input file to use"))))
-        .subcommand(SubCommand::with_name("store")
+        .subcommand(SubCommand::with_name("mapping")
                     .display_order(30)
-                    .about("Interacts with key stores")
+                    .about("Interacts with key mappings")
                     .setting(AppSettings::SubcommandRequiredElseHelp)
                     .subcommand(SubCommand::with_name("list")
-                                .about("Lists keys in the store"))
+                                .about("Lists keys in the mapping"))
                     .subcommand(SubCommand::with_name("add")
                                 .about("Add a key identified by fingerprint")
                                 .arg(Arg::with_name("label").value_name("LABEL")
@@ -301,10 +319,10 @@ pub fn build() -> App<'static, 'static> {
                                      .short("B")
                                      .help("Don't ASCII-armor encode the OpenPGP data")))
                     .subcommand(SubCommand::with_name("delete")
-                                .about("Deletes bindings or stores")
-                                .arg(Arg::with_name("the-store")
-                                     .long("the-store")
-                                     .help("Delete the selected store (change with --store)"))
+                                .about("Deletes bindings or mappings")
+                                .arg(Arg::with_name("the-mapping")
+                                     .long("the-mapping")
+                                     .help("Delete the selected mapping (change with --mapping)"))
                                 .arg(Arg::with_name("label")
                                      .value_name("LABEL")
                                      .help("Delete binding with this label")))
@@ -319,16 +337,16 @@ pub fn build() -> App<'static, 'static> {
                                      .value_name("LABEL")
                                      .help("List messages related to this label"))))
         .subcommand(SubCommand::with_name("list")
-                    .about("Lists key stores and known keys")
+                    .about("Lists key mappings and known keys")
                     .setting(AppSettings::SubcommandRequiredElseHelp)
-                    .subcommand(SubCommand::with_name("stores")
-                                .about("Lists key stores")
+                    .subcommand(SubCommand::with_name("mappings")
+                                .about("Lists key mappings")
                                 .arg(Arg::with_name("prefix").value_name("PREFIX")
-                                     .help("List only stores with the given realm prefix")))
+                                     .help("List only mappings with the given realm prefix")))
                     .subcommand(SubCommand::with_name("bindings")
-                                .about("Lists all bindings in all key stores")
+                                .about("Lists all bindings in all key mappings")
                                 .arg(Arg::with_name("prefix").value_name("PREFIX")
-                                     .help("List only bindings from stores with the given realm prefix")))
+                                     .help("List only bindings from mappings with the given realm prefix")))
                     .subcommand(SubCommand::with_name("keys")
                                 .about("Lists all keys in the common key pool"))
                     .subcommand(SubCommand::with_name("log")
@@ -344,13 +362,17 @@ pub fn build() -> App<'static, 'static> {
                              .value_name("EMAIL")
                              .long("userid")
                              .short("u")
-                             .help("Primary user ID"))
+                             .multiple(true)
+                             .number_of_values(1)
+                             .takes_value(true)
+                             .help("Add userid to the key \
+                                    (can be given multiple times)"))
                         .arg(Arg::with_name("cipher-suite")
                              .value_name("CIPHER-SUITE")
                              .long("cipher-suite")
                              .short("c")
-                             .possible_values(&["rsa3k", "cv25519"])
-                             .default_value("rsa3k")
+                             .possible_values(&["rsa3k", "rsa4k", "cv25519"])
+                             .default_value("cv25519")
                              .help("Cryptographic algorithms used for the key."))
                         .arg(Arg::with_name("with-password")
                              .long("with-password")
@@ -380,12 +402,12 @@ pub fn build() -> App<'static, 'static> {
                         .arg(Arg::with_name("can-encrypt").value_name("PURPOSE")
                              .long("can-encrypt")
                              .possible_values(&["transport", "rest", "all"])
-                             .default_value("all")
                              .help("The key has an encryption-capable subkey \
                                     (default)"))
                         .arg(Arg::with_name("cannot-encrypt")
                              .long("cannot-encrypt")
                              .help("The key will not be able to encrypt data"))
+
                         .arg(Arg::with_name("export").value_name("OUTFILE")
                              .long("export")
                              .short("e")
@@ -432,7 +454,31 @@ pub fn build() -> App<'static, 'static> {
                                      .short("p")
                                      .help("Sets the prefix to use for output files \
                                             (defaults to the input filename with a dash, \
-                                            or 'output')"))))
+                                            or 'output')")))
+                    .subcommand(SubCommand::with_name("join")
+                                .about("Joins OpenPGP packets split across \
+                                        files")
+                                .arg(Arg::with_name("input").value_name("FILE")
+                                     .multiple(true)
+                                     .help("Sets the input files to use"))
+                                .arg(Arg::with_name("output").value_name("FILE")
+                                     .long("output")
+                                     .short("o")
+                                     .help("Sets the output file to use"))
+                                .arg(Arg::with_name("kind")
+                                     .value_name("KIND")
+                                     .long("kind")
+                                     .possible_values(&["message", "publickey",
+                                                        "secretkey",
+                                                        "signature", "file"])
+                                     .default_value("file")
+                                     .help("Selects the kind of header line to \
+                                            produce"))
+                                .arg(Arg::with_name("binary")
+                                     .long("binary")
+                                     .short("B")
+                                     .help("Don't ASCII-armor encode the \
+                                            OpenPGP data"))))
 
         .subcommand(SubCommand::with_name("wkd")
                     .about("Interacts with Web Key Directories")
@@ -447,7 +493,7 @@ pub fn build() -> App<'static, 'static> {
                                             obtain the WKD URI.")))
                     .subcommand(SubCommand::with_name("get")
                                 .about("Writes to the standard output the \
-                                        Transferable Public Key retrieved \
+                                        TPK retrieved \
                                         from a Web Key Directory, given an \
                                         email address")
                                 .arg(Arg::with_name("input")
@@ -459,5 +505,29 @@ pub fn build() -> App<'static, 'static> {
                                     .long("binary")
                                     .short("B")
                                     .help("Don't ASCII-armor encode the OpenPGP data")))
+                    .subcommand(SubCommand::with_name("generate")
+                                .about("Generates a Web Key Directory \
+                                        for the given domain and keys.  \
+                                        If the WKD exists, the new \
+                                        keys will be inserted and it \
+                                        is updated and existing ones \
+                                        will be updated.")
+                                .arg(Arg::with_name("base_directory")
+                                     .value_name("BASE-DIRECTORY")
+                                     .required(true)
+                                     .help("The location to write the WKD to"))
+                                .arg(Arg::with_name("domain")
+                                    .value_name("DOMAIN")
+                                    .help("The domain for the WKD.")
+                                    .required(true))
+                                .arg(Arg::with_name("input")
+                                    .value_name("KEYRING")
+                                    .help("The keyring file with the keys to add to the WKD."))
+                                .arg(Arg::with_name("direct_method")
+                                     .long("direct_method")
+                                     .short("d")
+                                     .help("Use the direct method. \
+                                            [default: advanced method]"))
+                    )
         )
 }

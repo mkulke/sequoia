@@ -1,20 +1,20 @@
 [package]
 name = "sequoia"
 description = "A cool new OpenPGP implementation"
-version = "0.9.0"
+version = "0.11.0"
 authors = [
-    "Juga <juga@sequoia-pgp.org>",
     "Justus Winter <justus@sequoia-pgp.org>",
     "Kai Michaelis <kai@sequoia-pgp.org>",
     "Neal H. Walfield <neal@sequoia-pgp.org>",
 ]
-documentation = "https://docs.sequoia-pgp.org/0.9.0/"
+documentation = "https://docs.sequoia-pgp.org/0.11.0/"
 homepage = "https://sequoia-pgp.org/"
 repository = "https://gitlab.com/sequoia-pgp/sequoia"
 readme = "README.md"
 keywords = ["cryptography", "openpgp", "pgp", "encryption", "signing"]
 categories = ["cryptography", "authentication", "email"]
-license = "GPL-3.0"
+license = "GPL-2.0-or-later"
+edition = "2018"
 
 [badges]
 gitlab = { repository = "sequoia-pgp/sequoia" }
@@ -23,19 +23,18 @@ maintenance = { status = "actively-developed" }
 [workspace]
 
 [dependencies]
-buffered-reader = { path = "buffered-reader", version = "0.9" }
-sequoia-rfc2822 = { path = "rfc2822", version = "0.9" }
-sequoia-openpgp = { path = "openpgp", version = "0.9" }
-sequoia-openpgp-ffi = { path = "openpgp-ffi", version = "0.9" }
-sequoia-core = { path = "core", version = "0.9" }
-sequoia-ffi = { path = "ffi", version = "0.9" }
-sequoia-ffi-macros = { path = "ffi-macros", version = "0.9" }
-sequoia-ipc = { path = "ipc", version = "0.9" }
-sequoia-net = { path = "net", version = "0.9" }
-sequoia-store = { path = "store", version = "0.9" }
-sequoia-tool = { path = "tool", version = "0.9" }
-sequoia-sqv = { path = "sqv", version = "0.9" }
-sequoia-guide = { path = "guide", version = "0.9" }
+buffered-reader = { path = "buffered-reader", version = "0.11" }
+sequoia-openpgp = { path = "openpgp", version = "0.11" }
+sequoia-openpgp-ffi = { path = "openpgp-ffi", version = "0.11" }
+sequoia-core = { path = "core", version = "0.11" }
+sequoia-ffi = { path = "ffi", version = "0.11" }
+sequoia-ffi-macros = { path = "ffi-macros", version = "0.11" }
+sequoia-ipc = { path = "ipc", version = "0.11" }
+sequoia-net = { path = "net", version = "0.11" }
+sequoia-store = { path = "store", version = "0.11" }
+sequoia-tool = { path = "tool", version = "0.11" }
+sequoia-sqv = { path = "sqv", version = "0.11" }
+sequoia-guide = { path = "guide", version = "0.11" }
 
 [lib]
 name = "sequoia"

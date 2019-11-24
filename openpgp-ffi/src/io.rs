@@ -11,13 +11,13 @@ use std::os::unix::io::FromRawFd;
 
 extern crate sequoia_openpgp as openpgp;
 
-use Maybe;
-use RefMutRaw;
-use MoveIntoRaw;
-use MoveResultIntoRaw;
+use crate::Maybe;
+use crate::RefMutRaw;
+use crate::MoveIntoRaw;
+use crate::MoveResultIntoRaw;
 
 /// Wraps a generic reader.
-#[::ffi_wrapper_type(prefix = "pgp_")]
+#[crate::ffi_wrapper_type(prefix = "pgp_")]
 pub struct Reader(ReaderKind);
 
 /// Specializes readers.
@@ -25,7 +25,7 @@ pub struct Reader(ReaderKind);
 /// In some cases, we want to call functions on concrete types.  To
 /// avoid nasty hacks, we have specialized variants for that.
 pub(crate) enum ReaderKind {
-    Generic(Box<io::Read>),
+    Generic(Box<dyn io::Read>),
     Armored(openpgp::armor::Reader<'static>),
 }
 
@@ -41,7 +41,7 @@ impl Read for ReaderKind {
 
 /// Opens a file returning a reader.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle]
-pub extern "C" fn pgp_reader_from_file(errp: Option<&mut *mut ::error::Error>,
+pub extern "C" fn pgp_reader_from_file(errp: Option<&mut *mut crate::error::Error>,
                                             filename: *const c_char)
                                             -> Maybe<Reader> {
     let filename = ffi_param_cstr!(filename).to_string_lossy().into_owned();
@@ -75,7 +75,7 @@ pub extern "C" fn pgp_reader_from_bytes(buf: *const u8,
 
 /// Reads up to `len` bytes into `buf`.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle]
-pub extern "C" fn pgp_reader_read(errp: Option<&mut *mut ::error::Error>,
+pub extern "C" fn pgp_reader_read(errp: Option<&mut *mut crate::error::Error>,
                                        reader: *mut Reader,
                                        buf: *mut u8, len: size_t)
                                        -> ssize_t {
@@ -97,7 +97,7 @@ pub extern "C" fn pgp_reader_read(errp: Option<&mut *mut ::error::Error>,
 
 /// Copies up to `len` bytes from `source` to `dest`.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle]
-pub extern "C" fn pgp_reader_copy(errp: Option<&mut *mut ::error::Error>,
+pub extern "C" fn pgp_reader_copy(errp: Option<&mut *mut crate::error::Error>,
                                        source: *mut Reader,
                                        dest: *mut Writer,
                                        len: size_t)
@@ -119,7 +119,7 @@ pub extern "C" fn pgp_reader_copy(errp: Option<&mut *mut ::error::Error>,
 
 /// Reads all data from reader and discards it.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle]
-pub extern "C" fn pgp_reader_discard(errp: Option<&mut *mut ::error::Error>,
+pub extern "C" fn pgp_reader_discard(errp: Option<&mut *mut crate::error::Error>,
                                           reader: *mut Reader)
                                           -> ssize_t {
     let mut reader = reader.ref_mut_raw();
@@ -137,20 +137,20 @@ pub extern "C" fn pgp_reader_discard(errp: Option<&mut *mut ::error::Error>,
 }
 
 /// Wraps a generic writer.
-#[::ffi_wrapper_type(prefix = "pgp_")]
-pub struct Writer(Box<io::Write>);
+#[crate::ffi_wrapper_type(prefix = "pgp_")]
+pub struct Writer(Box<dyn io::Write>);
 
 /// Opens a file returning a writer.
 ///
 /// The file will be created if it does not exist, or be truncated
 /// otherwise.  If you need more control, use `pgp_writer_from_fd`.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
-fn pgp_writer_from_file(errp: Option<&mut *mut ::error::Error>,
+fn pgp_writer_from_file(errp: Option<&mut *mut crate::error::Error>,
                         filename: *const c_char)
                         -> Maybe<Writer> {
     let filename = ffi_param_cstr!(filename).to_string_lossy().into_owned();
     File::create(Path::new(&filename))
-        .map(|w| -> Box<io::Write> { Box::new(w) })
+        .map(|w| -> Box<dyn io::Write> { Box::new(w) })
         .map_err(|e| ::failure::Error::from(e))
         .move_into_raw(errp)
 }
@@ -159,7 +159,7 @@ fn pgp_writer_from_file(errp: Option<&mut *mut ::error::Error>,
 #[cfg(unix)]
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
 fn pgp_writer_from_fd(fd: c_int) -> *mut Writer {
-    let w: Box<io::Write> = Box::new(unsafe { File::from_raw_fd(fd) });
+    let w: Box<dyn io::Write> = Box::new(unsafe { File::from_raw_fd(fd) });
     w.move_into_raw()
 }
 
@@ -170,7 +170,7 @@ fn pgp_writer_from_bytes(buf: *mut u8, len: size_t) -> *mut Writer {
     let buf = unsafe {
         slice::from_raw_parts_mut(buf, len as usize)
     };
-    let w: Box<io::Write> = Box::new(Cursor::new(buf));
+    let w: Box<dyn io::Write> = Box::new(Cursor::new(buf));
     w.move_into_raw()
 }
 
@@ -188,7 +188,7 @@ fn pgp_writer_alloc(buf: *mut *mut c_void, len: *mut size_t)
     let buf = ffi_param_ref_mut!(buf);
     let len = ffi_param_ref_mut!(len);
 
-    let w: Box<io::Write> = Box::new(WriterAlloc {
+    let w: Box<dyn io::Write> = Box::new(WriterAlloc {
         buf: buf,
         len: len,
     });
@@ -230,7 +230,7 @@ impl Write for WriterAlloc {
 
 /// Writes up to `len` bytes of `buf` into `writer`.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
-fn pgp_writer_write(errp: Option<&mut *mut ::error::Error>,
+fn pgp_writer_write(errp: Option<&mut *mut crate::error::Error>,
                     writer: *mut Writer,
                     buf: *const u8, len: size_t)
                     -> ssize_t {

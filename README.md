@@ -63,9 +63,9 @@ detached messages called 'sqv'.
 LICENSE
 =======
 
-Sequoia is licensed under the GNU General Public License version 3 or
+Sequoia is licensed under the GNU General Public License version 2 or
 any later version.  See the file LICENSE.txt or visit
-https://www.gnu.org/licenses/gpl-3.0.html for details.
+https://www.gnu.org/licenses/gpl-2.0.html for details.
 
 Building Sequoia
 ================
@@ -86,6 +86,10 @@ execute `make test` (or use the `check` alias).  To install Sequoia,
 use `make install`.  The latter target honors `PREFIX` and `DESTDIR`.
 Finally, to return your source tree to its pristine state, run `make
 clean`.
+
+**Note:** By default the Python FFI bindings are also built. To skip
+these add `PYTHON=disable` to all `make` invocations. E.g. `make
+PYTHON=disable`.
 
 To build Sequoia, you need at least Rust 1.34 and a few
 libraries.  Please see below for OS-specific notes.
@@ -115,7 +119,7 @@ You can install the needed libraries with the following command:
 
 You can install the needed libraries with the following command:
 
-    $ sudo port install cargo rustc capnproto nettle pkgconfig
+    $ sudo port install cargo rust capnproto nettle pkgconfig coreutils
 
 ### Windows
 

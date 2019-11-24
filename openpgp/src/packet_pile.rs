@@ -6,15 +6,15 @@ use std::path::Path;
 
 use buffered_reader::BufferedReader;
 
-use Result;
-use Error;
-use Packet;
-use packet::{Container, PacketIter};
-use PacketPile;
-use parse::PacketParserResult;
-use parse::PacketParserBuilder;
-use parse::Parse;
-use parse::Cookie;
+use crate::Result;
+use crate::Error;
+use crate::Packet;
+use crate::packet::{self, Container};
+use crate::PacketPile;
+use crate::parse::PacketParserResult;
+use crate::parse::PacketParserBuilder;
+use crate::parse::Parse;
+use crate::parse::Cookie;
 
 
 impl fmt::Debug for PacketPile {
@@ -57,10 +57,18 @@ impl<'a> Parse<'a, PacketPile> for PacketPile {
     /// Deserializes the OpenPGP message stored in the provided buffer.
     ///
     /// See `from_reader` for more details and caveats.
-    fn from_bytes(data: &'a [u8]) -> Result<PacketPile> {
+    fn from_bytes<D: AsRef<[u8]> + ?Sized>(data: &'a D) -> Result<PacketPile> {
         let bio = buffered_reader::Memory::with_cookie(
-            data, Cookie::default());
+            data.as_ref(), Cookie::default());
         PacketPile::from_buffered_reader(Box::new(bio))
+    }
+}
+
+impl std::str::FromStr for PacketPile {
+    type Err = failure::Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Self::from_bytes(s.as_bytes())
     }
 }
 
@@ -118,7 +126,7 @@ impl PacketPile {
                 if *i < c.packets.len() {
                     let p = &c.packets[*i];
                     packet = Some(p);
-                    cont = p.children.as_ref();
+                    cont = p.children_ref();
                     continue;
                 }
             }
@@ -148,7 +156,7 @@ impl PacketPile {
                 return Some(p)
             }
 
-            container = p.children.as_mut().unwrap();
+            container = p.children_mut().unwrap();
         }
 
         None
@@ -236,12 +244,12 @@ impl PacketPile {
             }
 
             let p = &mut tmp.packets[i];
-            if p.children.is_none() {
+            if p.children_ref().is_none() {
                 match p {
                     Packet::CompressedData(_) | Packet::SEIP(_) => {
                         // We have a container with no children.
                         // That's okay.  We can create the container.
-                        p.children = Some(Container::new());
+                        p.set_children(Some(Container::new()));
                     },
                     _ => {
                         return Err(Error::IndexOutOfRange.into());
@@ -249,7 +257,7 @@ impl PacketPile {
                 }
             }
 
-            container = p.children.as_mut().unwrap();
+            container = p.children_mut().unwrap();
         }
 
         return Err(Error::IndexOutOfRange.into());
@@ -257,7 +265,7 @@ impl PacketPile {
 
     /// Returns an iterator over all of the packet's descendants, in
     /// depth-first order.
-    pub fn descendants(&self) -> PacketIter {
+    pub fn descendants(&self) -> packet::Iter {
         self.top_level.descendants()
     }
 
@@ -272,7 +280,7 @@ impl PacketPile {
     }
 
 
-    pub(crate) fn from_buffered_reader<'a>(bio: Box<'a + BufferedReader<Cookie>>)
+    pub(crate) fn from_buffered_reader<'a>(bio: Box<dyn BufferedReader<Cookie> + 'a>)
             -> Result<PacketPile> {
         PacketParserBuilder::from_buffered_reader(bio)?
             .buffer_unread_content()
@@ -324,7 +332,7 @@ impl PacketPile {
                 let packets_len = tmp.packets.len();
                 let p = &mut tmp.packets[packets_len - 1];
 
-                container = p.children.as_mut().unwrap();
+                container = p.children_mut().unwrap();
             }
 
             if relative_position < 0 {
@@ -339,9 +347,9 @@ impl PacketPile {
                     // Create a new container.
                     let tmp = container;
                     let i = tmp.packets.len() - 1;
-                    assert!(tmp.packets[i].children.is_none());
-                    tmp.packets[i].children = Some(Container::new());
-                    container = tmp.packets[i].children.as_mut().unwrap();
+                    assert!(tmp.packets[i].children_ref().is_none());
+                    tmp.packets[i].set_children(Some(Container::new()));
+                    container = tmp.packets[i].children_mut().unwrap();
                 }
 
                 container.packets.push(packet);
@@ -410,13 +418,13 @@ impl<'a> PacketParserBuilder<'a> {
 mod test {
     use super::*;
 
-    use constants::CompressionAlgorithm;
-    use constants::DataFormat::Text;
-    use packet::Literal;
-    use packet::CompressedData;
-    use packet::seip::SEIP1;
-    use packet::Tag;
-    use parse::{Parse, PacketParser};
+    use crate::constants::CompressionAlgorithm;
+    use crate::constants::DataFormat::Text;
+    use crate::packet::Literal;
+    use crate::packet::CompressedData;
+    use crate::packet::seip::SEIP1;
+    use crate::packet::Tag;
+    use crate::parse::{Parse, PacketParser};
 
     #[test]
     fn deserialize_test_1 () {
@@ -424,7 +432,7 @@ mod test {
         // just rely on the fact that an assertion is not thrown.
 
         // A flat message.
-        let pile = PacketPile::from_bytes(::tests::key("public-key.gpg"))
+        let pile = PacketPile::from_bytes(crate::tests::key("public-key.gpg"))
             .unwrap();
         eprintln!("PacketPile has {} top-level packets.",
                   pile.children().len());
@@ -445,7 +453,7 @@ mod test {
         // A message containing a compressed packet that contains a
         // literal packet.
         let pile = PacketPile::from_bytes(
-            ::tests::message("compressed-data-algo-1.gpg")).unwrap();
+            crate::tests::message("compressed-data-algo-1.gpg")).unwrap();
         eprintln!("PacketPile has {} top-level packets.",
                   pile.children().len());
         eprintln!("PacketPile: {:?}", pile);
@@ -462,7 +470,7 @@ mod test {
     #[test]
     fn deserialize_test_3 () {
         let pile =
-            PacketPile::from_bytes(::tests::message("signed.gpg")).unwrap();
+            PacketPile::from_bytes(crate::tests::message("signed.gpg")).unwrap();
         eprintln!("PacketPile has {} top-level packets.",
                   pile.children().len());
         eprintln!("PacketPile: {:?}", pile);
@@ -482,7 +490,7 @@ mod test {
     // lutz's key is a v3 key.
     #[test]
     fn torture() {
-        let data = ::tests::key("dkg.gpg");
+        let data = crate::tests::key("dkg.gpg");
         let mut ppp = PacketParserBuilder::from_bytes(data).unwrap()
             //.trace()
             .buffer_unread_content()
@@ -496,7 +504,7 @@ mod test {
         //pile.pretty_print();
         assert_eq!(pile.children().len(), 1450);
 
-        let data = ::tests::key("lutz.gpg");
+        let data = crate::tests::key("lutz.gpg");
         let mut ppp = PacketParserBuilder::from_bytes(data).unwrap()
             //.trace()
             .buffer_unread_content()
@@ -523,7 +531,7 @@ mod test {
         // quine.
         let max_recursion_depth = 128;
         let pile = PacketParserBuilder::from_bytes(
-            ::tests::message("compression-quine.gpg")).unwrap()
+            crate::tests::message("compression-quine.gpg")).unwrap()
             .max_recursion_depth(max_recursion_depth)
             .into_packet_pile().unwrap();
 
@@ -545,7 +553,7 @@ mod test {
         let max_recursion_depth = 255;
         let mut ppr : PacketParserResult
             = PacketParserBuilder::from_bytes(
-                ::tests::message("compression-quine.gpg")).unwrap()
+                crate::tests::message("compression-quine.gpg")).unwrap()
                 .max_recursion_depth(max_recursion_depth)
                 .finalize().unwrap();
 
@@ -577,7 +585,7 @@ mod test {
         // packet, we expect recurse() to not recurse.
 
         let ppr = PacketParserBuilder::from_bytes(
-                ::tests::message("compressed-data-algo-1.gpg")).unwrap()
+                crate::tests::message("compressed-data-algo-1.gpg")).unwrap()
             .buffer_unread_content()
             .finalize().unwrap();
 
@@ -594,12 +602,12 @@ mod test {
 
         // recurse should now not recurse.  Since there is nothing
         // following the compressed packet, ppr should be EOF.
-        let (mut packet, ppr) = pp.next().unwrap();
+        let (packet, ppr) = pp.next().unwrap();
         assert!(ppr.is_none());
 
         // Get the rest of the content and put the initial byte that
         // we stole back.
-        let mut content = packet.body.take().unwrap();
+        let mut content = packet.body().unwrap().to_vec();
         content.insert(0, data[0]);
 
         let content = &content.into_boxed_slice()[..];
@@ -636,8 +644,8 @@ mod test {
         }
 
         let mut seip = SEIP1::new();
-        seip.common.children = Some(Container::new());
-        seip.common.children.as_mut().unwrap().push(cd.into());
+        seip.set_children(Some(Container::new()));
+        seip.children_mut().unwrap().push(cd.into());
         packets.push(seip.into());
 
         eprintln!("{:#?}", packets);
@@ -651,16 +659,16 @@ mod test {
         assert_eq!(pile.path_ref_mut(&[ 0, 0 ]).unwrap().tag(),
                    Tag::CompressedData);
 
-        for (i, t) in text.iter().enumerate() {
+        for (i, t) in text.into_iter().enumerate() {
             assert_eq!(pile.path_ref(&[ 0, 0, i ]).unwrap().tag(),
                        Tag::Literal);
             assert_eq!(pile.path_ref_mut(&[ 0, 0, i ]).unwrap().tag(),
                        Tag::Literal);
 
-            assert_eq!(pile.path_ref(&[ 0, 0, i ]).unwrap().body,
-                       Some(t.to_vec()));
-            assert_eq!(pile.path_ref_mut(&[ 0, 0, i ]).unwrap().body,
-                       Some(t.to_vec()));
+            assert_eq!(pile.path_ref(&[ 0, 0, i ]).unwrap().body(),
+                       Some(t));
+            assert_eq!(pile.path_ref_mut(&[ 0, 0, i ]).unwrap().body(),
+                       Some(t));
         }
 
         // Try a few out of bounds accesses.
@@ -713,7 +721,7 @@ mod test {
         let children = pile.into_children().collect::<Vec<Packet>>();
         assert_eq!(children.len(), 1, "{:#?}", children);
         if let Packet::Literal(ref literal) = children[0] {
-            assert_eq!(literal.common.body, Some(b"two".to_vec()),
+            assert_eq!(literal.body(), Some(&b"two"[..]),
                        "{:#?}", literal);
         } else {
             panic!("WTF");
@@ -751,7 +759,7 @@ mod test {
                         .children()
                         .map(|p| {
                             if let Packet::Literal(ref literal) = p {
-                                &literal.common.body.as_ref().unwrap()[..]
+                                literal.body().unwrap()
                             } else {
                                 panic!("Expected a literal packet, got: {:?}", p);
                             }
@@ -805,10 +813,10 @@ mod test {
                     assert_eq!(top_level.len(), 1);
 
                     let values = top_level[0]
-                        .children.as_ref().unwrap().children()
+                        .children()
                         .map(|p| {
                             if let Packet::Literal(ref literal) = p {
-                                &literal.common.body.as_ref().unwrap()[..]
+                                literal.body().unwrap()
                             } else {
                                 panic!("Expected a literal packet, got: {:?}", p);
                             }
@@ -852,5 +860,11 @@ mod test {
         // Since this is a container, this should be okay.
         assert!(pile.replace(&[ 0, 0 ], 0, Vec::new()).is_ok());
         assert!(pile.replace(&[ 0, 1 ], 0, Vec::new()).is_err());
+    }
+
+    #[test]
+    fn packet_pile_is_send_and_sync() {
+        fn f<T: Send + Sync>(_: T) {}
+        f(PacketPile::from(vec![]));
     }
 }

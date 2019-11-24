@@ -12,6 +12,7 @@
 #include <sequoia/openpgp/error.h>
 #include <sequoia/openpgp/crypto.h>
 #include <sequoia/openpgp/packet.h>
+#include <sequoia/openpgp/serialize.h>
 
 /* sequoia::openpgp::KeyID.  */
 
@@ -378,63 +379,140 @@ bool pgp_signature_is_split_key(pgp_signature_t signature);
 bool pgp_signature_is_group_key(pgp_signature_t signature);
 
 /*/
-/// Returns whether the signature is alive.
+/// Returns whether the signature is alive at the specified time.
 ///
-/// A signature is alive if the creation date is in the past, and the
-/// signature has not expired.
+/// A signature is considered to be alive if `creation time -
+/// tolerance <= time` and `time <= expiration time`.
+///
+/// If `time` is 0, uses the current time.
+///
+/// This function uses the default tolerance.  If you want to specify
+/// a different tolerance (or no tolerance), then use
+/// `pgp_signature_alive_with_tolerance`.
+///
+/// Some tolerance for clock skew is sometimes necessary, because
+/// although most computers synchronize their clock with a time
+/// server, up to a few seconds of clock skew are not unusual in
+/// practice.  And, even worse, several minutes of clock skew appear
+/// to be not uncommon on virtual machines.
+///
+/// Not accounting for clock skew can result in signatures being
+/// unexpectedly considered invalid.  Consider: computer A sends a
+/// message to computer B at 9:00, but computer B, whose clock says
+/// the current time is 8:59, rejects it, because the signature
+/// appears to have been made in the future.  This is particularly
+/// problematic for low-latency protocols built on top of OpenPGP,
+/// e.g., state synchronization between two MUAs via a shared IMAP
+/// folder.
+///
+/// Being tolerant to potential clock skew is not always appropriate.
+/// For instance, when determining a User ID's current self signature
+/// at time `t`, we don't ever want to consider a self-signature made
+/// after `t` to be valid, even if it was made just a few moments
+/// after `t`.  This goes doubly so for soft revocation certificates:
+/// the user might send a message that she is retiring, and then
+/// immediately create a soft revocation.  The soft revocation should
+/// not invalidate the message.
+///
+/// Unfortunately, in many cases, whether we should account for clock
+/// skew or not depends on application-specific context.  As a rule of
+/// thumb, if the time and the timestamp come from different sources,
+/// you probably want to account for clock skew.
+///
+/// Note that [Section 5.2.3.4 of RFC 4880] states that "[[A Signature
+/// Creation Time subpacket]] MUST be present in the hashed area."
+/// Consequently, if such a packet does not exist, but a "Signature
+/// Expiration Time" subpacket exists, we conservatively treat the
+/// signature as expired, because there is no way to evaluate the
+/// expiration time.
+///
+///  [Section 5.2.3.4 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.4
 /*/
-bool pgp_signature_alive(pgp_signature_t signature);
+bool pgp_signature_alive(pgp_signature_t signature, time_t when);
+
+/*/
+/// Returns whether the signature is alive at the specified time.
+///
+/// A signature is considered to be alive if `creation time -
+/// tolerance <= time` and `time <= expiration time`.
+///
+/// If `time` is 0, uses the current time.
+///
+/// If `tolerance` is 0, uses no tolerance.  To ensure consistency
+/// across callers, you should use the default tolerance (i.e., use
+/// `pgp_signature_alive`).
+///
+/// Some tolerance for clock skew is sometimes necessary, because
+/// although most computers synchronize their clock with a time
+/// server, up to a few seconds of clock skew are not unusual in
+/// practice.  And, even worse, several minutes of clock skew appear
+/// to be not uncommon on virtual machines.
+///
+/// Not accounting for clock skew can result in signatures being
+/// unexpectedly considered invalid.  Consider: computer A sends a
+/// message to computer B at 9:00, but computer B, whose clock says
+/// the current time is 8:59, rejects it, because the signature
+/// appears to have been made in the future.  This is particularly
+/// problematic for low-latency protocols built on top of OpenPGP,
+/// e.g., state synchronization between two MUAs via a shared IMAP
+/// folder.
+///
+/// Being tolerant to potential clock skew is not always appropriate.
+/// For instance, when determining a User ID's current self signature
+/// at time `t`, we don't ever want to consider a self-signature made
+/// after `t` to be valid, even if it was made just a few moments
+/// after `t`.  This goes doubly so for soft revocation certificates:
+/// the user might send a message that she is retiring, and then
+/// immediately create a soft revocation.  The soft revocation should
+/// not invalidate the message.
+///
+/// Unfortunately, in many cases, whether we should account for clock
+/// skew or not depends on application-specific context.  As a rule of
+/// thumb, if the time and the timestamp come from different sources,
+/// you probably want to account for clock skew.
+///
+/// Note that [Section 5.2.3.4 of RFC 4880] states that "[[A Signature
+/// Creation Time subpacket]] MUST be present in the hashed area."
+/// Consequently, if such a packet does not exist, but a "Signature
+/// Expiration Time" subpacket exists, we conservatively treat the
+/// signature as expired, because there is no way to evaluate the
+/// expiration time.
+///
+///  [Section 5.2.3.4 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.4
+/*/
+bool pgp_signature_alive_with_tolerance(pgp_signature_t signature,
+                                        time_t time, unsigned int tolerance);
+
+/*/
+/// Returns whether the signature is expired at the specified time.
+///
+/// If `when` is 0, then the current time is used.
+/*/
+bool pgp_signature_expired(pgp_signature_t signature, time_t when);
 
 /*/
 /// Returns whether the signature is alive at the specified time.
 ///
 /// A signature is alive if the creation date is in the past, and the
 /// signature has not expired at the specified time.
+///
+/// If `when` is 0, then the current time is used.
 /*/
-bool pgp_signature_alive_at(pgp_signature_t signature, time_t when);
-
-/*/
-/// Returns whether the signature is expired.
-/*/
-bool pgp_signature_expired(pgp_signature_t signature);
+bool pgp_signature_key_alive(pgp_signature_t signature, pgp_key_t key,
+                             time_t when);
 
 /*/
 /// Returns whether the signature is expired at the specified time.
-/*/
-bool pgp_signature_expired_at(pgp_signature_t signature, time_t when);
-
-/*/
-/// Returns whether the signature is alive.
 ///
-/// A signature is alive if the creation date is in the past, and the
-/// signature has not expired.
+/// If `when` is 0, then the current time is used.
 /*/
-bool pgp_signature_key_alive(pgp_signature_t signature, pgp_key_t key);
-
-/*/
-/// Returns whether the signature is alive at the specified time.
-///
-/// A signature is alive if the creation date is in the past, and the
-/// signature has not expired at the specified time.
-/*/
-bool pgp_signature_key_alive_at(pgp_signature_t signature, pgp_key_t key,
-                                time_t when);
-
-/*/
-/// Returns whether the signature is expired.
-/*/
-bool pgp_signature_key_expired(pgp_signature_t signature, pgp_key_t key);
-
-/*/
-/// Returns whether the signature is expired at the specified time.
-/*/
-bool pgp_signature_key_expired_at(pgp_signature_t signature, pgp_key_t key,
-                                  time_t when);
+bool pgp_signature_key_expired(pgp_signature_t signature, pgp_key_t key,
+                               time_t when);
 
 /*/
 /// Returns the PKESK's recipient.
 ///
-/// The return value is a reference ot a `KeyID`.  The caller must not
+/// The return value is a reference to a `KeyID`.  The caller must not
 /// modify or free it.
 /*/
 pgp_keyid_t pgp_pkesk_recipient(pgp_pkesk_t pkesk);
@@ -566,6 +644,32 @@ void pgp_tpk_key_iter_certification_capable (pgp_tpk_key_iter_t iter);
 void pgp_tpk_key_iter_signing_capable (pgp_tpk_key_iter_t iter);
 
 /*/
+/// Changes the iterator to only return keys that are capable of
+/// encrypting data at rest.
+///
+/// If you call this function and, e.g., the `signing_capable`
+/// function, the *union* of the values is used.  That is, the
+/// iterator will return keys that are certification capable *or*
+/// signing capable.
+///
+/// Note: you may not call this function after starting to iterate.
+/*/
+void pgp_tpk_key_iter_encrypting_capable_at_rest (pgp_tpk_key_iter_t);
+
+/*/
+/// Changes the iterator to only return keys that are capable of
+/// encrypting data for transport.
+///
+/// If you call this function and, e.g., the `signing_capable`
+/// function, the *union* of the values is used.  That is, the
+/// iterator will return keys that are certification capable *or*
+/// signing capable.
+///
+/// Note: you may not call this function after starting to iterate.
+/*/
+void pgp_tpk_key_iter_encrypting_capable_for_transport (pgp_tpk_key_iter_t);
+
+/*/
 /// Changes the iterator to only return keys that are alive.
 ///
 /// If you call this function (or `pgp_tpk_key_iter_alive_at`), only
@@ -612,15 +716,16 @@ void pgp_tpk_key_iter_unencrypted_secret (pgp_tpk_key_iter_t iter,
                                           bool unencrypted_secret);
 
 /*/
-/// Returns the next key.  Returns NULL if there are no more elements.
+/// Returns a reference to the next key.  Returns NULL if there are no
+/// more elements.
 ///
-/// If sigo is not NULL, stores the current self-signature (if any) in
-/// *sigo.  (Note: subkeys always have signatures, but a primary key
-/// may not have a direct signature, and there might not be any user
-/// ids.)
+/// If signature is not NULL, stores the current self-signature (if
+/// any) in *signature.  (Note: subkeys always have signatures, but a
+/// primary key may not have a direct signature, and there might not
+/// be any user ids.)
 ///
-/// If rso is not NULL, this stores the key's revocation status in
-/// *rso.
+/// If rev is not NULL, this stores the key's revocation status in
+/// *rev.
 /*/
 pgp_key_t pgp_tpk_key_iter_next (pgp_tpk_key_iter_t iter,
                                  pgp_signature_t *signature,
@@ -750,16 +855,7 @@ pgp_tsk_t pgp_tpk_as_tsk (pgp_tpk_t tpk);
 /// The tpk still owns the key.  The caller should neither modify nor
 /// free the key.
 /*/
-pgp_key_t pgp_tpk_primary (pgp_tpk_t tpk);
-
-/*/
-/// Returns the TPK's current revocation status.
-///
-/// Note: this only returns whether the TPK has been revoked, and does
-/// not reflect whether an individual user id, user attribute or
-/// subkey has been revoked.
-/*/
-pgp_revocation_status_t pgp_tpk_revocation_status (pgp_tpk_t tpk);
+pgp_key_t pgp_tpk_primary_key (pgp_tpk_t tpk);
 
 /*/
 /// Returns the TPK's revocation status at the specified time.
@@ -767,9 +863,11 @@ pgp_revocation_status_t pgp_tpk_revocation_status (pgp_tpk_t tpk);
 /// Note: this only returns whether the TPK has been revoked, and does
 /// not reflect whether an individual user id, user attribute or
 /// subkey has been revoked.
+///
+/// If `when` is 0, then returns the TPK's revocation status as of the
+/// time of the call.
 /*/
-pgp_revocation_status_t pgp_tpk_revocation_status_at (pgp_tpk_t tpk,
-                                                      time_t when);
+pgp_revocation_status_t pgp_tpk_revoked (pgp_tpk_t tpk, time_t when);
 
 /*/
 /// Writes a revocation certificate to the writer.
@@ -795,23 +893,17 @@ pgp_tpk_t pgp_tpk_revoke_in_place (pgp_error_t *errp,
 
 /*/
 /// Returns whether the TPK has expired.
+///
+/// If `when` is 0, then the current time is used.
 /*/
-int pgp_tpk_expired(pgp_tpk_t tpk);
-
-/*/
-/// Returns whether the TPK has expired at the specified time.
-/*/
-int pgp_tpk_expired_at(pgp_tpk_t tpk, time_t at);
-
-/*/
-/// Returns whether the TPK is alive.
-/*/
-int pgp_tpk_alive(pgp_tpk_t tpk);
+int pgp_tpk_expired(pgp_tpk_t tpk, time_t at);
 
 /*/
 /// Returns whether the TPK is alive at the specified time.
+///
+/// If `when` is 0, then the current time is used.
 /*/
-int pgp_tpk_alive_at(pgp_tpk_t tpk, time_t at);
+int pgp_tpk_alive(pgp_tpk_t tpk, time_t when);
 
 /*/
 /// Changes the TPK's expiration.
@@ -1067,11 +1159,8 @@ pgp_key_pair_t pgp_key_into_key_pair (pgp_error_t *errp, pgp_key_t key);
 /*/
 /// Constructs a User ID.
 ///
-/// This escapes the name.  The comment and address must be well
-/// formed according to RFC 2822.  Only the address is required.
-///
-/// If you already have a full RFC 2822 mailbox, then you can just
-/// use `UserID::from()`.
+/// This does a basic check and any necessary escaping to form a de
+/// factor User ID.  Only the address is required.
 /*/
 pgp_packet_t pgp_user_id_from_address (pgp_error_t *errp,
                                        const char *name,
@@ -1081,14 +1170,11 @@ pgp_packet_t pgp_user_id_from_address (pgp_error_t *errp,
 /*/
 /// Constructs a User ID.
 ///
-/// This escapes the name.  The comment must be well formed, the
-/// address can be arbitrary.
+/// This does a basic check and any necessary escaping to form a de
+/// factor User ID.  The address is not checked.
 ///
 /// This is useful when you want to specify a URI instead of an
 /// email address.
-///
-/// If you have a full RFC 2822 mailbox, then you can just use
-/// `UserID::from()`.
 /*/
 pgp_packet_t pgp_user_id_from_unchecked_address (pgp_error_t *errp,
                                                  const char *name,
@@ -1115,44 +1201,29 @@ const uint8_t *pgp_user_id_value (pgp_packet_t uid,
 				 size_t *value_len);
 
 /*/
-/// Returns the User ID's display name, if any.
+/// Returns the User ID's name component, if any.
 ///
-/// The User ID is parsed as an [RFC 2822 mailbox], and the display
-/// name is extracted.
+/// The User ID is parsed according to de factor convention, and the
+/// name component is extracted.
 ///
-/// Note: invalid email addresses are accepted in order to support
-/// things like URIs of the form `Hostname
-/// <ssh://server@example.net>`.
+/// If the User ID cannot be parsed, then an error is returned.
 ///
-/// If the User ID is otherwise not a valid RFC 2822 mailbox
-/// production, then an error is returned.
-///
-///
-/// If the User ID does not contain a display, *name is set
-/// to NULL.
-///
-///   [RFC 2822 mailbox]: https://tools.ietf.org/html/rfc2822#section-3.4
+/// If the User ID does not contain a name component, *namep is set to
+/// NULL.
 /*/
 pgp_status_t pgp_user_id_name(pgp_error_t *errp, pgp_packet_t uid,
                               char **namep);
 
 /*/
-/// Returns the User ID's comment, if any.
+/// Returns the User ID's comment field, if any.
 ///
-/// The User ID is parsed as an [RFC 2822 mailbox], and the first
-/// comment is extracted.
+/// The User ID is parsed according to de factor convention, and the
+/// comment field is extracted.
 ///
-/// Note: invalid email addresses are accepted in order to support
-/// things like URIs of the form `Hostname
-/// <ssh://server@example.net>`.
-///
-/// If the User ID is otherwise not a valid RFC 2822 mailbox
-/// production, then an error is returned.
+/// If the User ID cannot be parsed, then an error is returned.
 ///
 /// If the User ID does not contain a comment, *commentp is set
 /// to NULL.
-///
-///   [RFC 2822 mailbox]: https://tools.ietf.org/html/rfc2822#section-3.4
 /*/
 pgp_status_t pgp_user_id_comment(pgp_error_t *errp, pgp_packet_t uid,
                                  char **commentp);
@@ -1160,65 +1231,16 @@ pgp_status_t pgp_user_id_comment(pgp_error_t *errp, pgp_packet_t uid,
 /*/
 /// Returns the User ID's email address, if any.
 ///
-/// The User ID is parsed as an [RFC 2822 mailbox], and the email
-/// address is extracted.
+/// The User ID is parsed according to de factor convention, and the
+/// email address is extracted.
 ///
-/// Note: invalid email addresses are accepted in order to support
-/// things like URIs of the form `Hostname
-/// <ssh://server@example.net>`.
-///
-/// If the User ID is otherwise not a valid RFC 2822 mailbox
-/// production, then an error is returned.
+/// If the User ID cannot be parsed, then an error is returned.
 ///
 /// If the User ID does not contain an email address, *addressp is set
 /// to NULL.
-///
-///   [RFC 2822 mailbox]: https://tools.ietf.org/html/rfc2822#section-3.4
 /*/
-pgp_status_t pgp_user_id_address(pgp_error_t *errp, pgp_packet_t uid,
-                                 char **addressp);
-
-/*/
-/// Returns the User ID's invalid address, if any.
-///
-/// The User ID is parsed as an [RFC 2822 mailbox], and if the address
-/// is invalid, that is returned.
-///
-/// Note: invalid email addresses are accepted in order to support
-/// things like URIs of the form `Hostname
-/// <ssh://server@example.net>`.
-///
-/// If the User ID is otherwise not a valid RFC 2822 mailbox
-/// production, then an error is returned.
-///
-/// If the User ID does not contain an invalid address, *otherp is
-/// set to NULL.
-///
-///   [RFC 2822 mailbox]: https://tools.ietf.org/html/rfc2822#section-3.4
-/*/
-pgp_status_t pgp_user_id_other(pgp_error_t *errp, pgp_packet_t uid,
-                               char **addressp);
-
-/*/
-/// Returns the User ID's email address, if any.
-///
-/// The User ID is parsed as an [RFC 2822 mailbox], and the email
-/// address, whether it is valid or not, is extracted.
-///
-/// Note: invalid email addresses are accepted in order to support
-/// things like URIs of the form `Hostname
-/// <ssh://server@example.net>`.
-///
-/// If the User ID is otherwise not a valid RFC 2822 mailbox
-/// production, then an error is returned.
-///
-/// If the User ID does not contain an address (valid or invalid),
-/// *addressp is set to NULL.
-///
-///   [RFC 2822 mailbox]: https://tools.ietf.org/html/rfc2822#section-3.4
-/*/
-pgp_status_t pgp_user_id_address_or_other(pgp_error_t *errp, pgp_packet_t uid,
-                                          char **addressp);
+pgp_status_t pgp_user_id_email(pgp_error_t *errp, pgp_packet_t uid,
+                               char **emailp);
 
 /*/
 /// Returns a normalized version of the UserID's email address.
@@ -1240,8 +1262,21 @@ pgp_status_t pgp_user_id_address_or_other(pgp_error_t *errp, pgp_packet_t uid,
 ///   [empty locale]: https://www.w3.org/International/wiki/Case_folding
 ///   [Autocryt]: https://autocrypt.org/level1.html#e-mail-address-canonicalization
 /*/
-pgp_status_t pgp_user_id_address_normalized(pgp_error_t *errp, pgp_packet_t uid,
-                                            char **addressp);
+pgp_status_t pgp_user_id_email_normalized(pgp_error_t *errp, pgp_packet_t uid,
+                                          char **emailp);
+
+/*/
+/// Returns the User ID's URI, if any.
+///
+/// The User ID is parsed according to de factor convention, and the
+/// URI is extracted.
+///
+/// If the User ID cannot be parsed, then an error is returned.
+///
+/// If the User ID does not contain a URI, *urip is set to NULL.
+/*/
+pgp_status_t pgp_user_id_uri(pgp_error_t *errp, pgp_packet_t uid,
+                             char **uri);
 
 /*/
 /// Returns the value of the User Attribute Packet.
@@ -1561,6 +1596,12 @@ pgp_writer_stack_t pgp_arbitrary_writer_new (pgp_error_t *errp,
 /// For every signing key, a signer writes a one-pass-signature
 /// packet, then hashes and emits the data stream, then for every key
 /// writes a signature packet.
+///
+/// The signers are consumed.
+///
+/// The hash is performed using the algorithm specified in
+/// `hash_algo`.  Pass 0 for the default (which is what you usually
+/// want).
 /*/
 pgp_writer_stack_t pgp_signer_new (pgp_error_t *errp,
                                    pgp_writer_stack_t inner,
@@ -1596,10 +1637,10 @@ pgp_writer_stack_t pgp_encryptor_new (pgp_error_t *errp,
 				      pgp_writer_stack_t inner,
 				      char **passwords,
 				      size_t passwords_len,
-				      pgp_tpk_t *recipients,
+				      pgp_recipient_t *recipients,
 				      size_t recipients_len,
-				      pgp_encryption_mode_t mode,
-				      uint8_t cipher_algo);
+				      uint8_t cipher_algo,
+				      uint8_t aead_algo);
 
 /*/
 /// Frees this object.
@@ -1682,6 +1723,8 @@ bool pgp_verification_result_good_checksum (pgp_verification_result_t,
 					    pgp_key_t *,
 					    pgp_signature_t *,
 					    pgp_revocation_status_t *);
+bool pgp_verification_result_not_alive (pgp_verification_result_t,
+                                        pgp_signature_t *);
 bool pgp_verification_result_missing_key (pgp_verification_result_t,
 					  pgp_signature_t *);
 bool pgp_verification_result_bad_checksum (pgp_verification_result_t,

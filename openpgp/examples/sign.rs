@@ -4,11 +4,9 @@ use std::env;
 use std::io;
 
 extern crate sequoia_openpgp as openpgp;
-use openpgp::armor;
-use openpgp::crypto;
-use openpgp::constants::DataFormat;
-use openpgp::parse::Parse;
-use openpgp::serialize::stream::{Message, LiteralWriter, Signer};
+use crate::openpgp::armor;
+use crate::openpgp::parse::Parse;
+use crate::openpgp::serialize::stream::{Message, LiteralWriter, Signer};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -38,7 +36,7 @@ fn main() {
                         .expect("decryption failed");
                 }
                 n += 1;
-                key.into_keypair().unwrap()
+                key.mark_parts_secret().unwrap().into_keypair().unwrap()
             });
         }
 
@@ -56,16 +54,17 @@ fn main() {
     // Stream an OpenPGP message.
     let message = Message::new(sink);
 
-    // Now, create a signer that emits a signature.
-    let signer = Signer::new(
-        message,
-        keys.iter_mut().map(|s| -> &mut dyn crypto::Signer { s }).collect(),
-        None)
-        .expect("Failed to create signer");
+    // Now, create a signer that emits the signature(s).
+    let mut signer =
+        Signer::new(message, keys.pop().expect("No key for signing"));
+    for s in keys {
+        signer = signer.add_signer(s);
+    }
+    let signer = signer.build().expect("Failed to create signer");
 
     // Then, create a literal writer to wrap the data in a literal
     // message packet.
-    let mut literal = LiteralWriter::new(signer, DataFormat::Binary, None, None)
+    let mut literal = LiteralWriter::new(signer).build()
         .expect("Failed to create literal writer");
 
     // Copy all the data.

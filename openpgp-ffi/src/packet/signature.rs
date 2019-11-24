@@ -8,6 +8,7 @@
 //!   [Section 5.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2
 
 use libc::time_t;
+use libc::c_uint;
 
 extern crate sequoia_openpgp as openpgp;
 use super::Packet;
@@ -15,10 +16,10 @@ use super::super::fingerprint::Fingerprint;
 use super::super::keyid::KeyID;
 use super::key::Key;
 
-use Maybe;
-use MoveFromRaw;
-use MoveIntoRaw;
-use RefRaw;
+use crate::Maybe;
+use crate::MoveFromRaw;
+use crate::MoveIntoRaw;
+use crate::RefRaw;
 
 /// Holds a signature packet.
 ///
@@ -32,7 +33,7 @@ use RefRaw;
 /// Wraps [`sequoia-openpgp::packet::signature::Signature`].
 ///
 /// [`sequoia-openpgp::packet::signature::Signature`]: ../../sequoia_openpgp/packet/signature/struct.Signature.html
-#[::ffi_wrapper_type(prefix = "pgp_",
+#[crate::ffi_wrapper_type(prefix = "pgp_",
                      derive = "Clone, Debug, PartialEq, Parse, Serialize")]
 pub struct Signature(openpgp::packet::Signature);
 
@@ -116,72 +117,169 @@ fn pgp_signature_is_group_key(sig: *const Signature) -> bool {
 }
 
 
-/// Returns whether the signature is alive.
+/// Returns whether the signature is alive at the specified time.
 ///
-/// A signature is alive if the creation date is in the past, and the
-/// signature has not expired.
+/// A signature is considered to be alive if `creation time -
+/// tolerance <= time` and `time <= expiration time`.
+///
+/// If `time` is 0, uses the current time.
+///
+/// This function uses the default tolerance.  If you want to specify
+/// a different tolerance (or no tolerance), then use
+/// `pgp_signature_alive_with_tolerance`.
+///
+/// Some tolerance for clock skew is sometimes necessary, because
+/// although most computers synchronize their clock with a time
+/// server, up to a few seconds of clock skew are not unusual in
+/// practice.  And, even worse, several minutes of clock skew appear
+/// to be not uncommon on virtual machines.
+///
+/// Not accounting for clock skew can result in signatures being
+/// unexpectedly considered invalid.  Consider: computer A sends a
+/// message to computer B at 9:00, but computer B, whose clock says
+/// the current time is 8:59, rejects it, because the signature
+/// appears to have been made in the future.  This is particularly
+/// problematic for low-latency protocols built on top of OpenPGP,
+/// e.g., state synchronization between two MUAs via a shared IMAP
+/// folder.
+///
+/// Being tolerant to potential clock skew is not always appropriate.
+/// For instance, when determining a User ID's current self signature
+/// at time `t`, we don't ever want to consider a self-signature made
+/// after `t` to be valid, even if it was made just a few moments
+/// after `t`.  This goes doubly so for soft revocation certificates:
+/// the user might send a message that she is retiring, and then
+/// immediately create a soft revocation.  The soft revocation should
+/// not invalidate the message.
+///
+/// Unfortunately, in many cases, whether we should account for clock
+/// skew or not depends on application-specific context.  As a rule of
+/// thumb, if the time and the timestamp come from different sources,
+/// you probably want to account for clock skew.
+///
+/// Note that [Section 5.2.3.4 of RFC 4880] states that "[[A Signature
+/// Creation Time subpacket]] MUST be present in the hashed area."
+/// Consequently, if such a packet does not exist, but a "Signature
+/// Expiration Time" subpacket exists, we conservatively treat the
+/// signature as expired, because there is no way to evaluate the
+/// expiration time.
+///
+///  [Section 5.2.3.4 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.4
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
-fn pgp_signature_alive(sig: *const Signature) -> bool {
-    sig.ref_raw().signature_alive()
+fn pgp_signature_alive(sig: *const Signature, time: time_t)
+    -> bool
+{
+    let time = if time == 0 {
+        None
+    } else {
+        Some(std::time::UNIX_EPOCH + std::time::Duration::new(time as u64, 0))
+    };
+    sig.ref_raw().signature_alive(time, None)
+}
+
+/// Returns whether the signature is alive at the specified time.
+///
+/// A signature is considered to be alive if `creation time -
+/// tolerance <= time` and `time <= expiration time`.
+///
+/// If `time` is 0, uses the current time.
+///
+/// If `tolerance` is 0, uses no tolerance.  To ensure consistency
+/// across callers, you should use the default tolerance (i.e., use
+/// `pgp_signature_alive`).
+///
+/// Some tolerance for clock skew is sometimes necessary, because
+/// although most computers synchronize their clock with a time
+/// server, up to a few seconds of clock skew are not unusual in
+/// practice.  And, even worse, several minutes of clock skew appear
+/// to be not uncommon on virtual machines.
+///
+/// Not accounting for clock skew can result in signatures being
+/// unexpectedly considered invalid.  Consider: computer A sends a
+/// message to computer B at 9:00, but computer B, whose clock says
+/// the current time is 8:59, rejects it, because the signature
+/// appears to have been made in the future.  This is particularly
+/// problematic for low-latency protocols built on top of OpenPGP,
+/// e.g., state synchronization between two MUAs via a shared IMAP
+/// folder.
+///
+/// Being tolerant to potential clock skew is not always appropriate.
+/// For instance, when determining a User ID's current self signature
+/// at time `t`, we don't ever want to consider a self-signature made
+/// after `t` to be valid, even if it was made just a few moments
+/// after `t`.  This goes doubly so for soft revocation certificates:
+/// the user might send a message that she is retiring, and then
+/// immediately create a soft revocation.  The soft revocation should
+/// not invalidate the message.
+///
+/// Unfortunately, in many cases, whether we should account for clock
+/// skew or not depends on application-specific context.  As a rule of
+/// thumb, if the time and the timestamp come from different sources,
+/// you probably want to account for clock skew.
+///
+/// Note that [Section 5.2.3.4 of RFC 4880] states that "[[A Signature
+/// Creation Time subpacket]] MUST be present in the hashed area."
+/// Consequently, if such a packet does not exist, but a "Signature
+/// Expiration Time" subpacket exists, we conservatively treat the
+/// signature as expired, because there is no way to evaluate the
+/// expiration time.
+///
+///  [Section 5.2.3.4 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.4
+#[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
+fn pgp_signature_alive_with_tolerance(sig: *const Signature,
+                                      time: time_t, tolerance: c_uint)
+    -> bool
+{
+    let time = if time == 0 {
+        None
+    } else {
+        Some(std::time::UNIX_EPOCH + std::time::Duration::new(time as u64, 0))
+    };
+    let tolerance = std::time::Duration::new(tolerance as u64, 0);
+    sig.ref_raw().signature_alive(time, Some(tolerance))
+}
+
+/// Returns whether the signature is expired at the specified time.
+///
+/// If `when` is 0, then the current time is used.
+#[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
+fn pgp_signature_expired(sig: *const Signature, when: time_t) -> bool {
+    let t = if when == 0 {
+        None
+    } else {
+        Some(std::time::UNIX_EPOCH + std::time::Duration::new(when as u64, 0))
+    };
+    sig.ref_raw().signature_expired(t)
 }
 
 /// Returns whether the signature is alive at the specified time.
 ///
 /// A signature is alive if the creation date is in the past, and the
-/// signature has not expired at the specified time.
-#[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
-fn pgp_signature_alive_at(sig: *const Signature, when: time_t) -> bool {
-    sig.ref_raw()
-        .signature_alive_at(time::at(time::Timespec::new(when as i64, 0)))
-}
-
-/// Returns whether the signature is expired.
-#[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
-fn pgp_signature_expired(sig: *const Signature) -> bool {
-    sig.ref_raw().signature_expired()
-}
-
-/// Returns whether the signature is expired at the specified time.
-#[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
-fn pgp_signature_expired_at(sig: *const Signature, when: time_t) -> bool {
-    sig.ref_raw()
-        .signature_expired_at(time::at(time::Timespec::new(when as i64, 0)))
-}
-
-/// Returns whether the signature is alive.
-///
-/// A signature is alive if the creation date is in the past, and the
 /// signature has not expired.
+///
+/// If `when` is 0, then the current time is used.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
-fn pgp_signature_key_alive(sig: *const Signature, key: *const Key)
+fn pgp_signature_key_alive(sig: *const Signature, key: *const Key,
+                           when: time_t)
                            -> bool {
-    sig.ref_raw().key_alive(key.ref_raw())
-}
-
-/// Returns whether the signature is alive at the specified time.
-///
-/// A signature is alive if the creation date is in the past, and the
-/// signature has not expired at the specified time.
-#[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
-fn pgp_signature_key_alive_at(sig: *const Signature, key: *const Key,
-                              when: time_t) -> bool {
-    sig.ref_raw()
-        .key_alive_at(key.ref_raw(),
-                      time::at(time::Timespec::new(when as i64, 0)))
-}
-
-/// Returns whether the signature is expired.
-#[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
-fn pgp_signature_key_expired(sig: *const Signature, key: *const Key)
-                             -> bool {
-    sig.ref_raw().key_expired(key.ref_raw())
+    let t = if when == 0 {
+        None
+    } else {
+        Some(std::time::UNIX_EPOCH + std::time::Duration::new(when as u64, 0))
+    };
+    sig.ref_raw().key_alive(key.ref_raw(), t)
 }
 
 /// Returns whether the signature is expired at the specified time.
+///
+/// If `when` is 0, then the current time is used.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
-fn pgp_signature_key_expired_at(sig: *const Signature, key: *const Key,
-                                when: time_t) -> bool {
-    sig.ref_raw()
-        .key_expired_at(key.ref_raw(),
-                        time::at(time::Timespec::new(when as i64, 0)))
+fn pgp_signature_key_expired(sig: *const Signature, key: *const Key,
+                             when: time_t) -> bool {
+    let t = if when == 0 {
+        None
+    } else {
+        Some(std::time::UNIX_EPOCH + std::time::Duration::new(when as u64, 0))
+    };
+    sig.ref_raw().key_expired(key.ref_raw(), t)
 }

@@ -9,18 +9,18 @@
 use std::ops::{Deref, DerefMut};
 use quickcheck::{Arbitrary, Gen};
 
-use Result;
-use crypto;
-use crypto::s2k::S2K;
-use Error;
-use constants::{
+use crate::Result;
+use crate::crypto;
+use crate::crypto::s2k::S2K;
+use crate::Error;
+use crate::constants::{
     AEADAlgorithm,
     SymmetricAlgorithm,
 };
-use packet::{self, SKESK};
-use Packet;
-use crypto::Password;
-use crypto::SessionKey;
+use crate::packet::{self, SKESK};
+use crate::Packet;
+use crate::crypto::Password;
+use crate::crypto::SessionKey;
 
 impl SKESK {
     /// Derives the key inside this SKESK from `password`. Returns a
@@ -400,9 +400,9 @@ impl Arbitrary for SKESK5 {
 #[cfg(test)]
 mod test {
     use super::*;
-    use PacketPile;
-    use parse::Parse;
-    use serialize::{Serialize, SerializeInto};
+    use crate::PacketPile;
+    use crate::parse::Parse;
+    use crate::serialize::{Serialize, SerializeInto};
 
     quickcheck! {
         fn roundtrip(p: SKESK) -> bool {
@@ -437,7 +437,7 @@ mod test {
             0xbd, 0x45, 0x6d, 0x17, 0x38, 0xc6, 0x3c, 0x36,
         ];
         let packets: Vec<Packet> =
-            PacketPile::from_bytes(&raw).unwrap().into_children().collect();
+            PacketPile::from_bytes(&raw[..]).unwrap().into_children().collect();
         assert_eq!(packets.len(), 1);
         if let Packet::SKESK(SKESK::V5(ref s)) = packets[0] {
             assert_eq!(&s.s2k().derive_key(

@@ -5,11 +5,11 @@ use std::env;
 use std::io;
 
 extern crate sequoia_openpgp as openpgp;
-use openpgp::armor;
-use openpgp::constants::DataFormat;
-use openpgp::parse::Parse;
-use openpgp::serialize::stream::{
-    Message, LiteralWriter, Encryptor, EncryptionMode,
+use crate::openpgp::armor;
+use crate::openpgp::constants::KeyFlags;
+use crate::openpgp::parse::Parse;
+use crate::openpgp::serialize::stream::{
+    Message, LiteralWriter, Encryptor,
 };
 
 fn main() {
@@ -21,8 +21,8 @@ fn main() {
     }
 
     let mode = match args[1].as_ref() {
-        "at-rest" => EncryptionMode::AtRest,
-        "for-transport" => EncryptionMode::ForTransport,
+        "at-rest" => KeyFlags::default().set_encrypt_at_rest(true),
+        "for-transport" => KeyFlags::default().set_encrypt_for_transport(true),
         x => panic!("invalid mode: {:?}, \
                      must be either 'at-rest' or 'for-transport'",
                     x),
@@ -33,8 +33,13 @@ fn main() {
         openpgp::TPK::from_file(f)
             .expect("Failed to read key")
     }).collect();
-    // Build a vector of references to hand to Encryptor.
-    let recipients: Vec<&openpgp::TPK> = tpks.iter().collect();
+
+    // Build a vector of recipients to hand to Encryptor.
+    let mut recipients =
+        tpks.iter()
+        .flat_map(|tpk| tpk.keys_valid().key_flags(mode.clone()))
+        .map(|(_, _, key)| key.into())
+        .collect::<Vec<_>>();
 
     // Compose a writer stack corresponding to the output format and
     // packet structure we want.  First, we want the output to be
@@ -46,14 +51,14 @@ fn main() {
     let message = Message::new(sink);
 
     // We want to encrypt a literal data packet.
-    let encryptor = Encryptor::new(message,
-                                   &[], // No symmetric encryption.
-                                   &recipients,
-                                   mode,
-                                   None)
-        .expect("Failed to create encryptor");
-    let mut literal_writer = LiteralWriter::new(encryptor, DataFormat::Binary,
-                                                None, None)
+    let mut encryptor = Encryptor::for_recipient(
+        message, recipients.pop().expect("No encryption key found"));
+    for r in recipients {
+        encryptor = encryptor.add_recipient(r)
+    }
+    let encryptor = encryptor.build().expect("Failed to create encryptor");
+
+    let mut literal_writer = LiteralWriter::new(encryptor).build()
         .expect("Failed to create literal writer");
 
     // Copy stdin to our writer stack to encrypt the data.

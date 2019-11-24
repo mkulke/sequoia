@@ -1,20 +1,20 @@
 [package]
 name = "sequoia-core"
 description = "Policies for Sequoia"
-version = "0.9.0"
+version = "0.11.0"
 authors = [
-    "Juga <juga@sequoia-pgp.org>",
     "Justus Winter <justus@sequoia-pgp.org>",
     "Kai Michaelis <kai@sequoia-pgp.org>",
     "Neal H. Walfield <neal@sequoia-pgp.org>",
 ]
-documentation = "https://docs.sequoia-pgp.org/0.9.0/sequoia_core"
+documentation = "https://docs.sequoia-pgp.org/0.11.0/sequoia_core"
 homepage = "https://sequoia-pgp.org/"
 repository = "https://gitlab.com/sequoia-pgp/sequoia"
 readme = "../README.md"
 keywords = ["cryptography", "openpgp", "pgp", "encryption", "signing"]
 categories = ["cryptography", "authentication", "email"]
-license = "GPL-3.0"
+license = "GPL-2.0-or-later"
+edition = "2018"
 
 [badges]
 gitlab = { repository = "sequoia-pgp/sequoia" }
@@ -23,4 +23,4 @@ maintenance = { status = "actively-developed" }
 [dependencies]
 dirs = "2.0"
 failure = "0.1.2"
-tempdir = "0.3.5"
+tempfile = "3.1"

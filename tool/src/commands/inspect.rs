@@ -1,15 +1,14 @@
 use std::io::{self, Read};
-use time;
 
 use clap;
 
 extern crate sequoia_openpgp as openpgp;
-use openpgp::{Packet, Result};
-use openpgp::parse::{Parse, PacketParserResult};
+use crate::openpgp::{Packet, Result};
+use crate::openpgp::parse::{Parse, PacketParserResult};
 
-use super::TIMEFMT;
+use super::dump::Convert;
 
-pub fn inspect(m: &clap::ArgMatches, output: &mut io::Write)
+pub fn inspect(m: &clap::ArgMatches, output: &mut dyn io::Write)
                -> Result<()> {
     let print_keygrips = m.is_present("keygrips");
     let print_certifications = m.is_present("certifications");
@@ -27,7 +26,7 @@ pub fn inspect(m: &clap::ArgMatches, output: &mut io::Write)
     let mut literal_prefix = Vec::new();
 
     let mut ppr =
-        openpgp::parse::PacketParser::from_reader(::open_or_stdin(input)?)?;
+        openpgp::parse::PacketParser::from_reader(crate::open_or_stdin(input)?)?;
     while let PacketParserResult::Some(mut pp) = ppr {
         match pp.packet {
             Packet::PublicKey(_) | Packet::SecretKey(_) => {
@@ -124,22 +123,22 @@ pub fn inspect(m: &clap::ArgMatches, output: &mut io::Write)
     Ok(())
 }
 
-fn inspect_tpk(output: &mut io::Write, tpk: &openpgp::TPK,
+fn inspect_tpk(output: &mut dyn io::Write, tpk: &openpgp::TPK,
                print_keygrips: bool, print_certifications: bool) -> Result<()> {
     writeln!(output, "Transferable {} Key.",
              if tpk.is_tsk() { "Secret" } else { "Public" })?;
     writeln!(output)?;
     writeln!(output, "    Fingerprint: {}", tpk.fingerprint())?;
-    inspect_revocation(output, "", tpk.revocation_status())?;
-    inspect_key(output, "", tpk.primary(), tpk.primary_key_signature(),
+    inspect_revocation(output, "", tpk.revoked(None))?;
+    inspect_key(output, "", tpk.primary(), tpk.primary_key_signature(None),
                 tpk.certifications(),
                 print_keygrips, print_certifications)?;
     writeln!(output)?;
 
     for skb in tpk.subkeys() {
-        writeln!(output, "         Subkey: {}", skb.subkey().fingerprint())?;
+        writeln!(output, "         Subkey: {}", skb.key().fingerprint())?;
         inspect_revocation(output, "", skb.revoked(None))?;
-        inspect_key(output, "", skb.subkey(), skb.binding_signature(),
+        inspect_key(output, "", skb.key(), skb.binding_signature(None),
                     skb.certifications(),
                     print_keygrips, print_certifications)?;
         writeln!(output)?;
@@ -148,10 +147,11 @@ fn inspect_tpk(output: &mut io::Write, tpk: &openpgp::TPK,
     for uidb in tpk.userids() {
         writeln!(output, "         UserID: {}", uidb.userid())?;
         inspect_revocation(output, "", uidb.revoked(None))?;
-        if let Some(sig) = uidb.binding_signature() {
-            if sig.signature_expired() {
+        if let Some(sig) = uidb.binding_signature(None) {
+            if sig.signature_expired(None) {
                 writeln!(output, "                 Expired")?;
-            } else if ! sig.signature_alive() {
+            } else if ! sig.signature_alive(None,
+                                            std::time::Duration::new(0, 0)) {
                 writeln!(output, "                 Not yet valid")?;
             }
         }
@@ -164,18 +164,21 @@ fn inspect_tpk(output: &mut io::Write, tpk: &openpgp::TPK,
     Ok(())
 }
 
-fn inspect_key(output: &mut io::Write,
-               indent: &str,
-               key: &openpgp::packet::Key,
-               binding_signature: Option<&openpgp::packet::Signature>,
-               certs: &[openpgp::packet::Signature],
-               print_keygrips: bool,
-               print_certifications: bool)
-               -> Result<()> {
+fn inspect_key<P, R>(output: &mut dyn io::Write,
+                     indent: &str,
+                     key: &openpgp::packet::Key<P, R>,
+                     binding_signature: Option<&openpgp::packet::Signature>,
+                     certs: &[openpgp::packet::Signature],
+                     print_keygrips: bool,
+                     print_certifications: bool)
+        -> Result<()>
+        where P: openpgp::packet::key::KeyParts,
+              R: openpgp::packet::key::KeyRole
+{
     if let Some(sig) = binding_signature {
-        if sig.key_expired(key) {
+        if sig.key_expired(key, None) {
             writeln!(output, "{}                 Expired", indent)?;
-        } else if ! sig.key_alive(key) {
+        } else if ! sig.key_alive(key, None) {
             writeln!(output, "{}                 Not yet valid", indent)?;
         }
     }
@@ -189,14 +192,14 @@ fn inspect_key(output: &mut io::Write,
         writeln!(output, "{}Public-key size: {} bits", indent, bits)?;
     }
     writeln!(output, "{}  Creation time: {}", indent,
-             time::strftime(TIMEFMT, key.creation_time())?)?;
+             key.creation_time().convert())?;
     if let Some(sig) = binding_signature {
         if let Some(expires) = sig.key_expiration_time() {
-            let expiration_time = *key.creation_time() + expires;
+            let expiration_time = key.creation_time() + expires;
             writeln!(output, "{}Expiration time: {} (creation time + {})",
                      indent,
-                     time::strftime(TIMEFMT, &expiration_time)?,
-                     expires)?;
+                     expiration_time.convert(),
+                     expires.convert())?;
         }
 
         if let Some(keyflags) = inspect_key_flags(sig.key_flags()) {
@@ -208,11 +211,11 @@ fn inspect_key(output: &mut io::Write,
     Ok(())
 }
 
-fn inspect_revocation(output: &mut io::Write,
+fn inspect_revocation(output: &mut dyn io::Write,
                       indent: &str,
                       revoked: openpgp::RevocationStatus)
                       -> Result<()> {
-    use openpgp::RevocationStatus::*;
+    use crate::openpgp::RevocationStatus::*;
     match revoked {
         Revoked(_) =>
             writeln!(output, "{}                 Revoked", indent)?,
@@ -224,7 +227,7 @@ fn inspect_revocation(output: &mut io::Write,
     Ok(())
 }
 
-fn inspect_key_flags(flags: openpgp::packet::KeyFlags) -> Option<String> {
+fn inspect_key_flags(flags: openpgp::constants::KeyFlags) -> Option<String> {
     let mut capabilities = Vec::new();
     if flags.can_certify() {
         capabilities.push("certification")
@@ -249,11 +252,11 @@ fn inspect_key_flags(flags: openpgp::packet::KeyFlags) -> Option<String> {
     }
 }
 
-fn inspect_signatures(output: &mut io::Write,
+fn inspect_signatures(output: &mut dyn io::Write,
                       sigs: &[openpgp::packet::Signature]) -> Result<()> {
-    use openpgp::constants::SignatureType::*;
+    use crate::openpgp::constants::SignatureType::*;
     for sig in sigs {
-        match sig.sigtype() {
+        match sig.typ() {
             Binary | Text => (),
             signature_type @ _ =>
                 writeln!(output, "           Kind: {}", signature_type)?,
@@ -273,7 +276,7 @@ fn inspect_signatures(output: &mut io::Write,
     Ok(())
 }
 
-fn inspect_certifications(output: &mut io::Write,
+fn inspect_certifications(output: &mut dyn io::Write,
                           certs: &[openpgp::packet::Signature],
                           print_certifications: bool) -> Result<()> {
     if print_certifications {

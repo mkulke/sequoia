@@ -93,7 +93,7 @@ pub trait Handler {
 /// A factory for handlers.
 pub type HandlerFactory = fn(descriptor: Descriptor,
                              handle: tokio_core::reactor::Handle)
-                             -> Result<Box<Handler>>;
+                             -> Result<Box<dyn Handler>>;
 
 /// A descriptor is used to connect to a service.
 #[derive(Clone)]
@@ -235,7 +235,7 @@ impl Descriptor {
     /// Try to create a TCP socket, bind it to a random port on
     /// localhost.
     fn listen(&self) -> Result<TcpListener> {
-        let port = OsRng::new()?.next_u32() as u16;
+        let port = OsRng.next_u32() as u16;
         Ok(TcpListener::bind((LOCALHOST, port))?)
     }
 
@@ -275,6 +275,8 @@ impl Descriptor {
             .arg(format!("{}", self.ctx.ephemeral()))
             // l will be closed here if the exec fails.
             .stdin(unsafe { Stdio::from_raw_fd(fd) })
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .spawn()?;
         Ok(())
     }
@@ -414,7 +416,7 @@ impl Cookie {
     /// Make a new cookie.
     fn new() -> Result<Self> {
         let mut c = vec![0; COOKIE_SIZE];
-        OsRng::new()?.fill_bytes(&mut c);
+        OsRng.fill_bytes(&mut c);
         Ok(Cookie(c))
     }
 

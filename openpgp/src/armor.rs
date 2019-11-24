@@ -30,14 +30,16 @@ use buffered_reader::BufferedReader;
 use std::io::{Cursor, Read, Write};
 use std::io::{Result, Error, ErrorKind};
 use std::path::Path;
-use std::cmp::min;
+use std::cmp;
 use std::str;
+use std::borrow::Cow;
 use quickcheck::{Arbitrary, Gen};
 
-use packet::prelude::*;
-use packet::BodyLength;
-use packet::ctb::{CTBNew, CTBOld};
-use serialize::SerializeInto;
+use crate::vec_truncate;
+use crate::packet::prelude::*;
+use crate::packet::header::BodyLength;
+use crate::packet::header::ctb::{CTBNew, CTBOld};
+use crate::serialize::SerializeInto;
 
 /// The encoded output stream must be represented in lines of no more
 /// than 76 characters each (see (see [RFC 4880, section
@@ -135,28 +137,17 @@ impl Kind {
         "-----BEGIN PGP -----".len()
             + self.blurb().len()
     }
-
-    /// Returns the maximal size of the footer with CRC.
-    fn footer_max_len(&self) -> usize {
-        (5    // CRC
-         + 4  // CR NL CR NL
-         + 18 // "-----END PGP -----"
-         + self.blurb().len()
-         + 2  // CR NL
-        )
-    }
 }
 
 /// A filter that applies ASCII Armor to the data written to it.
 pub struct Writer<W: Write> {
-    sink: W,
+    sink: Option<W>,
     kind: Kind,
     stash: Vec<u8>,
     column: usize,
     crc: CRC,
-    epilogue: Vec<u8>,
+    header: Vec<u8>,
     dirty: bool,
-    finalized: bool,
 }
 
 impl<W: Write> Writer<W> {
@@ -192,18 +183,17 @@ impl<W: Write> Writer<W> {
     /// ```
     pub fn new(inner: W, kind: Kind, headers: &[(&str, &str)]) -> Result<Self> {
         let mut w = Writer {
-            sink: inner,
+            sink: Some(inner),
             kind: kind,
             stash: Vec::<u8>::with_capacity(2),
             column: 0,
             crc: CRC::new(),
-            epilogue: Vec::with_capacity(128),
+            header: Vec::with_capacity(128),
             dirty: false,
-            finalized: false,
         };
 
         {
-            let mut cur = Cursor::new(&mut w.epilogue);
+            let mut cur = Cursor::new(&mut w.header);
             write!(&mut cur, "{}{}", kind.begin(), LINE_ENDING)?;
 
             for h in headers {
@@ -217,13 +207,18 @@ impl<W: Write> Writer<W> {
         Ok(w)
     }
 
-    fn write_epilogue(&mut self) -> Result<()> {
+    fn e_finalized() -> Error {
+        Error::new(ErrorKind::BrokenPipe, "Writer is finalized.")
+    }
+
+    fn finalize_headers(&mut self) -> Result<()> {
         if ! self.dirty {
             self.dirty = true;
-            self.sink.write_all(&self.epilogue)?;
+            self.sink.as_mut().ok_or_else(Self::e_finalized)?
+                .write_all(&self.header)?;
             // Release memory.
-            self.epilogue.clear();
-            self.epilogue.shrink_to_fit();
+            crate::vec_truncate(&mut self.header, 0);
+            self.header.shrink_to_fit();
         }
         Ok(())
     }
@@ -231,51 +226,76 @@ impl<W: Write> Writer<W> {
     /// Writes the footer.
     ///
     /// No more data can be written after this call.  If this is not
-    /// called explicitly, the header is written once the writer is
+    /// called explicitly, the footer is written once the writer is
     /// dropped.
-    pub fn finalize(&mut self) -> Result<()> {
-        if self.finalized {
-            return Err(Error::new(ErrorKind::BrokenPipe, "Writer is finalized."));
+    pub fn finalize(mut self) -> Result<W> {
+        if ! self.dirty {
+            // No data was written to us, don't emit anything.
+            return Ok(self.sink.take().ok_or_else(Self::e_finalized)?);
         }
+        self.finalize_armor()?;
+        if let Some(sink) = self.sink.take() {
+            Ok(sink)
+        } else {
+            Err(Self::e_finalized())
+        }
+    }
 
+    /// Writes the footer.
+    fn finalize_armor(&mut self) -> Result<()> {
         if ! self.dirty {
             // No data was written to us, don't emit anything.
             return Ok(());
         }
-        self.write_epilogue()?;
+        self.finalize_headers()?;
+        if let Some(sink) = self.sink.as_mut() {
+            // Write any stashed bytes and pad.
+            if self.stash.len() > 0 {
+                sink.write_all(base64::encode_config(
+                    &self.stash, base64::STANDARD).as_bytes())?;
+                self.column += 4;
+            }
 
-        // Write any stashed bytes and pad.
-        if self.stash.len() > 0 {
-            self.sink.write_all(base64::encode_config(&self.stash,
-                                                      base64::STANDARD).as_bytes())?;
-            self.column += 4;
+            // Inserts a line break if necessary.
+            //
+            // Unfortunately, we cannot use
+            //self.linebreak()?;
+            //
+            // Therefore, we inline it here.  This is a bit sad.
+            assert!(self.column <= LINE_LENGTH);
+            if self.column == LINE_LENGTH {
+                write!(sink, "{}", LINE_ENDING)?;
+                self.column = 0;
+            }
+
+            if self.column > 0 {
+                write!(sink, "{}", LINE_ENDING)?;
+            }
+
+            let crc = self.crc.finalize();
+            let bytes: [u8; 3] = [
+                (crc >> 16) as u8,
+                (crc >>  8) as u8,
+                (crc >>  0) as u8,
+            ];
+
+            // CRC and footer.
+            write!(sink, "={}{}{}{}",
+                   base64::encode_config(&bytes, base64::STANDARD_NO_PAD),
+                   LINE_ENDING, self.kind.end(), LINE_ENDING)?;
+
+            Ok(())
+        } else {
+            Err(Self::e_finalized())
         }
-        self.linebreak()?;
-        if self.column > 0 {
-            write!(self.sink, "{}", LINE_ENDING)?;
-        }
-
-        let crc = self.crc.finalize();
-        let bytes: [u8; 3] = [
-            (crc >> 16) as u8,
-            (crc >>  8) as u8,
-            (crc >>  0) as u8,
-        ];
-
-        // CRC and footer.
-        write!(self.sink, "={}{}{}{}",
-               base64::encode_config(&bytes, base64::STANDARD_NO_PAD),
-               LINE_ENDING, self.kind.end(), LINE_ENDING)?;
-
-        self.finalized = true;
-        Ok(())
     }
 
     /// Inserts a line break if necessary.
     fn linebreak(&mut self) -> Result<()> {
         assert!(self.column <= LINE_LENGTH);
         if self.column == LINE_LENGTH {
-            write!(self.sink, "{}", LINE_ENDING)?;
+            write!(self.sink.as_mut().ok_or_else(Self::e_finalized)?,
+                   "{}", LINE_ENDING)?;
             self.column = 0;
         }
         Ok(())
@@ -284,11 +304,7 @@ impl<W: Write> Writer<W> {
 
 impl<W: Write> Write for Writer<W> {
     fn write(&mut self, buf: &[u8]) -> Result<usize> {
-        if self.finalized {
-            return Err(Error::new(ErrorKind::BrokenPipe, "Writer is finalized."));
-        }
-
-        self.write_epilogue()?;
+        self.finalize_headers()?;
 
         // Update CRC on the unencoded data.
         self.crc.update(buf);
@@ -316,11 +332,12 @@ impl<W: Write> Write for Writer<W> {
 
             // If this fails for some reason, and the caller retries
             // the write, we might end up with a stash of size 3.
-            self.sink.write_all(base64::encode_config(&self.stash,
-                                                      base64::STANDARD_NO_PAD).as_bytes())?;
+            self.sink.as_mut().ok_or_else(Self::e_finalized)?
+                .write_all(base64::encode_config(
+                    &self.stash, base64::STANDARD_NO_PAD).as_bytes())?;
             self.column += 4;
             self.linebreak()?;
-            self.stash.clear();
+            crate::vec_truncate(&mut self.stash, 0);
         }
 
         // Ensure that a multiple of 3 bytes are encoded, stash the
@@ -340,8 +357,9 @@ impl<W: Write> Write for Writer<W> {
         written += input.len();
         let mut enc = encoded.as_bytes();
         while enc.len() > 0 {
-            let n = min(LINE_LENGTH - self.column, enc.len());
-            self.sink.write_all(&enc[..n])?;
+            let n = cmp::min(LINE_LENGTH - self.column, enc.len());
+            self.sink.as_mut().ok_or_else(Self::e_finalized)?
+                .write_all(&enc[..n])?;
             enc = &enc[n..];
             self.column += n;
             self.linebreak()?;
@@ -352,13 +370,13 @@ impl<W: Write> Write for Writer<W> {
     }
 
     fn flush(&mut self) -> Result<()> {
-        self.sink.flush()
+        self.sink.as_mut().ok_or_else(Self::e_finalized)?.flush()
     }
 }
 
 impl<W: Write> Drop for Writer<W> {
     fn drop(&mut self) {
-        let _ = self.finalize();
+        let _ = self.finalize_armor();
     }
 }
 
@@ -395,7 +413,7 @@ pub enum ReaderMode {
 
 /// A filter that strips ASCII Armor from a stream of data.
 pub struct Reader<'a> {
-    source: Box<'a + BufferedReader<()>>,
+    source: Box<dyn BufferedReader<()> + 'a>,
     kind: Option<Kind>,
     mode: ReaderMode,
     buffer: Vec<u8>,
@@ -404,6 +422,8 @@ pub struct Reader<'a> {
     initialized: bool,
     headers: Vec<(String, String)>,
     finalized: bool,
+    prefix_len: usize,
+    prefix_remaining: usize,
 }
 
 impl Default for ReaderMode {
@@ -522,7 +542,7 @@ impl<'a> Reader<'a> {
     }
 
     pub(crate) fn from_buffered_reader<C: 'a, M>(
-        inner: Box<'a + BufferedReader<C>>, mode: M) -> Self
+        inner: Box<dyn BufferedReader<C> + 'a>, mode: M) -> Self
         where M: Into<Option<ReaderMode>>
     {
         let mode = mode.into().unwrap_or(Default::default());
@@ -537,6 +557,8 @@ impl<'a> Reader<'a> {
             headers: Vec::new(),
             initialized: false,
             finalized: false,
+            prefix_len: 0,
+            prefix_remaining: 0,
         }
     }
 
@@ -579,12 +601,12 @@ impl<'a> Reader<'a> {
                     let mut o = [ 0u8; 4 ];
 
                     CTBNew::new(tag).serialize_into(&mut ctb[..]).unwrap();
-                    base64::encode_config_slice(&ctb[..], base64::MIME, &mut o[..]);
+                    base64::encode_config_slice(&ctb[..], base64::STANDARD, &mut o[..]);
                     valid_start.push(o[0]);
 
                     CTBOld::new(tag, BodyLength::Full(0)).unwrap()
                         .serialize_into(&mut ctb[..]).unwrap();
-                    base64::encode_config_slice(&ctb[..], base64::MIME, &mut o[..]);
+                    base64::encode_config_slice(&ctb[..], base64::STANDARD, &mut o[..]);
                     valid_start.push(o[0]);
                 }
 
@@ -610,15 +632,31 @@ impl<'a> Reader<'a> {
         };
 
         let mut lines = 0;
+        let mut prefix = Vec::new();
         let n = 'search: loop {
             if lines > 0 {
                 // Find the start of the next line.
-                self.source.drop_through(&[b'\n'])?;
+                self.source.drop_through(&[b'\n'], true)?;
+                crate::vec_truncate(&mut prefix, 0);
             }
             lines += 1;
 
             // Ignore leading whitespace, etc.
-            while self.source.data_hard(1)?[0].is_ascii_whitespace() {
+            while match self.source.data_hard(1)?[0] {
+                // Skip some whitespace (previously .is_ascii_whitespace())
+                b' ' | b'\t' | b'\r' | b'\n' => true,
+                // Also skip common quote characters
+                b'>' | b'|' | b']' | b'}' => true,
+                // Do not skip anything else
+                _ => false,
+            } {
+                let c = self.source.data(1)?[0];
+                if c == b'\n' {
+                    // We found a newline while walking whitespace, reset prefix
+                    crate::vec_truncate(&mut prefix, 0);
+                } else {
+                    prefix.push(self.source.data_hard(1)?[0]);
+                }
                 self.source.consume(1);
             }
 
@@ -679,6 +717,8 @@ impl<'a> Reader<'a> {
         if found_blob {
             // Skip the rest of the initialization.
             self.initialized = true;
+            self.prefix_len = prefix.len();
+            self.prefix_remaining = prefix.len();
             return Ok(());
         }
 
@@ -695,10 +735,29 @@ impl<'a> Reader<'a> {
         };
         self.source.consume(n);
 
+        let next_prefix = &self.source.data_hard(prefix.len())?[..prefix.len()];
+        if prefix != next_prefix {
+            // If the next line doesn't start with the same prefix, we assume
+            // it was garbage on the front and drop the prefix so long as it
+            // was purely whitespace.  Any non-whitespace remains an error
+            // while searching for the armor header if it's not repeated.
+            if prefix.iter().all(|b| (*b as char).is_ascii_whitespace()) {
+                crate::vec_truncate(&mut prefix, 0);
+            } else {
+                // Nope, we have actually failed to read this properly
+                return Err(
+                    Error::new(ErrorKind::InvalidInput,
+                               "Reached EOF looking for Armor Header Line"));
+            }
+        }
+
         // Read the key-value headers.
         let mut n = 0;
         let mut lines = 0;
         loop {
+            // Skip any known prefix on lines
+            self.source.consume(prefix.len());
+
             self.source.consume(n);
 
             let line = self.source.read_to('\n' as u8)?;
@@ -752,59 +811,167 @@ impl<'a> Reader<'a> {
         self.source.consume(n);
 
         self.initialized = true;
+        self.prefix_len = prefix.len();
+        self.prefix_remaining = prefix.len();
         Ok(())
     }
+}
 
-    /// Parses the footer.
-    fn finalize(footer: &[u8], kind: Option<Kind>) -> Result<Option<u32>> {
-        let mut off = 0;
+// Remove whitespace, etc. from the base64 data.
+//
+// This function returns the filtered base64 data (i.e., stripped of
+// all skipable data like whitespace), and the amount of unfiltered
+// data that corresponds to.  Thus, if we have the following 7 bytes:
+//
+//     ab  cde
+//     0123456
+//
+// This function returns ("abcd", 6), because the 'd' is the last
+// character in the last complete base64 chunk, and it is at offset 5.
+//
+// If 'd' is follow by whitespace, it is undefined whether that
+// whitespace is included in the count.
+//
+// This function only returns full chunks of base64 data.  As a
+// consequence, if base64_data_max is less than 4, then this will not
+// return any data.
+//
+// This function will stop after it sees base64 padding, and if it
+// sees invalid base64 data.
+fn base64_filter(mut bytes: Cow<[u8]>, base64_data_max: usize,
+                 mut prefix_remaining: usize, prefix_len: usize)
+    -> (Cow<[u8]>, usize, usize)
+{
+    let mut leading_whitespace = 0;
 
-        /* Look for CRC.  The CRC is optional.  */
-        let crc = if footer.len() >= 6 && footer[0] == '=' as u8
-            && footer[1..5].iter().all(is_base64_char)
-        {
-            /* Found.  */
-            let crc = match base64::decode_config(&footer[1..5], base64::MIME) {
-                Ok(d) => d,
-                Err(e) => return Err(Error::new(ErrorKind::InvalidInput, e)),
-            };
+    // Round down to the nearest chunk size.
+    let base64_data_max = base64_data_max / 4 * 4;
 
-            assert_eq!(crc.len(), 3);
-            let crc =
-                (crc[0] as u32) << 16
-                | (crc[1] as u32) << 8
-                | crc[2] as u32;
+    // Number of bytes of base64 data.  Since we update `bytes` in
+    // place, the base64 data is `&bytes[..base64_len]`.
+    let mut base64_len = 0;
 
-            /* Update offset, skip whitespace.  */
-            off += 5;
-            while off < footer.len() && footer[off].is_ascii_whitespace() {
-                off += 1;
+    // Offset of the next byte of unfiltered data to process.
+    let mut unfiltered_offset = 0;
+
+    // Offset of the last byte of the last ***complete*** base64 chunk
+    // in the unfiltered data.
+    let mut unfiltered_complete_len = 0;
+
+    // Number of bytes of padding that we've seen so far.
+    let mut padding = 0;
+
+    while unfiltered_offset < bytes.len()
+        && base64_len < base64_data_max
+        // A valid base64 chunk never starts with padding.
+        && ! (padding > 0 && base64_len % 4 == 0)
+    {
+        // If we have some prefix to skip, skip it.
+        if prefix_remaining > 0 {
+            prefix_remaining -= 1;
+            if unfiltered_offset == 0 {
+                match bytes {
+                    Cow::Borrowed(s) => {
+                        // We're at the beginning.  Avoid moving
+                        // data by cutting off the start of the
+                        // slice.
+                        bytes = Cow::Borrowed(&s[1..]);
+                        leading_whitespace += 1;
+                        continue;
+                    }
+                    Cow::Owned(_) => (),
+                }
+            }
+            unfiltered_offset += 1;
+            continue;
+        }
+        match bytes[unfiltered_offset] {
+            // White space.
+            c if c.is_ascii_whitespace() => {
+                if c == b'\n' {
+                    prefix_remaining = prefix_len;
+                }
+                if unfiltered_offset == 0 {
+                    match bytes {
+                        Cow::Borrowed(s) => {
+                            // We're at the beginning.  Avoid moving
+                            // data by cutting off the start of the
+                            // slice.
+                            bytes = Cow::Borrowed(&s[1..]);
+                            leading_whitespace += 1;
+                            continue;
+                        }
+                        Cow::Owned(_) => (),
+                    }
+                }
             }
 
-            Some(crc)
-        } else {
-            None
-        };
+            // Padding.
+            b'=' => {
+                if padding == 2 {
+                    // There can never be more than two bytes of
+                    // padding.
+                    break;
+                }
+                if base64_len % 4 == 0 {
+                    // Padding can never occur at the start of a
+                    // base64 chunk.
+                    break;
+                }
 
-        if let Some(kind) = kind {
-            if ! footer[off..].starts_with(&kind.end().into_bytes()) {
-                return Err(Error::new(ErrorKind::InvalidInput, "Invalid ASCII Armor footer."));
+                if unfiltered_offset != base64_len {
+                    bytes.to_mut()[base64_len] = b'=';
+                }
+                base64_len += 1;
+                if base64_len % 4 == 0 {
+                    unfiltered_complete_len = unfiltered_offset + 1;
+                }
+                padding += 1;
             }
+
+            // The only thing that can occur after padding is
+            // whitespace or padding.  Those cases were covered above.
+            _ if padding > 0 => break,
+
+            // Base64 data!
+            b if is_base64_char(&b) => {
+                if unfiltered_offset != base64_len {
+                    bytes.to_mut()[base64_len] = b;
+                }
+                base64_len += 1;
+                if base64_len % 4 == 0 {
+                    unfiltered_complete_len = unfiltered_offset + 1;
+                }
+            }
+
+            // Not base64 data.
+            _ => break,
         }
 
-        Ok(crc)
+        unfiltered_offset += 1;
+    }
+
+    let base64_len = base64_len - (base64_len % 4);
+    unfiltered_complete_len += leading_whitespace;
+    match bytes {
+        Cow::Borrowed(s) =>
+            (Cow::Borrowed(&s[..base64_len]), unfiltered_complete_len,
+             prefix_remaining),
+        Cow::Owned(mut v) => {
+            vec_truncate(&mut v, base64_len);
+            (Cow::Owned(v), unfiltered_complete_len, prefix_remaining)
+        }
     }
 }
 
 /// Checks whether the given bytes contain armored OpenPGP data.
 fn is_armored_pgp_blob(bytes: &[u8]) -> bool {
-    let bytes = if let Some(msg) = get_base64_prefix(bytes) {
-        msg
-    }  else {
-        return false;
-    };
+    // Get up to 32 bytes of base64 data.  That's 24 bytes of data
+    // (ignoring padding), which is more than enough to get the first
+    // packet's header.
+    let (bytes, _, _) = base64_filter(Cow::Borrowed(bytes), 32, 0, 0);
 
-    match base64::decode_config(bytes, base64::MIME) {
+    match base64::decode_config(&bytes, base64::STANDARD) {
         Ok(d) => {
             // Don't consider an empty message to be valid.
             if d.len() == 0 {
@@ -812,7 +979,7 @@ fn is_armored_pgp_blob(bytes: &[u8]) -> bool {
             } else {
                 let mut br = buffered_reader::Memory::new(&d);
                 if let Ok(header) = Header::parse(&mut br) {
-                    header.ctb.tag.valid_start_of_message()
+                    header.ctb().tag().valid_start_of_message()
                         && header.valid(false).is_ok()
                 } else {
                     false
@@ -823,244 +990,227 @@ fn is_armored_pgp_blob(bytes: &[u8]) -> bool {
     }
 }
 
-/// Gets a slice containing the largest valid base64 prefix.
-fn get_base64_prefix(bytes: &[u8]) -> Option<&[u8]> {
-    let mut padding = 0;
-    let mut base64_chars = 0;
-
-    let mut result = bytes;
-    for (i, c) in bytes.iter().enumerate() {
-        if c.is_ascii_whitespace() {
-            continue;
-        }
-
-        if padding > 0 && *c != '=' as u8 {
-            result = &bytes[..i];
-            break;
-        }
-
-        if *c == '=' as u8 {
-            padding += 1;
-            base64_chars += 1;
-            if base64_chars % 4 == 0 || padding == 2 {
-                result = &bytes[..i];
-                break;
-            }
-        } else if is_base64_char(c) {
-            base64_chars += 1;
-        } else {
-            if i == 0 {
-                return None;
-            } else {
-                result = &bytes[..i];
-                break;
-            }
-        }
-    }
-
-    // If we have too much, just chop off a few characters.
-    while base64_chars % 4 != 0 {
-        let suffix = result[result.len() - 1];
-        if is_base64_char(&suffix) || suffix == b'=' {
-            base64_chars -= 1;
-        }
-        result = &result[..result.len() - 1];
-    }
-
-    return Some(result);
-}
-
 /// Checks whether the given byte is in the base64 character set.
 fn is_base64_char(b: &u8) -> bool {
     b.is_ascii_alphanumeric() || *b == '+' as u8 || *b == '/' as u8
 }
 
-/// Checks whether the given slice looks like an armor footer.  If so,
-/// returns the size of the footer.
-fn is_footer(buf: &[u8], reference: &[u8]) -> Option<usize> {
-    if buf.len() < reference.len() {
-        return None;
-    }
-
-    let mut off = 0;
-
-    // Look for CRC.  The CRC is optional.
-    if buf.len() >= 6 && buf[0] == '=' as u8
-        && buf[1..5].iter().all(is_base64_char)
-    {
-        // Found.  Update offset, skip whitespace.
-        off += 5;
-        while off < buf.len() && buf[off].is_ascii_whitespace() {
-            off += 1;
-        }
-    }
-
-    if buf[off..].starts_with(reference) {
-        Some(off + reference.len())
-    } else {
-        None
-    }
+/// Returns the number of bytes of base64 data are needed to encode
+/// `s` bytes of raw data.
+fn base64_size(s: usize) -> usize {
+    (s + 3 - 1) / 3 * 4
 }
 
-/// Looks for the footer, returning the footer's offset, and the end
-/// of the footer.
-fn find_footer(buf: &[u8], kind: Kind) -> Option<(usize, usize)> {
-    let reference = kind.end().into_bytes();
-
-    if buf.len() < reference.len() {
-        return None;
-    }
-
-    for i in 0..buf.len() - reference.len() {
-        if let Some(length) = is_footer(&buf[i..], &reference) {
-            // Found footer at offset i.
-            return Some((i, i + length));
-        }
-    }
-    None
+#[test]
+fn base64_size_test() {
+    assert_eq!(base64_size(0), 0);
+    assert_eq!(base64_size(1), 4);
+    assert_eq!(base64_size(2), 4);
+    assert_eq!(base64_size(3), 4);
+    assert_eq!(base64_size(4), 8);
+    assert_eq!(base64_size(5), 8);
+    assert_eq!(base64_size(6), 8);
+    assert_eq!(base64_size(7), 12);
 }
 
 impl<'a> Read for Reader<'a> {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        self.initialize()?;
-
-        /* How much did we get?  */
-        let mut read = 0;
-
-        // First, use what we have in the buffer.
-        let amount = min(buf.len(), self.buffer.len());
-        &mut buf[..amount].copy_from_slice(&self.buffer[..amount]);
-        self.buffer.drain(..amount);
-        read += amount;
-
-        // If we could satisfy the read from the buffer, we're done.
-        if read == buf.len() {
-            return Ok(read);
+        if ! self.initialized {
+            self.initialize()?;
         }
-        assert_eq!(self.buffer.len(), 0);
 
-        // Our buffer is drained.  If we are finalized, nothing more
-        // can be read.
         if self.finalized {
-            return Ok(read);
+            assert_eq!(self.buffer.len(), 0);
+            return Ok(0);
         }
 
-        let (consumed, decoded) = {
-            // Try to get enough bytes to fill buf, account for bytes
-            // filled using our buffer, round up, and add enough for
-            // the footer.
-            //
-            // Later, we may have to get some more until we have a
-            // multiple of four non-whitespace ASCII characters.
-            let mut want = (buf.len() - read + 2) / 3 * 4
-                + self.kind.map(|k| k.footer_max_len()).unwrap_or(46);
+        let (consumed, decoded) = if self.buffer.len() > 0 {
+            // We have something buffered, use that.
 
-            // Keep track of how much we got last time to detect
-            // hitting EOF.
-            let mut got = 0;
+            let amount = cmp::min(buf.len(), self.buffer.len());
+            buf[..amount].copy_from_slice(&self.buffer[..amount]);
+            self.buffer.drain(..amount);
 
-            'readloop: loop {
-                let raw = self.source.data(want)?;
-                if raw.len() == got {
-                    // EOF.  Decide how to proceed.
-
-                    if self.mode != ReaderMode::VeryTolerant {
-                        // If we are here, we should have seen a
-                        // footer by now.
-                        return Err(Error::new(ErrorKind::UnexpectedEof,
-                                              "Armor footer is missing"));
-                    } else {
-                        // Otherwise, we may have found only the blob,
-                        // or the footer is damaged, or missing.  Try
-                        // to decode what we have got, then we are
-                        // done.
-
-                        // We need to try to discard garbage at the end.
-                        let mut end = min(raw.len(), want);
-                        loop {
-                            match base64::decode_config(&raw[..end],
-                                                        base64::MIME) {
-                                Ok(d) => break 'readloop (end, d),
-                                Err(_) =>
-                                    if end == 0 {
-                                        // No more valid data.
-                                        break 'readloop (raw.len(), vec![]);
-                                    } else {
-                                        end -= 1;
-                                    },
-                            }
-                        }
-                    }
-                } else {
-                    got = raw.len();
-                }
-
-                // Check if we see the footer.  If so, we're almost done.
-                if let Some(kind) = self.kind {
-                    if let Some((n, end)) = find_footer(&raw, kind) {
-                        self.expect_crc = Reader::finalize(&raw[n..], self.kind)?;
-                        self.finalized = true;
-                        match base64::decode_config(&raw[..n], base64::MIME) {
-                            Ok(d) => break (end, d),
-                            Err(e) =>
-                                return Err(Error::new(ErrorKind::InvalidInput, e)),
-                        }
-                    }
-                }
-
-                // See how many valid characters we got.
-                let n = &raw.iter().filter(
-                    |c| ! (**c).is_ascii_whitespace()).count();
-                if n % 4 == 0 {
-                    // Enough!  Try to decode them.
-
-                    // We need to try to discard garbage at the end.
-                    let mut end = raw.len();
-                    loop {
-                        match base64::decode_config(&raw[..end],
-                                                    base64::MIME) {
-                            Ok(d) => break 'readloop (end, d),
-                            Err(_) =>
-                                if end == 0 {
-                                    // No more valid data.
-                                    break 'readloop (raw.len(), vec![]);
-                                } else {
-                                    end -= 1;
-                                },
-                        }
-                    }
-                }
-
-                // Otherwise, get some more bytes.
-                want = got + 4 - n % 4;
-            }
-        };
-        self.source.consume(consumed);
-        self.crc.update(&decoded);
-
-        /* Check how much we got vs how much was requested.  */
-        if decoded.len() <= (buf.len() - read) {
-            &mut buf[read..read + decoded.len()].copy_from_slice(&decoded);
-            read += decoded.len();
+            (0, amount)
         } else {
-            // We got more than we wanted, spill the surplus into our
-            // buffer.
-            let spill = decoded.len() - (buf.len() - read);
+            // We need to decode some data.  We consider three cases,
+            // all a function of the size of `buf`:
+            //
+            //   - Tiny: if `buf` can hold less than three bytes, then
+            //     we almost certainly have to double buffer: except
+            //     at the very end, a base64 chunk consists of 3 bytes
+            //     of data.
+            //
+            //     Note: this happens if the caller does `for c in
+            //     Reader::new(...).bytes() ...`.  Then it reads one
+            //     byte of decoded data at a time.
+            //
+            //   - Small: if the caller only requests a few bytes at a
+            //     time, we may as well double buffer to reduce
+            //     decoding overhead.
+            //
+            //   - Large: if `buf` is large, we can decode directly
+            //     into `buf` and avoid double buffering.  But,
+            //     because we ignore whitespace, it is hard to
+            //     determine exactly how much data to read to
+            //     maximally fill `buf`.
 
-            &mut buf[read..read + decoded.len() - spill].copy_from_slice(
-                &decoded[..decoded.len() - spill]);
-            read += decoded.len() - spill;
+            // We use 64, because ASCII-armor text usually contains 64
+            // characters of base64 data per line, and this prevents
+            // turning the borrow into an own.
+            const THRESHOLD : usize = 64;
 
-            self.buffer.extend_from_slice(&decoded[decoded.len() - spill..]);
-        }
+            let to_read =
+                cmp::max(
+                    // Tiny or small:
+                    THRESHOLD + 2,
 
-        /* If we are finalized, we may have found a crc sum.  */
-        if let Some(crc) = self.expect_crc {
-            if self.crc.finalize() != crc {
-                return Err(Error::new(ErrorKind::InvalidInput, "Bad CRC sum."));
+                    // Large: a heuristic:
+
+                    base64_size(buf.len())
+                    // Assume about 2 bytes of whitespace (crlf) per
+                    // 64 character line.
+                        + 2 * ((buf.len() + 63) / 64));
+
+            let base64data = self.source.data(to_read)?;
+            let base64data = if base64data.len() > to_read {
+                &base64data[..to_read]
+            } else {
+                base64data
+            };
+
+            let (base64data, consumed, prefix_remaining)
+                = base64_filter(Cow::Borrowed(base64data),
+                                // base64_size rounds up, but we want
+                                // to round down as we have to double
+                                // buffer partial chunks.
+                                cmp::max(THRESHOLD, buf.len() / 3 * 4),
+                                self.prefix_remaining,
+                                self.prefix_len);
+
+            // We shouldn't have any partial chunks.
+            assert_eq!(base64data.len() % 4, 0);
+
+            let decoded = if base64data.len() / 4 * 3 > buf.len() {
+                // We need to double buffer.  Decode into a vector.
+                // (Note: the computed size *might* be a slight
+                // overestimate, because the last base64 chunk may
+                // include padding.)
+                self.buffer = base64::decode_config(
+                    &base64data, base64::STANDARD)
+                    .map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
+
+                self.crc.update(&self.buffer);
+
+                let copied = cmp::min(buf.len(), self.buffer.len());
+                buf[..copied].copy_from_slice(&self.buffer[..copied]);
+                self.buffer.drain(..copied);
+
+                copied
+            } else {
+                // We can decode directly into the caller-supplied
+                // buffer.
+                let decoded = base64::decode_config_slice(
+                    &base64data, base64::STANDARD, buf)
+                    .map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
+
+                self.crc.update(&buf[..decoded]);
+
+                decoded
+            };
+
+            self.prefix_remaining = prefix_remaining;
+
+            (consumed, decoded)
+        };
+
+        self.source.consume(consumed);
+        if decoded == 0 {
+            self.finalized = true;
+
+            /* Look for CRC.  The CRC is optional.  */
+            let consumed = {
+                // Skip whitespace.
+                while self.source.data(1)?.len() > 0
+                    && self.source.buffer()[0].is_ascii_whitespace()
+                {
+                    self.source.consume(1);
+                }
+
+                let data = self.source.data(5)?;
+                let data = if data.len() > 5 {
+                    &data[..5]
+                } else {
+                    data
+                };
+
+                if data.len() == 5
+                    && data[0] == '=' as u8
+                    && data[1..5].iter().all(is_base64_char)
+                {
+                    /* Found.  */
+                    let crc = match base64::decode_config(
+                        &data[1..5], base64::STANDARD)
+                    {
+                        Ok(d) => d,
+                        Err(e) => return Err(Error::new(ErrorKind::InvalidInput, e)),
+                    };
+
+                    assert_eq!(crc.len(), 3);
+                    let crc =
+                        (crc[0] as u32) << 16
+                        | (crc[1] as u32) << 8
+                        | crc[2] as u32;
+
+                    self.expect_crc = Some(crc);
+                    5
+                } else {
+                    0
+                }
+            };
+            self.source.consume(consumed);
+
+            // Skip any expected prefix
+            self.source.consume(self.prefix_len);
+            // Look for a footer.
+            let consumed = {
+                // Skip whitespace.
+                while self.source.data(1)?.len() > 0
+                    && self.source.buffer()[0].is_ascii_whitespace()
+                {
+                    self.source.consume(1);
+                }
+
+                // If we had a header, we require a footer.
+                if let Some(kind) = self.kind {
+                    let footer = kind.end();
+                    let got = self.source.data(footer.len())?;
+                    let got = if got.len() > footer.len() {
+                        &got[..footer.len()]
+                    } else {
+                        got
+                    };
+                    if footer.as_bytes() != got {
+                        return Err(Error::new(ErrorKind::InvalidInput,
+                                              "Invalid ASCII Armor footer."));
+                    }
+
+                    footer.len()
+                } else {
+                    0
+                }
+            };
+            self.source.consume(consumed);
+
+            if let Some(crc) = self.expect_crc {
+                if self.crc.finalize() != crc {
+                    return Err(Error::new(ErrorKind::InvalidInput,
+                                          "Bad CRC sum."));
+                }
             }
         }
-        Ok(read)
+
+        Ok(decoded)
     }
 }
 
@@ -1270,9 +1420,16 @@ mod test {
                 &include_bytes!("../tests/data/armor/test-2.bad-footer.asc")[..]
             ),
             ReaderMode::Tolerant(Some(Kind::File)));
-        let mut buf = [0; 5];
-        let e = r.read(&mut buf);
-        assert!(e.is_err());
+        let mut read = 0;
+        loop {
+            let mut buf = [0; 5];
+            match r.read(&mut buf) {
+                Ok(0) => panic!("Reached EOF, but expected an error!"),
+                Ok(r) => read += r,
+                Err(_) => break,
+            }
+        }
+        assert!(read <= 2);
     }
 
     #[test]
@@ -1367,7 +1524,7 @@ mod test {
 
     #[test]
     fn dearmor_yuge() {
-        let yuge_key = ::tests::key("yuge-key-so-yuge-the-yugest.asc");
+        let yuge_key = crate::tests::key("yuge-key-so-yuge-the-yugest.asc");
         let mut r = Reader::new(Cursor::new(&yuge_key[..]),
                                 ReaderMode::VeryTolerant);
         let mut dearmored = Vec::<u8>::new();
@@ -1379,6 +1536,51 @@ mod test {
         for c in r.bytes() {
             dearmored.push(c.unwrap());
         }
+    }
+
+    #[test]
+    fn dearmor_quoted() {
+        let mut r = Reader::new(
+            Cursor::new(
+                &include_bytes!("../tests/data/armor/test-3.with-headers-quoted.asc")[..]
+            ),
+            ReaderMode::VeryTolerant);
+        let mut buf = [0; 5];
+        let e = r.read(&mut buf);
+        assert!(r.kind() == Some(Kind::File));
+        assert!(e.is_ok());
+    }
+
+    #[test]
+    fn dearmor_quoted_a_lot() {
+        let mut r = Reader::new(
+            Cursor::new(
+                &include_bytes!("../tests/data/armor/test-3.with-headers-quoted-a-lot.asc")[..]
+            ),
+            ReaderMode::VeryTolerant);
+        let mut buf = [0; 5];
+        // Loop over the input to ensure we read and verify all the way to the
+        // end of the input in order to check the checksum and footer validation
+        loop {
+            let e = r.read(&mut buf);
+            assert!(r.kind() == Some(Kind::File));
+            assert!(e.is_ok());
+            if e.unwrap() == 0 {
+                break;
+            }
+        }
+    }
+
+    #[test]
+    fn dearmor_quoted_badly() {
+        let mut r = Reader::new(
+            Cursor::new(
+                &include_bytes!("../tests/data/armor/test-3.with-headers-quoted-badly.asc")[..]
+            ),
+            ReaderMode::VeryTolerant);
+        let mut buf = [0; 5];
+        let e = r.read(&mut buf);
+        assert!(e.is_err());
     }
 
     quickcheck! {

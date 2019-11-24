@@ -7,15 +7,18 @@ use futures::future::Future;
 use futures::stream::Stream;
 
 extern crate sequoia_openpgp as openpgp;
-use openpgp::constants::SymmetricAlgorithm;
-use openpgp::crypto::SessionKey;
-use openpgp::packet::KeyFlags;
-use openpgp::parse::stream::*;
-use openpgp::serialize::{Serialize, stream::*};
-use openpgp::tpk::{TPKBuilder, CipherSuite};
+use crate::openpgp::constants::{
+    HashAlgorithm,
+    SymmetricAlgorithm,
+};
+use crate::openpgp::crypto::SessionKey;
+use crate::openpgp::constants::KeyFlags;
+use crate::openpgp::parse::stream::*;
+use crate::openpgp::serialize::{Serialize, stream::*};
+use crate::openpgp::tpk::{TPKBuilder, CipherSuite};
 
 extern crate sequoia_ipc as ipc;
-use ipc::gnupg::{Context, Agent, KeyPair};
+use crate::ipc::gnupg::{Context, Agent, KeyPair};
 
 macro_rules! make_context {
     () => {{
@@ -91,7 +94,7 @@ fn sign() {
         tpk.as_tsk().serialize(&mut buf).unwrap();
         gpg_import(&ctx, &buf);
 
-        let mut keypair = KeyPair::new(
+        let keypair = KeyPair::new(
             &ctx, tpk.keys_valid().signing_capable().take(1).next().unwrap().2)
             .unwrap();
 
@@ -101,13 +104,14 @@ fn sign() {
             let message = Message::new(&mut message);
 
             // We want to sign a literal data packet.
-            let signer = Signer::new(message, vec![&mut keypair], None)
-                .unwrap();
+            let signer = Signer::new(message, keypair)
+                 // XXX: Is this necessary?  If so, it shouldn't.
+                .hash_algo(HashAlgorithm::SHA512).unwrap()
+                .build().unwrap();
 
             // Emit a literal data packet.
             let mut literal_writer = LiteralWriter::new(
-                signer, openpgp::constants::DataFormat::Binary, None, None)
-                .unwrap();
+                signer).build().unwrap();
 
             // Sign the data.
             literal_writer.write_all(MESSAGE.as_bytes()).unwrap();
@@ -159,6 +163,9 @@ fn sign() {
                         match results.get(0) {
                             Some(VerificationResult::GoodChecksum(..)) =>
                                 good = true,
+                            Some(VerificationResult::NotAlive(_)) =>
+                                return Err(failure::err_msg(
+                                    "Good, but not live signature")),
                             Some(VerificationResult::MissingKey(_)) =>
                                 return Err(failure::err_msg(
                                     "Missing key to verify signature")),
@@ -200,20 +207,22 @@ fn decrypt() {
 
         let mut message = Vec::new();
         {
+            let recipient =
+                tpk.keys_valid().key_flags(
+                    KeyFlags::default().set_encrypt_for_transport(true))
+                .map(|(_, _, key)| key.into())
+                .nth(0).unwrap();
+
             // Start streaming an OpenPGP message.
             let message = Message::new(&mut message);
 
             // We want to encrypt a literal data packet.
-            let encryptor = Encryptor::new(message,
-                                           &[], // No symmetric encryption.
-                                           &[&tpk],
-                                           EncryptionMode::ForTransport,
-                                           None).unwrap();
+            let encryptor =
+                Encryptor::for_recipient(message, recipient).build().unwrap();
 
             // Emit a literal data packet.
             let mut literal_writer = LiteralWriter::new(
-                encryptor, openpgp::constants::DataFormat::Binary, None, None)
-                .unwrap();
+                encryptor).build().unwrap();
 
             // Encrypt the data.
             literal_writer.write_all(MESSAGE.as_bytes()).unwrap();

@@ -5,10 +5,9 @@ use std::io;
 extern crate rpassword;
 
 extern crate sequoia_openpgp as openpgp;
-use openpgp::armor;
-use openpgp::crypto;
-use openpgp::parse::Parse;
-use openpgp::serialize::stream::{Message, Signer};
+use crate::openpgp::armor;
+use crate::openpgp::parse::Parse;
+use crate::openpgp::serialize::stream::{Message, Signer};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -38,7 +37,7 @@ fn main() {
                         .expect("decryption failed");
                 }
                 n += 1;
-                key.into_keypair().unwrap()
+                key.mark_parts_secret().unwrap().into_keypair().unwrap()
             });
         }
 
@@ -56,12 +55,14 @@ fn main() {
     // Stream an OpenPGP message.
     let message = Message::new(sink);
 
-    // Now, create a signer that emits a detached signature.
-    let mut signer = Signer::detached(
-        message,
-        keys.iter_mut().map(|s| -> &mut dyn crypto::Signer { s }).collect(),
-        None)
-        .expect("Failed to create signer");
+    // Now, create a signer that emits the detached signature(s).
+    let mut signer =
+        Signer::new(message, keys.pop().expect("No key for signing"));
+    for s in keys {
+        signer = signer.add_signer(s);
+    }
+    let mut signer =
+        signer.detached().build().expect("Failed to create signer");
 
     // Copy all the data.
     io::copy(&mut io::stdin(), &mut signer)

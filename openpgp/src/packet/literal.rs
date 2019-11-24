@@ -1,14 +1,14 @@
 use std::fmt;
 use std::cmp;
-use time;
+use std::time;
 use quickcheck::{Arbitrary, Gen};
 
-use constants::DataFormat;
-use conversions::Time;
-use Error;
-use packet;
-use Packet;
-use Result;
+use crate::constants::DataFormat;
+use crate::conversions::Time;
+use crate::Error;
+use crate::packet;
+use crate::Packet;
+use crate::Result;
 
 /// Holds a literal packet.
 ///
@@ -35,7 +35,7 @@ pub struct Literal {
     filename: Option<Vec<u8>>,
     /// A four-octet number that indicates a date associated with the
     /// literal data.
-    date: time::Tm,
+    date: time::SystemTime, // XXX Should be Option<SystemTime>
 }
 
 impl fmt::Debug for Literal {
@@ -76,7 +76,7 @@ impl Literal {
             common: Default::default(),
             format: format,
             filename: None,
-            date: time::Tm::from_pgp(0),
+            date: time::SystemTime::from_pgp(0),
         }
     }
 
@@ -121,7 +121,7 @@ impl Literal {
                                    -> Result<Option<Vec<u8>>> {
         Ok(::std::mem::replace(&mut self.filename, match filename.len() {
             0 => None,
-            1...255 => Some(filename.to_vec()),
+            1..=255 => Some(filename.to_vec()),
             n => return
                 Err(Error::InvalidArgument(
                     format!("filename too long: {} bytes", n)).into()),
@@ -147,11 +147,11 @@ impl Literal {
     /// Note: when a literal data packet is protected by a signature,
     /// only the literal data packet's body is protected, not the
     /// meta-data.  As such, this field should normally be ignored.
-    pub fn date(&self) -> Option<&time::Tm> {
+    pub fn date(&self) -> Option<time::SystemTime> {
         if self.date.to_pgp().unwrap_or(0) == 0 {
             None
         } else {
-            Some(&self.date)
+            Some(self.date)
         }
     }
 
@@ -160,13 +160,14 @@ impl Literal {
     /// Note: when a literal data packet is protected by a signature,
     /// only the literal data packet's body is protected, not the
     /// meta-data.  As such, this field should not be used.
-    pub fn set_date(&mut self, timestamp: Option<time::Tm>) -> Option<time::Tm>
+    pub fn set_date(&mut self, timestamp: Option<time::SystemTime>)
+                    -> Option<time::SystemTime>
     {
         let old = ::std::mem::replace(
             &mut self.date,
             timestamp.map(|t| t.canonicalize())
-                .unwrap_or(time::Tm::from_pgp(0)));
-        if old == time::Tm::from_pgp(0) {
+                .unwrap_or(time::SystemTime::from_pgp(0)));
+        if old == time::SystemTime::from_pgp(0) {
             None
         } else {
             Some(old)
@@ -187,7 +188,8 @@ impl Arbitrary for Literal {
         while let Err(_) = l.set_filename_from_bytes(&Vec::<u8>::arbitrary(g)) {
             // Too long, try again.
         }
-        l.set_date(Option::<u32>::arbitrary(g).map(|t| time::Tm::from_pgp(t)));
+        l.set_date(Option::<u32>::arbitrary(g)
+                   .map(|t| time::SystemTime::from_pgp(t)));
         l
     }
 }
@@ -195,8 +197,8 @@ impl Arbitrary for Literal {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use parse::Parse;
-    use serialize::SerializeInto;
+    use crate::parse::Parse;
+    use crate::serialize::SerializeInto;
 
     quickcheck! {
         fn roundtrip(p: Literal) -> bool {

@@ -1,8 +1,8 @@
 use std::fmt;
 
-use Fingerprint;
-use KeyID;
-use Result;
+use crate::Fingerprint;
+use crate::KeyID;
+use crate::Result;
 
 impl fmt::Display for Fingerprint {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -15,6 +15,14 @@ impl fmt::Debug for Fingerprint {
         f.debug_tuple("Fingerprint")
             .field(&self.to_string())
             .finish()
+    }
+}
+
+impl std::str::FromStr for Fingerprint {
+    type Err = failure::Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Self::from_hex(s)
     }
 }
 
@@ -45,7 +53,7 @@ impl Fingerprint {
     /// assert_eq!(fp.unwrap().to_hex(), hex);
     /// ```
     pub fn from_hex(hex: &str) -> Result<Fingerprint> {
-        Ok(Fingerprint::from_bytes(&::conversions::from_hex(hex, true)?[..]))
+        Ok(Fingerprint::from_bytes(&crate::conversions::from_hex(hex, true)?[..]))
     }
 
     /// Returns a reference to the raw Fingerprint.
@@ -182,5 +190,12 @@ Echo Foxtrot Zero One Two Three Four Five Six Seven Eight Niner Alpha Bravo \
 Charlie Delta Echo Foxtrot Zero One Two Three Four Five Six Seven";
 
         assert_eq!(fpr.to_icao(), expected);
+    }
+
+    #[test]
+    fn fingerprint_is_send_and_sync() {
+        fn f<T: Send + Sync>(_: T) {}
+        f(Fingerprint::from_hex(
+            "0123 4567 89AB CDEF 0123 4567 89AB CDEF 0123 4567").unwrap());
     }
 }

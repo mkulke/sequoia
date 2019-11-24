@@ -1,16 +1,16 @@
 //! Functions for parsing MPIs.
 
 use std::io::Read;
-use {
+use crate::{
     Result,
     Error,
     PublicKeyAlgorithm,
     SymmetricAlgorithm,
     HashAlgorithm,
 };
-use constants::Curve;
-use crypto::mpis::{self, MPI};
-use parse::{
+use crate::constants::Curve;
+use crate::crypto::mpis::{self, MPI};
+use crate::parse::{
     PacketHeaderParser,
     Cookie,
 };
@@ -43,7 +43,7 @@ impl mpis::PublicKey {
                             php: &mut PacketHeaderParser<'a>)
         -> Result<Self>
     {
-        use PublicKeyAlgorithm::*;
+        use crate::PublicKeyAlgorithm::*;
 
         #[allow(deprecated)]
         match algo {
@@ -134,7 +134,7 @@ impl mpis::PublicKey {
                                                "unknown_parameter", php) {
                     mpis.push(mpi);
                 }
-                let mut rest = php.parse_bytes_eof("rest")?;
+                let rest = php.parse_bytes_eof("rest")?;
 
                 Ok(mpis::PublicKey::Unknown {
                     mpis: mpis.into_boxed_slice(),
@@ -145,13 +145,13 @@ impl mpis::PublicKey {
     }
 }
 
-impl mpis::SecretKey {
+impl mpis::SecretKeyMaterial {
     /// Parses secret key MPIs for `algo` plus their SHA1 checksum. Fails if the
     /// checksum is wrong.
     pub fn parse_chksumd<T: Read>(algo: PublicKeyAlgorithm, cur: T)
                                   -> Result<Self> {
         use std::io::Cursor;
-        use serialize::Serialize;
+        use crate::serialize::Serialize;
 
         // read mpis
         let bio = buffered_reader::Generic::with_cookie(
@@ -205,7 +205,7 @@ impl mpis::SecretKey {
                              php: &mut PacketHeaderParser<'a>)
                              -> Result<Self>
     {
-        use PublicKeyAlgorithm::*;
+        use crate::PublicKeyAlgorithm::*;
 
         #[allow(deprecated)]
         match algo {
@@ -215,7 +215,7 @@ impl mpis::SecretKey {
                 let q = MPI::parse("rsa_secret_q_len", "rsa_secret_q", php)?;
                 let u = MPI::parse("rsa_secret_u_len", "rsa_secret_u", php)?;
 
-                Ok(mpis::SecretKey::RSA {
+                Ok(mpis::SecretKeyMaterial::RSA {
                     d: d.into(),
                     p: p.into(),
                     q: q.into(),
@@ -226,7 +226,7 @@ impl mpis::SecretKey {
             DSA => {
                 let x = MPI::parse("dsa_secret_len", "dsa_secret", php)?;
 
-                Ok(mpis::SecretKey::DSA {
+                Ok(mpis::SecretKeyMaterial::DSA {
                     x: x.into(),
                 })
             }
@@ -235,27 +235,27 @@ impl mpis::SecretKey {
                 let x = MPI::parse("elgamal_secret_len", "elgamal_secret",
                                    php)?;
 
-                Ok(mpis::SecretKey::Elgamal {
+                Ok(mpis::SecretKeyMaterial::Elgamal {
                     x: x.into(),
                 })
             }
 
             EdDSA => {
-                Ok(mpis::SecretKey::EdDSA {
+                Ok(mpis::SecretKeyMaterial::EdDSA {
                     scalar: MPI::parse("eddsa_secret_len", "eddsa_secret", php)?
                                 .into()
                 })
             }
 
             ECDSA => {
-                Ok(mpis::SecretKey::ECDSA {
+                Ok(mpis::SecretKeyMaterial::ECDSA {
                     scalar: MPI::parse("ecdsa_secret_len", "ecdsa_secret", php)?
                                 .into()
                 })
             }
 
             ECDH => {
-                Ok(mpis::SecretKey::ECDH {
+                Ok(mpis::SecretKeyMaterial::ECDH {
                     scalar: MPI::parse("ecdh_secret_len", "ecdh_secret", php)?
                                 .into()
                 })
@@ -267,9 +267,9 @@ impl mpis::SecretKey {
                                                "unknown_parameter", php) {
                     mpis.push(mpi.into());
                 }
-                let mut rest = php.parse_bytes_eof("rest")?;
+                let rest = php.parse_bytes_eof("rest")?;
 
-                Ok(mpis::SecretKey::Unknown {
+                Ok(mpis::SecretKeyMaterial::Unknown {
                     mpis: mpis.into_boxed_slice(),
                     rest: rest.into(),
                 })
@@ -305,7 +305,7 @@ impl mpis::Ciphertext {
     pub(crate) fn _parse<'a>(algo: PublicKeyAlgorithm,
                              php: &mut PacketHeaderParser<'a>)
                              -> Result<Self> {
-        use PublicKeyAlgorithm::*;
+        use crate::PublicKeyAlgorithm::*;
 
         #[allow(deprecated)]
         match algo {
@@ -345,7 +345,7 @@ impl mpis::Ciphertext {
                                                "unknown_parameter", php) {
                     mpis.push(mpi);
                 }
-                let mut rest = php.parse_bytes_eof("rest")?;
+                let rest = php.parse_bytes_eof("rest")?;
 
                 Ok(mpis::Ciphertext::Unknown {
                     mpis: mpis.into_boxed_slice(),
@@ -386,7 +386,7 @@ impl mpis::Signature {
     pub(crate) fn _parse<'a>(algo: PublicKeyAlgorithm,
                              php: &mut PacketHeaderParser<'a>)
                              -> Result<Self> {
-        use PublicKeyAlgorithm::*;
+        use crate::PublicKeyAlgorithm::*;
 
         #[allow(deprecated)]
         match algo {
@@ -452,7 +452,7 @@ impl mpis::Signature {
                                                "unknown_parameter", php) {
                     mpis.push(mpi);
                 }
-                let mut rest = php.parse_bytes_eof("rest")?;
+                let rest = php.parse_bytes_eof("rest")?;
 
                 Ok(mpis::Signature::Unknown {
                     mpis: mpis.into_boxed_slice(),
@@ -469,7 +469,7 @@ impl mpis::Signature {
 #[test]
 fn mpis_parse_test() {
     use super::Parse;
-    use PublicKeyAlgorithm::*;
+    use crate::PublicKeyAlgorithm::*;
 
     // Dummy RSA public key.
     {

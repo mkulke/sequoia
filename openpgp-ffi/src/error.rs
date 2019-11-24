@@ -6,34 +6,34 @@ use libc::c_char;
 
 extern crate sequoia_openpgp as openpgp;
 
-use MoveIntoRaw;
-use RefRaw;
+use crate::MoveIntoRaw;
+use crate::RefRaw;
 
 /// Complex errors.
 ///
 /// This wraps [`failure::Error`]s.
 ///
 /// [`failure::Error`]: https://docs.rs/failure/0.1.5/failure/struct.Error.html
-#[::ffi_wrapper_type(prefix = "pgp_", derive = "Display")]
+#[crate::ffi_wrapper_type(prefix = "pgp_", derive = "Display")]
 pub struct Error(failure::Error);
 
 impl<T> From<failure::Fallible<T>> for Status {
-    fn from(f: failure::Fallible<T>) -> ::error::Status {
+    fn from(f: failure::Fallible<T>) -> crate::error::Status {
         match f {
-            Ok(_) =>  ::error::Status::Success,
-            Err(e) => ::error::Status::from(&e),
+            Ok(_) =>  crate::error::Status::Success,
+            Err(e) => crate::error::Status::from(&e),
         }
     }
 }
 
-impl ::MoveResultIntoRaw<::error::Status> for ::failure::Fallible<()>
+impl crate::MoveResultIntoRaw<crate::error::Status> for ::failure::Fallible<()>
 {
-    fn move_into_raw(self, errp: Option<&mut *mut ::error::Error>)
-                     -> ::error::Status {
+    fn move_into_raw(self, errp: Option<&mut *mut crate::error::Error>)
+                     -> crate::error::Status {
         match self {
-            Ok(_) => ::error::Status::Success,
+            Ok(_) => crate::error::Status::Success,
             Err(e) => {
-                let status = ::error::Status::from(&e);
+                let status = crate::error::Status::from(&e);
                 if let Some(errp) = errp {
                     *errp = e.move_into_raw();
                 }
@@ -75,6 +75,9 @@ pub enum Status {
     /// The packet is malformed.
     MalformedPacket = -5,
 
+    /// Packet size exceeds the configured limit.
+    PacketTooLarge = -29,
+
     /// Unsupported packet type.
     UnsupportedPacketType = -14,
 
@@ -96,7 +99,7 @@ pub enum Status {
     /// Unsupported Compression algorithm.
     UnsupportedCompressionAlgorithm = -28,
 
-    /// Unsupport signature type.
+    /// Unsupported signature type.
     UnsupportedSignatureType = -20,
 
     /// Invalid password.
@@ -143,6 +146,7 @@ pub enum Status {
     // XXX: Skipping UnsupportedAEADAlgorithm = -26
     // XXX: Skipping MissingSessionKey = -27
     // XXX: Skipping UnsupportedCompressionAlgorithm = -28
+    // XXX: Skipping PacketTooLarge = -29
 }
 
 /// Returns the error message.
@@ -150,7 +154,7 @@ pub enum Status {
 /// The returned value must *not* be freed.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle]
 pub extern "C" fn pgp_status_to_string(status: Status) -> *const c_char {
-    use error::Status::*;
+    use crate::error::Status::*;
 
     match status {
         Success => "Success\x00",
@@ -161,6 +165,7 @@ pub extern "C" fn pgp_status_to_string(status: Status) -> *const c_char {
         InvalidArgument => "A given argument is invalid\x00",
         InvalidOperation => "The requested operation is invalid\x00",
         MalformedPacket => "The packet is malformed\x00",
+        PacketTooLarge => "Packet size exceeds the configured limit\x00",
         UnsupportedPacketType => "Unsupported packet type\x00",
         UnsupportedHashAlgorithm => "Unsupported hash algorithm\x00",
         UnsupportedPublicKeyAlgorithm =>
@@ -171,7 +176,7 @@ pub extern "C" fn pgp_status_to_string(status: Status) -> *const c_char {
         UnsupportedAEADAlgorithm => "Unsupported AEAD algorithm\x00",
         UnsupportedCompressionAlgorithm =>
             "Unsupported compression algorithm\x00",
-        UnsupportedSignatureType => "Unsupport signature type\x00",
+        UnsupportedSignatureType => "Unsupported signature type\x00",
         InvalidPassword => "Invalid password\x00",
         InvalidSessionKey => "Invalid session key\x00",
         MissingSessionKey => "Missing session key\x00",
@@ -195,6 +200,8 @@ impl<'a> From<&'a failure::Error> for Status {
                     Status::InvalidOperation,
                 &openpgp::Error::MalformedPacket(_) =>
                     Status::MalformedPacket,
+                &openpgp::Error::PacketTooLarge(_, _, _) =>
+                    Status::PacketTooLarge,
                 &openpgp::Error::UnsupportedPacketType(_) =>
                     Status::UnsupportedPacketType,
                 &openpgp::Error::UnsupportedHashAlgorithm(_) =>

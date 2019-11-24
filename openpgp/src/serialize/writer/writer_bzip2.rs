@@ -1,10 +1,9 @@
-use bzip2::Compression as BzCompression;
 use bzip2::write::BzEncoder;
 use std::fmt;
 use std::io;
 
-use Result;
-use super::{Generic, Stack, BoxStack, Stackable};
+use crate::Result;
+use super::{Generic, Stack, BoxStack, Stackable, CompressionLevel};
 
 /// BZing writer.
 pub struct BZ<'a, C: 'a> {
@@ -13,10 +12,13 @@ pub struct BZ<'a, C: 'a> {
 
 impl<'a, C: 'a> BZ<'a, C> {
     /// Makes a BZ compressing writer.
-    pub fn new(inner: Stack<'a, C>, cookie: C) -> Stack<'a, C> {
+    pub fn new<L>(inner: Stack<'a, C>, cookie: C, level: L) -> Stack<'a, C>
+        where L: Into<Option<CompressionLevel>>
+    {
         Stack::from(Box::new(BZ {
             inner: Generic::new_unboxed(
-                BzEncoder::new(inner.into(), BzCompression::Default),
+                BzEncoder::new(inner.into(),
+                               level.into().unwrap_or_default().into()),
                 cookie),
         }))
     }
@@ -51,11 +53,11 @@ impl<'a, C: 'a> Stackable<'a, C> for BZ<'a, C> {
     fn mount(&mut self, _new: BoxStack<'a, C>) {
         unreachable!("Only implemented by Signer")
     }
-    fn inner_mut(&mut self) -> Option<&mut Stackable<'a, C>> {
-        self.inner.inner_mut()
+    fn inner_mut(&mut self) -> Option<&mut dyn Stackable<'a, C>> {
+        Some(self.inner.inner.get_mut())
     }
-    fn inner_ref(&self) -> Option<&Stackable<'a, C>> {
-        self.inner.inner_ref()
+    fn inner_ref(&self) -> Option<&dyn Stackable<'a, C>> {
+        Some(self.inner.inner.get_ref())
     }
     fn cookie_set(&mut self, cookie: C) -> C {
         self.inner.cookie_set(cookie)
@@ -65,5 +67,8 @@ impl<'a, C: 'a> Stackable<'a, C> for BZ<'a, C> {
     }
     fn cookie_mut(&mut self) -> &mut C {
         self.inner.cookie_mut()
+    }
+    fn position(&self) -> u64 {
+        self.inner.position
     }
 }

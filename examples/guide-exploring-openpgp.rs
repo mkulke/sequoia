@@ -1,11 +1,11 @@
 //! https://sequoia-pgp.org/guide/exploring-openpgp/
 
 extern crate sequoia_openpgp as openpgp;
-use openpgp::parse::Parse;
+use crate::openpgp::parse::Parse;
 
 fn main() {
     let tpk =
-       b"-----BEGIN PGP PUBLIC KEY BLOCK-----
+        "-----BEGIN PGP PUBLIC KEY BLOCK-----
 
          mQENBFpxtsABCADZcBa1Q3ZLZnju18o0+t8LoQuIIeyeUQ0H45y6xUqyrD5HSkVM
          VGQs6IHLq70mAizBJ4VznUVqVOh/NhOlapXi6/TKpjHvttdg45o6Pgqa0Kx64luT
@@ -55,15 +55,15 @@ fn main() {
     for (i, u) in tpk.userids().enumerate() {
         println!("{}: UID: {}, {} self-signature(s), {} certification(s)",
                  i, u.userid(),
-                 u.selfsigs().len(),
+                 u.self_signatures().len(),
                  u.certifications().len());
     }
 
     // List subkeys.
     for (i, s) in tpk.subkeys().enumerate() {
         println!("{}: Fingerprint: {}, {} self-signature(s), {} certification(s)",
-                 i, s.subkey().fingerprint(),
-                 s.selfsigs().len(),
+                 i, s.key().fingerprint(),
+                 s.self_signatures().len(),
                  s.certifications().len());
     }
 }

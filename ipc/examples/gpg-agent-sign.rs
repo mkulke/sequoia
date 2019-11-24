@@ -6,11 +6,10 @@ extern crate clap;
 extern crate sequoia_openpgp as openpgp;
 extern crate sequoia_ipc as ipc;
 
-use openpgp::armor;
-use openpgp::constants::DataFormat;
-use openpgp::parse::Parse;
-use openpgp::serialize::stream::{Message, LiteralWriter, Signer};
-use ipc::gnupg::{Context, KeyPair};
+use crate::openpgp::armor;
+use crate::openpgp::parse::Parse;
+use crate::openpgp::serialize::stream::{Message, LiteralWriter, Signer};
+use crate::ipc::gnupg::{Context, KeyPair};
 
 fn main() {
     let matches = clap::App::new("gpg-agent-sign")
@@ -39,14 +38,11 @@ fn main() {
         }).collect::<Vec<_>>();
 
     // Construct a KeyPair for every signing-capable (sub)key.
-    let mut keypairs = tpks.iter().flat_map(|tpk| tpk.keys_valid().signing_capable().filter_map(|(_, _, key)| {
-        KeyPair::new(&ctx, key).ok()
-    })).collect::<Vec<KeyPair>>();
-
-    // Well, this is awkward...
-    let signers = keypairs.iter_mut()
-        .map(|s| -> &mut dyn openpgp::crypto::Signer { s })
-        .collect();
+    let mut signers = tpks.iter().flat_map(|tpk| {
+        tpk.keys_valid().signing_capable().filter_map(|(_, _, key)| {
+            KeyPair::new(&ctx, key).ok()
+        })
+    }).collect::<Vec<KeyPair<_>>>();
 
     // Compose a writer stack corresponding to the output format and
     // packet structure we want.  First, we want the output to be
@@ -57,13 +53,17 @@ fn main() {
     // Stream an OpenPGP message.
     let message = Message::new(sink);
 
-    // Now, create a signer that emits a signature.
-    let signer = Signer::new(message, signers, None)
-        .expect("Failed to create signer");
+    // Now, create a signer that emits the signature(s).
+    let mut signer =
+        Signer::new(message, signers.pop().expect("No key for signing"));
+    for s in signers {
+        signer = signer.add_signer(s);
+    }
+    let signer = signer.build().expect("Failed to create signer");
 
     // Then, create a literal writer to wrap the data in a literal
     // message packet.
-    let mut literal = LiteralWriter::new(signer, DataFormat::Binary, None, None)
+    let mut literal = LiteralWriter::new(signer).build()
         .expect("Failed to create literal writer");
 
     // Copy all the data.

@@ -1,9 +1,11 @@
-use failure;
 use std::hash::{Hash, Hasher};
+use std::cmp::Ordering;
 
-use packet::Tag;
-use packet;
-use Packet;
+use failure;
+
+use crate::packet::Tag;
+use crate::packet;
+use crate::Packet;
 
 /// Holds an unknown packet.
 ///
@@ -25,7 +27,28 @@ impl Eq for Unknown {}
 
 impl PartialEq for Unknown {
     fn eq(&self, other: &Unknown) -> bool {
-        self.common == other.common && self.tag == other.tag
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl PartialOrd for Unknown
+{
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Unknown
+{
+    fn cmp(&self, other: &Unknown) -> Ordering {
+        // An unknown packet cannot have children.
+        assert!(self.common.children.is_none());
+        assert!(other.common.children.is_none());
+
+        match self.tag.cmp(&other.tag) {
+            Ordering::Equal => self.common.body().cmp(&other.common.body()),
+            o => o,
+        }
     }
 }
 

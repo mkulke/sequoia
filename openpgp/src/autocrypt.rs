@@ -19,23 +19,22 @@ use std::path::Path;
 use std::fs::File;
 use std::str;
 
-use armor;
+use crate::armor;
 
-use Error;
-use Result;
-use Packet;
-use packet::SKESK;
-use TPK;
-use parse::{
+use crate::Error;
+use crate::Result;
+use crate::Packet;
+use crate::packet::SKESK;
+use crate::TPK;
+use crate::parse::{
     Parse,
     PacketParserResult, PacketParser,
 };
-use serialize::Serialize;
-use serialize::stream::{
-    Message, LiteralWriter, Encryptor, EncryptionMode,
+use crate::serialize::Serialize;
+use crate::serialize::stream::{
+    Message, LiteralWriter, Encryptor,
 };
-use constants::DataFormat;
-use crypto::Password;
+use crate::crypto::Password;
 
 /// Version of Autocrypt to use. `Autocrypt::default()` always returns the
 /// latest version.
@@ -101,14 +100,14 @@ impl AutocryptHeader {
                              -> Result<Self>
         where P: Into<Option<&'a str>>
     {
-        use packet::Tag;
+        use crate::packet::key;
 
         // Minimize TPK.
         let mut acc = Vec::new();
 
         // The primary key and the most recent selfsig.
-        acc.push(tpk.primary().clone().into_packet(Tag::PublicKey)?);
-        tpk.selfsigs().iter().take(1)
+        acc.push(tpk.primary().clone().into());
+        tpk.direct_signatures().iter().take(1)
             .for_each(|s| acc.push(s.clone().into()));
 
         // The subkeys and the most recent selfsig.
@@ -120,18 +119,19 @@ impl AutocryptHeader {
                 continue;
             }
 
-            acc.push(skb.subkey().clone().into_packet(Tag::PublicSubkey)?);
-            skb.selfsigs().iter().take(1)
+            let k : key::PublicSubkey = skb.key().clone();
+            acc.push(k.into());
+            skb.self_signatures().iter().take(1)
                 .for_each(|s| acc.push(s.clone().into()));
         }
 
         // The UserIDs matching ADDR.
         for uidb in tpk.userids() {
             // XXX: Fix match once we have the rfc2822-name-addr.
-            if let Ok(Some(a)) = uidb.userid().address() {
+            if let Ok(Some(a)) = uidb.userid().email() {
                 if &a == addr {
                     acc.push(uidb.userid().clone().into());
-                    uidb.selfsigs().iter().take(1)
+                    uidb.self_signatures().iter().take(1)
                         .for_each(|s| acc.push(s.clone().into()));
                 } else {
                     // Address is not matching.
@@ -332,7 +332,7 @@ impl AutocryptSetupMessage {
     /// You can set the `prefer_encrypt` setting, which defaults to
     /// "nopreference", using `set_prefer_encrypt`.
     ///
-    /// Note: this generates a random passcode.  To retreive the
+    /// Note: this generates a random passcode.  To retrieve the
     /// passcode, use the `passcode` method.
     ///
     /// To decode an Autocrypt Setup Message, use the `from_bytes` or
@@ -406,7 +406,7 @@ impl AutocryptSetupMessage {
         // approximately 119 bits of information.  120 bits = 15
         // bytes.
         let mut p_as_vec = vec![0; 15];
-        ::crypto::random(&mut p_as_vec[..]);
+        crate::crypto::random(&mut p_as_vec[..]);
         let p = Password::from(p_as_vec);
 
         // Turn it into a 128-bit number.
@@ -467,14 +467,10 @@ impl AutocryptSetupMessage {
 
         // Passphrase-Format header with value numeric9x4
         let m = Message::new(w);
-        let w = Encryptor::new(m,
-                               &[ self.passcode.as_ref().unwrap() ],
-                               &[],
-                               EncryptionMode::ForTransport,
-                               None)?;
+        let w = Encryptor::with_password(m, self.passcode.clone().unwrap())
+            .build()?;
 
-        let mut w = LiteralWriter::new(w, DataFormat::Binary,
-                                       /* filename*/ None, /* date */ None)?;
+        let mut w = LiteralWriter::new(w).build()?;
 
         // The inner message is an ASCII-armored encoded TPK.
         let mut w = armor::Writer::new(
@@ -483,8 +479,8 @@ impl AutocryptSetupMessage {
                 self.prefer_encrypt().unwrap_or(&"nopreference"[..])) ])?;
 
         self.tpk.as_tsk().serialize(&mut w)?;
-
-        Ok(w.finalize()?)
+        w.finalize()?;
+        Ok(())
     }
 
 
@@ -774,7 +770,7 @@ impl<'a> AutocryptSetupMessageParser<'a> {
 mod test {
     use super::*;
 
-    use Fingerprint;
+    use crate::Fingerprint;
 
     #[test]
     fn decode_test() {
@@ -1012,7 +1008,7 @@ In the light of the Efail vulnerability I am asking myself if it's
             .collect::<Vec<(usize, usize)>>()
         {
             let is_good = lower < count && count < upper;
-            eprintln!("{}: {} occurances{}.",
+            eprintln!("{}: {} occurrences{}.",
                       i, count, if is_good { "" } else { " UNLIKELY" });
 
             if !is_good {
@@ -1032,7 +1028,7 @@ In the light of the Efail vulnerability I am asking myself if it's
     fn autocrypt_setup_message() {
         // Try the example autocrypt setup message.
         let mut asm = AutocryptSetupMessage::from_bytes(
-            ::tests::file("autocrypt/setup-message.txt")).unwrap();
+            crate::tests::file("autocrypt/setup-message.txt")).unwrap();
 
         // A bad passcode.
         assert!(asm.decrypt(&"123".into()).is_err());
@@ -1052,7 +1048,7 @@ In the light of the Efail vulnerability I am asking myself if it's
         // Create an ASM for testy-private.  Then decrypt it and make
         // sure the TPK, etc. survived the round trip.
         let tpk =
-            TPK::from_bytes(::tests::key("testy-private.pgp")).unwrap();
+            TPK::from_bytes(crate::tests::key("testy-private.pgp")).unwrap();
 
         let mut asm = AutocryptSetupMessage::new(tpk)
             .set_prefer_encrypt("mutual");
@@ -1067,7 +1063,7 @@ In the light of the Efail vulnerability I am asking myself if it's
 
     #[test]
     fn autocrypt_header_new() {
-        let tpk = TPK::from_bytes(::tests::key("testy.pgp")).unwrap();
+        let tpk = TPK::from_bytes(crate::tests::key("testy.pgp")).unwrap();
         let header = AutocryptHeader::new_sender(&tpk, "testy@example.org",
                                                  "mutual").unwrap();
         let mut buf = Vec::new();

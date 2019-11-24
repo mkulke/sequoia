@@ -15,15 +15,15 @@
 //!
 //! OPTIONS:
 //!         --home <DIRECTORY>           Sets the home directory to use
+//!     -m, --mapping <MAPPING>          Sets the realm and mapping to use [default: org.sequoia-pgp.contacts/default]
 //!     -p, --policy <NETWORK-POLICY>    Sets the network policy to use
-//!     -s, --store <STORE>              Sets the realm and store to use [default: org.sequoia-pgp.contacts/default]
 //!
 //! SUBCOMMANDS:
 //!     decrypt      Decrypts an OpenPGP message
 //!     encrypt      Encrypts a message
 //!     sign         Signs a message
 //!     verify       Verifies a message
-//!     store        Interacts with key stores
+//!     mapping      Interacts with key mappings
 //!     keyserver    Interacts with keyservers
 //!     autocrypt    Autocrypt support
 //!     dearmor      Removes ASCII Armor from a file
@@ -31,7 +31,7 @@
 //!     help         Prints this message or the help of the given subcommand(s)
 //!     inspect      Inspects a sequence of OpenPGP packets
 //!     key          Manipulates keys
-//!     list         Lists key stores and known keys
+//!     list         Lists key mappings and known keys
 //!     packet       OpenPGP Packet manipulation
 //!     wkd          Interacts with Web Key Directories
 //! ```
@@ -76,6 +76,12 @@
 //!     -V, --version      Prints version information
 //!
 //! OPTIONS:
+//!         --compression <KIND>                  Selects compression scheme to use [default: pad]  [possible values: none,
+//!                                               pad, zip, zlib, bzip2]
+//!         --mode <MODE>                         Selects what kind of keys are considered for encryption.  Transport select
+//!                                               subkeys marked as suitable for transport encryption, rest selects those
+//!                                               for encrypting data at rest, and all selects all encryption-capable
+//!                                               subkeys [default: all]  [possible values: transport, rest, all]
 //!     -o, --output <FILE>                       Sets the output file to use
 //!     -r, --recipient <LABEL>...                Recipient to encrypt for (can be given multiple times)
 //!         --recipient-key-file <TPK-FILE>...    Recipient to encrypt for, given as a file (can be given multiple times)
@@ -131,13 +137,13 @@
 //!     <FILE>    Sets the input file to use
 //! ```
 //!
-//! ## Subcommand store
+//! ## Subcommand mapping
 //!
 //! ```text
-//! Interacts with key stores
+//! Interacts with key mappings
 //!
 //! USAGE:
-//!     sq store <SUBCOMMAND>
+//!     sq mapping <SUBCOMMAND>
 //!
 //! FLAGS:
 //!     -h, --help       Prints help information
@@ -145,22 +151,22 @@
 //!
 //! SUBCOMMANDS:
 //!     add       Add a key identified by fingerprint
-//!     delete    Deletes bindings or stores
+//!     delete    Deletes bindings or mappings
 //!     export    Exports a key
 //!     help      Prints this message or the help of the given subcommand(s)
 //!     import    Imports a key
-//!     list      Lists keys in the store
+//!     list      Lists keys in the mapping
 //!     log       Lists the keystore log
 //!     stats     Get stats for the given label
 //! ```
 //!
-//! ### Subcommand store add
+//! ### Subcommand mapping add
 //!
 //! ```text
 //! Add a key identified by fingerprint
 //!
 //! USAGE:
-//!     sq store add <LABEL> <FINGERPRINT>
+//!     sq mapping add <LABEL> <FINGERPRINT>
 //!
 //! FLAGS:
 //!     -h, --help       Prints help information
@@ -171,30 +177,30 @@
 //!     <FINGERPRINT>    Key to add
 //! ```
 //!
-//! ### Subcommand store delete
+//! ### Subcommand mapping delete
 //!
 //! ```text
-//! Deletes bindings or stores
+//! Deletes bindings or mappings
 //!
 //! USAGE:
-//!     sq store delete [FLAGS] [LABEL]
+//!     sq mapping delete [FLAGS] [LABEL]
 //!
 //! FLAGS:
-//!     -h, --help         Prints help information
-//!         --the-store    Delete the selected store (change with --store)
-//!     -V, --version      Prints version information
+//!     -h, --help           Prints help information
+//!         --the-mapping    Delete the selected mapping (change with --mapping)
+//!     -V, --version        Prints version information
 //!
 //! ARGS:
 //!     <LABEL>    Delete binding with this label
 //! ```
 //!
-//! ### Subcommand store export
+//! ### Subcommand mapping export
 //!
 //! ```text
 //! Exports a key
 //!
 //! USAGE:
-//!     sq store export [FLAGS] [OPTIONS] <LABEL>
+//!     sq mapping export [FLAGS] [OPTIONS] <LABEL>
 //!
 //! FLAGS:
 //!     -B, --binary     Don't ASCII-armor encode the OpenPGP data
@@ -208,13 +214,13 @@
 //!     <LABEL>    Label to use
 //! ```
 //!
-//! ### Subcommand store import
+//! ### Subcommand mapping import
 //!
 //! ```text
 //! Imports a key
 //!
 //! USAGE:
-//!     sq store import <LABEL> [FILE]
+//!     sq mapping import <LABEL> [FILE]
 //!
 //! FLAGS:
 //!     -h, --help       Prints help information
@@ -225,26 +231,26 @@
 //!     <FILE>     Sets the input file to use
 //! ```
 //!
-//! ### Subcommand store list
+//! ### Subcommand mapping list
 //!
 //! ```text
-//! Lists keys in the store
+//! Lists keys in the mapping
 //!
 //! USAGE:
-//!     sq store list
+//!     sq mapping list
 //!
 //! FLAGS:
 //!     -h, --help       Prints help information
 //!     -V, --version    Prints version information
 //! ```
 //!
-//! ### Subcommand store log
+//! ### Subcommand mapping log
 //!
 //! ```text
 //! Lists the keystore log
 //!
 //! USAGE:
-//!     sq store log [LABEL]
+//!     sq mapping log [LABEL]
 //!
 //! FLAGS:
 //!     -h, --help       Prints help information
@@ -254,13 +260,13 @@
 //!     <LABEL>    List messages related to this label
 //! ```
 //!
-//! ### Subcommand store stats
+//! ### Subcommand mapping stats
 //!
 //! ```text
 //! Get stats for the given label
 //!
 //! USAGE:
-//!     sq store stats <LABEL>
+//!     sq mapping stats <LABEL>
 //!
 //! FLAGS:
 //!     -h, --help       Prints help information
@@ -478,22 +484,22 @@
 //!         --with-password     Prompt for a password to protect the generated key with.
 //!
 //! OPTIONS:
-//!         --can-encrypt <PURPOSE>          The key has an encryption-capable subkey (default) [default: all]  [possible
-//!                                          values: transport, rest, all]
-//!     -c, --cipher-suite <CIPHER-SUITE>    Cryptographic algorithms used for the key. [default: rsa3k]  [possible values:
-//!                                          rsa3k, cv25519]
+//!         --can-encrypt <PURPOSE>          The key has an encryption-capable subkey (default) [possible values: transport,
+//!                                          rest, all]
+//!     -c, --cipher-suite <CIPHER-SUITE>    Cryptographic algorithms used for the key. [default: cv25519]  [possible
+//!                                          values: rsa3k, rsa4k, cv25519]
 //!         --expiry <EXPIRY>                When the key should expire.  Either 'N[ymwd]', for N years, months, weeks, or
 //!                                          days, or 'never'.
 //!     -e, --export <OUTFILE>               Exports the key instead of saving it in the store
 //!         --rev-cert <FILE or ->           Sets the output file for the revocation certificate. Default is <OUTFILE>.rev,
 //!                                          mandatory if OUTFILE is '-'.
-//!     -u, --userid <EMAIL>                 Primary user ID
+//!     -u, --userid <EMAIL>...              Add userid to the key (can be given multiple times)
 //! ```
 //!
 //! ## Subcommand list
 //!
 //! ```text
-//! Lists key stores and known keys
+//! Lists key mappings and known keys
 //!
 //! USAGE:
 //!     sq list <SUBCOMMAND>
@@ -503,17 +509,17 @@
 //!     -V, --version    Prints version information
 //!
 //! SUBCOMMANDS:
-//!     bindings    Lists all bindings in all key stores
+//!     bindings    Lists all bindings in all key mappings
 //!     help        Prints this message or the help of the given subcommand(s)
 //!     keys        Lists all keys in the common key pool
 //!     log         Lists the server log
-//!     stores      Lists key stores
+//!     mappings    Lists key mappings
 //! ```
 //!
 //! ### Subcommand list bindings
 //!
 //! ```text
-//! Lists all bindings in all key stores
+//! Lists all bindings in all key mappings
 //!
 //! USAGE:
 //!     sq list bindings [PREFIX]
@@ -523,7 +529,7 @@
 //!     -V, --version    Prints version information
 //!
 //! ARGS:
-//!     <PREFIX>    List only bindings from stores with the given realm prefix
+//!     <PREFIX>    List only bindings from mappings with the given realm prefix
 //! ```
 //!
 //! ### Subcommand list keys
@@ -552,20 +558,20 @@
 //!     -V, --version    Prints version information
 //! ```
 //!
-//! ### Subcommand list stores
+//! ### Subcommand list mappings
 //!
 //! ```text
-//! Lists key stores
+//! Lists key mappings
 //!
 //! USAGE:
-//!     sq list stores [PREFIX]
+//!     sq list mappings [PREFIX]
 //!
 //! FLAGS:
 //!     -h, --help       Prints help information
 //!     -V, --version    Prints version information
 //!
 //! ARGS:
-//!     <PREFIX>    List only stores with the given realm prefix
+//!     <PREFIX>    List only mappings with the given realm prefix
 //! ```
 //!
 //! ## Subcommand packet
@@ -583,6 +589,7 @@
 //! SUBCOMMANDS:
 //!     dump     Lists OpenPGP packets
 //!     help     Prints this message or the help of the given subcommand(s)
+//!     join     Joins OpenPGP packets split across files
 //!     split    Splits a message into OpenPGP packets
 //! ```
 //!
@@ -606,6 +613,28 @@
 //!
 //! ARGS:
 //!     <FILE>    Sets the input file to use
+//! ```
+//!
+//! ### Subcommand packet join
+//!
+//! ```text
+//! Joins OpenPGP packets split across files
+//!
+//! USAGE:
+//!     sq packet join [FLAGS] [OPTIONS] [FILE]...
+//!
+//! FLAGS:
+//!     -B, --binary     Don't ASCII-armor encode the OpenPGP data
+//!     -h, --help       Prints help information
+//!     -V, --version    Prints version information
+//!
+//! OPTIONS:
+//!         --kind <KIND>      Selects the kind of header line to produce [default: file]  [possible values: message,
+//!                            publickey, secretkey, signature, file]
+//!     -o, --output <FILE>    Sets the output file to use
+//!
+//! ARGS:
+//!     <FILE>...    Sets the input files to use
 //! ```
 //!
 //! ### Subcommand packet split
@@ -641,16 +670,37 @@
 //!     -V, --version    Prints version information
 //!
 //! SUBCOMMANDS:
-//!     get     Writes to the standard output the Transferable Public Key retrieved from a Web Key Directory, given an
-//!             email address
-//!     help    Prints this message or the help of the given subcommand(s)
-//!     url     Prints the Web Key Directory URL of an email address.
+//!     generate    Generates a Web Key Directory for the given domain and keys.  If the WKD exists, the new keys will
+//!                 be inserted and it is updated and existing ones will be updated.
+//!     get         Writes to the standard output the TPK retrieved from a Web Key Directory, given an email address
+//!     help        Prints this message or the help of the given subcommand(s)
+//!     url         Prints the Web Key Directory URL of an email address.
+//! ```
+//!
+//! ### Subcommand wkd generate
+//!
+//! ```text
+//! Generates a Web Key Directory for the given domain and keys.  If the WKD exists, the new keys will be inserted and it is
+//! updated and existing ones will be updated.
+//!
+//! USAGE:
+//!     sq wkd generate [FLAGS] <BASE-DIRECTORY> <DOMAIN> [KEYRING]
+//!
+//! FLAGS:
+//!     -d, --direct_method    Use the direct method. [default: advanced method]
+//!     -h, --help             Prints help information
+//!     -V, --version          Prints version information
+//!
+//! ARGS:
+//!     <BASE-DIRECTORY>    The location to write the WKD to
+//!     <DOMAIN>            The domain for the WKD.
+//!     <KEYRING>           The keyring file with the keys to add to the WKD.
 //! ```
 //!
 //! ### Subcommand wkd get
 //!
 //! ```text
-//! Writes to the standard output the Transferable Public Key retrieved from a Web Key Directory, given an email address
+//! Writes to the standard output the TPK retrieved from a Web Key Directory, given an email address
 //!
 //! USAGE:
 //!     sq wkd get [FLAGS] <EMAIL_ADDRESS>

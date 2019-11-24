@@ -4,8 +4,10 @@ use std::io;
 use std::io::{Error, ErrorKind};
 
 use buffered_reader::{buffered_reader_generic_read_impl, BufferedReader};
-use BodyLength;
-use parse::{Cookie, Hashing};
+
+use crate::vec_truncate;
+use crate::packet::header::BodyLength;
+use crate::parse::{Cookie, Hashing};
 
 const TRACE : bool = false;
 
@@ -203,8 +205,7 @@ impl<T: BufferedReader<Cookie>> BufferedReaderPartialBodyFilter<T> {
                 }
             }
         }
-
-        buffer.truncate(amount_buffered);
+        vec_truncate(&mut buffer, amount_buffered);
         buffer.shrink_to_fit();
 
         // We're done.
@@ -375,15 +376,15 @@ impl<T: BufferedReader<Cookie>> BufferedReader<Cookie>
         self.partial_body_length == 0 && self.last
     }
 
-    fn get_mut(&mut self) -> Option<&mut BufferedReader<Cookie>> {
+    fn get_mut(&mut self) -> Option<&mut dyn BufferedReader<Cookie>> {
         Some(&mut self.reader)
     }
 
-    fn get_ref(&self) -> Option<&BufferedReader<Cookie>> {
+    fn get_ref(&self) -> Option<&dyn BufferedReader<Cookie>> {
         Some(&self.reader)
     }
 
-    fn into_inner<'b>(self: Box<Self>) -> Option<Box<BufferedReader<Cookie> + 'b>>
+    fn into_inner<'b>(self: Box<Self>) -> Option<Box<dyn BufferedReader<Cookie> + 'b>>
             where Self: 'b {
         Some(Box::new(self.reader))
     }

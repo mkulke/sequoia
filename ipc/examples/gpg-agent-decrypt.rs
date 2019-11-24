@@ -7,9 +7,9 @@ extern crate clap;
 extern crate sequoia_openpgp as openpgp;
 extern crate sequoia_ipc as ipc;
 
-use openpgp::crypto::SessionKey;
-use openpgp::constants::SymmetricAlgorithm;
-use openpgp::parse::{
+use crate::openpgp::crypto::SessionKey;
+use crate::openpgp::constants::SymmetricAlgorithm;
+use crate::openpgp::parse::{
     Parse,
     stream::{
         DecryptionHelper,
@@ -20,7 +20,7 @@ use openpgp::parse::{
         MessageLayer,
     },
 };
-use ipc::gnupg::{Context, KeyPair};
+use crate::ipc::gnupg::{Context, KeyPair};
 
 fn main() {
     let matches = clap::App::new("gpg-agent-decrypt")
@@ -63,7 +63,7 @@ fn main() {
 /// verification policy.
 struct Helper<'a> {
     ctx: &'a Context,
-    keys: HashMap<openpgp::KeyID, openpgp::packet::Key>,
+    keys: HashMap<openpgp::KeyID, openpgp::packet::key::UnspecifiedPublic>,
 }
 
 impl<'a> Helper<'a> {
@@ -77,7 +77,7 @@ impl<'a> Helper<'a> {
                                 || s.key_flags().can_encrypt_for_transport()))
                     .unwrap_or(false)
                 {
-                    keys.insert(key.keyid(), key.clone());
+                    keys.insert(key.keyid(), key.clone().into());
                 }
             }
         }
@@ -137,6 +137,13 @@ impl<'a> VerificationHelper for Helper<'a> {
                                 let issuer = sig.issuer()
                                     .expect("good checksum has an issuer");
                                 eprintln!("Good signature from {}", issuer);
+                            },
+                            NotAlive(ref sig) => {
+                                let issuer = sig.issuer()
+                                    .expect("Good, but not live signature has an \
+                                             issuer");
+                                eprintln!("Good, but not live signature from {}",
+                                          issuer);
                             },
                             MissingKey(ref sig) => {
                                 let issuer = sig.issuer()

@@ -1,4 +1,5 @@
 use std::fmt;
+use std::cmp::Ordering;
 
 use quickcheck::{Arbitrary, Gen};
 
@@ -7,7 +8,7 @@ use quickcheck::{Arbitrary, Gen};
 ///   [Section 4.3 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-4.3
 ///
 /// The values correspond to the serialized format.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Hash)]
 pub enum Tag {
     /// Reserved Packet tag.
     Reserved,
@@ -53,9 +54,33 @@ pub enum Tag {
     Private(u8),
 }
 
+impl Eq for Tag {}
+
+impl PartialEq for Tag {
+    fn eq(&self, other: &Tag) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl PartialOrd for Tag
+{
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Tag
+{
+    fn cmp(&self, other: &Self) -> Ordering {
+        let a : u8 = (*self).into();
+        let b : u8 = (*other).into();
+        a.cmp(&b)
+    }
+}
+
 impl From<u8> for Tag {
     fn from(u: u8) -> Self {
-        use packet::Tag::*;
+        use crate::packet::Tag::*;
 
         match u {
             0 => Reserved,
@@ -77,7 +102,7 @@ impl From<u8> for Tag {
             18 => SEIP,
             19 => MDC,
             20 => AED,
-            60...63 => Private(u),
+            60..=63 => Private(u),
             _ => Unknown(u),
         }
     }
@@ -85,28 +110,34 @@ impl From<u8> for Tag {
 
 impl From<Tag> for u8 {
     fn from(t: Tag) -> u8 {
+        (&t).into()
+    }
+}
+
+impl From<&Tag> for u8 {
+    fn from(t: &Tag) -> u8 {
         match t {
-            Tag::Reserved => 0,
-            Tag::PKESK => 1,
-            Tag::Signature => 2,
-            Tag::SKESK => 3,
-            Tag::OnePassSig => 4,
-            Tag::SecretKey => 5,
-            Tag::PublicKey => 6,
-            Tag::SecretSubkey => 7,
-            Tag::CompressedData => 8,
-            Tag::SED => 9,
-            Tag::Marker => 10,
-            Tag::Literal => 11,
-            Tag::Trust => 12,
-            Tag::UserID => 13,
-            Tag::PublicSubkey => 14,
-            Tag::UserAttribute => 17,
-            Tag::SEIP => 18,
-            Tag::MDC => 19,
-            Tag::AED => 20,
-            Tag::Private(x) => x,
-            Tag::Unknown(x) => x,
+            &Tag::Reserved => 0,
+            &Tag::PKESK => 1,
+            &Tag::Signature => 2,
+            &Tag::SKESK => 3,
+            &Tag::OnePassSig => 4,
+            &Tag::SecretKey => 5,
+            &Tag::PublicKey => 6,
+            &Tag::SecretSubkey => 7,
+            &Tag::CompressedData => 8,
+            &Tag::SED => 9,
+            &Tag::Marker => 10,
+            &Tag::Literal => 11,
+            &Tag::Trust => 12,
+            &Tag::UserID => 13,
+            &Tag::PublicSubkey => 14,
+            &Tag::UserAttribute => 17,
+            &Tag::SEIP => 18,
+            &Tag::MDC => 19,
+            &Tag::AED => 20,
+            &Tag::Private(x) => x,
+            &Tag::Unknown(x) => x,
         }
     }
 }

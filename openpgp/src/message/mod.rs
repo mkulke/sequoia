@@ -16,14 +16,14 @@ use std::path::Path;
 
 use failure;
 
-use Result;
-use Error;
-use Packet;
-use PacketPile;
-use Message;
-use packet::Literal;
-use packet::Tag;
-use parse::Parse;
+use crate::Result;
+use crate::Error;
+use crate::Packet;
+use crate::PacketPile;
+use crate::Message;
+use crate::packet::Literal;
+use crate::packet::Tag;
+use crate::parse::Parse;
 
 mod lexer;
 mod grammar;
@@ -333,8 +333,16 @@ impl<'a> Parse<'a, Message> for Message {
     /// See [`Message::from_packet_pile`] for more details.
     ///
     ///   [`Message::from_packet_pile`]: #method.from_packet_pile
-    fn from_bytes(buf: &'a [u8]) -> Result<Self> {
-        Self::from_packet_pile(PacketPile::from_bytes(buf)?)
+    fn from_bytes<D: AsRef<[u8]> + ?Sized>(data: &'a D) -> Result<Self> {
+        Self::from_packet_pile(PacketPile::from_bytes(data)?)
+    }
+}
+
+impl std::str::FromStr for Message {
+    type Err = failure::Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Self::from_bytes(s.as_bytes())
     }
 }
 
@@ -372,7 +380,9 @@ impl Message {
                     // we treat the content as an opaque message.
 
                     path.push(0);
-                    if packet.children.is_none() && packet.body.is_some() {
+                    if packet.children().next().is_none()
+                        && packet.body().is_some()
+                    {
                         v.push_token(Token::OpaqueContent, &path);
                     }
                 }
@@ -434,17 +444,17 @@ impl ::std::ops::Deref for Message {
 mod tests {
     use super::*;
 
-    use constants::DataFormat::Text;
-    use HashAlgorithm;
-    use constants::CompressionAlgorithm;
-    use SymmetricAlgorithm;
-    use PublicKeyAlgorithm;
-    use SignatureType;
-    use crypto::s2k::S2K;
-    use crypto::mpis::{Ciphertext, MPI};
-    use packet::prelude::*;
-    use KeyID;
-    use Container;
+    use crate::constants::DataFormat::Text;
+    use crate::HashAlgorithm;
+    use crate::constants::CompressionAlgorithm;
+    use crate::SymmetricAlgorithm;
+    use crate::PublicKeyAlgorithm;
+    use crate::SignatureType;
+    use crate::crypto::s2k::S2K;
+    use crate::crypto::mpis::{Ciphertext, MPI};
+    use crate::packet::prelude::*;
+    use crate::KeyID;
+    use crate::Container;
 
     #[test]
     fn tokens() {
@@ -592,7 +602,7 @@ mod tests {
 
     #[test]
     fn tags() {
-        use packet::Tag::*;
+        use crate::packet::Tag::*;
 
         struct TestVector<'a> {
             s: &'a [(Tag, isize)],
@@ -797,12 +807,12 @@ mod tests {
         let mut lit = Literal::new(Text);
         lit.set_body(b"data".to_vec());
 
-        let hash = ::constants::HashAlgorithm::SHA512;
-        let key: Key =
-            ::packet::key::Key4::generate_ecc(true, ::constants::Curve::Ed25519)
+        let hash = crate::constants::HashAlgorithm::SHA512;
+        let key: key::SecretKey =
+            crate::packet::key::Key4::generate_ecc(true, crate::constants::Curve::Ed25519)
             .unwrap().into();
         let mut pair = key.clone().into_keypair().unwrap();
-        let sig = ::packet::signature::Builder::new(SignatureType::Binary)
+        let sig = crate::packet::signature::Builder::new(SignatureType::Binary)
             .sign_hash(&mut pair, hash, hash.context().unwrap()).unwrap();
 
         // 0: OnePassSig
@@ -909,12 +919,12 @@ mod tests {
         let mut lit = Literal::new(Text);
         lit.set_body(b"data".to_vec());
 
-        let hash = ::constants::HashAlgorithm::SHA512;
-        let key: Key =
-            ::packet::key::Key4::generate_ecc(true, ::constants::Curve::Ed25519)
+        let hash = crate::constants::HashAlgorithm::SHA512;
+        let key: key::SecretKey =
+            crate::packet::key::Key4::generate_ecc(true, crate::constants::Curve::Ed25519)
             .unwrap().into();
         let mut pair = key.clone().into_keypair().unwrap();
-        let sig = ::packet::signature::Builder::new(SignatureType::Binary)
+        let sig = crate::packet::signature::Builder::new(SignatureType::Binary)
             .sign_hash(&mut pair, hash, hash.context().unwrap()).unwrap();
 
         // 0: Signature
@@ -953,7 +963,7 @@ mod tests {
         // There are no simple constructors for SEIP packets: they are
         // interleaved with SK-ESK and PK-ESK packets.  And, the
         // session key needs to be managed.  Instead, we use some
-        // internal iterfaces to progressively build up more
+        // internal interfaces to progressively build up more
         // complicated messages.
 
         let mut lit = Literal::new(Text);
@@ -962,7 +972,7 @@ mod tests {
         // 0: SK-ESK
         // => bad.
         let mut packets : Vec<Packet> = Vec::new();
-        let sk = ::crypto::SessionKey::new(8);
+        let sk = crate::crypto::SessionKey::new(8);
         packets.push(SKESK4::with_password(
             SymmetricAlgorithm::AES256,
             S2K::Simple { hash: HashAlgorithm::SHA256 },
@@ -988,10 +998,10 @@ mod tests {
         //  1: MDC
         // => good.
         let mut seip = SEIP1::new();
-        seip.common.children = Some(Container::new());
-        seip.common.children.as_mut().unwrap().push(
+        seip.set_children(Some(Container::new()));
+        seip.children_mut().unwrap().push(
             lit.clone().into());
-        seip.common.children.as_mut().unwrap().push(
+        seip.children_mut().unwrap().push(
             MDC::from([0u8; 20]).into());
         packets[1] = seip.into();
 
@@ -1071,7 +1081,7 @@ mod tests {
         //  2: Literal
         // => bad.
         packets.remove(3);
-        packets[2].children.as_mut().unwrap().push(lit.clone().into());
+        packets[2].children_mut().unwrap().push(lit.clone().into());
 
         assert!(packets.iter().map(|p| p.tag()).collect::<Vec<Tag>>()
                 == [ Tag::SKESK, Tag::SKESK, Tag::SEIP ]);
@@ -1085,7 +1095,7 @@ mod tests {
         // 2: SEIP
         //  0: Literal
         // => good.
-        packets[2].children.as_mut().unwrap().packets.pop().unwrap();
+        packets[2].children_mut().unwrap().packets.pop().unwrap();
 
         #[allow(deprecated)]
         packets.insert(
@@ -1100,5 +1110,11 @@ mod tests {
 
         let message = Message::from_packets(packets.clone());
         assert!(message.is_ok(), "{:#?}", message);
+    }
+
+    #[test]
+    fn message_is_send_and_sync() {
+        fn f<T: Send + Sync>(_: T) {}
+        f(Message::from_packets(vec![]));
     }
 }

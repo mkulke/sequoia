@@ -1,26 +1,33 @@
 //! Elliptic Curve Diffie-Hellman.
 
-use Error;
-use packet::Key;
-use Result;
-use constants::{
+use crate::vec_truncate;
+use crate::Error;
+use crate::packet::{
+    Key,
+    key,
+};
+use crate::Result;
+use crate::constants::{
     Curve,
     HashAlgorithm,
     SymmetricAlgorithm,
     PublicKeyAlgorithm,
 };
-use conversions::{
+use crate::conversions::{
     write_be_u64,
     read_be_u64,
 };
-use crypto::SessionKey;
-use crypto::mem::Protected;
-use crypto::mpis::{MPI, PublicKey, SecretKey, Ciphertext};
+use crate::crypto::SessionKey;
+use crate::crypto::mem::Protected;
+use crate::crypto::mpis::{MPI, PublicKey, SecretKeyMaterial, Ciphertext};
 use nettle::{cipher, curve25519, mode, Mode, ecc, ecdh, Yarrow};
 
 /// Wraps a session key using Elliptic Curve Diffie-Hellman.
 #[allow(non_snake_case)]
-pub fn encrypt(recipient: &Key, session_key: &SessionKey) -> Result<Ciphertext>
+pub fn encrypt<R>(recipient: &Key<key::PublicParts, R>,
+                  session_key: &SessionKey)
+    -> Result<Ciphertext>
+    where R: key::KeyRole
 {
     let mut rng = Yarrow::default();
 
@@ -33,7 +40,7 @@ pub fn encrypt(recipient: &Key, session_key: &SessionKey) -> Result<Ciphertext>
                 let R = q.decode_point(curve)?.0;
 
                 // Generate an ephemeral key pair {v, V=vG}
-                let mut v: Protected =
+                let v: Protected =
                     curve25519::private_key(&mut rng).into();
 
                 // Compute the public key.  We need to add an encoding
@@ -130,9 +137,11 @@ pub fn encrypt(recipient: &Key, session_key: &SessionKey) -> Result<Ciphertext>
 /// `VB` is the ephemeral public key (with 0x40 prefix), `S` is the
 /// shared Diffie-Hellman secret.
 #[allow(non_snake_case)]
-pub fn encrypt_shared(recipient: &Key, session_key: &SessionKey, VB: MPI,
-                      S: &Protected)
-                      -> Result<Ciphertext>
+pub fn encrypt_shared<R>(recipient: &Key<key::PublicParts, R>,
+                         session_key: &SessionKey, VB: MPI,
+                         S: &Protected)
+    -> Result<Ciphertext>
+    where R: key::KeyRole
 {
     match recipient.mpis() {
         &PublicKey::ECDH{ ref curve, ref hash, ref sym,.. } => {
@@ -169,14 +178,15 @@ pub fn encrypt_shared(recipient: &Key, session_key: &SessionKey, VB: MPI,
 
 /// Unwraps a session key using Elliptic Curve Diffie-Hellman.
 #[allow(non_snake_case)]
-pub fn decrypt(recipient: &Key, recipient_sec: &SecretKey,
-               ciphertext: &Ciphertext)
-               -> Result<SessionKey> {
-    use memsec;
-
+pub fn decrypt<R>(recipient: &Key<key::PublicParts, R>,
+                  recipient_sec: &SecretKeyMaterial,
+                  ciphertext: &Ciphertext)
+    -> Result<SessionKey>
+    where R: key::KeyRole
+{
     match (recipient.mpis(), recipient_sec, ciphertext) {
         (PublicKey::ECDH { ref curve, ..},
-         SecretKey::ECDH { ref scalar, },
+         SecretKeyMaterial::ECDH { ref scalar, },
          Ciphertext::ECDH { ref e, .. }) =>
         {
             let S: Protected = match curve {
@@ -187,8 +197,8 @@ pub fn decrypt(recipient: &Key, recipient_sec: &SecretKey,
                     // Nettle expects the private key to be exactly
                     // CURVE25519_SIZE bytes long but OpenPGP allows leading
                     // zeros to be stripped.
-                    // Padding has to be unconditionaly, otherwise we have a
-                    // secret-dependant branch.
+                    // Padding has to be unconditional; otherwise we have a
+                    // secret-dependent branch.
                     //
                     // Reverse the scalar.  See
                     // https://lists.gnupg.org/pipermail/gnupg-devel/2018-February/033437.html.
@@ -282,8 +292,11 @@ pub fn decrypt(recipient: &Key, recipient_sec: &SecretKey,
 /// `recipient` is the message receiver's public key, `S` is the
 /// shared Diffie-Hellman secret used to encrypt `ciphertext`.
 #[allow(non_snake_case)]
-pub fn decrypt_shared(recipient: &Key, S: &Protected, ciphertext: &Ciphertext)
-                      -> Result<SessionKey>
+pub fn decrypt_shared<R>(recipient: &Key<key::PublicParts, R>,
+                         S: &Protected,
+                         ciphertext: &Ciphertext)
+    -> Result<SessionKey>
+    where R: key::KeyRole
 {
     match (recipient.mpis(), ciphertext) {
         (PublicKey::ECDH { ref curve, ref hash, ref sym, ..},
@@ -297,7 +310,7 @@ pub fn decrypt_shared(recipient: &Key, S: &Protected, ciphertext: &Ciphertext)
             let Z = kdf(&S, sym.key_size()?, *hash, &param)?;
 
             // Compute m = AESKeyUnwrap( Z, C ) as per [RFC3394]
-            let mut m = aes_key_unwrap(*sym, &Z, key)?;
+            let m = aes_key_unwrap(*sym, &Z, key)?;
             let cipher = SymmetricAlgorithm::from(m[0]);
             let m = pkcs5_unpad(m, 1 + cipher.key_size()? + 2)?;
 
@@ -310,8 +323,13 @@ pub fn decrypt_shared(recipient: &Key, S: &Protected, ciphertext: &Ciphertext)
     }
 }
 
-fn make_param(recipient: &Key, curve: &Curve, hash: &HashAlgorithm,
-              sym: &SymmetricAlgorithm) -> Vec<u8> {
+fn make_param<P, R>(recipient: &Key<P, R>,
+              curve: &Curve, hash: &HashAlgorithm,
+              sym: &SymmetricAlgorithm)
+    -> Vec<u8>
+    where P: key::KeyParts,
+          R: key::KeyRole
+{
     // Param = curve_OID_len || curve_OID ||
     // public_key_alg_ID || 03 || 01 || KDF_hash_ID ||
     // KEK_alg_ID for AESKeyWrap || "Anonymous Sender    " ||
@@ -409,7 +427,7 @@ pub fn pkcs5_unpad(sk: Protected, target_len: usize) -> Result<Protected> {
     }
 
     if good {
-        buf.truncate(target_len);
+        vec_truncate(&mut buf, target_len);
         Ok(buf.into())
     } else {
         let sk: Protected = buf.into();
@@ -426,7 +444,7 @@ pub fn pkcs5_unpad(sk: Protected, target_len: usize) -> Result<Protected> {
 pub fn aes_key_wrap(algo: SymmetricAlgorithm, key: &Protected,
                     plaintext: &Protected)
                     -> Result<Vec<u8>> {
-    use SymmetricAlgorithm::*;
+    use crate::SymmetricAlgorithm::*;
 
     if plaintext.len() % 8 != 0 {
         return Err(Error::InvalidArgument(
@@ -441,7 +459,7 @@ pub fn aes_key_wrap(algo: SymmetricAlgorithm, key: &Protected,
     // nettle::Mode:ECB, and we need nettle::Mode for polymorphism (we
     // cannot have Box<nettle::Cipher>).  To work around this, we use
     // CBC, and always use an all-zero IV.
-    let mut cipher: Box<Mode> = match algo {
+    let mut cipher: Box<dyn Mode> = match algo {
         AES128 => Box::new(
             mode::Cbc::<cipher::Aes128>::with_encrypt_key(key)?),
         AES192 => Box::new(
@@ -512,7 +530,7 @@ pub fn aes_key_wrap(algo: SymmetricAlgorithm, key: &Protected,
 pub fn aes_key_unwrap(algo: SymmetricAlgorithm, key: &Protected,
                       ciphertext: &[u8])
                       -> Result<Protected> {
-    use SymmetricAlgorithm::*;
+    use crate::SymmetricAlgorithm::*;
 
     if ciphertext.len() % 8 != 0 {
         return Err(Error::InvalidArgument(
@@ -527,7 +545,7 @@ pub fn aes_key_unwrap(algo: SymmetricAlgorithm, key: &Protected,
     // nettle::Mode:ECB, and we need nettle::Mode for polymorphism (we
     // cannot have Box<nettle::Cipher>).  To work around this, we use
     // CBC, and always use an all-zero IV.
-    let mut cipher: Box<Mode> = match algo {
+    let mut cipher: Box<dyn Mode> = match algo {
         AES128 => Box::new(
             mode::Cbc::<cipher::Aes128>::with_decrypt_key(key)?),
         AES192 => Box::new(

@@ -1,10 +1,9 @@
-use flate2::Compression as FlateCompression;
 use flate2::write::{DeflateEncoder, ZlibEncoder};
 use std::fmt;
 use std::io;
 
-use Result;
-use super::{Generic, Stack, BoxStack, Stackable};
+use crate::Result;
+use super::{Generic, Stack, BoxStack, Stackable, CompressionLevel};
 
 /// ZIPing writer.
 pub struct ZIP<'a, C: 'a> {
@@ -13,10 +12,13 @@ pub struct ZIP<'a, C: 'a> {
 
 impl<'a, C: 'a> ZIP<'a, C> {
     /// Makes a ZIP compressing writer.
-    pub fn new(inner: Stack<'a, C>, cookie: C) -> Stack<'a, C> {
+    pub fn new<L>(inner: Stack<'a, C>, cookie: C, level: L) -> Stack<'a, C>
+        where L: Into<Option<CompressionLevel>>
+    {
         Stack::from(Box::new(ZIP {
             inner: Generic::new_unboxed(
-                DeflateEncoder::new(inner.into(), FlateCompression::default()),
+                DeflateEncoder::new(inner.into(),
+                                    level.into().unwrap_or_default().into()),
                 cookie),
         }))
     }
@@ -51,11 +53,11 @@ impl<'a, C: 'a> Stackable<'a, C> for ZIP<'a, C> {
     fn mount(&mut self, _new: BoxStack<'a, C>) {
         unreachable!("Only implemented by Signer")
     }
-    fn inner_mut(&mut self) -> Option<&mut Stackable<'a, C>> {
-        self.inner.inner_mut()
+    fn inner_mut(&mut self) -> Option<&mut dyn Stackable<'a, C>> {
+        Some(self.inner.inner.get_mut())
     }
-    fn inner_ref(&self) -> Option<&Stackable<'a, C>> {
-        self.inner.inner_ref()
+    fn inner_ref(&self) -> Option<&dyn Stackable<'a, C>> {
+        Some(self.inner.inner.get_ref())
     }
     fn cookie_set(&mut self, cookie: C) -> C {
         self.inner.cookie_set(cookie)
@@ -66,6 +68,9 @@ impl<'a, C: 'a> Stackable<'a, C> for ZIP<'a, C> {
     fn cookie_mut(&mut self) -> &mut C {
         self.inner.cookie_mut()
     }
+    fn position(&self) -> u64 {
+        self.inner.position
+    }
 }
 
 /// ZLIBing writer.
@@ -75,10 +80,13 @@ pub struct ZLIB<'a, C: 'a> {
 
 impl<'a, C: 'a> ZLIB<'a, C> {
     /// Makes a ZLIB compressing writer.
-    pub fn new(inner: Stack<'a, C>, cookie: C) -> Stack<'a, C> {
+    pub fn new<L>(inner: Stack<'a, C>, cookie: C, level: L) -> Stack<'a, C>
+        where L: Into<Option<CompressionLevel>>
+    {
         Stack::from(Box::new(ZLIB {
             inner: Generic::new_unboxed(
-                ZlibEncoder::new(inner.into(), FlateCompression::default()),
+                ZlibEncoder::new(inner.into(),
+                                 level.into().unwrap_or_default().into()),
                 cookie),
         }))
     }
@@ -113,11 +121,11 @@ impl<'a, C: 'a> Stackable<'a, C> for ZLIB<'a, C> {
     fn mount(&mut self, _new: BoxStack<'a, C>) {
         unreachable!("Only implemented by Signer")
     }
-    fn inner_mut(&mut self) -> Option<&mut Stackable<'a, C>> {
-        self.inner.inner_mut()
+    fn inner_mut(&mut self) -> Option<&mut dyn Stackable<'a, C>> {
+        Some(self.inner.inner.get_mut())
     }
-    fn inner_ref(&self) -> Option<&Stackable<'a, C>> {
-        self.inner.inner_ref()
+    fn inner_ref(&self) -> Option<&dyn Stackable<'a, C>> {
+        Some(self.inner.inner.get_ref())
     }
     fn cookie_set(&mut self, cookie: C) -> C {
         self.inner.cookie_set(cookie)
@@ -127,5 +135,8 @@ impl<'a, C: 'a> Stackable<'a, C> for ZLIB<'a, C> {
     }
     fn cookie_mut(&mut self) -> &mut C {
         self.inner.cookie_mut()
+    }
+    fn position(&self) -> u64 {
+        self.inner.position
     }
 }

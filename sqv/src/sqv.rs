@@ -6,7 +6,6 @@
 extern crate clap;
 extern crate failure;
 use failure::ResultExt;
-extern crate time;
 
 extern crate sequoia_openpgp as openpgp;
 
@@ -14,11 +13,11 @@ use std::process::exit;
 use std::fs::File;
 use std::collections::{HashMap, HashSet};
 
-use openpgp::{TPK, Packet, packet::Signature, KeyID, RevocationStatus};
-use openpgp::constants::HashAlgorithm;
-use openpgp::crypto::hash::Hash;
-use openpgp::parse::{Parse, PacketParserResult, PacketParser};
-use openpgp::tpk::TPKParser;
+use crate::openpgp::{TPK, Packet, packet::Signature, KeyID, RevocationStatus};
+use crate::openpgp::constants::HashAlgorithm;
+use crate::openpgp::crypto::hash::Hash;
+use crate::openpgp::parse::{Parse, PacketParserResult, PacketParser};
+use crate::openpgp::tpk::TPKParser;
 
 mod sqv_cli;
 
@@ -47,18 +46,25 @@ fn real_main() -> Result<(), failure::Error> {
         exit(2);
     }
 
-    let not_before = if let Some(t) = matches.value_of("not-before") {
-        Some(time::strptime(t, "%Y-%m-%d")
-             .context(format!("Bad value passed to --not-before: {:?}", t))?)
-    } else {
-        None
-    };
-    let not_after = if let Some(t) = matches.value_of("not-after") {
-        Some(time::strptime(t, "%Y-%m-%d")
-             .context(format!("Bad value passed to --not-after: {:?}", t))?)
-    } else {
-        None
-    }.unwrap_or_else(|| time::now_utc());
+    use chrono::{DateTime, offset::Utc, NaiveDate};
+    let not_before: Option<std::time::SystemTime> =
+        if let Some(t) = matches.value_of("not-before") {
+            Some(NaiveDate::parse_from_str(t, "%Y-%m-%d")
+                 .map(|n| DateTime::<Utc>::from_utc(n.and_hms(0, 0, 0), Utc))
+                 .context(format!("Bad value passed to --not-before: {:?}", t))?
+                 .into())
+        } else {
+            None
+        };
+    let not_after: std::time::SystemTime =
+        if let Some(t) = matches.value_of("not-after") {
+            Some(NaiveDate::parse_from_str(t, "%Y-%m-%d")
+                 .map(|n| DateTime::<Utc>::from_utc(n.and_hms(23, 59, 59), Utc))
+                 .context(format!("Bad value passed to --not-after: {:?}", t))?
+                 .into())
+        } else {
+            None
+        }.unwrap_or_else(|| std::time::SystemTime::now());
 
     // First, we collect the signatures and the alleged issuers.
     // Then, we scan the keyrings exactly once to find the associated
@@ -262,7 +268,7 @@ fn real_main() -> Result<(), failure::Error> {
                                 let binding = tpk
                                     .subkeys()
                                     .find(|s| {
-                                        s.subkey().fingerprint() == key.fingerprint()
+                                        s.key().fingerprint() == key.fingerprint()
                                     });
                                 if let Some(binding) = binding {
                                     if binding.revoked(t) != RevocationStatus::NotAsFarAsWeKnow {
@@ -273,7 +279,7 @@ fn real_main() -> Result<(), failure::Error> {
                                     }
                                 }
 
-                                if tpk.revocation_status_at(t)
+                                if tpk.revoked(t)
                                     != RevocationStatus::NotAsFarAsWeKnow
                                 {
                                     eprintln!(

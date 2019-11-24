@@ -6,11 +6,11 @@
 //!
 //!   [Section 3.7 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-3.7
 
-use Error;
-use Result;
-use HashAlgorithm;
-use crypto::Password;
-use crypto::SessionKey;
+use crate::Error;
+use crate::Result;
+use crate::HashAlgorithm;
+use crate::crypto::Password;
+use crate::crypto::SessionKey;
 
 use std::fmt;
 
@@ -56,7 +56,7 @@ pub enum S2K {
 impl Default for S2K {
     fn default() -> Self {
         let mut salt = [0u8; 8];
-        ::crypto::random(&mut salt);
+        crate::crypto::random(&mut salt);
         S2K::Iterated {
             // SHA2-256, being optimized for implementations on
             // architectures with a word size of 32 bit, has a more
@@ -74,7 +74,7 @@ impl Default for S2K {
 }
 
 impl S2K {
-    /// Convert the string to a key using the S2K's paramters.
+    /// Convert the string to a key using the S2K's parameters.
     pub fn derive_key(&self, string: &Password, key_size: usize)
     -> Result<SessionKey> {
         match self {
@@ -159,9 +159,9 @@ impl S2K {
         use std::usize;
 
         match hash_bytes {
-            0...1024 => 1024,
-            1025...2048 => hash_bytes as u32,
-            0x3e00001...usize::MAX => 0x3e00000,
+            0..=1024 => 1024,
+            1025..=2048 => hash_bytes as u32,
+            0x3e00001..=usize::MAX => 0x3e00000,
             hash_bytes => {
                 let hash_bytes = hash_bytes as u32;
                 let msb = 32 - hash_bytes.leading_zeros();
@@ -206,12 +206,12 @@ impl S2K {
 
         let msb = 32 - hash_bytes.leading_zeros();
         let (mantissa_mask, tail_mask) = match msb {
-            0...10 => {
+            0..=10 => {
                 return Err(Error::InvalidArgument(
                     format!("S2K: cannot encode iteration count of {}",
                             hash_bytes)).into());
             }
-            11...32 => {
+            11..=32 => {
                 let m = 0b1111_000000 << (msb - 11);
                 let t = 1 << (msb - 11);
 
@@ -286,15 +286,15 @@ impl Arbitrary for S2K {
 mod tests {
     use super::*;
 
-    use conversions::to_hex;
-    use SymmetricAlgorithm;
-    use Packet;
-    use parse::{Parse, PacketParser};
-    use serialize::Serialize;
+    use crate::conversions::to_hex;
+    use crate::SymmetricAlgorithm;
+    use crate::Packet;
+    use crate::parse::{Parse, PacketParser};
+    use crate::serialize::Serialize;
 
     #[test]
     fn s2k_parser_test() {
-        use packet::SKESK;
+        use crate::packet::SKESK;
 
         struct Test<'a> {
             filename: &'a str,
@@ -396,8 +396,8 @@ mod tests {
         ];
 
         for test in tests.iter() {
-            let path = ::tests::message(&format!("s2k/{}", test.filename));
-            let mut pp = PacketParser::from_bytes(path).unwrap().unwrap();
+            let path = crate::tests::message(&format!("s2k/{}", test.filename));
+            let pp = PacketParser::from_bytes(path).unwrap().unwrap();
             if let Packet::SKESK(SKESK::V4(ref skesk)) = pp.packet {
                 assert_eq!(skesk.symmetric_algo(), test.cipher_algo);
                 assert_eq!(skesk.s2k(), &test.s2k);
@@ -423,7 +423,7 @@ mod tests {
 
     quickcheck! {
         fn s2k_roundtrip(s2k: S2K) -> bool {
-            use serialize::SerializeInto;
+            use crate::serialize::SerializeInto;
 
             eprintln!("in {:?}", s2k);
             use std::io::Cursor;

@@ -3,25 +3,31 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, Write};
-use time;
 use rpassword;
 
 extern crate sequoia_openpgp as openpgp;
 use sequoia_core::Context;
-use openpgp::constants::DataFormat;
-use openpgp::crypto;
-use openpgp::{TPK, KeyID, Result};
-use openpgp::packet::key::SecretKey;
-use openpgp::parse::{
+use crate::openpgp::constants::{
+    CompressionAlgorithm,
+};
+use crate::openpgp::crypto;
+use crate::openpgp::{TPK, KeyID, Result};
+use crate::openpgp::packet::prelude::*;
+use crate::openpgp::parse::{
     Parse,
     PacketParserResult,
 };
-use openpgp::parse::stream::{
+use crate::openpgp::parse::stream::{
     Verifier, DetachedVerifier, VerificationResult, VerificationHelper,
     MessageStructure, MessageLayer,
 };
-use openpgp::serialize::stream::{
-    Message, Signer, LiteralWriter, Encryptor, EncryptionMode,
+use crate::openpgp::serialize::stream::{
+    Message, Signer, LiteralWriter, Encryptor, Recipient,
+    Compressor,
+};
+use crate::openpgp::serialize::padding::{
+    Padder,
+    padme,
 };
 extern crate sequoia_store as store;
 
@@ -29,36 +35,34 @@ mod decrypt;
 pub use self::decrypt::decrypt;
 mod sign;
 pub use self::sign::sign;
-mod dump;
+pub mod dump;
+use dump::Convert;
 pub use self::dump::dump;
 mod inspect;
 pub use self::inspect::inspect;
 pub mod key;
 
-const TIMEFMT: &'static str = "%Y-%m-%dT%H:%M";
-
-fn tm2str(t: &time::Tm) -> String {
-    time::strftime(TIMEFMT, t).expect("TIMEFMT is correct")
-}
-
 /// Returns suitable signing keys from a given list of TPKs.
-fn get_signing_keys(tpks: &[openpgp::TPK]) -> Result<Vec<crypto::KeyPair>> {
+fn get_signing_keys(tpks: &[openpgp::TPK])
+    -> Result<Vec<crypto::KeyPair<
+           openpgp::packet::key::UnspecifiedRole>>>
+{
     let mut keys = Vec::new();
     'next_tpk: for tsk in tpks {
         for key in tsk.keys_valid()
             .signing_capable()
             .map(|k| k.2)
         {
-            if let Some(mut secret) = key.secret() {
+            if let Some(secret) = key.secret() {
                 let unencrypted = match secret {
-                    SecretKey::Encrypted(ref e) => {
+                    SecretKeyMaterial::Encrypted(ref e) => {
                         let password = rpassword::read_password_from_tty(Some(
                             &format!("Please enter password to decrypt {}/{}: ",
                                      tsk, key))).unwrap();
                         e.decrypt(key.pk_algo(), &password.into())
                             .expect("decryption failed")
                     },
-                    SecretKey::Unencrypted(ref u) => u.clone(),
+                    SecretKeyMaterial::Unencrypted(ref u) => u.clone(),
                 };
 
                 keys.push(crypto::KeyPair::new(key.clone(), unencrypted)
@@ -74,15 +78,17 @@ fn get_signing_keys(tpks: &[openpgp::TPK]) -> Result<Vec<crypto::KeyPair>> {
     Ok(keys)
 }
 
-pub fn encrypt(store: &mut store::Store,
-               input: &mut io::Read, output: &mut io::Write,
+pub fn encrypt(mapping: &mut store::Mapping,
+               input: &mut dyn io::Read, output: &mut dyn io::Write,
                npasswords: usize, recipients: Vec<&str>,
-               mut tpks: Vec<openpgp::TPK>, signers: Vec<openpgp::TPK>)
+               mut tpks: Vec<openpgp::TPK>, signers: Vec<openpgp::TPK>,
+               mode: openpgp::constants::KeyFlags,
+               compression: &str)
                -> Result<()> {
     for r in recipients {
-        tpks.push(store.lookup(r).context("No such key found")?.tpk()?);
+        tpks.push(mapping.lookup(r).context("No such key found")?.tpk()?);
     }
-    let mut passwords = Vec::with_capacity(npasswords);
+    let mut passwords: Vec<crypto::Password> = Vec::with_capacity(npasswords);
     for n in 0..npasswords {
         let nprompt = format!("Enter password {}: ", n + 1);
         passwords.push(rpassword::read_password_from_tty(Some(
@@ -93,36 +99,74 @@ pub fn encrypt(store: &mut store::Store,
             }))?.into());
     }
 
+    if tpks.len() + passwords.len() == 0 {
+        return Err(failure::format_err!(
+            "Neither recipient nor password given"));
+    }
+
     let mut signers = get_signing_keys(&signers)?;
 
-    // Build a vector of references to hand to Encryptor.
+    // Build a vector of references to hand to Signer.
     let recipients: Vec<&openpgp::TPK> = tpks.iter().collect();
-    let passwords_: Vec<&openpgp::crypto::Password> =
-        passwords.iter().collect();
+
+    // Build a vector of recipients to hand to Encryptor.
+    let mut recipient_subkeys: Vec<Recipient> = Vec::new();
+    for tpk in tpks.iter() {
+        let mut count = 0;
+        for (_, _, key) in tpk.keys_valid().key_flags(mode.clone()) {
+            recipient_subkeys.push(key.into());
+            count += 1;
+        }
+        if count == 0 {
+            return Err(failure::format_err!(
+                "Key {} has no suitable encryption key", tpk));
+        }
+    }
 
     // Stream an OpenPGP message.
     let message = Message::new(output);
 
     // We want to encrypt a literal data packet.
-    let mut sink = Encryptor::new(message,
-                                  &passwords_,
-                                  &recipients,
-                                  EncryptionMode::AtRest,
-                                  None)
+    let mut encryptor = if let Some(p) = passwords.pop() {
+        Encryptor::with_password(message, p)
+    } else {
+        Encryptor::for_recipient(message, recipient_subkeys.pop().unwrap())
+    };
+    for p in passwords {
+        encryptor = encryptor.add_password(p);
+    }
+    for r in recipient_subkeys {
+        encryptor = encryptor.add_recipient(r);
+    }
+
+    let mut sink = encryptor.build()
         .context("Failed to create encryptor")?;
+
+    match compression {
+        "none" => (),
+        "pad" => sink = Padder::new(sink, padme)?,
+        "zip" => sink =
+            Compressor::new(sink).algo(CompressionAlgorithm::Zip).build()?,
+        "zlib" => sink =
+            Compressor::new(sink).algo(CompressionAlgorithm::Zlib).build()?,
+        "bzip2" => sink =
+            Compressor::new(sink).algo(CompressionAlgorithm::BZip2).build()?,
+        _ => unreachable!("all possible choices are handled")
+    }
 
     // Optionally sign message.
     if ! signers.is_empty() {
-        sink = Signer::with_intended_recipients(
-            sink,
-            signers.iter_mut().map(|s| -> &mut dyn crypto::Signer { s })
-                .collect(),
-            &recipients,
-            None)?;
+        let mut signer = Signer::new(sink, signers.pop().unwrap());
+        for s in signers {
+            signer = signer.add_signer(s);
+        }
+        for r in recipients {
+            signer = signer.add_intended_recipient(r);
+        }
+        sink = signer.build()?;
     }
 
-    let mut literal_writer = LiteralWriter::new(sink, DataFormat::Binary,
-                                                None, None)
+    let mut literal_writer = LiteralWriter::new(sink).build()
         .context("Failed to create literal writer")?;
 
     // Finally, copy stdin to our writer stack to encrypt the data.
@@ -137,7 +181,7 @@ pub fn encrypt(store: &mut store::Store,
 
 struct VHelper<'a> {
     ctx: &'a Context,
-    store: &'a mut store::Store,
+    mapping: &'a mut store::Mapping,
     signatures: usize,
     tpks: Option<Vec<TPK>>,
     labels: HashMap<KeyID, String>,
@@ -150,12 +194,12 @@ struct VHelper<'a> {
 }
 
 impl<'a> VHelper<'a> {
-    fn new(ctx: &'a Context, store: &'a mut store::Store, signatures: usize,
+    fn new(ctx: &'a Context, mapping: &'a mut store::Mapping, signatures: usize,
            tpks: Vec<TPK>)
            -> Self {
         VHelper {
             ctx: ctx,
-            store: store,
+            mapping: mapping,
             signatures: signatures,
             tpks: Some(tpks),
             labels: HashMap::new(),
@@ -195,6 +239,7 @@ impl<'a> VHelper<'a> {
         for result in results {
             let (issuer, level) = match result {
                 GoodChecksum(ref sig, ..) => (sig.get_issuer(), sig.level()),
+                NotAlive(ref sig) => (sig.get_issuer(), sig.level()),
                 MissingKey(ref sig) => (sig.get_issuer(), sig.level()),
                 BadChecksum(ref sig) => (sig.get_issuer(), sig.level()),
             };
@@ -222,6 +267,23 @@ impl<'a> VHelper<'a> {
                         self.good_signatures += 1;
                     } else {
                         self.good_checksums += 1;
+                    }
+                },
+                NotAlive(_) => {
+                    if let Some(issuer) = issuer {
+                        let issuer_str = format!("{}", issuer);
+                        eprintln!("Good, but not alive {} from {}", what,
+                                  self.labels.get(&issuer).unwrap_or(
+                                      &issuer_str));
+                    } else {
+                        eprintln!("Good, but not alive signature from {} \
+                                   without issuer information",
+                                  what);
+                    }
+                    if trusted {
+                        self.bad_signatures += 1;
+                    } else {
+                        self.bad_checksums += 1;
                     }
                 },
                 MissingKey(_) => {
@@ -264,14 +326,14 @@ impl<'a> VerificationHelper for VHelper<'a> {
         // Explicitly provided keys are trusted.
         self.trusted = seen.clone();
 
-        // Try to get missing TPKs from the store.
+        // Try to get missing TPKs from the mapping.
         for id in ids.iter().filter(|i| !seen.contains(i)) {
             let _ =
-                self.store.lookup_by_subkeyid(id)
+                self.mapping.lookup_by_subkeyid(id)
                 .and_then(|binding| {
                     self.labels.insert(id.clone(), binding.label()?);
 
-                    // Keys from our store are trusted.
+                    // Keys from our mapping are trusted.
                     self.trusted.insert(id.clone());
 
                     binding.tpk()
@@ -288,7 +350,7 @@ impl<'a> VerificationHelper for VHelper<'a> {
         // Try to get missing TPKs from the pool.
         for id in ids.iter().filter(|i| !seen.contains(i)) {
             let _ =
-                store::Pool::lookup_by_subkeyid(self.ctx, id)
+                store::Store::lookup_by_subkeyid(self.ctx, id)
                 .and_then(|key| {
                     // Keys from the pool are NOT trusted.
                     key.tpk()
@@ -328,13 +390,13 @@ impl<'a> VerificationHelper for VHelper<'a> {
     }
 }
 
-pub fn verify(ctx: &Context, store: &mut store::Store,
-              input: &mut io::Read,
-              detached: Option<&mut io::Read>,
-              output: &mut io::Write,
+pub fn verify(ctx: &Context, mapping: &mut store::Mapping,
+              input: &mut dyn io::Read,
+              detached: Option<&mut dyn io::Read>,
+              output: &mut dyn io::Write,
               signatures: usize, tpks: Vec<TPK>)
               -> Result<()> {
-    let helper = VHelper::new(ctx, store, signatures, tpks);
+    let helper = VHelper::new(ctx, mapping, signatures, tpks);
     let mut verifier = if let Some(dsig) = detached {
         DetachedVerifier::from_reader(dsig, input, helper, None)?
     } else {
@@ -354,7 +416,7 @@ pub fn verify(ctx: &Context, store: &mut store::Store,
     Ok(())
 }
 
-pub fn split(input: &mut io::Read, prefix: &str)
+pub fn split(input: &mut dyn io::Read, prefix: &str)
              -> Result<()> {
     // We (ab)use the mapping feature to create byte-accurate dumps of
     // nested packets.
@@ -377,7 +439,7 @@ pub fn split(input: &mut io::Read, prefix: &str)
 
             // Write all the bytes.
             for field in map.iter() {
-                sink.write_all(field.data)?;
+                sink.write_all(field.data())?;
             }
         }
 
@@ -399,24 +461,59 @@ pub fn split(input: &mut io::Read, prefix: &str)
     Ok(())
 }
 
-pub fn store_print_stats(store: &store::Store, label: &str) -> Result<()> {
+/// Joins the given files.
+pub fn join(inputs: Option<clap::Values>, output: &mut dyn io::Write)
+            -> Result<()> {
+    /// Writes a bit-accurate copy of all top-level packets in PPR to
+    /// OUTPUT.
+    fn copy(mut ppr: PacketParserResult, output: &mut dyn io::Write)
+            -> Result<()> {
+        while let PacketParserResult::Some(pp) = ppr {
+            // We (ab)use the mapping feature to create byte-accurate
+            // copies.
+            for field in pp.map().expect("must be mapped").iter() {
+                output.write_all(field.data())?;
+            }
+
+            ppr = pp.next()?.1;
+        }
+        Ok(())
+    }
+
+    if let Some(inputs) = inputs {
+        for name in inputs {
+            let ppr =
+                openpgp::parse::PacketParserBuilder::from_file(name)?
+                .map(true).finalize()?;
+            copy(ppr, output)?;
+        }
+    } else {
+        let ppr =
+            openpgp::parse::PacketParserBuilder::from_reader(io::stdin())?
+            .map(true).finalize()?;
+        copy(ppr, output)?;
+    }
+    Ok(())
+}
+
+pub fn mapping_print_stats(mapping: &store::Mapping, label: &str) -> Result<()> {
     fn print_stamps(st: &store::Stamps) -> Result<()> {
         println!("{} messages using this key", st.count);
         if let Some(t) = st.first {
-            println!("    First: {}", tm2str(&time::at(t)));
+            println!("    First: {}", t.convert());
         }
         if let Some(t) = st.last {
-            println!("    Last: {}", tm2str(&time::at(t)));
+            println!("    Last: {}", t.convert());
         }
         Ok(())
     }
 
     fn print_stats(st: &store::Stats) -> Result<()> {
         if let Some(t) = st.created {
-            println!("  Created: {}", tm2str(&time::at(t)));
+            println!("  Created: {}", t.convert());
         }
         if let Some(t) = st.updated {
-            println!("  Updated: {}", tm2str(&time::at(t)));
+            println!("  Updated: {}", t.convert());
         }
         print!("  Encrypted ");
         print_stamps(&st.encryption)?;
@@ -425,7 +522,7 @@ pub fn store_print_stats(store: &store::Store, label: &str) -> Result<()> {
         Ok(())
     }
 
-    let binding = store.lookup(label)?;
+    let binding = mapping.lookup(label)?;
     println!("Binding {:?}", label);
     print_stats(&binding.stats().context("Failed to get stats")?)?;
     let key = binding.key().context("Failed to get key")?;

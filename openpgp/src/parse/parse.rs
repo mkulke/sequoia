@@ -2,31 +2,33 @@ use std;
 use std::io;
 use std::io::prelude::*;
 use std::cmp;
-use std::collections::HashMap;
 use std::str;
 use std::mem;
 use std::fmt;
 use std::path::Path;
-use time;
+use std::time;
 use failure;
 
 use ::buffered_reader::*;
 
-use {
+use crate::{
     crypto::{aead, hash::Hash},
     Result,
-    CTB,
-    BodyLength,
+    packet::header::{
+        CTB,
+        BodyLength,
+        ctb::PacketLengthType,
+    },
     crypto::s2k::S2K,
     Error,
-    Header,
+    packet::Header,
     packet::signature::Signature4,
     packet::prelude::*,
     Packet,
     KeyID,
     crypto::SessionKey,
 };
-use constants::{
+use crate::constants::{
     AEADAlgorithm,
     CompressionAlgorithm,
     SignatureType,
@@ -34,16 +36,16 @@ use constants::{
     PublicKeyAlgorithm,
     SymmetricAlgorithm,
 };
-use conversions::Time;
-use crypto::{self, mpis::{PublicKey, MPI}};
-use crypto::symmetric::{Decryptor, BufferedReaderDecryptor};
-use message;
-use message::MessageValidator;
+use crate::conversions::Time;
+use crate::crypto::{self, mpis::{PublicKey, MPI}};
+use crate::crypto::symmetric::{Decryptor, BufferedReaderDecryptor};
+use crate::message;
+use crate::message::MessageValidator;
 
 mod partial_body;
 use self::partial_body::BufferedReaderPartialBodyFilter;
 
-use packet::signature::subpacket::SubpacketArea;
+use crate::packet::signature::subpacket::SubpacketArea;
 
 mod packet_pile_parser;
 pub use self::packet_pile_parser::PacketPileParser;
@@ -87,8 +89,7 @@ pub trait Parse<'a, T> {
     /// implementations can provide their own specialized version.
     ///
     /// [`from_reader(..)`]: #tymethod.from_reader
-    fn from_bytes(data: &'a [u8]) -> Result<T>
-    {
+    fn from_bytes<D: AsRef<[u8]> + ?Sized>(data: &'a D) -> Result<T> {
         Self::from_reader(io::Cursor::new(data))
     }
 }
@@ -127,6 +128,19 @@ macro_rules! impl_parse_generic_packet {
 ///
 /// So, this should be more than enough.
 const MAX_RECURSION_DEPTH : u8 = 16;
+
+/// The default maximum size of non-container packets.
+///
+/// Packets that exceed this limit will be returned as
+/// `Packet::Unknown`, with the error set to `Error::PacketTooLarge`.
+///
+/// This limit applies to any packet type that is *not* a container
+/// packet, i.e. any packet that is not a literal data packet, a
+/// compressed data packet, a symmetrically encrypted data packet, or
+/// an AEAD encrypted data packet.
+///
+/// The default is 1 MiB.
+const MAX_PACKET_SIZE: u32 = 1 << 20; // 1 MiB
 
 // Used to parse an OpenPGP packet's header (note: in this case, the
 // header means a Packet's fixed data, not the OpenPGP framing
@@ -212,7 +226,7 @@ impl<'a> PacketHeaderParser<'a> {
     // Returns a `PacketHeaderParser` to parse an OpenPGP packet.
     // `inner` points to the start of the OpenPGP framing information,
     // i.e., the CTB.
-    fn new(inner: Box<'a + BufferedReader<Cookie>>,
+    fn new(inner: Box<dyn BufferedReader<Cookie> + 'a>,
            state: PacketParserState,
            path: Vec<usize>, header: Header,
            header_bytes: Vec<u8>) -> Self
@@ -241,14 +255,12 @@ impl<'a> PacketHeaderParser<'a> {
     // framing has already been processed, and `inner` already
     // includes any required filters (e.g., a
     // `BufferedReaderPartialBodyFilter`, etc.).
-    fn new_naked(inner: Box<'a + BufferedReader<Cookie>>) -> Self {
+    fn new_naked(inner: Box<dyn BufferedReader<Cookie> + 'a>) -> Self {
         PacketHeaderParser::new(inner,
                                 PacketParserState::new(Default::default()),
                                 vec![ 0 ],
-                                Header {
-                                    ctb: CTB::new(Tag::Reserved),
-                                    length: BodyLength::Full(0),
-                                },
+                                Header::new(CTB::new(Tag::Reserved),
+                                            BodyLength::Full(0)),
                                 Vec::new())
     }
 
@@ -274,7 +286,7 @@ impl<'a> PacketHeaderParser<'a> {
 
             // This is a buffered_reader::Dup, so this always has an
             // inner.
-            let mut inner = Box::new(self.reader).into_inner().unwrap();
+            let inner = Box::new(self.reader).into_inner().unwrap();
 
             // Combine the header with the body for the map.
             let mut data = Vec::with_capacity(total_out + body.len());
@@ -476,12 +488,12 @@ pub(crate) struct SignatureGroup {
     ops_count: usize,
 
     /// Maps hash algorithms to hash contexts.
-    pub(crate) hashes: HashMap<HashAlgorithm, crypto::hash::Context>,
+    pub(crate) hashes: Vec<(HashAlgorithm, crypto::hash::Context)>,
 }
 
 impl fmt::Debug for SignatureGroup {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let algos = self.hashes.keys()
+        let algos = self.hashes.iter().map(|(a, _)| a)
             .collect::<Vec<&HashAlgorithm>>();
 
         f.debug_struct("Cookie")
@@ -495,7 +507,7 @@ impl Default for SignatureGroup {
     fn default() -> Self {
         SignatureGroup {
             ops_count: 0,
-            hashes: HashMap::new(),
+            hashes: Default::default(),
         }
     }
 }
@@ -587,9 +599,9 @@ impl Cookie {
     //
     // Thus to disable the hashing of a level 3 literal packet's
     // meta-data, we disable hashing at level 2.
-    fn hashing(reader: &mut BufferedReader<Cookie>,
+    fn hashing(reader: &mut dyn BufferedReader<Cookie>,
                how: Hashing, level: isize) {
-        let mut reader : Option<&mut BufferedReader<Cookie>>
+        let mut reader : Option<&mut dyn BufferedReader<Cookie>>
             = Some(reader);
         while let Some(r) = reader {
             {
@@ -613,9 +625,9 @@ impl Cookie {
     // A helpful debugging aid to pretty print a Buffered Reader
     // stack.
     #[allow(dead_code)]
-    fn dump(reader: &BufferedReader<Cookie>) {
+    fn dump(reader: &dyn BufferedReader<Cookie>) {
         let mut i = 1;
-        let mut reader : Option<&BufferedReader<Cookie>> = Some(reader);
+        let mut reader : Option<&dyn BufferedReader<Cookie>> = Some(reader);
         while let Some(r) = reader {
             {
                 let cookie = r.cookie_ref();
@@ -635,8 +647,8 @@ impl Cookie {
 
 // Pops readers from a buffered reader stack at the specified level.
 fn buffered_reader_stack_pop<'a>(
-    mut reader: Box<BufferedReader<Cookie> + 'a>, depth: isize)
-    -> Result<(bool, Box<BufferedReader<Cookie> + 'a>)>
+    mut reader: Box<dyn BufferedReader<Cookie> + 'a>, depth: isize)
+    -> Result<(bool, Box<dyn BufferedReader<Cookie> + 'a>)>
 {
     tracer!(TRACE, "buffered_reader_stack_pop", depth);
     t!("(reader level: {:?}, pop through: {})",
@@ -701,6 +713,18 @@ struct PacketParserSettings {
     // then a read from the reader pipeline could blow the stack.
     max_recursion_depth: u8,
 
+    // The maximum size of non-container packets.
+    //
+    // Packets that exceed this limit will be returned as
+    // `Packet::Unknown`, with the error set to
+    // `Error::PacketTooLarge`.
+    //
+    // This limit applies to any packet type that is *not* a
+    // container packet, i.e. any packet that is not a literal data
+    // packet, a compressed data packet, a symmetrically encrypted
+    // data packet, or an AEAD encrypted data packet.
+    max_packet_size: u32,
+
     // Whether a packet's contents should be buffered or dropped when
     // the next packet is retrieved.
     buffer_unread_content: bool,
@@ -714,6 +738,7 @@ impl Default for PacketParserSettings {
     fn default() -> Self {
         PacketParserSettings {
             max_recursion_depth: MAX_RECURSION_DEPTH,
+            max_packet_size: MAX_PACKET_SIZE,
             buffer_unread_content: false,
             map: false,
         }
@@ -738,7 +763,7 @@ impl S2K {
                 salt: Self::read_salt(php)?,
                 hash_bytes: S2K::decode_count(php.parse_u8("s2k_count")?),
             },
-            100...110 => S2K::Private(s2k),
+            100..=110 => S2K::Private(s2k),
             u => S2K::Unknown(u),
         };
 
@@ -773,7 +798,7 @@ impl Header {
             CTB::Old(ref ctb) =>
                 BodyLength::parse_old_format(bio, ctb.length_type)?,
         };
-        return Ok(Header { ctb: ctb, length: length });
+        return Ok(Header::new(ctb, length));
     }
 }
 
@@ -790,12 +815,106 @@ impl<'a> Parse<'a, Header> for Header {
     }
 }
 
+impl BodyLength {
+    /// Decodes a new format body length as described in [Section
+    /// 4.2.2 of RFC 4880].
+    ///
+    ///   [Section 4.2.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-4.2.2
+    pub(crate) fn parse_new_format<T: BufferedReader<C>, C> (bio: &mut T)
+        -> io::Result<BodyLength>
+    {
+        let octet1 : u8 = bio.data_consume_hard(1)?[0];
+        match octet1 {
+            0..=191 => // One octet.
+                Ok(BodyLength::Full(octet1 as u32)),
+            192..=223 => { // Two octets length.
+                let octet2 = bio.data_consume_hard(1)?[0];
+                Ok(BodyLength::Full(((octet1 as u32 - 192) << 8)
+                                    + octet2 as u32 + 192))
+            },
+            224..=254 => // Partial body length.
+                Ok(BodyLength::Partial(1 << (octet1 & 0x1F))),
+            255 => // Five octets.
+                Ok(BodyLength::Full(bio.read_be_u32()?)),
+        }
+    }
+
+    /// Decodes an old format body length as described in [Section
+    /// 4.2.1 of RFC 4880].
+    ///
+    ///   [Section 4.2.1 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-4.2.1
+    pub(crate) fn parse_old_format<T: BufferedReader<C>, C>
+        (bio: &mut T, length_type: PacketLengthType)
+         -> Result<BodyLength>
+    {
+        match length_type {
+            PacketLengthType::OneOctet =>
+                Ok(BodyLength::Full(bio.data_consume_hard(1)?[0] as u32)),
+            PacketLengthType::TwoOctets =>
+                Ok(BodyLength::Full(bio.read_be_u16()? as u32)),
+            PacketLengthType::FourOctets =>
+                Ok(BodyLength::Full(bio.read_be_u32()? as u32)),
+            PacketLengthType::Indeterminate =>
+                Ok(BodyLength::Indeterminate),
+        }
+    }
+}
+
+#[test]
+fn body_length_new_format() {
+    fn test(input: &[u8], expected_result: BodyLength) {
+        assert_eq!(
+            BodyLength::parse_new_format(
+                &mut buffered_reader::Memory::new(input)).unwrap(),
+            expected_result);
+    }
+
+    // Examples from Section 4.2.3 of RFC4880.
+
+    // Example #1.
+    test(&[0x64][..], BodyLength::Full(100));
+
+    // Example #2.
+    test(&[0xC5, 0xFB][..], BodyLength::Full(1723));
+
+    // Example #3.
+    test(&[0xFF, 0x00, 0x01, 0x86, 0xA0][..], BodyLength::Full(100000));
+
+    // Example #4.
+    test(&[0xEF][..], BodyLength::Partial(32768));
+    test(&[0xE1][..], BodyLength::Partial(2));
+    test(&[0xF0][..], BodyLength::Partial(65536));
+    test(&[0xC5, 0xDD][..], BodyLength::Full(1693));
+}
+
+#[test]
+fn body_length_old_format() {
+    fn test(input: &[u8], plt: PacketLengthType,
+            expected_result: BodyLength, expected_rest: &[u8]) {
+        let mut bio = buffered_reader::Memory::new(input);
+        assert_eq!(BodyLength::parse_old_format(&mut bio, plt).unwrap(),
+                   expected_result);
+        let rest = bio.data_eof();
+        assert_eq!(rest.unwrap(), expected_rest);
+    }
+
+    test(&[1], PacketLengthType::OneOctet, BodyLength::Full(1), &b""[..]);
+    test(&[1, 2], PacketLengthType::TwoOctets,
+         BodyLength::Full((1 << 8) + 2), &b""[..]);
+    test(&[1, 2, 3, 4], PacketLengthType::FourOctets,
+         BodyLength::Full((1 << 24) + (2 << 16) + (3 << 8) + 4), &b""[..]);
+    test(&[1, 2, 3, 4, 5, 6], PacketLengthType::FourOctets,
+         BodyLength::Full((1 << 24) + (2 << 16) + (3 << 8) + 4), &[5, 6][..]);
+    test(&[1, 2, 3, 4], PacketLengthType::Indeterminate,
+         BodyLength::Indeterminate, &[1, 2, 3, 4][..]);
+}
+
 impl Unknown {
     /// Parses the body of any packet and returns an Unknown.
     fn parse<'a>(php: PacketHeaderParser<'a>, error: failure::Error)
                  -> Result<PacketParser<'a>>
     {
-        let tag = php.header.ctb.tag;
+        let tag = php.header.ctb().tag();
         php.ok(Packet::Unknown(Unknown::new(tag, error)))
             .map(|pp| pp.set_decrypted(false))
     }
@@ -815,12 +934,12 @@ pub(crate) fn to_unknown_packet<R: Read>(reader: R) -> Result<Unknown>
         reader, None, Cookie::default());
     let header = Header::parse(&mut reader)?;
 
-    let reader : Box<BufferedReader<Cookie>>
-        = match header.length {
-            BodyLength::Full(len) =>
+    let reader : Box<dyn BufferedReader<Cookie>>
+        = match header.length() {
+            &BodyLength::Full(len) =>
                 Box::new(buffered_reader::Limitor::with_cookie(
                     Box::new(reader), len as u64, Cookie::default())),
-            BodyLength::Partial(len) =>
+            &BodyLength::Partial(len) =>
                 Box::new(BufferedReaderPartialBodyFilter::with_cookie(
                     reader, len, true, Cookie::default())),
             _ => Box::new(reader),
@@ -879,7 +998,7 @@ impl Signature4 {
 
         make_php_try!(php);
 
-        let sigtype = php_try!(php.parse_u8("sigtype"));
+        let typ = php_try!(php.parse_u8("type"));
         let pk_algo: PublicKeyAlgorithm = php_try!(php.parse_u8("pk_algo")).into();
         let hash_algo = php_try!(php.parse_u8("hash_algo"));
         let hashed_area_len = php_try!(php.parse_be_u16("hashed_area_len"));
@@ -900,7 +1019,7 @@ impl Signature4 {
 
         let hash_algo = hash_algo.into();
         let mut pp = php.ok(Packet::Signature(Signature4::new(
-            sigtype.into(), pk_algo.into(), hash_algo,
+            typ.into(), pk_algo.into(), hash_algo,
             SubpacketArea::new(hashed_area),
             SubpacketArea::new(unhashed_area),
             [hash_prefix1, hash_prefix2],
@@ -931,7 +1050,12 @@ impl Signature4 {
                     if cookie.hashes_for == HashesFor::Signature {
                         cookie.sig_group_mut().ops_count -= 1;
                         if let Some(hash) =
-                            cookie.sig_group().hashes.get(&hash_algo)
+                            cookie.sig_group().hashes.iter().find_map(
+                                |(a, h)| if *a == hash_algo {
+                                    Some(h)
+                                } else {
+                                    None
+                                })
                         {
                             t!("popped a {:?} HashedReader", hash_algo);
                             computed_hash = Some((cookie.signature_level(),
@@ -971,7 +1095,7 @@ impl Signature4 {
         // The absolute minimum size for the header is 11 bytes (this
         // doesn't include the signature MPIs).
 
-        if let BodyLength::Full(len) = header.length {
+        if let &BodyLength::Full(len) = header.length() {
             if len < 11 {
                 // Much too short.
                 return Err(
@@ -981,7 +1105,7 @@ impl Signature4 {
             return Err(
                 Error::MalformedPacket(
                     format!("Unexpected body length encoding: {:?}",
-                            header.length)
+                            header.length())
                         .into()).into());
         }
 
@@ -994,12 +1118,12 @@ impl Signature4 {
 
         // Assume unknown == bad.
         let version = data[0];
-        let sigtype : SignatureType = data[1].into();
+        let typ : SignatureType = data[1].into();
         let pk_algo : PublicKeyAlgorithm = data[2].into();
         let hash_algo : HashAlgorithm = data[3].into();
 
         if version == 4
-            && !destructures_to!(SignatureType::Unknown(_) = sigtype)
+            && !destructures_to!(SignatureType::Unknown(_) = typ)
             && !destructures_to!(PublicKeyAlgorithm::Unknown(_) = pk_algo)
             && !destructures_to!(HashAlgorithm::Unknown(_) = hash_algo)
         {
@@ -1015,14 +1139,14 @@ impl_parse_generic_packet!(Signature);
 
 #[test]
 fn signature_parser_test () {
-    let data = ::tests::message("sig.gpg");
+    let data = crate::tests::message("sig.gpg");
 
     {
         let pp = PacketParser::from_bytes(data).unwrap().unwrap();
-        assert_eq!(pp.header.length, BodyLength::Full(307));
+        assert_eq!(pp.header.length(), &BodyLength::Full(307));
         if let Packet::Signature(ref p) = pp.packet {
             assert_eq!(p.version(), 4);
-            assert_eq!(p.sigtype(), SignatureType::Binary);
+            assert_eq!(p.typ(), SignatureType::Binary);
             assert_eq!(p.pk_algo(), PublicKeyAlgorithm::RSAEncryptSign);
             assert_eq!(p.hash_algo(), HashAlgorithm::SHA512);
             assert_eq!(p.hashed_area().data.len(), 29);
@@ -1062,7 +1186,7 @@ impl OnePassSig3 {
             return php.fail("unknown version");
         }
 
-        let sigtype = php_try!(php.parse_u8("sigtype"));
+        let typ = php_try!(php.parse_u8("type"));
         let hash_algo = php_try!(php.parse_u8("hash_algo"));
         let pk_algo = php_try!(php.parse_u8("pk_algo"));
         let mut issuer = [0u8; 8];
@@ -1070,7 +1194,7 @@ impl OnePassSig3 {
         let last = php_try!(php.parse_u8("last"));
 
         let hash_algo = hash_algo.into();
-        let mut sig = OnePassSig3::new(sigtype.into());
+        let mut sig = OnePassSig3::new(typ.into());
         sig.set_hash_algo(hash_algo);
         sig.set_pk_algo(pk_algo.into());
         sig.set_issuer(KeyID::from_bytes(&issuer));
@@ -1082,7 +1206,7 @@ impl OnePassSig3 {
         // hashed reader on level recursion_depth - 1.
         let done = {
             let mut done = false;
-            let mut reader : Option<&mut BufferedReader<Cookie>>
+            let mut reader : Option<&mut dyn BufferedReader<Cookie>>
                 = Some(&mut php.reader);
             while let Some(r) = reader {
                 {
@@ -1104,11 +1228,11 @@ impl OnePassSig3 {
                                 // Make sure that it uses the required
                                 // hash algorithm.
                                 if ! cookie.sig_group()
-                                    .hashes.contains_key(&hash_algo)
+                                    .hashes.iter().any(|(a, _)| *a == hash_algo)
                                 {
                                     if let Ok(ctx) = hash_algo.context() {
                                         cookie.sig_group_mut()
-                                            .hashes.insert(hash_algo, ctx);
+                                            .hashes.push((hash_algo, ctx));
                                     }
                                 }
 
@@ -1191,18 +1315,18 @@ impl OnePassSig3 {
 
 #[test]
 fn one_pass_sig_parser_test () {
-    use SignatureType;
-    use PublicKeyAlgorithm;
+    use crate::SignatureType;
+    use crate::PublicKeyAlgorithm;
 
     // This test assumes that the first packet is a OnePassSig packet.
-    let data = ::tests::message("signed-1.gpg");
+    let data = crate::tests::message("signed-1.gpg");
     let mut pp = PacketParser::from_bytes(data).unwrap().unwrap();
     let p = pp.finish().unwrap();
     // eprintln!("packet: {:?}", p);
 
     if let &Packet::OnePassSig(ref p) = p {
         assert_eq!(p.version(), 3);
-        assert_eq!(p.sigtype(), SignatureType::Binary);
+        assert_eq!(p.typ(), SignatureType::Binary);
         assert_eq!(p.hash_algo(), HashAlgorithm::SHA512);
         assert_eq!(p.pk_algo(), PublicKeyAlgorithm::RSAEncryptSign);
         assert_eq!(p.issuer().to_hex(), "7223B56678E02528");
@@ -1249,7 +1373,7 @@ fn one_pass_sig_test () {
     for test in tests.iter() {
         eprintln!("Trying {}...", test.filename);
         let mut ppr = PacketParserBuilder::from_bytes(
-            ::tests::message(test.filename))
+            crate::tests::message(test.filename))
             .expect(&format!("Reading {}", test.filename)[..])
             .finalize().unwrap();
 
@@ -1262,10 +1386,10 @@ fn one_pass_sig_test () {
             } else if let Packet::Signature(ref sig) = pp.packet {
                 eprintln!("  {}:\n  prefix: expected: {}, in sig: {}",
                           test.filename,
-                          ::conversions::to_hex(&test.hash_prefix[sigs][..], false),
-                          ::conversions::to_hex(sig.hash_prefix(), false));
+                          crate::conversions::to_hex(&test.hash_prefix[sigs][..], false),
+                          crate::conversions::to_hex(sig.hash_prefix(), false));
                 eprintln!("  computed hash: {}",
-                          ::conversions::to_hex(&sig.computed_hash().unwrap().1,
+                          crate::conversions::to_hex(&sig.computed_hash().unwrap().1,
                                                 false));
 
                 assert_eq!(&test.hash_prefix[sigs], sig.hash_prefix());
@@ -1289,12 +1413,16 @@ fn one_pass_sig_test () {
     }
 }
 
-impl Key {
+// Key::parse doesn't actually use the Key type parameters.  So, we
+// can just set them to anything.  This avoids the caller having to
+// set them to something.
+impl Key<key::UnspecifiedParts, key::UnspecifiedRole>
+{
     /// Parses the body of a public key, public subkey, secret key or
     /// secret subkey packet.
     fn parse<'a>(mut php: PacketHeaderParser<'a>) -> Result<PacketParser<'a>> {
         make_php_try!(php);
-        let tag = php.header.ctb.tag;
+        let tag = php.header.ctb().tag();
         assert!(tag == Tag::Reserved
                 || tag == Tag::PublicKey
                 || tag == Tag::PublicSubkey
@@ -1315,15 +1443,19 @@ impl Key {
     }
 }
 
-impl Key4 {
+// Key4::parse doesn't actually use the Key4 type parameters.  So, we
+// can just set them to anything.  This avoids the caller having to
+// set them to something.
+impl Key4<key::UnspecifiedParts, key::UnspecifiedRole>
+{
     /// Parses the body of a public key, public subkey, secret key or
     /// secret subkey packet.
     fn parse<'a>(mut php: PacketHeaderParser<'a>) -> Result<PacketParser<'a>> {
         use std::io::Cursor;
-        use serialize::Serialize;
+        use crate::serialize::Serialize;
 
         make_php_try!(php);
-        let tag = php.header.ctb.tag;
+        let tag = php.header.ctb().tag();
         assert!(tag == Tag::Reserved
                 || tag == Tag::PublicKey
                 || tag == Tag::PublicSubkey
@@ -1338,7 +1470,7 @@ impl Key4 {
                 // Unencrypted
                 0 => {
                     let sec = php_try!(
-                        crypto::mpis::SecretKey::_parse(pk_algo, &mut php));
+                        crypto::mpis::SecretKeyMaterial::_parse(pk_algo, &mut php));
                     let their_chksum = php_try!(php.parse_be_u16("checksum"));
                     let mut cur = Cursor::new(Vec::default());
 
@@ -1353,16 +1485,17 @@ impl Key4 {
                     sec.into()
                 }
                 // Encrypted & MD5 for key derivation: unsupported
-                1...253 => {
+                1..=253 => {
                     return php.fail("unsupported secret key encryption");
                 }
                 // Encrypted, S2K & SHA-1 checksum
                 254 => {
                     let sk: SymmetricAlgorithm = php_try!(php.parse_u8("sym_algo")).into();
                     let s2k = php_try!(S2K::parse(&mut php));
-                    let mut cipher = php_try!(php.parse_bytes_eof("encrypted_mpis"));
+                    let cipher =
+                        php_try!(php.parse_bytes_eof("encrypted_mpis"));
 
-                    ::packet::key::Encrypted::new(
+                    crate::packet::key::Encrypted::new(
                         s2k, sk, cipher.into_boxed_slice()).into()
                 }
                 // Encrypted, S2K & mod 65536 checksum: unsupported
@@ -1391,29 +1524,58 @@ impl Key4 {
             }
         }
 
-        let key = php_try!(Key4::new(time::Tm::from_pgp(creation_time),
-                                     pk_algo, mpis, secret));
+        fn k<R>(creation_time: u32,
+                pk_algo: PublicKeyAlgorithm,
+                mpis: PublicKey)
+            -> Result<Key4<key::PublicParts, R>>
+            where R: key::KeyRole
+        {
+            Key4::new(std::time::SystemTime::from_pgp(creation_time),
+                      pk_algo, mpis)
+        }
+        fn s<R>(creation_time: u32,
+                pk_algo: PublicKeyAlgorithm,
+                mpis: PublicKey,
+                secret: SecretKeyMaterial)
+            -> Result<Key4<key::SecretParts, R>>
+            where R: key::KeyRole
+        {
+            Key4::with_secret(std::time::SystemTime::from_pgp(creation_time),
+                              pk_algo, mpis, secret)
+        }
 
-        let tag = php.header.ctb.tag;
-        php.ok(match tag {
+        let tag = php.header.ctb().tag();
+
+        let p : Packet = match tag {
             // For the benefit of Key::from_bytes.
             Tag::Reserved => if have_secret {
-                Packet::SecretKey(key.into())
+                Packet::SecretKey(
+                    php_try!(s(creation_time, pk_algo, mpis, secret.unwrap()))
+                        .into())
             } else {
-                Packet::PublicKey(key.into())
+                Packet::PublicKey(
+                    php_try!(k(creation_time, pk_algo, mpis)).into())
             },
-            Tag::PublicKey => Packet::PublicKey(key.into()),
-            Tag::PublicSubkey => Packet::PublicSubkey(key.into()),
-            Tag::SecretKey => Packet::SecretKey(key.into()),
-            Tag::SecretSubkey => Packet::SecretSubkey(key.into()),
+            Tag::PublicKey => Packet::PublicKey(
+                php_try!(k(creation_time, pk_algo, mpis)).into()),
+            Tag::PublicSubkey => Packet::PublicSubkey(
+                php_try!(k(creation_time, pk_algo, mpis)).into()),
+            Tag::SecretKey => Packet::SecretKey(
+                php_try!(s(creation_time, pk_algo, mpis, secret.unwrap()))
+                    .into()),
+            Tag::SecretSubkey => Packet::SecretSubkey(
+                php_try!(s(creation_time, pk_algo, mpis, secret.unwrap()))
+                    .into()),
             _ => unreachable!(),
-        })
+        };
+
+        php.ok(p)
     }
 
     /// Returns whether the data appears to be a key (no promises).
     fn plausible(bio: &mut buffered_reader::Dup<Cookie>, header: &Header) -> Result<()> {
         // The packet's header is 6 bytes.
-        if let BodyLength::Full(len) = header.length {
+        if let &BodyLength::Full(len) = header.length() {
             if len < 6 {
                 // Much too short.
                 return Err(Error::MalformedPacket(
@@ -1423,7 +1585,7 @@ impl Key4 {
             return Err(
                 Error::MalformedPacket(
                     format!("Unexpected body length encoding: {:?}",
-                            header.length)
+                            header.length())
                         .into()).into());
         }
 
@@ -1449,7 +1611,7 @@ impl Key4 {
     }
 }
 
-impl<'a> Parse<'a, Key> for Key {
+impl<'a> Parse<'a, key::UnspecifiedKey> for key::UnspecifiedKey {
     fn from_reader<R: 'a + Read>(reader: R) -> Result<Self> {
         let bio = buffered_reader::Generic::with_cookie(
             reader, None, Cookie::default());
@@ -1459,11 +1621,10 @@ impl<'a> Parse<'a, Key> for Key {
         pp.buffer_unread_content()?;
 
         match pp.next()? {
-            (Packet::PublicKey(o), PacketParserResult::EOF(_))
-            | (Packet::PublicSubkey(o), PacketParserResult::EOF(_))
-            | (Packet::SecretKey(o), PacketParserResult::EOF(_))
-            | (Packet::SecretSubkey(o), PacketParserResult::EOF(_)) =>
-                Ok(o),
+            (Packet::PublicKey(o), PacketParserResult::EOF(_)) => Ok(o.into()),
+            (Packet::PublicSubkey(o), PacketParserResult::EOF(_)) => Ok(o.into()),
+            (Packet::SecretKey(o), PacketParserResult::EOF(_)) => Ok(o.into()),
+            (Packet::SecretSubkey(o), PacketParserResult::EOF(_)) => Ok(o.into()),
             (p, PacketParserResult::EOF(_)) =>
                 Err(Error::InvalidOperation(
                     format!("Not a Key packet: {:?}", p)).into()),
@@ -1558,7 +1719,7 @@ impl Literal {
             literal.set_filename_from_bytes(&filename)
                 .expect("length checked above");
         }
-        literal.set_date(Some(time::Tm::from_pgp(date)));
+        literal.set_date(Some(time::SystemTime::from_pgp(date)));
         let mut pp = php.ok(Packet::Literal(literal))?;
 
         // Enable hashing of the body.
@@ -1573,18 +1734,18 @@ impl_parse_generic_packet!(Literal);
 
 #[test]
 fn literal_parser_test () {
-    use constants::DataFormat;
+    use crate::constants::DataFormat;
     {
-        let data = ::tests::message("literal-mode-b.gpg");
+        let data = crate::tests::message("literal-mode-b.gpg");
         let mut pp = PacketParser::from_bytes(data).unwrap().unwrap();
-        assert_eq!(pp.header.length, BodyLength::Full(18));
+        assert_eq!(pp.header.length(), &BodyLength::Full(18));
         let content = pp.steal_eof().unwrap();
         let p = pp.finish().unwrap();
         // eprintln!("{:?}", p);
         if let &Packet::Literal(ref p) = p {
             assert_eq!(p.format(), DataFormat::Binary);
             assert_eq!(p.filename().unwrap()[..], b"foobar"[..]);
-            assert_eq!(p.date(), Some(&time::Tm::from_pgp(1507458744)));
+            assert_eq!(p.date(), Some(time::SystemTime::from_pgp(1507458744)));
             assert_eq!(content, b"FOOBAR");
         } else {
             panic!("Wrong packet!");
@@ -1592,18 +1753,18 @@ fn literal_parser_test () {
     }
 
     {
-        let data = ::tests::message("literal-mode-t-partial-body.gpg");
+        let data = crate::tests::message("literal-mode-t-partial-body.gpg");
         let mut pp = PacketParser::from_bytes(data).unwrap().unwrap();
-        assert_eq!(pp.header.length, BodyLength::Partial(4096));
+        assert_eq!(pp.header.length(), &BodyLength::Partial(4096));
         let content = pp.steal_eof().unwrap();
         let p = pp.finish().unwrap();
         if let &Packet::Literal(ref p) = p {
             assert_eq!(p.format(), DataFormat::Text);
             assert_eq!(p.filename().unwrap()[..],
                        b"manifesto.txt"[..]);
-            assert_eq!(p.date(), Some(&time::Tm::from_pgp(1508000649)));
+            assert_eq!(p.date(), Some(time::SystemTime::from_pgp(1508000649)));
 
-            let expected = ::tests::manifesto();
+            let expected = crate::tests::manifesto();
 
             assert_eq!(&content[..], &expected[..]);
         } else {
@@ -1679,9 +1840,9 @@ impl_parse_generic_packet!(CompressedData);
 #[cfg(any(feature = "compression-deflate", feature = "compression-bzip2"))]
 #[test]
 fn compressed_data_parser_test () {
-    use constants::DataFormat;
+    use crate::constants::DataFormat;
 
-    let expected = ::tests::manifesto();
+    let expected = crate::tests::manifesto();
 
     for i in 1..4 {
         match CompressionAlgorithm::from(i) {
@@ -1691,7 +1852,7 @@ fn compressed_data_parser_test () {
             CompressionAlgorithm::BZip2 => (),
             _ => continue,
         }
-        let mut pp = PacketParser::from_bytes(::tests::message(
+        let pp = PacketParser::from_bytes(crate::tests::message(
             &format!("compressed-data-algo-{}.gpg", i))).unwrap().unwrap();
 
         // We expect a compressed packet containing a literal data
@@ -1717,7 +1878,8 @@ fn compressed_data_parser_test () {
         if let Packet::Literal(literal) = literal {
             assert_eq!(literal.filename(), None);
             assert_eq!(literal.format(), DataFormat::Binary);
-            assert_eq!(literal.date(), Some(&time::Tm::from_pgp(1509219866)));
+            assert_eq!(literal.date(),
+                       Some(time::SystemTime::from_pgp(1509219866)));
             assert_eq!(content, expected.to_vec());
         } else {
             panic!("Wrong packet!");
@@ -1791,7 +1953,7 @@ impl_parse_generic_packet!(SKESK);
 
 #[test]
 fn skesk_parser_test() {
-    use crypto::Password;
+    use crate::crypto::Password;
     struct Test<'a> {
         filename: &'a str,
         s2k: S2K,
@@ -1815,8 +1977,8 @@ fn skesk_parser_test() {
     ];
 
     for test in tests.iter() {
-        let mut pp = PacketParser::from_bytes(
-            ::tests::message(test.filename)).unwrap().unwrap();
+        let pp = PacketParser::from_bytes(
+            crate::tests::message(test.filename)).unwrap().unwrap();
         if let Packet::SKESK(SKESK::V4(ref skesk)) = pp.packet {
             eprintln!("{:?}", skesk);
 
@@ -1825,7 +1987,7 @@ fn skesk_parser_test() {
 
             match skesk.decrypt(&test.password) {
                 Ok((_sym_algo, key)) => {
-                    let key = ::conversions::to_hex(&key[..], false);
+                    let key = crate::conversions::to_hex(&key[..], false);
                     assert_eq!(&key[..], &test.key_hex[..]);
                 }
                 Err(e) => {
@@ -1869,16 +2031,21 @@ impl MDC {
 
         let mut computed_hash : [u8; 20] = Default::default();
         {
-            let mut r : Option<&mut BufferedReader<Cookie>>
+            let mut r : Option<&mut dyn BufferedReader<Cookie>>
                 = Some(&mut php.reader);
             while let Some(bio) = r {
                 {
                     let state = bio.cookie_mut();
                     if state.hashes_for == HashesFor::MDC {
                         if state.sig_group().hashes.len() > 0 {
-                            let mut h = state.sig_group_mut().hashes
-                                .get_mut(&HashAlgorithm::SHA1)
-                                .unwrap();
+                            let h = state.sig_group_mut().hashes
+                                .iter_mut().find_map(
+                                    |(a, h)|
+                                    if *a == HashAlgorithm::SHA1 {
+                                        Some(h)
+                                    } else {
+                                        None
+                                    }).unwrap();
                             h.digest(&mut computed_hash);
                         }
 
@@ -2058,7 +2225,7 @@ impl<'a> Parse<'a, Packet> for Packet {
             ?.buffer_unread_content().finalize()?;
 
         let (p, ppr) = match ppr {
-            PacketParserResult::Some(mut pp) => {
+            PacketParserResult::Some(pp) => {
                 pp.next()?
             },
             PacketParserResult::EOF(_) =>
@@ -2087,10 +2254,10 @@ struct PacketParserState {
     message_validator: MessageValidator,
 
     /// Whether the packet sequence is a valid OpenPGP keyring.
-    keyring_validator: ::tpk::KeyringValidator,
+    keyring_validator: crate::tpk::KeyringValidator,
 
     /// Whether the packet sequence is a valid OpenPGP TPK.
-    tpk_validator: ::tpk::TPKValidator,
+    tpk_validator: crate::tpk::TPKValidator,
 
     // Whether this is the first packet in the packet sequence.
     first_packet: bool,
@@ -2170,7 +2337,7 @@ pub struct PacketParser<'a> {
     // `next()` or `recurse()`.
     last_path: Vec<usize>,
 
-    reader: Box<BufferedReader<Cookie> + 'a>,
+    reader: Box<dyn BufferedReader<Cookie> + 'a>,
 
     // Whether the caller read the packet's content.  If so, then we
     // can't recurse, because we're missing some of the packet!
@@ -2212,7 +2379,7 @@ impl<'a> std::fmt::Debug for PacketParser<'a> {
 /// The return value of PacketParser::parse.
 enum ParserResult<'a> {
     Success(PacketParser<'a>),
-    EOF((Box<BufferedReader<Cookie> + 'a>, PacketParserState, Vec<usize>)),
+    EOF((Box<dyn BufferedReader<Cookie> + 'a>, PacketParserState, Vec<usize>)),
 }
 
 /// Information about the stream of packets parsed by the
@@ -2242,7 +2409,7 @@ impl PacketParserEOF {
     ///
     /// As opposed to a TPK or just a bunch of packets.
     pub fn is_message(&self) -> Result<()> {
-        use message::MessageValidity;
+        use crate::message::MessageValidity;
 
         match self.state.message_validator.check() {
             MessageValidity::Message => Ok(()),
@@ -2255,7 +2422,7 @@ impl PacketParserEOF {
     ///
     /// As opposed to a Message or just a bunch of packets.
     pub fn is_keyring(&self) -> Result<()> {
-        use tpk::KeyringValidity;
+        use crate::tpk::KeyringValidity;
 
         match self.state.keyring_validator.check() {
             KeyringValidity::Keyring => Ok(()),
@@ -2268,7 +2435,7 @@ impl PacketParserEOF {
     ///
     /// As opposed to a Message or just a bunch of packets.
     pub fn is_tpk(&self) -> Result<()> {
-        use tpk::TPKValidity;
+        use crate::tpk::TPKValidity;
 
         match self.state.tpk_validator.check() {
             TPKValidity::TPK => Ok(()),
@@ -2435,9 +2602,9 @@ impl<'a> Parse<'a, PacketParserResult<'a>> for PacketParser<'a> {
     ///
     /// This function returns a `PacketParser` for the first packet in
     /// the stream.
-    fn from_bytes(bytes: &'a [u8])
+    fn from_bytes<D: AsRef<[u8]> + ?Sized>(data: &'a D)
             -> Result<PacketParserResult<'a>> {
-        PacketParserBuilder::from_bytes(bytes)?.finalize()
+        PacketParserBuilder::from_bytes(data)?.finalize()
     }
 }
 
@@ -2447,7 +2614,7 @@ impl <'a> PacketParser<'a> {
     ///
     /// This function returns a `PacketParser` for the first packet in
     /// the stream.
-    pub(crate) fn from_buffered_reader(bio: Box<BufferedReader<Cookie> + 'a>)
+    pub(crate) fn from_buffered_reader(bio: Box<dyn BufferedReader<Cookie> + 'a>)
             -> Result<PacketParserResult<'a>> {
         PacketParserBuilder::from_buffered_reader(bio)?.finalize()
     }
@@ -2457,7 +2624,7 @@ impl <'a> PacketParser<'a> {
     ///
     /// This function may only be called when the `PacketParser` is in
     /// State::Body.
-    fn take_reader(&mut self) -> Box<BufferedReader<Cookie> + 'a> {
+    fn take_reader(&mut self) -> Box<dyn BufferedReader<Cookie> + 'a> {
         self.set_reader(
             Box::new(buffered_reader::EOF::with_cookie(Default::default())))
     }
@@ -2466,14 +2633,14 @@ impl <'a> PacketParser<'a> {
     ///
     /// This function may only be called when the `PacketParser` is in
     /// State::Body.
-    fn set_reader(&mut self, reader: Box<BufferedReader<Cookie> + 'a>)
-        -> Box<BufferedReader<Cookie> + 'a>
+    fn set_reader(&mut self, reader: Box<dyn BufferedReader<Cookie> + 'a>)
+        -> Box<dyn BufferedReader<Cookie> + 'a>
     {
         mem::replace(&mut self.reader, reader)
     }
 
     /// Returns a mutable reference to the reader stack.
-    fn mut_reader(&mut self) -> &mut BufferedReader<Cookie> {
+    fn mut_reader(&mut self) -> &mut dyn BufferedReader<Cookie> {
         &mut self.reader
     }
 
@@ -2530,7 +2697,7 @@ impl <'a> PacketParser<'a> {
     /// Before that, it is only possible to say that the message is a
     /// valid prefix or definitely not an OpenPGP message.
     pub fn possible_message(&self) -> Result<()> {
-        use message::MessageValidity;
+        use crate::message::MessageValidity;
 
         match self.state.message_validator.check() {
             MessageValidity::Message => unreachable!(),
@@ -2546,7 +2713,7 @@ impl <'a> PacketParser<'a> {
     /// Before that, it is only possible to say that the message is a
     /// valid prefix or definitely not an OpenPGP keyring.
     pub fn possible_keyring(&self) -> Result<()> {
-        use tpk::KeyringValidity;
+        use crate::tpk::KeyringValidity;
 
         match self.state.keyring_validator.check() {
             KeyringValidity::Keyring => unreachable!(),
@@ -2562,7 +2729,7 @@ impl <'a> PacketParser<'a> {
     /// Before that, it is only possible to say that the message is a
     /// valid prefix or definitely not an OpenPGP TPK.
     pub fn possible_tpk(&self) -> Result<()> {
-        use tpk::TPKValidity;
+        use crate::tpk::TPKValidity;
 
         match self.state.tpk_validator.check() {
             TPKValidity::TPK => unreachable!(),
@@ -2592,7 +2759,7 @@ impl <'a> PacketParser<'a> {
         let bad = Err(
             Error::MalformedPacket("Can't make an educated case".into()).into());
 
-        match header.ctb.tag {
+        match header.ctb().tag() {
             Tag::Reserved | Tag::Marker
             | Tag::Unknown(_) | Tag::Private(_) =>
                 Err(Error::MalformedPacket("Looks like garbage".into()).into()),
@@ -2627,7 +2794,7 @@ impl <'a> PacketParser<'a> {
     /// Returns a `PacketParser` for the next OpenPGP packet in the
     /// stream.  If there are no packets left, this function returns
     /// `bio`.
-    fn parse(mut bio: Box<BufferedReader<Cookie> + 'a>,
+    fn parse(mut bio: Box<dyn BufferedReader<Cookie> + 'a>,
              state: PacketParserState,
              path: Vec<usize>)
         -> Result<ParserResult<'a>>
@@ -2712,14 +2879,12 @@ impl <'a> PacketParser<'a> {
             t!("turning {} bytes of junk into an Unknown packet", skip);
 
             // Fabricate a header.
-            header = Header {
-                ctb: CTB::new(Tag::Reserved),
-                length: BodyLength::Full(skip as u32),
-            };
+            header = Header::new(CTB::new(Tag::Reserved),
+                                 BodyLength::Full(skip as u32));
             0
         };
 
-        let tag = header.ctb.tag;
+        let tag = header.ctb().tag();
 
         // A buffered_reader::Dup always has an inner.
         let mut bio = Box::new(bio).into_inner().unwrap();
@@ -2739,16 +2904,16 @@ impl <'a> PacketParser<'a> {
         let header_bytes =
             Vec::from(&bio.data_consume_hard(consumed)?[..consumed]);
 
-        let bio : Box<BufferedReader<Cookie>>
-            = match header.length {
-                BodyLength::Full(len) => {
+        let bio : Box<dyn BufferedReader<Cookie>>
+            = match header.length() {
+                &BodyLength::Full(len) => {
                     t!("Pushing a limitor ({} bytes), level: {}.",
                        len, recursion_depth);
                     Box::new(buffered_reader::Limitor::with_cookie(
                         bio, len as u64,
                         Cookie::new(recursion_depth)))
                 },
-                BodyLength::Partial(len) => {
+                &BodyLength::Partial(len) => {
                     t!("Pushing a partial body chunk decoder, level: {}.",
                        recursion_depth);
                     Box::new(BufferedReaderPartialBodyFilter::with_cookie(
@@ -2770,7 +2935,27 @@ impl <'a> PacketParser<'a> {
         // Our parser should not accept packets that fail our header
         // syntax check.  Doing so breaks roundtripping, and seems
         // like a bad idea anyway.
-        let header_syntax_error = header.valid(true).err();
+        let mut header_syntax_error = header.valid(true).err();
+
+        // Check packet size.
+        if header_syntax_error.is_none() {
+            let max_size = state.settings.max_packet_size;
+            match tag {
+                // Don't check the size for container packets, those
+                // can be safely streamed.
+                Tag::Literal | Tag::CompressedData | Tag::SED | Tag::SEIP
+                    | Tag::AED => (),
+                _ => match header.length() {
+                    &BodyLength::Full(l) => if l > max_size {
+                        header_syntax_error = Some(
+                            Error::PacketTooLarge(tag, l, max_size).into());
+                    },
+                    _ => unreachable!("non-data packets have full length, \
+                                       syntax check above"),
+                }
+            }
+        }
+
         let parser = PacketHeaderParser::new(bio, state, path,
                                              header, header_bytes);
 
@@ -3092,15 +3277,14 @@ impl <'a> PacketParser<'a> {
     pub fn buffer_unread_content(&mut self) -> Result<&[u8]> {
         let mut rest = self.steal_eof()?;
         if rest.len() > 0 {
-            if let Some(mut body) = self.packet.body.take() {
+            if let Some(body) = self.packet.body_mut() {
                 body.append(&mut rest);
-                self.packet.body = Some(body);
             } else {
-                self.packet.body = Some(rest);
+                self.packet.set_body(rest);
             }
         }
 
-        if let Some(body) = self.packet.body.as_ref() {
+        if let Some(body) = self.packet.body() {
             Ok(&body[..])
         } else {
             Ok(&b""[..])
@@ -3140,7 +3324,7 @@ impl <'a> PacketParser<'a> {
             match self.packet.tag() {
                 Tag::SEIP | Tag::AED | Tag::SED | Tag::CompressedData => {
                     // We didn't (fully) process a container's content.  Add
-                    // this as opaque conent to the message validator.
+                    // this as opaque content to the message validator.
                     let mut path = self.path().to_vec();
                     path.push(0);
                     self.state.message_validator.push_token(
@@ -3253,16 +3437,16 @@ impl<'a> BufferedReader<Cookie> for PacketParser<'a> {
         self.reader.drop_eof()
     }
 
-    fn get_mut(&mut self) -> Option<&mut BufferedReader<Cookie>> {
+    fn get_mut(&mut self) -> Option<&mut dyn BufferedReader<Cookie>> {
         None
     }
 
-    fn get_ref(&self) -> Option<&BufferedReader<Cookie>> {
+    fn get_ref(&self) -> Option<&dyn BufferedReader<Cookie>> {
         None
     }
 
     fn into_inner<'b>(self: Box<Self>)
-            -> Option<Box<BufferedReader<Cookie> + 'b>>
+            -> Option<Box<dyn BufferedReader<Cookie> + 'b>>
             where Self: 'b {
         None
     }
@@ -3289,12 +3473,12 @@ fn packet_parser_reader_interface() {
     // We need the Read trait.
     use std::io::Read;
 
-    let expected = ::tests::manifesto();
+    let expected = crate::tests::manifesto();
 
     // A message containing a compressed packet that contains a
     // literal packet.
     let pp = PacketParser::from_bytes(
-        ::tests::message("compressed-data-algo-1.gpg")).unwrap().unwrap();
+        crate::tests::message("compressed-data-algo-1.gpg")).unwrap().unwrap();
 
     // The message has the form:
     //
@@ -3338,7 +3522,7 @@ fn packet_parser_reader_interface() {
     let (packet, ppr) = pp.recurse().unwrap();
     assert!(ppr.is_none());
     // Since we read all of the data, we expect content to be None.
-    assert!(packet.body.is_none());
+    assert!(packet.body().is_none());
 }
 
 impl<'a> PacketParser<'a> {
@@ -3376,7 +3560,7 @@ impl<'a> PacketParser<'a> {
             Packet::SEIP(_) => {
                 // Get the first blocksize plus two bytes and check
                 // whether we can decrypt them using the provided key.
-                // Don't actually comsume them in case we can't.
+                // Don't actually consume them in case we can't.
                 let bl = algo.block_size()?;
 
                 {
@@ -3390,7 +3574,7 @@ impl<'a> PacketParser<'a> {
                         return Err(Error::InvalidSessionKey(
                             format!(
                                 "Last two 16-bit quantities don't match: {}",
-                                ::conversions::to_hex(&header[..], false)))
+                                crate::conversions::to_hex(&header[..], false)))
                                    .into());
                     }
                 }
@@ -3448,14 +3632,21 @@ impl<'a> PacketParser<'a> {
             },
 
             Packet::AED(AED::V1(aed)) => {
-                // Get the first chunk and check whether we can
+                // Read the first chunk and check whether we can
                 // decrypt it using the provided key.  Don't actually
-                // comsume them in case we can't.
+                // consume them in case we can't.
                 {
-                    let data = self.data(aed.chunk_digest_size()?)?;
-                    let mut dec = aead::Decryptor::new(
+                    // We need a bit more than one chunk so that
+                    // `aead::Decryptor` won't see EOF and think that
+                    // it has a partial block and it needs to verify
+                    // the final chunk.
+                    let amount
+                        = aed.chunk_digest_size()? + aed.aead().digest_size()?;
+                    let data = self.data(amount)?;
+                    let dec = aead::Decryptor::new(
                         1, aed.symmetric_algo(), aed.aead(), aed.chunk_size(),
-                        aed.iv(), key, &data[..cmp::min(data.len(), aed.chunk_digest_size()?)])?;
+                        aed.iv(), key,
+                        &data[..cmp::min(data.len(), amount)])?;
                     let mut chunk = Vec::new();
                     dec.take(aed.chunk_size() as u64).read_to_end(&mut chunk)?;
                 }
@@ -3500,7 +3691,7 @@ mod test {
     impl<'a> Data<'a> {
         fn content(&self) -> Vec<u8> {
             match self {
-                Data::File(filename) => ::tests::message(filename).to_vec(),
+                Data::File(filename) => crate::tests::message(filename).to_vec(),
                 Data::String(data) => data.to_vec(),
             }
         }
@@ -3689,12 +3880,21 @@ mod test {
 
     #[test]
     fn decrypt_test() {
-        for test in DECRYPT_TESTS.iter() { for stream in [false, true].iter() {
+        decrypt_test_common(false);
+    }
+
+    #[test]
+    fn decrypt_test_stream() {
+        decrypt_test_common(true);
+    }
+
+    fn decrypt_test_common(stream: bool) {
+        for test in DECRYPT_TESTS.iter() {
             eprintln!("Decrypting {}, streaming content: {}",
                       test.filename, stream);
 
-            let mut ppr = PacketParserBuilder::from_bytes(
-                ::tests::message(test.filename)).unwrap()
+            let ppr = PacketParserBuilder::from_bytes(
+                crate::tests::message(test.filename)).unwrap()
                 .buffer_unread_content()
                 .finalize()
                 .expect(&format!("Error reading {}", test.filename)[..]);
@@ -3703,7 +3903,7 @@ mod test {
                 ppr, false, &[ Tag::SEIP, Tag::AED ][..],
                 &[ Tag::SKESK, Tag::PKESK ][..] );
             if let PacketParserResult::Some(ref mut pp) = ppr {
-                let key = ::conversions::from_hex(test.key_hex, false)
+                let key = crate::conversions::from_hex(test.key_hex, false)
                     .unwrap().into();
 
                 pp.decrypt(test.algo, &key).unwrap();
@@ -3715,7 +3915,7 @@ mod test {
                 ppr, true, &[ Tag::Literal ][..],
                 &[ Tag::OnePassSig, Tag::CompressedData ][..]);
             if let PacketParserResult::Some(ref mut pp) = ppr {
-                if *stream {
+                if stream {
                     let mut body = Vec::new();
                     loop {
                         let mut b = [0];
@@ -3730,7 +3930,7 @@ mod test {
                                "{:?}", pp.packet);
                 } else {
                     pp.buffer_unread_content().unwrap();
-                    assert_eq!(&pp.packet.body.as_ref().unwrap()[..],
+                    assert_eq!(pp.packet.body().unwrap(),
                                &test.plaintext.content()[..],
                                "{:?}", pp.packet);
                 }
@@ -3738,7 +3938,7 @@ mod test {
                 panic!("Expected a Literal packet.  Got: {:?}", ppr);
             }
 
-            let mut ppr = consume_until(
+            let ppr = consume_until(
                 ppr, true, &[ Tag::MDC ][..], &[ Tag::Signature ][..]);
             if let PacketParserResult::Some(
                 PacketParser { packet: Packet::MDC(ref mdc), .. }) = ppr
@@ -3754,14 +3954,14 @@ mod test {
             let ppr = consume_until(
                 ppr, true, &[][..], &[][..]);
             assert!(ppr.is_none());
-        }}
+        }
     }
 
     #[test]
     fn message_validator() {
         for test in DECRYPT_TESTS.iter() {
             let mut ppr = PacketParserBuilder::from_bytes(
-                ::tests::message(test.filename)).unwrap()
+                crate::tests::message(test.filename)).unwrap()
                 .finalize()
                 .expect(&format!("Error reading {}", test.filename)[..]);
 
@@ -3772,7 +3972,7 @@ mod test {
 
                 match pp.packet {
                     Packet::SEIP(_) | Packet::AED(_) => {
-                        let key = ::conversions::from_hex(test.key_hex, false)
+                        let key = crate::conversions::from_hex(test.key_hex, false)
                             .unwrap().into();
                         pp.decrypt(test.algo, &key).unwrap();
                     },
@@ -3803,12 +4003,12 @@ mod test {
                       "neal.pgp"]
         {
             let mut ppr = PacketParserBuilder::from_reader(
-                Cursor::new(::tests::key("testy.pgp")).chain(
-                    Cursor::new(::tests::key(test)))).unwrap()
+                Cursor::new(crate::tests::key("testy.pgp")).chain(
+                    Cursor::new(crate::tests::key(test)))).unwrap()
                 .finalize()
                 .expect(&format!("Error reading {:?}", test));
 
-            while let PacketParserResult::Some(mut pp) = ppr {
+            while let PacketParserResult::Some(pp) = ppr {
                 assert!(pp.possible_keyring().is_ok());
                 ppr = pp.recurse().unwrap().1;
             }
@@ -3828,12 +4028,12 @@ mod test {
                       "testy-new.pgp",
                       "neal.pgp"]
         {
-            let mut ppr = PacketParserBuilder::from_bytes(::tests::key(test))
+            let mut ppr = PacketParserBuilder::from_bytes(crate::tests::key(test))
                 .unwrap()
                 .finalize()
                 .expect(&format!("Error reading {:?}", test));
 
-            while let PacketParserResult::Some(mut pp) = ppr {
+            while let PacketParserResult::Some(pp) = ppr {
                 assert!(pp.possible_keyring().is_ok());
                 assert!(pp.possible_tpk().is_ok());
                 ppr = pp.recurse().unwrap().1;
@@ -3853,12 +4053,12 @@ mod test {
     fn message_validator_opaque_content() {
         for test in DECRYPT_TESTS.iter() {
             let mut ppr = PacketParserBuilder::from_bytes(
-                ::tests::message(test.filename)).unwrap()
+                crate::tests::message(test.filename)).unwrap()
                 .finalize()
                 .expect(&format!("Error reading {}", test.filename)[..]);
 
             let mut saw_literal = false;
-            while let PacketParserResult::Some(mut pp) = ppr {
+            while let PacketParserResult::Some(pp) = ppr {
                 assert!(pp.possible_message().is_ok());
 
                 match pp.packet {
@@ -3887,7 +4087,7 @@ mod test {
             eprintln!("Decrypting {}", test.filename);
 
             let mut ppr = PacketParserBuilder::from_bytes(
-                ::tests::message(test.filename)).unwrap()
+                crate::tests::message(test.filename)).unwrap()
                 .finalize()
                 .expect(&format!("Error reading {}", test.filename)[..]);
 
@@ -3909,7 +4109,7 @@ mod test {
 
                 match pp.packet {
                     Packet::SEIP(_) | Packet::AED(_) => {
-                        let key = ::conversions::from_hex(test.key_hex, false)
+                        let key = crate::conversions::from_hex(test.key_hex, false)
                             .unwrap().into();
 
                         pp.decrypt(test.algo, &key).unwrap();
@@ -3924,7 +4124,7 @@ mod test {
                        "Message shorter than expected (expecting: {:?})",
                        paths);
 
-            if let PacketParserResult::EOF(mut eof) = ppr {
+            if let PacketParserResult::EOF(eof) = ppr {
                 assert_eq!(last_path, eof.last_path());
             } else {
                 panic!("Expect an EOF");
@@ -3934,12 +4134,12 @@ mod test {
 
     #[test]
     fn corrupted_tpk() {
-        use armor::{Reader, ReaderMode, Kind};
+        use crate::armor::{Reader, ReaderMode, Kind};
 
         // The following TPK is corrupted about a third the way
         // through.  Make sure we can recover.
         let mut ppr = PacketParser::from_reader(
-            Reader::from_bytes(::tests::key("corrupted.pgp"),
+            Reader::from_bytes(crate::tests::key("corrupted.pgp"),
                                ReaderMode::Tolerant(Some(Kind::PublicKey))))
             .unwrap();
 
@@ -3975,7 +4175,7 @@ mod test {
     #[test]
     fn junk_prefix() {
         // Make sure we can read the first packet.
-        let msg = ::tests::message("sig.gpg");
+        let msg = crate::tests::message("sig.gpg");
 
         let ppr = PacketParserBuilder::from_bytes(msg).unwrap()
             .dearmor(packet_parser_builder::Dearmor::Disabled)
@@ -4000,8 +4200,8 @@ mod test {
     /// Issue #141.
     #[test]
     fn truncated_packet() {
-        for msg in &[&::tests::message("literal-mode-b.gpg")[..],
-                     &::tests::message("literal-mode-t-partial-body.gpg")[..],
+        for msg in &[&crate::tests::message("literal-mode-b.gpg")[..],
+                     &crate::tests::message("literal-mode-t-partial-body.gpg")[..],
         ] {
             // Make sure we can read the first packet.
             let ppr = PacketParserBuilder::from_bytes(msg).unwrap()
@@ -4022,5 +4222,40 @@ mod test {
                 panic!("No packet!?");
             }
         }
+    }
+
+    #[test]
+    fn max_packet_size() {
+        use crate::serialize::Serialize;
+        let uid = Packet::UserID("foobar".into());
+        let mut buf = Vec::new();
+        uid.serialize(&mut buf).unwrap();
+
+        // Make sure we can read it.
+        let ppr = PacketParserBuilder::from_bytes(&buf).unwrap()
+            .finalize().unwrap();
+        if let PacketParserResult::Some(pp) = ppr {
+            assert_eq!(Packet::UserID("foobar".into()), pp.packet);
+        } else {
+            panic!("failed to parse userid");
+        }
+
+        // But if we set the maximum packet size too low, it is parsed
+        // into a unknown packet.
+        let ppr = PacketParserBuilder::from_bytes(&buf).unwrap()
+            .max_packet_size(5)
+            .finalize().unwrap();
+        if let PacketParserResult::Some(pp) = ppr {
+            if let Packet::Unknown(ref u) = pp.packet {
+                assert_eq!(u.tag(), Tag::UserID);
+                assert_match!(Some(&Error::PacketTooLarge(_, _, _))
+                              = u.error().downcast_ref());
+            } else {
+                panic!("expected an unknown packet, got {:?}", pp.packet);
+            }
+        } else {
+            panic!("failed to parse userid");
+        }
+
     }
 }

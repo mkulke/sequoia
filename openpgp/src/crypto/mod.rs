@@ -6,8 +6,8 @@ use std::fmt;
 
 use nettle::{Random, Yarrow};
 
-use constants::HashAlgorithm;
-use Result;
+use crate::constants::HashAlgorithm;
+use crate::Result;
 
 pub(crate) mod aead;
 mod asymmetric;
@@ -70,6 +70,12 @@ impl AsRef<[u8]> for SessionKey {
 
 impl DerefMut for SessionKey {
     fn deref_mut(&mut self) -> &mut [u8] {
+        &mut self.0
+    }
+}
+
+impl AsMut<[u8]> for SessionKey {
+    fn as_mut(&mut self) -> &mut [u8] {
         &mut self.0
     }
 }
@@ -169,8 +175,8 @@ pub fn hash_file<R: Read>(reader: R, algos: &[HashAlgorithm])
 {
     use std::mem;
 
-    use ::parse::HashedReader;
-    use ::parse::HashesFor;
+    use crate::parse::HashedReader;
+    use crate::parse::HashesFor;
 
     use buffered_reader::BufferedReader;
 
@@ -187,7 +193,7 @@ pub fn hash_file<R: Read>(reader: R, algos: &[HashAlgorithm])
     let mut hashes =
         mem::replace(&mut reader.cookie_mut().sig_group_mut().hashes,
                      Default::default());
-    let hashes = hashes.drain().collect();
+    let hashes = hashes.drain(..).collect();
     Ok(hashes)
 }
 
@@ -202,7 +208,7 @@ fn hash_file_test() {
     ].iter().cloned().collect();
 
     let result =
-        hash_file(::std::io::Cursor::new(::tests::manifesto()),
+        hash_file(::std::io::Cursor::new(crate::tests::manifesto()),
                   &expected.keys().cloned().collect::<Vec<HashAlgorithm>>())
         .unwrap();
 
@@ -211,6 +217,6 @@ fn hash_file_test() {
         hash.digest(&mut digest);
 
         assert_eq!(*expected.get(&algo).unwrap(),
-                   &::conversions::to_hex(&digest[..], false));
+                   &crate::conversions::to_hex(&digest[..], false));
     }
 }

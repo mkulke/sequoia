@@ -5,22 +5,20 @@ use std::path::PathBuf;
 use tempfile::NamedTempFile;
 
 extern crate sequoia_openpgp as openpgp;
-use openpgp::armor;
-use openpgp::constants::DataFormat;
-use openpgp::crypto;
-use openpgp::{Packet, Result};
-use openpgp::packet::Signature;
-use openpgp::parse::{
+use crate::openpgp::armor;
+use crate::openpgp::{Packet, Result};
+use crate::openpgp::packet::Signature;
+use crate::openpgp::parse::{
     Parse,
     PacketParserResult,
 };
-use openpgp::serialize::Serialize;
-use openpgp::serialize::stream::{
+use crate::openpgp::serialize::Serialize;
+use crate::openpgp::serialize::stream::{
     Message, Signer, LiteralWriter,
 };
-use create_or_stdout;
+use crate::create_or_stdout;
 
-pub fn sign(input: &mut io::Read, output_path: Option<&str>,
+pub fn sign(input: &mut dyn io::Read, output_path: Option<&str>,
             secrets: Vec<openpgp::TPK>, detached: bool, binary: bool,
             append: bool, notarize: bool, force: bool)
             -> Result<()> {
@@ -33,19 +31,19 @@ pub fn sign(input: &mut io::Read, output_path: Option<&str>,
     }
 }
 
-fn sign_data(input: &mut io::Read, output_path: Option<&str>,
+fn sign_data(input: &mut dyn io::Read, output_path: Option<&str>,
              secrets: Vec<openpgp::TPK>, detached: bool, binary: bool,
              append: bool, force: bool)
              -> Result<()> {
     let (mut output, prepend_sigs, tmp_path):
-    (Box<io::Write>, Vec<Signature>, Option<PathBuf>) =
+    (Box<dyn io::Write>, Vec<Signature>, Option<PathBuf>) =
         if detached && append && output_path.is_some() {
             // First, read the existing signatures.
             let mut sigs = Vec::new();
             let mut ppr =
                 openpgp::parse::PacketParser::from_file(output_path.unwrap())?;
 
-            while let PacketParserResult::Some(mut pp) = ppr {
+            while let PacketParserResult::Some(pp) = ppr {
                 let (packet, ppr_tmp) = pp.recurse()?;
                 ppr = ppr_tmp;
 
@@ -83,9 +81,9 @@ fn sign_data(input: &mut io::Read, output_path: Option<&str>,
     };
 
     let mut keypairs = super::get_signing_keys(&secrets)?;
-    let signers = keypairs.iter_mut()
-        .map(|s| -> &mut dyn crypto::Signer { s })
-        .collect();
+    if keypairs.is_empty() {
+        return Err(failure::format_err!("No signing keys found"));
+    }
 
     // When extending a detached signature, prepend any existing
     // signatures first.
@@ -96,11 +94,14 @@ fn sign_data(input: &mut io::Read, output_path: Option<&str>,
     // Stream an OpenPGP message.
     let sink = Message::new(output);
 
-    let signer = if detached {
-        Signer::detached(sink, signers, None)
-    } else {
-        Signer::new(sink, signers, None)
-    }.context("Failed to create signer")?;
+    let mut signer = Signer::new(sink, keypairs.pop().unwrap());
+    for s in keypairs {
+        signer = signer.add_signer(s);
+    }
+    if detached {
+        signer = signer.detached();
+    }
+    let signer = signer.build().context("Failed to create signer")?;
 
     let mut writer = if detached {
         // Detached signatures do not need a literal data packet, just
@@ -108,7 +109,7 @@ fn sign_data(input: &mut io::Read, output_path: Option<&str>,
         signer
     } else {
         // We want to wrap the data in a literal data packet.
-        LiteralWriter::new(signer, DataFormat::Binary, None, None)
+        LiteralWriter::new(signer).build()
             .context("Failed to create literal writer")?
     };
 
@@ -127,7 +128,7 @@ fn sign_data(input: &mut io::Read, output_path: Option<&str>,
     Ok(())
 }
 
-fn sign_message(input: &mut io::Read, output_path: Option<&str>,
+fn sign_message(input: &mut dyn io::Read, output_path: Option<&str>,
                 secrets: Vec<openpgp::TPK>, binary: bool, notarize: bool,
                 force: bool)
              -> Result<()> {
@@ -141,13 +142,9 @@ fn sign_message(input: &mut io::Read, output_path: Option<&str>,
     };
 
     let mut keypairs = super::get_signing_keys(&secrets)?;
-    // We need to create the signers here, so that we can take() them
-    // once in the parsing loop.  We cannot create the references in
-    // the loop, because the borrow checker does not understand that
-    // it happens only once.
-    let mut signers = Some(keypairs.iter_mut()
-                           .map(|s| -> &mut dyn crypto::Signer { s })
-                           .collect::<Vec<&mut dyn crypto::Signer>>());
+    if keypairs.is_empty() {
+        return Err(failure::format_err!("No signing keys found"));
+    }
 
     let mut sink = Message::new(output);
 
@@ -213,9 +210,11 @@ fn sign_message(input: &mut io::Read, output_path: Option<&str>,
             State::AfterFirstSigGroup => {
                 // After the first signature group, we push the signer
                 // onto the writer stack.
-                let signers = signers.take().expect("only happens once");
-                sink = Signer::new(sink, signers, None)
-                    .context("Failed to create signer")?;
+                let mut signer = Signer::new(sink, keypairs.pop().unwrap());
+                for s in keypairs.drain(..) {
+                    signer = signer.add_signer(s);
+                }
+                sink = signer.build().context("Failed to create signer")?;
                 state = State::Signing { signature_count: 0, };
             },
 
@@ -239,9 +238,15 @@ fn sign_message(input: &mut io::Read, output_path: Option<&str>,
             };
             // Create a literal writer to wrap the data in a literal
             // message packet.
-            let mut literal =
-                LiteralWriter::new(sink, l.format(), l.filename(),
-                                   l.date().map(|d| *d))
+            let mut literal = LiteralWriter::new(sink).format(l.format());
+            if let Some(f) = l.filename() {
+                literal = literal.filename(f)?;
+            }
+            if let Some(d) = l.date() {
+                literal = literal.date(d)?;
+            }
+
+            let mut literal = literal.build()
                 .context("Failed to create literal writer")?;
 
             // Finally, just copy all the data.

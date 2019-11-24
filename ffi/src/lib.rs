@@ -117,7 +117,6 @@ extern crate nettle;
 
 extern crate sequoia_ffi_macros;
 use sequoia_ffi_macros::{
-    ffi_catch_abort,
     ffi_wrapper_type,
 };
 extern crate sequoia_openpgp;
@@ -131,7 +130,7 @@ pub mod openpgp {
     include!("../../openpgp-ffi/src/common.rs");
 }
 
-pub(crate) use openpgp::{
+pub(crate) use crate::openpgp::{
     io,
     build_hasher,
     strndup,
@@ -141,6 +140,8 @@ pub(crate) use openpgp::{
     MoveIntoRaw,
     MoveResultIntoRaw,
     Maybe,
+    maybe_time,
+    to_time_t,
 };
 
 /* Error handling with implicit context.  */

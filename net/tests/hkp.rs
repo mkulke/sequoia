@@ -2,6 +2,7 @@ extern crate futures;
 extern crate http;
 extern crate hyper;
 extern crate rand;
+extern crate tokio_core;
 extern crate url;
 
 use futures::Stream;
@@ -17,15 +18,16 @@ use rand::rngs::OsRng;
 use std::io::Cursor;
 use std::net::{SocketAddr, IpAddr, Ipv4Addr};
 use std::thread;
+use tokio_core::reactor::Core;
 
 extern crate sequoia_openpgp as openpgp;
 extern crate sequoia_core;
 extern crate sequoia_net;
 
-use openpgp::armor::Reader;
-use openpgp::TPK;
-use openpgp::{Fingerprint, KeyID};
-use openpgp::parse::Parse;
+use crate::openpgp::armor::Reader;
+use crate::openpgp::TPK;
+use crate::openpgp::{Fingerprint, KeyID};
+use crate::openpgp::parse::Parse;
 use sequoia_core::{Context, NetworkPolicy};
 use sequoia_net::KeyServer;
 
@@ -122,7 +124,7 @@ fn start_server() -> SocketAddr {
     let (tx, rx) = oneshot::channel::<SocketAddr>();
     thread::spawn(move || {
         let (addr, server) = loop {
-            let port = OsRng::new().unwrap().next_u32() as u16;
+            let port = OsRng.next_u32() as u16;
             let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
                                        port);
             if let Ok(s) = Server::try_bind(&addr) {
@@ -142,6 +144,7 @@ fn start_server() -> SocketAddr {
 
 #[test]
 fn get() {
+    let mut core = Core::new().unwrap();
     let ctx = Context::configure()
         .ephemeral()
         .network_policy(NetworkPolicy::Insecure)
@@ -153,7 +156,7 @@ fn get() {
     let mut keyserver =
         KeyServer::new(&ctx, &format!("hkp://{}", addr)).unwrap();
     let keyid = KeyID::from_hex(ID).unwrap();
-    let key = keyserver.get(&keyid).unwrap();
+    let key = core.run(keyserver.get(&keyid)).unwrap();
 
     assert_eq!(key.fingerprint(),
                Fingerprint::from_hex(FP).unwrap());
@@ -161,6 +164,7 @@ fn get() {
 
 #[test]
 fn send() {
+    let mut core = Core::new().unwrap();
     let ctx = Context::configure()
         .ephemeral()
         .network_policy(NetworkPolicy::Insecure)
@@ -173,5 +177,5 @@ fn send() {
         KeyServer::new(&ctx, &format!("hkp://{}", addr)).unwrap();
     let key = TPK::from_reader(Reader::new(Cursor::new(RESPONSE),
                                            None)).unwrap();
-    keyserver.send(&key).unwrap();
+    core.run(keyserver.send(&key)).unwrap();
 }

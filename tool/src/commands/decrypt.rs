@@ -6,13 +6,13 @@ extern crate termsize;
 
 extern crate sequoia_openpgp as openpgp;
 use sequoia_core::Context;
-use openpgp::constants::SymmetricAlgorithm;
-use openpgp::conversions::hex;
-use openpgp::crypto::SessionKey;
-use openpgp::{Fingerprint, TPK, KeyID, Result};
-use openpgp::packet::{Key, key::SecretKey, Signature, PKESK, SKESK};
-use openpgp::parse::PacketParser;
-use openpgp::parse::stream::{
+use crate::openpgp::constants::SymmetricAlgorithm;
+use crate::openpgp::conversions::hex;
+use crate::openpgp::crypto::{self, SessionKey};
+use crate::openpgp::{Fingerprint, TPK, KeyID, Result};
+use crate::openpgp::packet::prelude::*;
+use crate::openpgp::parse::PacketParser;
+use crate::openpgp::parse::stream::{
     VerificationHelper, DecryptionHelper, Decryptor, MessageStructure,
 };
 extern crate sequoia_store as store;
@@ -21,7 +21,8 @@ use super::{dump::PacketDumper, VHelper};
 
 struct Helper<'a> {
     vhelper: VHelper<'a>,
-    secret_keys: HashMap<KeyID, Key>,
+    secret_keys:
+        HashMap<KeyID, key::UnspecifiedSecret>,
     key_identities: HashMap<KeyID, Fingerprint>,
     key_hints: HashMap<KeyID, String>,
     dump_session_key: bool,
@@ -30,22 +31,26 @@ struct Helper<'a> {
 }
 
 impl<'a> Helper<'a> {
-    fn new(ctx: &'a Context, store: &'a mut store::Store,
+    fn new(ctx: &'a Context, mapping: &'a mut store::Mapping,
            signatures: usize, tpks: Vec<TPK>, secrets: Vec<TPK>,
            dump_session_key: bool, dump: bool, hex: bool)
            -> Self {
-        let mut keys: HashMap<KeyID, Key> = HashMap::new();
+        let mut keys: HashMap<KeyID, key::UnspecifiedSecret>
+            = HashMap::new();
         let mut identities: HashMap<KeyID, Fingerprint> = HashMap::new();
         let mut hints: HashMap<KeyID, String> = HashMap::new();
         for tsk in secrets {
-            let can_encrypt = |_: &Key, sig: Option<&Signature>| -> bool {
+            fn can_encrypt<R, P>(_: &Key<P, R>, sig: Option<&Signature>) -> bool
+                where P: key::KeyParts,
+                      R: key::KeyRole,
+            {
                 if let Some(sig) = sig {
                     sig.key_flags().can_encrypt_at_rest()
                         || sig.key_flags().can_encrypt_for_transport()
                 } else {
                     false
                 }
-            };
+            }
 
             let hint = match tsk.userids().nth(0) {
                 Some(uid) => format!("{} ({})", uid.userid(),
@@ -53,18 +58,18 @@ impl<'a> Helper<'a> {
                 None => format!("{}", tsk.fingerprint().to_keyid()),
             };
 
-            if can_encrypt(tsk.primary(), tsk.primary_key_signature()) {
+            if can_encrypt(tsk.primary(), tsk.primary_key_signature(None)) {
                 let id = tsk.fingerprint().to_keyid();
-                keys.insert(id.clone(), tsk.primary().clone());
+                keys.insert(id.clone(), tsk.primary().clone().into());
                 identities.insert(id.clone(), tsk.fingerprint());
                 hints.insert(id, hint.clone());
             }
 
             for skb in tsk.subkeys() {
-                let key = skb.subkey();
-                if can_encrypt(key, skb.binding_signature()) {
+                let key = skb.key();
+                if can_encrypt(key, skb.binding_signature(None)) {
                     let id = key.fingerprint().to_keyid();
-                    keys.insert(id.clone(), key.clone());
+                    keys.insert(id.clone(), key.clone().into());
                     identities.insert(id.clone(), tsk.fingerprint());
                     hints.insert(id, hint.clone());
                 }
@@ -72,7 +77,7 @@ impl<'a> Helper<'a> {
         }
 
         Helper {
-            vhelper: VHelper::new(ctx, store, signatures, tpks),
+            vhelper: VHelper::new(ctx, mapping, signatures, tpks),
             secret_keys: keys,
             key_identities: identities,
             key_hints: hints,
@@ -85,6 +90,34 @@ impl<'a> Helper<'a> {
                 None
             },
             hex: hex,
+        }
+    }
+
+    /// Tries to decrypt the given PKESK packet with `keypair` and try
+    /// to decrypt the packet parser using `decrypt`.
+    fn try_decrypt<D>(&self, pkesk: &PKESK,
+                      keypair: &mut dyn crypto::Decryptor<key::UnspecifiedRole>,
+                      decrypt: &mut D)
+                      -> openpgp::Result<Option<Fingerprint>>
+        where D: FnMut(SymmetricAlgorithm, &SessionKey) -> openpgp::Result<()>
+    {
+        let keyid = keypair.public().fingerprint().to_keyid();
+        match pkesk.decrypt(keypair)
+            .and_then(|(algo, sk)| {
+                decrypt(algo, &sk)?; Ok(sk)
+            })
+        {
+            Ok(sk) => {
+                if self.dump_session_key {
+                    eprintln!("Session key: {}", hex::encode(&sk));
+                }
+                Ok(self.key_identities.get(&keyid).map(|fp| fp.clone()))
+            },
+            Err(e) => {
+                eprintln!("Decryption using {} failed:\n  {}",
+                          self.key_hints.get(&keyid).unwrap(), e);
+                Err(e)
+            },
         }
     }
 }
@@ -122,23 +155,19 @@ impl<'a> DecryptionHelper for Helper<'a> {
         for pkesk in pkesks {
             let keyid = pkesk.recipient();
             if let Some(key) = self.secret_keys.get(&keyid) {
-                if let Some(SecretKey::Unencrypted { .. }) = key.secret() {
-                    if let Ok(sk) = key.clone().into_keypair()
-                        .and_then(|mut keypair| pkesk.decrypt(&mut keypair))
-                        .and_then(|(algo, sk)| { decrypt(algo, &sk)?; Ok(sk) })
+                if key.secret().map(|s| ! s.is_encrypted()).unwrap_or(false) {
+                    if let Ok(fp) = key.clone().into_keypair()
+                        .and_then(|mut k|
+                                  self.try_decrypt(pkesk, &mut k, &mut decrypt))
                     {
-                        if self.dump_session_key {
-                            eprintln!("Session key: {}", hex::encode(&sk));
-                        }
-                        return Ok(self.key_identities.get(keyid)
-                                  .map(|fp| fp.clone()));
+                        return Ok(fp);
                     }
                 }
             }
         }
 
         // Second, we try those keys that are encrypted.
-        'pkesk_loop: for pkesk in pkesks {
+        for pkesk in pkesks {
             // Don't ask the user to decrypt a key if we don't support
             // the algorithm.
             if ! pkesk.pk_algo().is_supported() {
@@ -146,50 +175,92 @@ impl<'a> DecryptionHelper for Helper<'a> {
             }
 
             let keyid = pkesk.recipient();
-            if let Some(key) = self.secret_keys.get(&keyid) {
-                if key.secret().map(|s| ! s.is_encrypted())
-                    .unwrap_or(true)
-                {
-                    continue;
-                }
+            if let Some(key) = self.secret_keys.get_mut(&keyid) {
+                let mut keypair = loop {
+                    if key.secret().map(|s| ! s.is_encrypted()).unwrap_or(false)
+                    {
+                        break key.clone().into_keypair().unwrap();
+                    }
 
-                loop {
                     let p = rpassword::read_password_from_tty(Some(
                         &format!(
                             "Enter password to decrypt key {}: ",
-                            self.key_hints.get(&keyid).unwrap())))
-                        ?.into();
+                            self.key_hints.get(&keyid).unwrap())))?.into();
 
-                    let mut key = key.clone();
                     let algo = key.pk_algo();
                     if let Some(()) =
                         key.secret_mut()
                         .and_then(|s| s.decrypt_in_place(algo, &p).ok())
                     {
-                        let mut keypair = key.into_keypair().unwrap();
-                        match pkesk.decrypt(&mut keypair)
-                            .and_then(|(algo, sk)| {
-                                decrypt(algo, &sk)?; Ok(sk)
-                            })
-                        {
-                            Ok(sk) => {
-                                if self.dump_session_key {
-                                    eprintln!("Session key: {}",
-                                              hex::encode(&sk));
-                                }
-                                return Ok(self.key_identities.get(keyid)
-                                          .map(|fp| fp.clone()));
-                            },
-                            Err(e) => {
-                                eprintln!("Decryption using {} failed:\n  {}",
-                                          self.key_hints.get(&keyid).unwrap(),
-                                          e);
-                                continue 'pkesk_loop;
-                            },
-                        }
+                        break key.clone().into_keypair().unwrap()
                     } else {
                         eprintln!("Bad password.");
                     }
+                };
+
+                if let Ok(fp) = self.try_decrypt(pkesk, &mut keypair,
+                                                 &mut decrypt) {
+                    return Ok(fp);
+                }
+            }
+        }
+
+        // Third, we try to decrypt PKESK packets with wildcard
+        // recipients using those keys that we can use without
+        // prompting for a password.
+        for pkesk in pkesks.iter().filter(|p| p.recipient().is_wildcard()) {
+            for key in self.secret_keys.values() {
+                if key.secret().map(|s| ! s.is_encrypted()).unwrap_or(false) {
+                    if let Ok(fp) = key.clone().into_keypair()
+                        .and_then(|mut k|
+                                  self.try_decrypt(pkesk, &mut k, &mut decrypt))
+                    {
+                        return Ok(fp);
+                    }
+                }
+            }
+        }
+
+        // Fourth, we try to decrypt PKESK packets with wildcard
+        // recipients using those keys that are encrypted.
+        for pkesk in pkesks.iter().filter(|p| p.recipient().is_wildcard()) {
+            // Don't ask the user to decrypt a key if we don't support
+            // the algorithm.
+            if ! pkesk.pk_algo().is_supported() {
+                continue;
+            }
+
+            // To appease the borrow checker, iterate over the
+            // hashmap, awkwardly.
+            for keyid in self.secret_keys.keys().cloned().collect::<Vec<_>>()
+            {
+                let mut keypair = loop {
+                    let key = self.secret_keys.get_mut(&keyid).unwrap(); // Yuck
+
+                    if key.secret().map(|s| ! s.is_encrypted()).unwrap_or(false)
+                    {
+                        break key.clone().into_keypair().unwrap();
+                    }
+
+                    let p = rpassword::read_password_from_tty(Some(
+                        &format!(
+                            "Enter password to decrypt key {}: ",
+                            self.key_hints.get(&keyid).unwrap())))?.into();
+
+                    let algo = key.pk_algo();
+                    if let Some(()) =
+                        key.secret_mut()
+                        .and_then(|s| s.decrypt_in_place(algo, &p).ok())
+                    {
+                        break key.clone().into_keypair().unwrap()
+                    } else {
+                        eprintln!("Bad password.");
+                    }
+                };
+
+                if let Ok(fp) = self.try_decrypt(pkesk, &mut keypair,
+                                                 &mut decrypt) {
+                    return Ok(fp);
                 }
             }
         }
@@ -221,13 +292,13 @@ impl<'a> DecryptionHelper for Helper<'a> {
     }
 }
 
-pub fn decrypt(ctx: &Context, store: &mut store::Store,
-               input: &mut io::Read, output: &mut io::Write,
+pub fn decrypt(ctx: &Context, mapping: &mut store::Mapping,
+               input: &mut dyn io::Read, output: &mut dyn io::Write,
                signatures: usize, tpks: Vec<TPK>, secrets: Vec<TPK>,
                dump_session_key: bool,
                dump: bool, hex: bool)
                -> Result<()> {
-    let helper = Helper::new(ctx, store, signatures, tpks, secrets,
+    let helper = Helper::new(ctx, mapping, signatures, tpks, secrets,
                              dump_session_key, dump, hex);
     let mut decryptor = Decryptor::from_reader(input, helper, None)
         .context("Decryption failed")?;

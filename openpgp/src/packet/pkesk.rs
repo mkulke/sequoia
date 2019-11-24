@@ -7,19 +7,20 @@
 
 use quickcheck::{Arbitrary, Gen};
 
-use Error;
-use packet::Key;
-use KeyID;
-use crypto::Decryptor;
-use crypto::mpis::{self, MPI, Ciphertext};
-use Packet;
-use PublicKeyAlgorithm;
-use Result;
-use SymmetricAlgorithm;
-use crypto::SessionKey;
-use crypto::ecdh;
+use crate::Error;
+use crate::packet::key;
+use crate::packet::Key;
+use crate::KeyID;
+use crate::crypto::Decryptor;
+use crate::crypto::mpis::{self, MPI, Ciphertext};
+use crate::Packet;
+use crate::PublicKeyAlgorithm;
+use crate::Result;
+use crate::SymmetricAlgorithm;
+use crate::crypto::SessionKey;
+use crate::crypto::ecdh;
 use nettle::{rsa, Yarrow};
-use packet;
+use crate::packet;
 
 /// Holds an asymmetrically encrypted session key.
 ///
@@ -56,10 +57,13 @@ impl PKESK3 {
     ///
     /// The given symmetric algorithm must match the algorithm that is
     /// used to encrypt the payload.
-    pub fn for_recipient(algo: SymmetricAlgorithm,
-                         session_key: &SessionKey, recipient: &Key)
-                         -> Result<PKESK3> {
-        use PublicKeyAlgorithm::*;
+    pub fn for_recipient<R>(algo: SymmetricAlgorithm,
+                            session_key: &SessionKey,
+                            recipient: &Key<key::PublicParts, R>)
+        -> Result<PKESK3>
+        where R: key::KeyRole
+    {
+        use crate::PublicKeyAlgorithm::*;
         let mut rng = Yarrow::default();
 
         // We need to prefix the cipher specifier to the session key,
@@ -145,8 +149,9 @@ impl PKESK3 {
 
     /// Decrypts the ESK and returns the session key and symmetric algorithm
     /// used to encrypt the following payload.
-    pub fn decrypt(&self, decryptor: &mut Decryptor)
+    pub fn decrypt<R>(&self, decryptor: &mut dyn Decryptor<R>)
         -> Result<(SymmetricAlgorithm, SessionKey)>
+        where R: key::KeyRole
     {
         let plain = decryptor.decrypt(&self.esk)?;
         let key_rgn = 1..(plain.len() - 2);
@@ -202,11 +207,11 @@ impl Arbitrary for PKESK3 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use TPK;
-    use PacketPile;
-    use Packet;
-    use parse::Parse;
-    use serialize::SerializeInto;
+    use crate::TPK;
+    use crate::PacketPile;
+    use crate::Packet;
+    use crate::parse::Parse;
+    use crate::serialize::SerializeInto;
 
     quickcheck! {
         fn roundtrip(p: PKESK3) -> bool {
@@ -219,12 +224,12 @@ mod tests {
     #[test]
     fn decrypt_rsa() {
         let tpk = TPK::from_bytes(
-            ::tests::key("testy-private.pgp")).unwrap();
+            crate::tests::key("testy-private.pgp")).unwrap();
         let pile = PacketPile::from_bytes(
-            ::tests::message("encrypted-to-testy.gpg")).unwrap();
+            crate::tests::message("encrypted-to-testy.gpg")).unwrap();
         let mut keypair =
             tpk.subkeys().next().unwrap()
-            .subkey().clone().into_keypair().unwrap();
+            .key().clone().mark_parts_secret().unwrap().into_keypair().unwrap();
 
         let pkg = pile.descendants().skip(0).next().clone();
 
@@ -240,12 +245,12 @@ mod tests {
     #[test]
     fn decrypt_ecdh_cv25519() {
         let tpk = TPK::from_bytes(
-            ::tests::key("testy-new-private.pgp")).unwrap();
+            crate::tests::key("testy-new-private.pgp")).unwrap();
         let pile = PacketPile::from_bytes(
-            ::tests::message("encrypted-to-testy-new.pgp")).unwrap();
+            crate::tests::message("encrypted-to-testy-new.pgp")).unwrap();
         let mut keypair =
             tpk.subkeys().next().unwrap()
-            .subkey().clone().into_keypair().unwrap();
+            .key().clone().mark_parts_secret().unwrap().into_keypair().unwrap();
 
         let pkg = pile.descendants().skip(0).next().clone();
 
@@ -261,12 +266,12 @@ mod tests {
     #[test]
     fn decrypt_ecdh_nistp256() {
         let tpk = TPK::from_bytes(
-            ::tests::key("testy-nistp256-private.pgp")).unwrap();
+            crate::tests::key("testy-nistp256-private.pgp")).unwrap();
         let pile = PacketPile::from_bytes(
-            ::tests::message("encrypted-to-testy-nistp256.pgp")).unwrap();
+            crate::tests::message("encrypted-to-testy-nistp256.pgp")).unwrap();
         let mut keypair =
             tpk.subkeys().next().unwrap()
-            .subkey().clone().into_keypair().unwrap();
+            .key().clone().mark_parts_secret().unwrap().into_keypair().unwrap();
 
         let pkg = pile.descendants().skip(0).next().clone();
 
@@ -282,12 +287,12 @@ mod tests {
     #[test]
     fn decrypt_ecdh_nistp384() {
         let tpk = TPK::from_bytes(
-            ::tests::key("testy-nistp384-private.pgp")).unwrap();
+            crate::tests::key("testy-nistp384-private.pgp")).unwrap();
         let pile = PacketPile::from_bytes(
-            ::tests::message("encrypted-to-testy-nistp384.pgp")).unwrap();
+            crate::tests::message("encrypted-to-testy-nistp384.pgp")).unwrap();
         let mut keypair =
             tpk.subkeys().next().unwrap()
-            .subkey().clone().into_keypair().unwrap();
+            .key().clone().mark_parts_secret().unwrap().into_keypair().unwrap();
 
         let pkg = pile.descendants().skip(0).next().clone();
 
@@ -303,12 +308,12 @@ mod tests {
     #[test]
     fn decrypt_ecdh_nistp521() {
         let tpk = TPK::from_bytes(
-            ::tests::key("testy-nistp521-private.pgp")).unwrap();
+            crate::tests::key("testy-nistp521-private.pgp")).unwrap();
         let pile = PacketPile::from_bytes(
-            ::tests::message("encrypted-to-testy-nistp521.pgp")).unwrap();
+            crate::tests::message("encrypted-to-testy-nistp521.pgp")).unwrap();
         let mut keypair =
             tpk.subkeys().next().unwrap()
-            .subkey().clone().into_keypair().unwrap();
+            .key().clone().mark_parts_secret().unwrap().into_keypair().unwrap();
 
         let pkg = pile.descendants().skip(0).next().clone();
 
@@ -324,18 +329,17 @@ mod tests {
 
     #[test]
     fn decrypt_with_short_cv25519_secret_key() {
-        use conversions::Time;
+        use crate::conversions::Time;
         use super::PKESK3;
-        use crypto::SessionKey;
-        use crypto::mpis::{self, MPI};
-        use PublicKeyAlgorithm;
-        use SymmetricAlgorithm;
-        use HashAlgorithm;
-        use constants::Curve;
-        use packet::Key;
-        use packet::key::Key4;
+        use crate::crypto::SessionKey;
+        use crate::crypto::mpis::{self, MPI};
+        use crate::PublicKeyAlgorithm;
+        use crate::SymmetricAlgorithm;
+        use crate::HashAlgorithm;
+        use crate::constants::Curve;
+        use crate::packet::key;
+        use crate::packet::key::Key4;
         use nettle::curve25519;
-        use time;
 
         // 20 byte sec key
         let mut sec = [
@@ -354,18 +358,20 @@ mod tests {
             hash: HashAlgorithm::SHA256,
             sym: SymmetricAlgorithm::AES256,
         };
-        let private_mpis = mpis::SecretKey::ECDH {
+        let private_mpis = mpis::SecretKeyMaterial::ECDH {
             scalar: MPI::new(&sec[..]).into(),
         };
-        let mut key: Key = Key4::new(time::now().canonicalize(),
-                                     PublicKeyAlgorithm::ECDH,
-                                     public_mpis, None)
-            .unwrap().into();
+        let mut key: key::UnspecifiedPublic
+            = Key4::new(std::time::SystemTime::now().canonicalize(),
+                        PublicKeyAlgorithm::ECDH,
+                        public_mpis)
+                .unwrap().into();
         key.set_secret(Some(private_mpis.into()));
         let sess_key = SessionKey::new(32);
         let pkesk = PKESK3::for_recipient(SymmetricAlgorithm::AES256, &sess_key,
                                           &key).unwrap();
-        let mut keypair = key.into_keypair().unwrap();
+        let mut keypair =
+            key.mark_parts_secret().unwrap().into_keypair().unwrap();
         pkesk.decrypt(&mut keypair).unwrap();
     }
 }

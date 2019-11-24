@@ -64,16 +64,31 @@ extern crate quickcheck;
 
 extern crate rand;
 
-extern crate time;
-
-extern crate sequoia_rfc2822 as rfc2822;
-
 #[macro_use] extern crate lazy_static;
 
 extern crate idna;
 
 #[macro_use]
 mod macros;
+
+// On debug builds, Vec<u8>::truncate is very, very slow.  For
+// instance, running the decrypt_test_stream test takes 51 seconds on
+// my (Neal's) computer using Vec<u8>::truncate and <0.1 seconds using
+// `unsafe { v.set_len(len); }`.
+//
+// The issue is that the compiler calls drop on every element that is
+// dropped, even though a u8 doesn't have a drop implementation.  The
+// compiler optimizes this away at high optimization levels, but those
+// levels make debugging harder.
+fn vec_truncate(v: &mut Vec<u8>, len: usize) {
+    if cfg!(debug_assertions) {
+        if len < v.len() {
+            unsafe { v.set_len(len); }
+        }
+    } else {
+        v.truncate(len);
+    }
+}
 
 // Like assert!, but checks a pattern.
 //
@@ -109,19 +124,19 @@ pub mod conversions;
 pub mod crypto;
 
 pub mod packet;
-use packet::{BodyLength, Header, Container};
-use packet::ctb::{CTB, CTBOld, CTBNew};
+use crate::packet::{Container, key};
 
 pub mod parse;
 
 pub mod tpk;
+pub use tpk::TPK;
 pub mod serialize;
 
 mod packet_pile;
 pub mod message;
 
 pub mod constants;
-use constants::{
+use crate::constants::{
     PublicKeyAlgorithm,
     SymmetricAlgorithm,
     HashAlgorithm,
@@ -139,9 +154,9 @@ mod tests;
 /// The time is chosen to that the subkeys in
 /// openpgp/tests/data/keys/neal.pgp are not expired.
 #[cfg(test)]
-fn frozen_time() -> time::Tm {
-    use conversions::Time;
-    time::Tm::from_pgp(1554542220 - 1)
+fn frozen_time() -> std::time::SystemTime {
+    use crate::conversions::Time;
+    std::time::SystemTime::from_pgp(1554542220 - 1)
 }
 
 /// Crate result specialization.
@@ -161,6 +176,11 @@ pub enum Error {
     /// A malformed packet.
     #[fail(display = "Malformed packet: {}", _0)]
     MalformedPacket(String),
+
+    /// Packet size exceeds the configured limit.
+    #[fail(display = "{} Packet ({} bytes) exceeds limit of {} bytes",
+           _0, _1, _2)]
+    PacketTooLarge(packet::Tag, u32, u32),
 
     /// Unsupported packet type.
     #[fail(display = "Unsupported packet type.  Tag: {}", _0)]
@@ -264,13 +284,13 @@ pub enum Packet {
     /// One pass signature packet.
     OnePassSig(packet::OnePassSig),
     /// Public key packet.
-    PublicKey(packet::Key),
+    PublicKey(packet::key::PublicKey),
     /// Public subkey packet.
-    PublicSubkey(packet::Key),
+    PublicSubkey(packet::key::PublicSubkey),
     /// Public/Secret key pair.
-    SecretKey(packet::Key),
+    SecretKey(packet::key::SecretKey),
     /// Public/Secret subkey pair.
-    SecretSubkey(packet::Key),
+    SecretSubkey(packet::key::SecretSubkey),
     /// Marker packet.
     Marker(packet::Marker),
     /// Trust packet.
@@ -302,7 +322,7 @@ impl Packet {
     ///
     ///   [Section 4.3 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-4.3
     pub fn tag(&self) -> packet::Tag {
-        use packet::Tag;
+        use crate::packet::Tag;
         match self {
             &Packet::Unknown(ref packet) => packet.tag(),
             &Packet::Signature(_) => Tag::Signature,
@@ -333,7 +353,7 @@ impl Packet {
     /// into an `Packet::Unknown`.  `tag()` returns `Tag::Signature`,
     /// whereas `kind()` returns `None`.
     pub fn kind(&self) -> Option<packet::Tag> {
-        use packet::Tag;
+        use crate::packet::Tag;
         match self {
             &Packet::Unknown(_) => None,
             &Packet::Signature(_) => Some(Tag::Signature),
@@ -374,81 +394,6 @@ pub struct PacketPile {
     /// At the top level, we have a sequence of packets, which may be
     /// containers.
     top_level: Container,
-}
-
-/// A transferable public key (TPK).
-///
-/// A TPK (see [RFC 4880, section 11.1]) can be used to verify
-/// signatures and encrypt data.  It can be stored in a keystore and
-/// uploaded to keyservers.
-///
-/// TPKs are always canonicalized in the sense that only elements
-/// (user id, user attribute, subkey) with at least one valid
-/// self-signature are preserved.  Also, invalid self-signatures are
-/// dropped.  The self-signatures are sorted so that the newest
-/// self-signature comes first.  User IDs are sorted so that the first
-/// `UserID` is the primary User ID.  Third-party certifications are
-/// *not* validated, as the keys are not available; they are simply
-/// passed through as is.
-///
-/// [RFC 4880, section 11.1]: https://tools.ietf.org/html/rfc4880#section-11.1
-///
-/// # Secret keys
-///
-/// Any key in a `TPK` may have a secret key attached to it.  To
-/// protect secret keys from being leaked, secret keys are not written
-/// out if a `TPK` is serialized.  To also serialize the secret keys,
-/// you need to use [`TPK::as_tsk()`] to get an object that writes
-/// them out during serialization.
-///
-/// [`TPK::as_tsk()`]: #method.as_tsk
-///
-/// # Example
-///
-/// ```rust
-/// # extern crate sequoia_openpgp as openpgp;
-/// # use openpgp::Result;
-/// # use openpgp::parse::{Parse, PacketParserResult, PacketParser};
-/// use openpgp::TPK;
-///
-/// # fn main() { f().unwrap(); }
-/// # fn f() -> Result<()> {
-/// #     let ppr = PacketParser::from_bytes(&b""[..])?;
-/// match TPK::from_packet_parser(ppr) {
-///     Ok(tpk) => {
-///         println!("Key: {}", tpk.primary());
-///         for binding in tpk.userids() {
-///             println!("User ID: {}", binding.userid());
-///         }
-///     }
-///     Err(err) => {
-///         eprintln!("Error parsing TPK: {}", err);
-///     }
-/// }
-///
-/// #     Ok(())
-/// # }
-#[derive(Debug, Clone, PartialEq)]
-pub struct TPK {
-    primary: packet::Key,
-    primary_selfsigs: Vec<packet::Signature>,
-    primary_certifications: Vec<packet::Signature>,
-    primary_self_revocations: Vec<packet::Signature>,
-    // Other revocations (these may or may not be by known designated
-    // revokers).
-    primary_other_revocations: Vec<packet::Signature>,
-
-    userids: Vec<tpk::UserIDBinding>,
-    user_attributes: Vec<tpk::UserAttributeBinding>,
-    subkeys: Vec<tpk::SubkeyBinding>,
-
-    // Unknown components, e.g., some UserAttribute++ packet from the
-    // future.
-    pub(crate) // XXX for TSK::serialize()
-    unknowns: Vec<tpk::UnknownBinding>,
-    // Signatures that we couldn't find a place for.
-    pub(crate) // XXX for TSK::serialize()
-    bad: Vec<packet::Signature>,
 }
 
 /// An OpenPGP message.
@@ -504,18 +449,14 @@ pub enum KeyID {
 pub enum RevocationStatus<'a> {
     /// The key is definitely revoked.
     ///
-    /// All self-revocations are returned, the most recent revocation
-    /// first.
-    Revoked(&'a [packet::Signature]),
-    /// We have a third-party revocation certificate that is allegedly
-    /// from a designated revoker, but we don't have the designated
-    /// revoker's key to check its validity.
+    /// The relevant self-revocations are returned.
+    Revoked(Vec<&'a packet::Signature>),
+    /// There is a revocation certificate from a possible designated
+    /// revoker.
+    CouldBe(Vec<&'a packet::Signature>),
+    /// The key does not appear to be revoked.
     ///
-    /// All such certificates are returned.  The caller must check
-    /// them manually.
-    CouldBe(&'a [packet::Signature]),
-    /// The key does not appear to be revoked, but perhaps an attacker
-    /// has performed a DoS, which prevents us from seeing the
-    /// revocation certificate.
+    /// An attacker could still have performed a DoS, which prevents
+    /// us from seeing the revocation certificate.
     NotAsFarAsWeKnow,
 }

@@ -4,8 +4,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 extern crate sequoia_openpgp as openpgp;
-use openpgp::parse::*;
-use openpgp::serialize::*;
+use crate::openpgp::parse::*;
+use crate::openpgp::serialize::*;
 
 mod for_each_artifact {
     use super::*;
@@ -39,6 +39,21 @@ mod for_each_artifact {
             let mut v = Vec::new();
             p.as_tsk().serialize(&mut v)?;
             let q = openpgp::TPK::from_bytes(&v)?;
+            if p != q {
+                eprintln!("roundtripping {:?} failed", src);
+
+                let p : Vec<openpgp::Packet> = p.clone().into_packets().collect();
+                let q : Vec<openpgp::Packet> = q.clone().into_packets().collect();
+                eprintln!("original: {} packets; roundtripped: {} packets",
+                          p.len(), q.len());
+                for (i, (p, q)) in p.iter().zip(q.iter()).enumerate() {
+                    if p != q {
+                        eprintln!("First difference at packet {}:\nOriginal: {:?}\nNew: {:?}",
+                                  i, p, q);
+                        break;
+                    }
+                }
+            }
             assert_eq!(p, q, "roundtripping {:?} failed", src);
 
             let w = p.as_tsk().to_vec().unwrap();

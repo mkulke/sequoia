@@ -23,12 +23,13 @@ use self::openpgp::{
         KeyIter,
         TPKBuilder,
         TPKParser,
+        TPKRevocationBuilder,
         UserIDBinding,
         UserIDBindingIter,
     },
 };
 
-use ::error::Status;
+use crate::error::Status;
 use super::fingerprint::Fingerprint;
 use super::packet::key::Key;
 use super::packet::Packet;
@@ -37,11 +38,12 @@ use super::packet_pile::PacketPile;
 use super::tsk::TSK;
 use super::revocation_status::RevocationStatus;
 
-use Maybe;
-use RefRaw;
-use MoveFromRaw;
-use MoveIntoRaw;
-use MoveResultIntoRaw;
+use crate::Maybe;
+use crate::RefRaw;
+use crate::MoveFromRaw;
+use crate::MoveIntoRaw;
+use crate::MoveResultIntoRaw;
+use crate::maybe_time;
 
 /// A transferable public key (TPK).
 ///
@@ -59,7 +61,7 @@ use MoveResultIntoRaw;
 /// passed through as is.
 ///
 /// [RFC 4880, section 11.1]: https://tools.ietf.org/html/rfc4880#section-11.1
-#[::ffi_wrapper_type(
+#[crate::ffi_wrapper_type(
     prefix = "pgp_", name = "tpk",
     derive = "Clone, Debug, Display, PartialEq, Parse, Serialize")]
 pub struct TPK(openpgp::TPK);
@@ -68,7 +70,7 @@ pub struct TPK(openpgp::TPK);
 ///
 /// Consumes `m`.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
-fn pgp_tpk_from_packet_pile(errp: Option<&mut *mut ::error::Error>,
+fn pgp_tpk_from_packet_pile(errp: Option<&mut *mut crate::error::Error>,
                             m: *mut PacketPile)
                             -> Maybe<TPK> {
     openpgp::TPK::from_packet_pile(m.move_from_raw()).move_into_raw(errp)
@@ -78,7 +80,7 @@ fn pgp_tpk_from_packet_pile(errp: Option<&mut *mut ::error::Error>,
 ///
 /// Consumes the packet parser result.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
-fn pgp_tpk_from_packet_parser(errp: Option<&mut *mut ::error::Error>,
+fn pgp_tpk_from_packet_parser(errp: Option<&mut *mut crate::error::Error>,
                               ppr: *mut PacketParserResult)
                               -> Maybe<TPK>
 {
@@ -94,7 +96,7 @@ fn pgp_tpk_from_packet_parser(errp: Option<&mut *mut ::error::Error>,
 ///
 /// Consumes `tpk` and `other`.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
-fn pgp_tpk_merge(errp: Option<&mut *mut ::error::Error>,
+fn pgp_tpk_merge(errp: Option<&mut *mut crate::error::Error>,
                  tpk: *mut TPK,
                  other: *mut TPK)
                  -> Maybe<TPK> {
@@ -111,7 +113,7 @@ fn pgp_tpk_merge(errp: Option<&mut *mut ::error::Error>,
 /// Consumes `tpk` and the packets in `packets`.  The buffer, however,
 /// must be managed by the caller.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
-fn pgp_tpk_merge_packets(errp: Option<&mut *mut ::error::Error>,
+fn pgp_tpk_merge_packets(errp: Option<&mut *mut crate::error::Error>,
                          tpk: *mut TPK,
                          packets: *mut *mut Packet,
                          packets_len: size_t)
@@ -147,8 +149,10 @@ fn pgp_tpk_as_tsk(tpk: *const TPK) -> *mut TSK<'static> {
 ///
 /// The tpk still owns the key.  The caller must not modify the key.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
-fn pgp_tpk_primary(tpk: *const TPK) -> *const Key {
-    tpk.ref_raw().primary().move_into_raw()
+fn pgp_tpk_primary_key(tpk: *const TPK) -> *const Key {
+    let key : &self::openpgp::packet::key::UnspecifiedKey
+        = tpk.ref_raw().primary().into();
+    key.move_into_raw()
 }
 
 /// Returns the TPK's revocation status as of a given time.
@@ -156,30 +160,14 @@ fn pgp_tpk_primary(tpk: *const TPK) -> *const Key {
 /// Note: this only returns whether the TPK has been revoked, and does
 /// not reflect whether an individual user id, user attribute or
 /// subkey has been revoked.
-#[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
-fn pgp_tpk_revocation_status_at(tpk: *const TPK, when: time_t)
-    -> *mut RevocationStatus<'static>
-{
-    let when = when as i64;
-    let when = if when == 0 {
-        None
-    } else {
-        Some(time::at(time::Timespec::new(when, 0)))
-    };
-
-    tpk.ref_raw().revocation_status_at(when).move_into_raw()
-}
-
-/// Returns the TPK's current revocation status.
 ///
-/// Note: this only returns whether the TPK has been revoked, and does
-/// not reflect whether an individual user id, user attribute or
-/// subkey has been revoked.
+/// If `when` is 0, then returns the TPK's revocation status as of the
+/// time of the call.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
-fn pgp_tpk_revocation_status(tpk: *const TPK)
+fn pgp_tpk_revoked(tpk: *const TPK, when: time_t)
     -> *mut RevocationStatus<'static>
 {
-    tpk.ref_raw().revocation_status().move_into_raw()
+    tpk.ref_raw().revoked(maybe_time(when)).move_into_raw()
 }
 
 fn int_to_reason_for_revocation(code: c_int) -> ReasonForRevocation {
@@ -219,7 +207,7 @@ fn int_to_reason_for_revocation(code: c_int) -> ReasonForRevocation {
 /// assert (revocation);
 /// pgp_signature_free (revocation);    /* Free the generated one.  */
 ///
-/// primary_key = pgp_tpk_primary (tpk);
+/// primary_key = pgp_tpk_primary_key (tpk);
 /// primary_keypair = pgp_key_into_key_pair (NULL, pgp_key_clone (primary_key));
 /// pgp_key_free (primary_key);
 /// assert (primary_keypair);
@@ -235,16 +223,17 @@ fn int_to_reason_for_revocation(code: c_int) -> ReasonForRevocation {
 /// tpk = pgp_tpk_merge_packets (NULL, tpk, &packet, 1);
 /// assert (tpk);
 ///
-/// pgp_revocation_status_t rs = pgp_tpk_revocation_status (tpk);
+/// pgp_revocation_status_t rs = pgp_tpk_revoked (tpk, 0);
 /// assert (pgp_revocation_status_variant (rs) == PGP_REVOCATION_STATUS_REVOKED);
 /// pgp_revocation_status_free (rs);
 ///
 /// pgp_tpk_free (tpk);
 /// ```
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
-fn pgp_tpk_revoke(errp: Option<&mut *mut ::error::Error>,
+fn pgp_tpk_revoke(errp: Option<&mut *mut crate::error::Error>,
                   tpk: *const TPK,
-                  primary_signer: *mut Box<crypto::Signer>,
+                  primary_signer: *mut Box<dyn crypto::Signer<
+                          openpgp::packet::key::UnspecifiedRole>>,
                   code: c_int,
                   reason: Option<&c_char>)
                   -> Maybe<Signature>
@@ -259,7 +248,10 @@ fn pgp_tpk_revoke(errp: Option<&mut *mut ::error::Error>,
         b""
     };
 
-    tpk.revoke(signer.as_mut(), code, reason).move_into_raw(errp)
+    let builder = TPKRevocationBuilder::new();
+    let builder = ffi_try_or!(builder.set_reason_for_revocation(code, reason), None);
+    let sig = builder.build(signer.as_mut(), tpk, None);
+    sig.move_into_raw(errp)
 }
 
 /// Adds a revocation certificate to the tpk.
@@ -286,7 +278,7 @@ fn pgp_tpk_revoke(errp: Option<&mut *mut ::error::Error>,
 /// assert (revocation);
 /// pgp_signature_free (revocation);    /* Free the generated one.  */
 ///
-/// primary_key = pgp_tpk_primary (tpk);
+/// primary_key = pgp_tpk_primary_key (tpk);
 /// primary_keypair = pgp_key_into_key_pair (NULL, pgp_key_clone (primary_key));
 /// pgp_key_free (primary_key);
 /// assert (primary_keypair);
@@ -298,16 +290,17 @@ fn pgp_tpk_revoke(errp: Option<&mut *mut ::error::Error>,
 /// pgp_signer_free (primary_signer);
 /// pgp_key_pair_free (primary_keypair);
 ///
-/// pgp_revocation_status_t rs = pgp_tpk_revocation_status (tpk);
+/// pgp_revocation_status_t rs = pgp_tpk_revoked (tpk, 0);
 /// assert (pgp_revocation_status_variant (rs) == PGP_REVOCATION_STATUS_REVOKED);
 /// pgp_revocation_status_free (rs);
 ///
 /// pgp_tpk_free (tpk);
 /// ```
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
-fn pgp_tpk_revoke_in_place(errp: Option<&mut *mut ::error::Error>,
+fn pgp_tpk_revoke_in_place(errp: Option<&mut *mut crate::error::Error>,
                            tpk: *mut TPK,
-                           primary_signer: *mut Box<crypto::Signer>,
+                           primary_signer: *mut Box<dyn crypto::Signer<
+                                   openpgp::packet::key::UnspecifiedRole>>,
                            code: c_int,
                            reason: Option<&c_char>)
                            -> Maybe<TPK>
@@ -325,37 +318,20 @@ fn pgp_tpk_revoke_in_place(errp: Option<&mut *mut ::error::Error>,
 }
 
 /// Returns whether the TPK has expired.
+///
+/// If `when` is 0, then the current time is used.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
-fn pgp_tpk_expired(tpk: *const TPK)
-                   -> c_int {
-    let tpk = tpk.ref_raw();
-
-    tpk.expired() as c_int
-}
-
-/// Returns whether the TPK has expired.
-#[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
-fn pgp_tpk_expired_at(tpk: *const TPK, when: time_t)
-                      -> c_int {
-    let tpk = tpk.ref_raw();
-    tpk.expired_at(time::at(time::Timespec::new(when as i64, 0))) as c_int
-}
-
-/// Returns whether the TPK is alive.
-#[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
-fn pgp_tpk_alive(tpk: *const TPK)
-                 -> c_int {
-    let tpk = tpk.ref_raw();
-
-    tpk.alive() as c_int
+fn pgp_tpk_expired(tpk: *const TPK, when: time_t) -> c_int {
+    tpk.ref_raw().expired(maybe_time(when)) as c_int
 }
 
 /// Returns whether the TPK is alive at the specified time.
+///
+/// If `when` is 0, then the current time is used.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
-fn pgp_tpk_alive_at(tpk: *const TPK, when: time_t)
+fn pgp_tpk_alive(tpk: *const TPK, when: time_t)
                     -> c_int {
-    let tpk = tpk.ref_raw();
-    tpk.alive_at(time::at(time::Timespec::new(when as i64, 0))) as c_int
+    tpk.ref_raw().alive(maybe_time(when)) as c_int
 }
 
 /// Changes the TPK's expiration.
@@ -365,15 +341,16 @@ fn pgp_tpk_alive_at(tpk: *const TPK, when: time_t)
 ///
 /// This function consumes `tpk` and returns a new `TPK`.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
-fn pgp_tpk_set_expiry(errp: Option<&mut *mut ::error::Error>,
-                      tpk: *mut TPK, primary_signer: *mut Box<crypto::Signer>,
+fn pgp_tpk_set_expiry(errp: Option<&mut *mut crate::error::Error>,
+                      tpk: *mut TPK, primary_signer: *mut Box<dyn crypto::Signer<
+                              openpgp::packet::key::UnspecifiedRole>>,
                       expiry: u32)
                       -> Maybe<TPK> {
     let tpk = tpk.move_from_raw();
     let signer = ffi_param_ref_mut!(primary_signer);
 
     tpk.set_expiry(signer.as_mut(),
-                   Some(time::Duration::seconds(expiry as i64)))
+                   Some(std::time::Duration::new(expiry as u64, 0)))
         .move_into_raw(errp)
 }
 
@@ -424,7 +401,7 @@ pub extern "C" fn pgp_user_id_binding_selfsig(
     -> Maybe<Signature>
 {
     let binding = ffi_param_ref!(binding);
-    binding.binding_signature().move_into_raw()
+    binding.binding_signature(None).move_into_raw()
 }
 
 
@@ -459,9 +436,11 @@ pub extern "C" fn pgp_user_id_binding_iter_next<'a>(
 
 /* tpk::KeyIter. */
 
-/// Wrapers a KeyIter for export via the FFI.
+/// Wraps a KeyIter for export via the FFI.
 pub struct KeyIterWrapper<'a> {
-    iter: KeyIter<'a>,
+    pub(crate) // For serialize.rs.
+    iter: KeyIter<'a, openpgp::packet::key::PublicParts,
+                  openpgp::packet::key::UnspecifiedRole>,
     // Whether next has been called.
     next_called: bool,
 }
@@ -562,6 +541,50 @@ pub extern "C" fn pgp_tpk_key_iter_signing_capable<'a>(
     iter_wrapper.iter = tmp.signing_capable();
 }
 
+/// Changes the iterator to only return keys that are capable of
+/// encrypting data at rest.
+///
+/// If you call this function and, e.g., the `signing_capable`
+/// function, the *union* of the values is used.  That is, the
+/// iterator will return keys that are certification capable *or*
+/// signing capable.
+///
+/// Note: you may not call this function after starting to iterate.
+#[::sequoia_ffi_macros::extern_fn] #[no_mangle]
+pub extern "C" fn pgp_tpk_key_iter_encrypting_capable_at_rest<'a>(
+    iter_wrapper: *mut KeyIterWrapper<'a>)
+{
+    let iter_wrapper = ffi_param_ref_mut!(iter_wrapper);
+    if iter_wrapper.next_called {
+        panic!("Can't change KeyIter filter after iterating.");
+    }
+
+    let tmp = std::mem::replace(&mut iter_wrapper.iter, KeyIter::empty());
+    iter_wrapper.iter = tmp.encrypting_capable_at_rest();
+}
+
+/// Changes the iterator to only return keys that are capable of
+/// encrypting data for transport.
+///
+/// If you call this function and, e.g., the `signing_capable`
+/// function, the *union* of the values is used.  That is, the
+/// iterator will return keys that are certification capable *or*
+/// signing capable.
+///
+/// Note: you may not call this function after starting to iterate.
+#[::sequoia_ffi_macros::extern_fn] #[no_mangle]
+pub extern "C" fn pgp_tpk_key_iter_encrypting_capable_for_transport<'a>(
+    iter_wrapper: *mut KeyIterWrapper<'a>)
+{
+    let iter_wrapper = ffi_param_ref_mut!(iter_wrapper);
+    if iter_wrapper.next_called {
+        panic!("Can't change KeyIter filter after iterating.");
+    }
+
+    let tmp = std::mem::replace(&mut iter_wrapper.iter, KeyIter::empty());
+    iter_wrapper.iter = tmp.encrypting_capable_for_transport();
+}
+
 /// Changes the iterator to only return keys that are alive.
 ///
 /// If you call this function (or `pgp_tpk_key_iter_alive_at`), only
@@ -601,7 +624,8 @@ pub extern "C" fn pgp_tpk_key_iter_alive_at<'a>(
 
     use std::mem;
     let tmp = mem::replace(&mut iter_wrapper.iter, KeyIter::empty());
-    iter_wrapper.iter = tmp.alive_at(time::at(time::Timespec::new(when as i64, 0)));
+    iter_wrapper.iter =
+        tmp.alive_at(maybe_time(when).unwrap_or(std::time::UNIX_EPOCH));
 }
 
 /// Changes the iterator to only return keys whose revocation status
@@ -689,13 +713,15 @@ pub extern "C" fn pgp_tpk_key_iter_next<'a>(
             *ptr = rs.move_into_raw();
         }
 
+        let key : &self::openpgp::packet::key::UnspecifiedKey
+            = key.into();
         Some(key).move_into_raw()
     } else {
         None
     }
 }
 
-/// Wrappers a TPKParser for export via the FFI.
+/// Wraps a TPKParser for export via the FFI.
 pub struct TPKParserWrapper<'a> {
     parser: TPKParser<'a, std::vec::IntoIter<self::openpgp::Packet>>,
 }
@@ -705,7 +731,7 @@ pub struct TPKParserWrapper<'a> {
 /// A `TPKParser` parses a keyring, which is simply zero or more TPKs
 /// concatenated together.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
-fn pgp_tpk_parser_from_bytes(errp: Option<&mut *mut ::error::Error>,
+fn pgp_tpk_parser_from_bytes(errp: Option<&mut *mut crate::error::Error>,
                              buf: *mut u8, len: size_t)
     -> *mut TPKParserWrapper<'static>
 {
@@ -736,7 +762,7 @@ fn pgp_tpk_parser_from_packet_parser(ppr: *mut PacketParserResult<'static>)
 /// If this function returns NULL and does not set *errp, then the end
 /// of the file was reached.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
-fn pgp_tpk_parser_next(errp: Option<&mut *mut ::error::Error>,
+fn pgp_tpk_parser_next(errp: Option<&mut *mut crate::error::Error>,
                        parser: *mut TPKParserWrapper)
     -> *mut TPK
 {
@@ -846,6 +872,7 @@ fn int_to_cipher_suite(cs: c_int) -> CipherSuite {
         3 => P384,
         4 => P521,
         5 => RSA2k,
+        6 => RSA4k,
         n => panic!("Bad ciphersuite: {}", n),
      }
 }
@@ -918,7 +945,7 @@ pub extern "C" fn pgp_tpk_builder_add_certification_subkey
 /// Consumes `tpkb`.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle]
 pub extern "C" fn pgp_tpk_builder_generate
-    (errp: Option<&mut *mut ::error::Error>, tpkb: *mut TPKBuilder,
+    (errp: Option<&mut *mut crate::error::Error>, tpkb: *mut TPKBuilder,
      tpk_out: *mut Maybe<TPK>,
      revocation_out: *mut *mut Signature)
     -> Status

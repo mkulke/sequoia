@@ -1,13 +1,13 @@
 use std::io;
 use std::path::Path;
 
-use {
+use crate::{
     Result,
     Packet,
     Container,
     PacketPile,
 };
-use parse::{
+use crate::parse::{
     PacketParserBuilder,
     PacketParserResult,
     PacketParser,
@@ -39,7 +39,7 @@ use buffered_reader::BufferedReader;
 /// to the packet (`&mut Packet`) that is currently being processed
 /// while continuing to support streaming operations.  It is also not
 /// possible to return a mutable reference to the `PacketParser`.
-/// Thus, we expose the `Option<PacketParser>` directly to the user.
+/// Thus, we expose the `PacketParserResult` directly to the user.
 /// *However*, do *not* directly call `PacketParser::next()` or
 /// `PacketParser::recurse()`.  This will break the `PacketPileParser`
 /// implementation.
@@ -107,10 +107,10 @@ impl<'a> Parse<'a, PacketPileParser<'a>> for PacketPileParser<'a> {
 
     /// Creates a `PacketPileParser` to parse the OpenPGP message stored
     /// in the provided buffer.
-    fn from_bytes(data: &'a [u8])
+    fn from_bytes<D: AsRef<[u8]> + ?Sized>(data: &'a D)
             -> Result<PacketPileParser<'a>> {
         let bio = Box::new(buffered_reader::Memory::with_cookie(
-            data, Cookie::default()));
+            data.as_ref(), Cookie::default()));
         PacketPileParser::from_buffered_reader(bio)
     }
 }
@@ -129,7 +129,7 @@ impl<'a> PacketPileParser<'a> {
 
     /// Creates a `PacketPileParser` to parse the OpenPGP message stored
     /// in the `BufferedReader` object.
-    pub(crate) fn from_buffered_reader(bio: Box<BufferedReader<Cookie> + 'a>)
+    pub(crate) fn from_buffered_reader(bio: Box<dyn BufferedReader<Cookie> + 'a>)
             -> Result<PacketPileParser<'a>> {
         Self::from_packet_parser(PacketParser::from_buffered_reader(bio)?)
     }
@@ -146,17 +146,17 @@ impl<'a> PacketPileParser<'a> {
             let tmp = container;
             let packets_len = tmp.packets.len();
             let p = &mut tmp.packets[packets_len - 1];
-            if p.children.is_none() {
+            if p.children().next().is_none() {
                 if i == position - 1 {
                     // This is the leaf.  Create a new container
                     // here.
-                    p.children = Some(Container::new());
+                    p.set_children(Some(Container::new()));
                 } else {
                     panic!("Internal inconsistency while building message.");
                 }
             }
 
-            container = p.children.as_mut().unwrap();
+            container = p.children_mut().unwrap();
         }
 
         container.packets.push(packet);
@@ -277,7 +277,7 @@ impl<'a> PacketPileParser<'a> {
 fn message_parser_test() {
     let mut count = 0;
     let mut mp =
-        PacketPileParser::from_bytes(::tests::key("public-key.gpg"))
+        PacketPileParser::from_bytes(crate::tests::key("public-key.gpg"))
         .unwrap();
     while mp.recurse() {
         count += 1;
@@ -292,12 +292,12 @@ fn message_parser_test() {
 fn message_parser_reader_interface() {
     use std::io::Read;
 
-    let expected = ::tests::manifesto();
+    let expected = crate::tests::manifesto();
 
     // A message containing a compressed packet that contains a
     // literal packet.
     let mut mp = PacketPileParser::from_bytes(
-        ::tests::message("compressed-data-algo-1.gpg")).unwrap();
+        crate::tests::message("compressed-data-algo-1.gpg")).unwrap();
     let mut count = 0;
     while mp.recurse() {
         let pp = mp.ppr.as_mut().unwrap();

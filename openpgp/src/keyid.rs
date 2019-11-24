@@ -1,10 +1,10 @@
 use std::fmt;
 use quickcheck::{Arbitrary, Gen};
 
-use Error;
-use Fingerprint;
-use KeyID;
-use Result;
+use crate::Error;
+use crate::Fingerprint;
+use crate::KeyID;
+use crate::Result;
 
 impl fmt::Display for KeyID {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -17,6 +17,14 @@ impl fmt::Debug for KeyID {
         f.debug_tuple("KeyID")
             .field(&self.to_string())
             .finish()
+    }
+}
+
+impl std::str::FromStr for KeyID {
+    type Err = failure::Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Self::from_hex(s)
     }
 }
 
@@ -84,7 +92,7 @@ impl KeyID {
 
     /// Reads a hex-encoded Key ID.
     pub fn from_hex(hex: &str) -> Result<KeyID> {
-        let bytes = ::conversions::from_hex(hex, true)?;
+        let bytes = crate::conversions::from_hex(hex, true)?;
 
         // A KeyID is exactly 8 bytes long.
         if bytes.len() == 8 {
@@ -206,5 +214,11 @@ mod test {
         assert_match!(KeyID::Invalid(_) = KeyID::from_hex("587DAEF1").unwrap());
         assert_match!(KeyID::Invalid(_) =
                       KeyID::from_hex("0x587DAEF1").unwrap());
+    }
+
+    #[test]
+    fn keyid_is_send_and_sync() {
+        fn f<T: Send + Sync>(_: T) {}
+        f(KeyID::from_hex("89AB CDEF 0123 4567").unwrap());
     }
 }

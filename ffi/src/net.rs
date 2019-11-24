@@ -22,9 +22,14 @@
 //! pgp_tpk_t tpk;
 //!
 //! ctx = sq_context_new (NULL);
-//! ks = sq_keyserver_sks_pool (ctx);
+//! ks = sq_keyserver_keys_openpgp_org (ctx);
 //! id = pgp_keyid_from_bytes ((uint8_t *) "\x24\x7F\x6D\xAB\xC8\x49\x14\xFE");
 //! tpk = sq_keyserver_get (ctx, ks, id);
+//!
+//! pgp_tpk_free (tpk);
+//! pgp_keyid_free (id);
+//! sq_keyserver_free (ks);
+//! sq_context_free (ctx);
 //! ```
 
 use libc::{c_char, size_t};
@@ -33,16 +38,17 @@ use std::ptr;
 use std::slice;
 
 extern crate sequoia_openpgp as openpgp;
+extern crate tokio_core;
 
 use sequoia_net::KeyServer;
 
 use super::error::Status;
 use super::core::Context;
-use ::openpgp::keyid::KeyID;
-use ::openpgp::tpk::TPK;
-use ::RefRaw;
-use MoveResultIntoRaw;
-use Maybe;
+use crate::openpgp::keyid::KeyID;
+use crate::openpgp::tpk::TPK;
+use crate::RefRaw;
+use crate::MoveResultIntoRaw;
+use crate::Maybe;
 
 /// Returns a handle for the given URI.
 ///
@@ -50,7 +56,7 @@ use Maybe;
 /// e.g. `hkps://examle.org`.
 ///
 /// Returns `NULL` on errors.
-#[::ffi_catch_abort] #[no_mangle] pub extern "C"
+#[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
 fn sq_keyserver_new(ctx: *mut Context, uri: *const c_char) -> *mut KeyServer {
     let ctx = ffi_param_ref_mut!(ctx);
     ffi_make_fry_from_ctx!(ctx);
@@ -66,7 +72,7 @@ fn sq_keyserver_new(ctx: *mut Context, uri: *const c_char) -> *mut KeyServer {
 /// size `len` used to authenticate the server.
 ///
 /// Returns `NULL` on errors.
-#[::ffi_catch_abort] #[no_mangle] pub extern "C"
+#[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
 fn sq_keyserver_with_cert(ctx: *mut Context,
                           uri: *const c_char,
                           cert: *const u8,
@@ -88,22 +94,21 @@ fn sq_keyserver_with_cert(ctx: *mut Context,
     ffi_try_box!(KeyServer::with_cert(&ctx.c, &uri, cert))
 }
 
-/// Returns a handle for the SKS keyserver pool.
+/// Returns a handle for keys.openpgp.org.
 ///
-/// The pool `hkps://hkps.pool.sks-keyservers.net` provides HKP
-/// services over https.  It is authenticated using a certificate
-/// included in this library.  It is a good default choice.
+/// The server at `hkps://keys.openpgp.org` distributes updates for
+/// OpenPGP certificates.  It is a good default choice.
 ///
 /// Returns `NULL` on errors.
-#[::ffi_catch_abort] #[no_mangle] pub extern "C"
-fn sq_keyserver_sks_pool(ctx: *mut Context) -> *mut KeyServer {
+#[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
+fn sq_keyserver_keys_openpgp_org(ctx: *mut Context) -> *mut KeyServer {
     let ctx = ffi_param_ref_mut!(ctx);
     ffi_make_fry_from_ctx!(ctx);
-    ffi_try_box!(KeyServer::sks_pool(&ctx.c))
+    ffi_try_box!(KeyServer::keys_openpgp_org(&ctx.c))
 }
 
 /// Frees a keyserver object.
-#[::ffi_catch_abort] #[no_mangle] pub extern "C"
+#[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
 fn sq_keyserver_free(ks: Option<&mut KeyServer>) {
     ffi_free!(ks)
 }
@@ -111,7 +116,7 @@ fn sq_keyserver_free(ks: Option<&mut KeyServer>) {
 /// Retrieves the key with the given `keyid`.
 ///
 /// Returns `NULL` on errors.
-#[::ffi_catch_abort] #[no_mangle] pub extern "C"
+#[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
 fn sq_keyserver_get(ctx: *mut Context,
                     ks: *mut KeyServer,
                     id: *const KeyID)
@@ -121,13 +126,14 @@ fn sq_keyserver_get(ctx: *mut Context,
     let ks = ffi_param_ref_mut!(ks);
     let id = id.ref_raw();
 
-    ks.get(&id).move_into_raw(Some(ctx.errp()))
+    let mut core = ffi_try_or!(tokio_core::reactor::Core::new(), None);
+    core.run(ks.get(&id)).move_into_raw(Some(ctx.errp()))
 }
 
 /// Sends the given key to the server.
 ///
 /// Returns != 0 on errors.
-#[::ffi_catch_abort] #[no_mangle] pub extern "C"
+#[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
 fn sq_keyserver_send(ctx: *mut Context,
                      ks: *mut KeyServer,
                      tpk: *const TPK)
@@ -137,5 +143,7 @@ fn sq_keyserver_send(ctx: *mut Context,
     let ks = ffi_param_ref_mut!(ks);
     let tpk = tpk.ref_raw();
 
-    ffi_try_status!(ks.send(tpk))
+    ffi_try_status!(tokio_core::reactor::Core::new()
+                    .map_err(|e| e.into())
+                    .and_then(|mut core| core.run(ks.send(tpk))))
 }

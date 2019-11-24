@@ -286,6 +286,10 @@ typedef enum pgp_tag {
     PGP_TAG_PRIVATE1 = 61,
     PGP_TAG_PRIVATE2 = 62,
     PGP_TAG_PRIVATE3 = 63,
+
+    /* Dummy value to make sure the enumeration has a defined size.
+       Do not use this value.  */
+    PGP_TAG_FORCE_WIDTH = INT_MAX,
 } pgp_tag_t;
 
 /*/
@@ -435,6 +439,11 @@ typedef enum pgp_tpk_cipher_suite {
   /*/
   PGP_TPK_CIPHER_SUITE_RSA2K,
 
+  /*/
+  /// 4096 bit RSA with SHA512 and AES256.
+  /*/
+  PGP_TPK_CIPHER_SUITE_RSA4K,
+
   /* Dummy value to make sure the enumeration has a defined size.  Do
      not use this value.  */
   PGP_TPK_CIPHER_SUITE_FORCE_WIDTH = INT_MAX,
@@ -445,29 +454,9 @@ typedef struct pgp_tpk_builder *pgp_tpk_builder_t;
 typedef struct pgp_writer_stack *pgp_writer_stack_t;
 
 /*/
-/// Specifies whether to encrypt for archival purposes or for
-/// transport.
+/// A recipient of an encrypted message.
 /*/
-typedef enum pgp_encryption_mode {
-  /*/
-  /// Encrypt data for long-term storage.
-  ///
-  /// This should be used for things that should be decryptable for
-  /// a long period of time, e.g. backups, archives, etc.
-  /*/
-  PGP_ENCRYPTION_MODE_AT_REST = 0,
-
-  /*/
-  /// Encrypt data for transport.
-  ///
-  /// This should be used to protect a message in transit.  The
-  /// recipient is expected to take additional steps if she wants to
-  /// be able to decrypt it later on, e.g. store the decrypted
-  /// session key, or re-encrypt the session key with a different
-  /// key.
-  /*/
-  PGP_ENCRYPTION_MODE_FOR_TRANSPORT = 1,
-} pgp_encryption_mode_t;
+typedef struct pgp_recipient *pgp_recipient_t;
 
 /// Communicates the message structure to the VerificationHelper.
 typedef struct pgp_message_structure *pgp_message_structure_t;
@@ -496,6 +485,7 @@ typedef enum pgp_verification_result_variant {
   PGP_VERIFICATION_RESULT_GOOD_CHECKSUM = 1,
   PGP_VERIFICATION_RESULT_MISSING_KEY = 2,
   PGP_VERIFICATION_RESULT_BAD_CHECKSUM = 3,
+  PGP_VERIFICATION_RESULT_NOT_ALIVE = 4,
 
   /* Dummy value to make sure the enumeration has a defined size.  Do
      not use this value.  */

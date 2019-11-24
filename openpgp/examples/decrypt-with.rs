@@ -8,9 +8,10 @@ use std::io;
 extern crate failure;
 extern crate sequoia_openpgp as openpgp;
 
-use openpgp::crypto::{KeyPair, SessionKey};
-use openpgp::constants::SymmetricAlgorithm;
-use openpgp::parse::{
+use crate::openpgp::crypto::{KeyPair, SessionKey};
+use crate::openpgp::constants::SymmetricAlgorithm;
+use crate::openpgp::packet::key;
+use crate::openpgp::parse::{
     Parse,
     stream::{
         DecryptionHelper,
@@ -49,7 +50,7 @@ pub fn main() {
 /// keys for the signature verification and implements the
 /// verification policy.
 struct Helper {
-    keys: HashMap<openpgp::KeyID, KeyPair>,
+    keys: HashMap<openpgp::KeyID, KeyPair<key::UnspecifiedRole>>,
 }
 
 impl Helper {
@@ -64,7 +65,9 @@ impl Helper {
                     .unwrap_or(false)
                 {
                     // This only works for unencrypted secret keys.
-                    if let Ok(keypair) = key.clone().into_keypair() {
+                    if let Ok(keypair) =
+                        key.clone().mark_parts_secret().unwrap().into_keypair()
+                    {
                         keys.insert(key.keyid(), keypair);
                     }
                 }
@@ -127,6 +130,12 @@ impl VerificationHelper for Helper {
                                 let issuer = sig.issuer()
                                     .expect("good checksum has an issuer");
                                 eprintln!("Good signature from {}", issuer);
+                            },
+                            NotAlive(ref sig) => {
+                                let issuer = sig.issuer()
+                                    .expect("not alive has an issuer");
+                                eprintln!("Good, but not alive signature from {}",
+                                          issuer);
                             },
                             MissingKey(ref sig) => {
                                 let issuer = sig.issuer()

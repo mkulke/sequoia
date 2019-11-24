@@ -58,40 +58,78 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::iter::FromIterator;
+use std::sync::Mutex;
+use std::ops::{Deref, DerefMut};
 use std::fmt;
 use std::io;
-use time;
+use std::cmp;
+use std::time; 
 
 use quickcheck::{Arbitrary, Gen};
 
 use buffered_reader::BufferedReader;
 
-use {
+use crate::{
     Error,
     Result,
     packet::Signature,
     packet::signature::{self, Signature4},
-    packet::Features,
-    packet::KeyFlags,
-    packet::KeyServerPreferences,
+    packet::key,
+    packet::Key,
     Packet,
     Fingerprint,
-    packet::Key,
     KeyID,
+    SignatureType,
 };
-use constants::{
+use crate::constants::{
     AEADAlgorithm,
     CompressionAlgorithm,
+    Features,
     HashAlgorithm,
+    KeyFlags,
+    KeyServerPreferences,
     PublicKeyAlgorithm,
     ReasonForRevocation,
     SymmetricAlgorithm,
 };
-use conversions::{
+use crate::conversions::{
     Time,
     Duration,
 };
 
+lazy_static!{
+    /// The default amount of tolerance to use when comparing
+    /// some timestamps.
+    ///
+    /// Used by `Subpacket::signature_alive`.
+    ///
+    /// When determining whether a timestamp generated on another
+    /// machine is valid *now*, we need to account for clock skew.
+    /// (Note: you don't normally need to consider clock skew when
+    /// evaluating a signature's validity at some time in the past.)
+    ///
+    /// We tolerate half an hour of skew based on the following
+    /// anecdote: In 2019, a developer using Sequoia in a Windows VM
+    /// running inside of Virtual Box on Mac OS X reported that he
+    /// typically observed a few minutes of clock skew and
+    /// occasionally saw over 20 minutes of clock skew.
+    ///
+    /// Note: when new messages override older messages, and their
+    /// signatures are evaluated at some arbitrary point in time, an
+    /// application may not see a consistent state if it uses a
+    /// tolerance.  Consider an application that has two messages and
+    /// wants to get the current message at time te:
+    ///
+    ///   - t0: message 0
+    ///   - te: "get current message"
+    ///   - t1: message 1
+    ///
+    /// If te is close to t1, then t1 may be considered valid, which
+    /// is probably not what you want.
+    pub static ref CLOCK_SKEW_TOLERANCE: time::Duration
+        = time::Duration::new(30 * 60, 0);
+}
+
 /// The subpacket types specified by [Section 5.2.3.1 of RFC 4880].
 ///
 /// [Section 5.2.3.1 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.1
@@ -207,7 +245,7 @@ impl From<u8> for SubpacketTag {
             34 => SubpacketTag::PreferredAEADAlgorithms,
             35 => SubpacketTag::IntendedRecipient,
             0| 1| 8| 13| 14| 15| 17| 18| 19 => SubpacketTag::Reserved(u),
-            100...110 => SubpacketTag::Private(u),
+            100..=110 => SubpacketTag::Private(u),
             _ => SubpacketTag::Unknown(u),
         }
     }
@@ -309,20 +347,25 @@ impl<'a> fmt::Debug for SubpacketRaw<'a> {
 }
 
 /// Subpacket area.
-#[derive(Clone, Eq)]
 pub struct SubpacketArea {
     /// Raw, unparsed subpacket data.
     pub data: Vec<u8>,
 
     // The subpacket area, but parsed so that the map is indexed by
     // the subpacket tag, and the value corresponds to the *last*
-    // occurance of that subpacket in the subpacket area.
+    // occurrence of that subpacket in the subpacket area.
     //
     // Since self-referential structs are a no-no, we use (start, len)
     // to reference the content in the area.
     //
     // This is an option, because we parse the subpacket area lazily.
-    parsed: RefCell<Option<HashMap<SubpacketTag, (bool, u16, u16)>>>,
+    parsed: Mutex<RefCell<Option<HashMap<SubpacketTag, (bool, u16, u16)>>>>,
+}
+
+impl Clone for SubpacketArea {
+    fn clone(&self) -> Self {
+        Self::new(self.data.clone())
+    }
 }
 
 impl PartialEq for SubpacketArea {
@@ -330,6 +373,7 @@ impl PartialEq for SubpacketArea {
         self.data == other.data
     }
 }
+impl Eq for SubpacketArea {}
 
 impl Hash for SubpacketArea {
     fn hash<H: Hasher>(&self, state: &mut H) {
@@ -360,9 +404,7 @@ impl<'a> Iterator for SubpacketAreaIterRaw<'a> {
             // Subpacket extends beyond the end of the hashed
             // area.  Skip it.
             self.reader.drop_eof().unwrap();
-            eprintln!("Invalid subpacket: subpacket extends beyond \
-                       end of hashed area ({} bytes, but  {} bytes left).",
-                      len, self.reader.data(0).unwrap().len());
+            // XXX: Return an error.  See #200.
             return None;
         }
 
@@ -446,7 +488,7 @@ impl<'a> FromIterator<(usize, usize, Subpacket<'a>)> for SubpacketArea {
     fn from_iter<I>(iter: I) -> Self
         where I: IntoIterator<Item=(usize, usize, Subpacket<'a>)>
     {
-        use serialize::Serialize;
+        use crate::serialize::Serialize;
         let mut data = Vec::new();
         iter.into_iter().for_each(|(_, _, s)| s.serialize(&mut data).unwrap());
         Self::new(data)
@@ -456,7 +498,7 @@ impl<'a> FromIterator<(usize, usize, Subpacket<'a>)> for SubpacketArea {
 impl SubpacketArea {
     /// Returns a new subpacket area based on `data`.
     pub fn new(data: Vec<u8>) -> SubpacketArea {
-        SubpacketArea { data: data, parsed: RefCell::new(None) }
+        SubpacketArea { data: data, parsed: Mutex::new(RefCell::new(None)) }
     }
 
     /// Returns a empty subpacket area.
@@ -469,19 +511,19 @@ impl SubpacketArea {
     // Initialize `Signature::hashed_area_parsed` from
     // `Signature::hashed_area`, if necessary.
     fn cache_init(&self) {
-        if self.parsed.borrow().is_none() {
+        if self.parsed.lock().unwrap().borrow().is_none() {
             let mut hash = HashMap::new();
             for (start, len, sb) in self.iter_raw() {
                 hash.insert(sb.tag, (sb.critical, start as u16, len as u16));
             }
 
-            *self.parsed.borrow_mut() = Some(hash);
+            *self.parsed.lock().unwrap().borrow_mut() = Some(hash);
         }
     }
 
     /// Invalidates the cache.
     fn cache_invalidate(&self) {
-        *self.parsed.borrow_mut() = None;
+        *self.parsed.lock().unwrap().borrow_mut() = None;
     }
 
     /// Iterates over the subpackets.
@@ -493,7 +535,7 @@ impl SubpacketArea {
     pub fn lookup(&self, tag: SubpacketTag) -> Option<Subpacket> {
         self.cache_init();
 
-        match self.parsed.borrow().as_ref().unwrap().get(&tag) {
+        match self.parsed.lock().unwrap().borrow().as_ref().unwrap().get(&tag) {
             Some(&(critical, start, len)) =>
                 return Some(SubpacketRaw {
                     critical: critical,
@@ -512,7 +554,7 @@ impl SubpacketArea {
     /// Returns `Error::MalformedPacket` if adding the packet makes
     /// the subpacket area exceed the size limit.
     pub fn add(&mut self, packet: Subpacket) -> Result<()> {
-        use serialize::Serialize;
+        use crate::serialize::Serialize;
 
         if self.data.len() + packet.len() > ::std::u16::MAX as usize {
             return Err(Error::MalformedPacket(
@@ -660,7 +702,7 @@ pub enum SubpacketValue<'a> {
     Invalid(&'a [u8]),
 
     /// 4-octet time field
-    SignatureCreationTime(time::Tm),
+    SignatureCreationTime(time::SystemTime),
     /// 4-octet time field
     SignatureExpirationTime(time::Duration),
     /// 1 octet of exportability, 0 for not, 1 for exportable
@@ -791,7 +833,7 @@ impl<'a> SubpacketValue<'a> {
             SignatureTarget { ref digest, .. } => 1 + 1 + digest.len(),
             EmbeddedSignature(p) => match p {
                 &Packet::Signature(Signature::V4(ref sig)) => {
-                    use serialize::Serialize;
+                    use crate::serialize::Serialize;
                     let mut w = Vec::new();
                     sig.serialize(&mut w).unwrap();
                     w.len()
@@ -863,11 +905,11 @@ impl<'a> SubpacketValue<'a> {
 #[derive(PartialEq, Clone)]
 pub struct Subpacket<'a> {
     /// Critical flag.
-    pub critical: bool,
+    critical: bool,
     /// Packet type.
-    pub tag: SubpacketTag,
+    tag: SubpacketTag,
     /// Packet value, must match packet type.
-    pub value: SubpacketValue<'a>,
+    value: SubpacketValue<'a>,
 }
 
 impl<'a> fmt::Debug for Subpacket<'a> {
@@ -884,12 +926,35 @@ impl<'a> fmt::Debug for Subpacket<'a> {
 
 impl<'a> Subpacket<'a> {
     /// Creates a new subpacket.
-    pub fn new(value: SubpacketValue<'a>, critical: bool) -> Result<Subpacket<'a>> {
-        Ok(Subpacket {
-            critical: critical,
-            tag: value.tag()?,
-            value: value,
-        })
+    pub fn new(value: SubpacketValue<'a>, critical: bool)
+               -> Result<Subpacket<'a>> {
+        Ok(Self::with_tag(value.tag()?, value, critical))
+    }
+
+    /// Creates a new subpacket with the given tag.
+    pub fn with_tag(tag: SubpacketTag, value: SubpacketValue<'a>,
+                    critical: bool)
+               -> Subpacket<'a> {
+        Subpacket {
+            critical,
+            tag,
+            value,
+        }
+    }
+
+    /// Returns whether this subpacket is critical.
+    pub fn critical(&self) -> bool {
+        self.critical
+    }
+
+    /// Returns the subpacket tag.
+    pub fn tag(&self) -> SubpacketTag {
+        self.tag
+    }
+
+    /// Returns the subpackets value.
+    pub fn value(&self) -> &SubpacketValue<'a> {
+        &self.value
     }
 
     /// Returns the length of the serialized subpacket.
@@ -927,7 +992,8 @@ impl<'a> From<SubpacketRaw<'a>> for Subpacket<'a> {
             SubpacketTag::SignatureCreationTime =>
                 // The timestamp is in big endian format.
                 from_be_u32(raw.value).map(|v| {
-                    SubpacketValue::SignatureCreationTime(time::Tm::from_pgp(v))
+                    SubpacketValue::SignatureCreationTime(
+                        time::SystemTime::from_pgp(v))
                 }),
 
             SubpacketTag::SignatureExpirationTime =>
@@ -1094,13 +1160,13 @@ impl<'a> From<SubpacketRaw<'a>> for Subpacket<'a> {
                 },
 
             SubpacketTag::EmbeddedSignature => {
-                use parse::Parse;
+                use crate::parse::Parse;
                 // A signature packet.
                 Some(SubpacketValue::EmbeddedSignature(
                     match Signature::from_bytes(&raw.value) {
                         Ok(s) => Packet::Signature(s),
                         Err(e) => {
-                            use packet::{Tag, Unknown};
+                            use crate::packet::{Tag, Unknown};
                             let mut u = Unknown::new(Tag::Signature, e);
                             u.set_body(raw.value.to_vec());
                             Packet::Unknown(u)
@@ -1234,22 +1300,10 @@ quickcheck! {
 }
 
 
-impl Signature4 {
+impl SubpacketArea {
     /// Returns the *last* instance of the specified subpacket.
     fn subpacket<'a>(&'a self, tag: SubpacketTag) -> Option<Subpacket<'a>> {
-        if let Some(sb) = self.hashed_area().lookup(tag) {
-            return Some(sb);
-        }
-
-        // There are a couple of subpackets that we are willing to
-        // take from the unhashed area.  The others we ignore
-        // completely.
-        if !(tag == SubpacketTag::Issuer
-             || tag == SubpacketTag::EmbeddedSignature) {
-            return None;
-        }
-
-        self.unhashed_area().lookup(tag)
+        self.lookup(tag)
     }
 
     /// Returns all instances of the specified subpacket.
@@ -1260,7 +1314,7 @@ impl Signature4 {
     fn subpackets<'a>(&'a self, target: SubpacketTag) -> Vec<Subpacket<'a>> {
         let mut result = Vec::new();
 
-        for (_start, _len, sb) in self.hashed_area().iter_raw() {
+        for (_start, _len, sb) in self.iter_raw() {
             if sb.tag == target {
                 result.push(sb.into());
             }
@@ -1278,7 +1332,7 @@ impl Signature4 {
     ///
     /// Note: if the signature contains multiple instances of this
     /// subpacket, only the last one is considered.
-    pub fn signature_creation_time(&self) -> Option<time::Tm> {
+    pub fn signature_creation_time(&self) -> Option<time::SystemTime> {
         // 4-octet time field
         if let Some(sb)
                 = self.subpacket(SubpacketTag::SignatureCreationTime) {
@@ -1312,79 +1366,6 @@ impl Signature4 {
             }
         } else {
             None
-        }
-    }
-
-    /// Returns whether or not the signature is expired.
-    ///
-    /// Note that [Section 5.2.3.4 of RFC 4880] states that "[[A
-    /// Signature Creation Time subpacket]] MUST be present in the
-    /// hashed area."  Consequently, if such a packet does not exist,
-    /// but a "Signature Expiration Time" subpacket exists, we
-    /// conservatively treat the signature as expired, because there
-    /// is no way to evaluate the expiration time.
-    ///
-    ///  [Section 5.2.3.4 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.4
-    pub fn signature_expired(&self) -> bool {
-        self.signature_expired_at(time::now_utc())
-    }
-
-    /// Returns whether or not the signature is expired at the given time.
-    ///
-    /// Note that [Section 5.2.3.4 of RFC 4880] states that "[[A
-    /// Signature Creation Time subpacket]] MUST be present in the
-    /// hashed area."  Consequently, if such a packet does not exist,
-    /// but a "Signature Expiration Time" subpacket exists, we
-    /// conservatively treat the signature as expired, because there
-    /// is no way to evaluate the expiration time.
-    ///
-    ///  [Section 5.2.3.4 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.4
-    pub fn signature_expired_at(&self, tm: time::Tm) -> bool {
-        match (self.signature_creation_time(), self.signature_expiration_time())
-        {
-            (Some(_), Some(e)) if e.num_seconds() == 0 =>
-                false, // Zero expiration time, does not expire.
-            (Some(c), Some(e)) =>
-                (c + e) <= tm,
-            (None, Some(_)) =>
-                true, // No creation time, treat as always expired.
-            (_, None) =>
-                false, // No expiration time, does not expire.
-        }
-    }
-
-    /// Returns whether or not the signature is alive, i.e. the
-    /// creation time has passed, but the expiration time has not.
-    ///
-    /// Note that [Section 5.2.3.4 of RFC 4880] states that "[[A
-    /// Signature Creation Time subpacket]] MUST be present in the
-    /// hashed area."  Consequently, if such a packet does not exist,
-    /// but a "Signature Expiration Time" subpacket exists, we
-    /// conservatively treat the signature as expired, because there
-    /// is no way to evaluate the expiration time.
-    ///
-    ///  [Section 5.2.3.4 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.4
-    pub fn signature_alive(&self) -> bool {
-        self.signature_alive_at(time::now_utc())
-    }
-
-    /// Returns whether or not the signature is alive at the given
-    /// time, i.e. the creation time has passed, but the expiration
-    /// time has not.
-    ///
-    /// Note that [Section 5.2.3.4 of RFC 4880] states that "[[A
-    /// Signature Creation Time subpacket]] MUST be present in the
-    /// hashed area."  Consequently, if such a packet does not exist,
-    /// but a "Signature Expiration Time" subpacket exists, we
-    /// conservatively treat the signature as expired, because there
-    /// is no way to evaluate the expiration time.
-    ///
-    ///  [Section 5.2.3.4 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.4
-    pub fn signature_alive_at(&self, tm: time::Tm) -> bool {
-        if let Some(creation_time) = self.signature_creation_time() {
-            creation_time <= tm && ! self.signature_expired_at(tm)
-        } else {
-            false
         }
     }
 
@@ -1521,56 +1502,6 @@ impl Signature4 {
         } else {
             None
         }
-    }
-
-    /// Returns whether or not the key is expired.
-    ///
-    /// See [Section 5.2.3.6 of RFC 4880].
-    ///
-    ///  [Section 5.2.3.6 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.6
-    pub fn key_expired(&self, key: &Key) -> bool {
-        self.key_expired_at(key, time::now_utc())
-    }
-
-    /// Returns whether or not the key is expired at the given time.
-    ///
-    /// See [Section 5.2.3.6 of RFC 4880].
-    ///
-    ///  [Section 5.2.3.6 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.6
-    pub fn key_expired_at(&self, key: &Key, tm: time::Tm) -> bool {
-        match self.key_expiration_time() {
-            Some(e) if e.num_seconds() == 0 =>
-                false, // Zero expiration time, does not expire.
-            Some(e) =>
-                *key.creation_time() + e <= tm,
-            None =>
-                false, // No expiration time, does not expire.
-        }
-    }
-
-    /// Returns whether or not the given key is alive, i.e. the
-    /// creation time has passed, but the expiration time has not.
-    ///
-    /// This function does not check whether the key was revoked.
-    ///
-    /// See [Section 5.2.3.6 of RFC 4880].
-    ///
-    ///  [Section 5.2.3.6 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.6
-    pub fn key_alive(&self, key: &Key) -> bool {
-        self.key_alive_at(key, time::now_utc())
-    }
-
-    /// Returns whether or not the given key is alive at the given
-    /// time, i.e. the creation time has passed, but the expiration
-    /// time has not.
-    ///
-    /// This function does not check whether the key was revoked.
-    ///
-    /// See [Section 5.2.3.6 of RFC 4880].
-    ///
-    ///  [Section 5.2.3.6 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.6
-    pub fn key_alive_at(&self, key: &Key, tm: time::Tm) -> bool {
-        *key.creation_time() <= tm && ! self.key_expired_at(key, tm)
     }
 
     /// Returns the value of the Preferred Symmetric Algorithms
@@ -2041,7 +1972,7 @@ impl Signature4 {
     pub fn intended_recipients(&self) -> Vec<Fingerprint> {
         let mut result = Vec::new();
 
-        for (_start, _len, sb) in self.hashed_area().iter_raw() {
+        for (_start, _len, sb) in self.iter_raw() {
             if sb.tag == SubpacketTag::IntendedRecipient {
                 let s = Subpacket::from(sb);
                 if let SubpacketValue::IntendedRecipient(fp) = s.value {
@@ -2054,9 +1985,394 @@ impl Signature4 {
     }
 }
 
+/// Subpacket storage.
+///
+/// Subpackets are stored either in a so-called hashed area or a
+/// so-called unhashed area.  Packets stored in the hashed area are
+/// protected by the signature's hash whereas packets stored in the
+/// unhashed area are not.  Generally, two types of information are
+/// stored in the unhashed area: self-authenticating data (the
+/// `Issuer` subpacket, the `Issuer Fingerprint` subpacket, and the
+/// `Embedded Signature` subpacket), and hints, like the features
+/// subpacket.
+///
+/// When accessing subpackets directly via `SubpacketArea`s, the
+/// subpackets are only looked up in the hashed area unless the
+/// packets are self-authenticating in which case subpackets from the
+/// hash area are preferred.  To return packets from a specific area,
+/// use the `hashed_area` and `unhashed_area` methods to get the
+/// specific methods and then use their accessors.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct SubpacketAreas {
+    /// Subpackets that are part of the signature.
+    hashed_area: SubpacketArea,
+    /// Subpackets _not_ that are part of the signature.
+    unhashed_area: SubpacketArea,
+}
+
+impl Deref for SubpacketAreas {
+    type Target = SubpacketArea;
+
+    fn deref(&self) -> &Self::Target {
+        &self.hashed_area
+    }
+}
+
+impl DerefMut for SubpacketAreas {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.hashed_area
+    }
+}
+
+impl SubpacketAreas {
+    /// Returns a new `SubpacketAreas` object.
+    pub fn new(hashed_area: SubpacketArea,
+               unhashed_area: SubpacketArea) ->  Self {
+        Self {
+            hashed_area: hashed_area,
+            unhashed_area: unhashed_area,
+        }
+    }
+
+    /// Returns a new `SubpacketAreas` object with empty hashed and
+    /// unhashed subpacket areas.
+    pub fn empty() -> Self {
+        Self {
+            hashed_area: SubpacketArea::empty(),
+            unhashed_area: SubpacketArea::empty(),
+        }
+    }
+
+    /// Gets a reference to the hashed area.
+    pub fn hashed_area(&self) -> &SubpacketArea {
+        &self.hashed_area
+    }
+
+    /// Gets a mutable reference to the hashed area.
+    pub fn hashed_area_mut(&mut self) -> &mut SubpacketArea {
+        &mut self.hashed_area
+    }
+
+    /// Gets a reference to the unhashed area.
+    pub fn unhashed_area(&self) -> &SubpacketArea {
+        &self.unhashed_area
+    }
+
+    /// Gets a mutable reference to the unhashed area.
+    pub fn unhashed_area_mut(&mut self) -> &mut SubpacketArea {
+        &mut self.unhashed_area
+    }
+
+    /// Returns the *last* instance of the specified subpacket.
+    fn subpacket<'a>(&'a self, tag: SubpacketTag) -> Option<Subpacket<'a>> {
+        if let Some(sb) = self.hashed_area().lookup(tag) {
+            return Some(sb);
+        }
+
+        // There are a couple of subpackets that we are willing to
+        // take from the unhashed area.  The others we ignore
+        // completely.
+        if !(tag == SubpacketTag::Issuer
+             || tag == SubpacketTag::IssuerFingerprint
+             || tag == SubpacketTag::EmbeddedSignature) {
+            return None;
+        }
+
+        self.unhashed_area().lookup(tag)
+    }
+
+    /// Returns whether or not the signature is expired at the given time.
+    ///
+    /// If `t` is None, uses the current time.
+    ///
+    /// Note that [Section 5.2.3.4 of RFC 4880] states that "[[A
+    /// Signature Creation Time subpacket]] MUST be present in the
+    /// hashed area."  Consequently, if such a packet does not exist,
+    /// but a "Signature Expiration Time" subpacket exists, we
+    /// conservatively treat the signature as expired, because there
+    /// is no way to evaluate the expiration time.
+    ///
+    ///  [Section 5.2.3.4 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.4
+    pub fn signature_expired<T>(&self, t: T) -> bool
+        where T: Into<Option<time::SystemTime>>
+    {
+        let t = t.into()
+            .unwrap_or_else(|| time::SystemTime::now().canonicalize());
+        match (self.signature_creation_time(), self.signature_expiration_time())
+        {
+            (Some(_), Some(e)) if e.as_secs() == 0 =>
+                false, // Zero expiration time, does not expire.
+            (Some(c), Some(e)) =>
+                (c + e) <= t,
+            (None, Some(_)) =>
+                true, // No creation time, treat as always expired.
+            (_, None) =>
+                false, // No expiration time, does not expire.
+        }
+    }
+
+    /// Returns whether or not the signature is alive at the specified
+    /// time.
+    ///
+    /// A signature is considered to be alive if `creation time -
+    /// tolerance <= time` and `time <= expiration time`.
+    ///
+    /// If `time` is None, uses the current time.
+    ///
+    /// If `time` is None, and `clock_skew_tolerance` is None, then
+    /// uses `CLOCK_SKEW_TOLERANCE`.  If `time` is not None, but
+    /// `clock_skew_tolerance` is None, uses no tolerance.
+    ///
+    /// Some tolerance for clock skew is sometimes necessary, because
+    /// although most computers synchronize their clock with a time
+    /// server, up to a few seconds of clock skew are not unusual in
+    /// practice.  And, even worse, several minutes of clock skew
+    /// appear to be not uncommon on virtual machines.
+    ///
+    /// Not accounting for clock skew can result in signatures being
+    /// unexpectedly considered invalid.  Consider: computer A sends a
+    /// message to computer B at 9:00, but computer B, whose clock
+    /// says the current time is 8:59, rejects it, because the
+    /// signature appears to have been made in the future.  This is
+    /// particularly problematic for low-latency protocols built on
+    /// top of OpenPGP, e.g., state synchronization between two MUAs
+    /// via a shared IMAP folder.
+    ///
+    /// Being tolerant to potential clock skew is not always
+    /// appropriate.  For instance, when determining a User ID's
+    /// current self signature at time `t`, we don't ever want to
+    /// consider a self-signature made after `t` to be valid, even if
+    /// it was made just a few moments after `t`.  This goes doubly so
+    /// for soft revocation certificates: the user might send a
+    /// message that she is retiring, and then immediately create a
+    /// soft revocation.  The soft revocation should not invalidate
+    /// the message.
+    ///
+    /// Unfortunately, in many cases, whether we should account for
+    /// clock skew or not depends on application-specific context.  As
+    /// a rule of thumb, if the time and the timestamp come from
+    /// different sources, you probably want to account for clock
+    /// skew.
+    ///
+    /// Note that [Section 5.2.3.4 of RFC 4880] states that "[[A
+    /// Signature Creation Time subpacket]] MUST be present in the
+    /// hashed area."  Consequently, if such a packet does not exist,
+    /// but a "Signature Expiration Time" subpacket exists, we
+    /// conservatively treat the signature as expired, because there
+    /// is no way to evaluate the expiration time.
+    ///
+    ///  [Section 5.2.3.4 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.4
+    pub fn signature_alive<T, U>(&self, time: T, clock_skew_tolerance: U)
+        -> bool
+        where T: Into<Option<time::SystemTime>>,
+              U: Into<Option<time::Duration>>
+    {
+        let (time, tolerance)
+            = match (time.into(), clock_skew_tolerance.into()) {
+                (None, None) =>
+                    (time::SystemTime::now().canonicalize(),
+                     *CLOCK_SKEW_TOLERANCE),
+                (None, Some(tolerance)) =>
+                    (time::SystemTime::now().canonicalize(),
+                     tolerance),
+                (Some(time), None) =>
+                    (time, time::Duration::new(0, 0)),
+                (Some(time), Some(tolerance)) =>
+                    (time, tolerance)
+            };
+
+        if let Some(creation_time) = self.signature_creation_time() {
+            // Be careful to avoid underflow.
+            cmp::max(creation_time, time::UNIX_EPOCH + tolerance)
+                - tolerance <= time
+                && ! self.signature_expired(time)
+        } else {
+            false
+        }
+    }
+
+    /// Returns whether or not the key is expired at the given time.
+    ///
+    /// If `t` is None, uses the current time.
+    ///
+    /// See [Section 5.2.3.6 of RFC 4880].
+    ///
+    ///  [Section 5.2.3.6 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.6
+    pub fn key_expired<P, R, T>(&self, key: &Key<P, R>, t: T) -> bool
+        where P: key::KeyParts,
+              R: key::KeyRole,
+              T: Into<Option<time::SystemTime>>
+    {
+        let t = t.into()
+            .unwrap_or_else(|| time::SystemTime::now().canonicalize());
+        match self.key_expiration_time() {
+            Some(e) if e.as_secs() == 0 =>
+                false, // Zero expiration time, does not expire.
+            Some(e) =>
+                key.creation_time() + e <= t,
+            None =>
+                false, // No expiration time, does not expire.
+        }
+    }
+
+    /// Returns whether or not the given key is alive at `t`.
+    ///
+    /// A key is considered to be alive if `creation time <= t` and `t
+    /// <= expiration time`.
+    ///
+    /// This function does not check whether the key was revoked.
+    ///
+    /// See [Section 5.2.3.6 of RFC 4880].
+    ///
+    ///  [Section 5.2.3.6 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.6
+    pub fn key_alive<P, R, T>(&self, key: &Key<P, R>, t: T) -> bool
+        where P: key::KeyParts,
+              R: key::KeyRole,
+              T: Into<Option<time::SystemTime>>
+    {
+        let t = t.into()
+            .unwrap_or_else(|| time::SystemTime::now().canonicalize());
+        key.creation_time() <= t && ! self.key_expired(key, t)
+    }
+
+    /// Returns the value of the Issuer subpacket, which contains the
+    /// KeyID of the key that allegedly created this signature.
+    ///
+    /// Note: for historical reasons this packet is usually stored in
+    /// the unhashed area of the signature and, consequently, it is
+    /// *not* protected by the signature.  Thus, it is trivial to
+    /// modify it in transit.  For this reason, the Issuer Fingerprint
+    /// subpacket should be preferred, when it is present.
+    ///
+    /// If the subpacket is not present or malformed, this returns
+    /// `None`.
+    ///
+    /// Note: if the signature contains multiple instances of this
+    /// subpacket, only the last one is considered.
+    pub fn issuer(&self) -> Option<KeyID> {
+        // 8-octet Key ID
+        if let Some(sb)
+                = self.subpacket(SubpacketTag::Issuer) {
+            if let SubpacketValue::Issuer(v) = sb.value {
+                Some(v)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Returns the value of the Embedded Signature subpacket, which
+    /// contains a signature.
+    ///
+    /// This is used, for instance, to store a subkey's primary key
+    /// binding signature (0x19).
+    ///
+    /// If the subpacket is not present or malformed, this returns
+    /// `None`.
+    ///
+    /// Note: if the signature contains multiple instances of this
+    /// subpacket, only the last one is considered.
+    pub fn embedded_signature(&self) -> Option<Packet> {
+        // 1 signature packet body
+        if let Some(sb)
+                = self.subpacket(SubpacketTag::EmbeddedSignature) {
+            if let SubpacketValue::EmbeddedSignature(v) = sb.value {
+                Some(v)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Returns the value of the Issuer Fingerprint subpacket, which
+    /// contains the fingerprint of the key that allegedly created
+    /// this signature.
+    ///
+    /// This subpacket should be preferred to the Issuer subpacket,
+    /// because Fingerprints are not subject to collisions, and the
+    /// Issuer subpacket is, for historic reasons, traditionally
+    /// stored in the unhashed area, i.e., it is not cryptographically
+    /// secured.
+    ///
+    /// This is used, for instance, to store a subkey's primary key
+    /// binding signature (0x19).
+    ///
+    /// If the subpacket is not present or malformed, this returns
+    /// `None`.
+    ///
+    /// Note: if the signature contains multiple instances of this
+    /// subpacket, only the last one is considered.
+    pub fn issuer_fingerprint(&self) -> Option<Fingerprint> {
+        // 1 octet key version number, N octets of fingerprint
+        if let Some(sb)
+                = self.subpacket(SubpacketTag::IssuerFingerprint) {
+            if let SubpacketValue::IssuerFingerprint(v) = sb.value {
+                Some(v)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+}
+
+impl Deref for Signature4 {
+    type Target = signature::Builder;
+
+    fn deref(&self) -> &Self::Target {
+        &self.fields
+    }
+}
+
+impl DerefMut for Signature4 {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.fields
+    }
+}
+
+impl Signature4 {
+    /// We'd like to implement Deref for Signature4 for both
+    /// signature::Builder and SubpacketArea.  Unfortunately, it is
+    /// only possible to implement Deref for one of them.  Since
+    /// SubpacketArea has more methods with much more documentation,
+    /// implement deref for that, and write provider forwarders for
+    /// signature::Builder.
+
+    /// Gets the version.
+    pub fn version(&self) -> u8 {
+        self.fields.version()
+    }
+
+    /// Gets the signature type.
+    pub fn typ(&self) -> SignatureType {
+        self.fields.typ()
+    }
+
+    /// Sets the signature type.
+    pub fn set_type(mut self, t: SignatureType) -> Self {
+        self.fields = self.fields.set_type(t);
+        self
+    }
+
+    /// Gets the public key algorithm.
+    pub fn pk_algo(&self) -> PublicKeyAlgorithm {
+        self.fields.pk_algo()
+    }
+
+    /// Gets the hash algorithm.
+    pub fn hash_algo(&self) -> HashAlgorithm {
+        self.fields.hash_algo()
+    }
+}
+
 impl signature::Builder {
     /// Sets the value of the Creation Time subpacket.
-    pub fn set_signature_creation_time(mut self, creation_time: time::Tm)
+    pub fn set_signature_creation_time(mut self, creation_time: time::SystemTime)
                                        -> Result<Self> {
         self.hashed_area.replace(Subpacket::new(
             SubpacketValue::SignatureCreationTime(creation_time.canonicalize()),
@@ -2411,52 +2727,54 @@ impl signature::Builder {
 
 #[test]
 fn accessors() {
-    use constants::Curve;
+    use crate::constants::Curve;
 
     let pk_algo = PublicKeyAlgorithm::EdDSA;
     let hash_algo = HashAlgorithm::SHA512;
     let hash = hash_algo.context().unwrap();
-    let mut sig = signature::Builder::new(::constants::SignatureType::Binary);
-    let mut key: ::packet::Key =
-        ::packet::key::Key4::generate_ecc(true, Curve::Ed25519).unwrap().into();
+    let mut sig = signature::Builder::new(crate::constants::SignatureType::Binary);
+    let mut key: crate::packet::key::SecretKey =
+        crate::packet::key::Key4::generate_ecc(true, Curve::Ed25519).unwrap().into();
     let mut keypair = key.clone().into_keypair().unwrap();
 
     // Cook up a timestamp without ns resolution.
-    let now = time::Tm::from_pgp(time::now_utc().to_pgp().unwrap());
+    let now = time::SystemTime::now().canonicalize();
 
     sig = sig.set_signature_creation_time(now).unwrap();
     let sig_ =
         sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
     assert_eq!(sig_.signature_creation_time(), Some(now));
 
-    let five_minutes = time::Duration::minutes(5);
-    let ten_minutes = time::Duration::minutes(10);
+    let zero_s = time::Duration::new(0, 0);
+    let minute = time::Duration::new(60, 0);
+    let five_minutes = 5 * minute;
+    let ten_minutes = 10 * minute;
     sig = sig.set_signature_expiration_time(Some(five_minutes)).unwrap();
     let sig_ =
         sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
     assert_eq!(sig_.signature_expiration_time(), Some(five_minutes));
 
-    assert!(!sig_.signature_expired());
-    assert!(!sig_.signature_expired_at(now));
-    assert!(sig_.signature_expired_at(now + ten_minutes));
+    assert!(!sig_.signature_expired(None));
+    assert!(!sig_.signature_expired(now));
+    assert!(sig_.signature_expired(now + ten_minutes));
 
-    assert!(sig_.signature_alive());
-    assert!(sig_.signature_alive_at(now));
-    assert!(!sig_.signature_alive_at(now - five_minutes));
-    assert!(!sig_.signature_alive_at(now + ten_minutes));
+    assert!(sig_.signature_alive(None, zero_s));
+    assert!(sig_.signature_alive(now, zero_s));
+    assert!(!sig_.signature_alive(now - five_minutes, zero_s));
+    assert!(!sig_.signature_alive(now + ten_minutes, zero_s));
 
     sig = sig.set_signature_expiration_time(None).unwrap();
     let sig_ =
         sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
     assert_eq!(sig_.signature_expiration_time(), None);
-    assert!(!sig_.signature_expired());
-    assert!(!sig_.signature_expired_at(now));
-    assert!(!sig_.signature_expired_at(now + ten_minutes));
+    assert!(!sig_.signature_expired(None));
+    assert!(!sig_.signature_expired(now));
+    assert!(!sig_.signature_expired(now + ten_minutes));
 
-    assert!(sig_.signature_alive());
-    assert!(sig_.signature_alive_at(now));
-    assert!(!sig_.signature_alive_at(now - five_minutes));
-    assert!(sig_.signature_alive_at(now + ten_minutes));
+    assert!(sig_.signature_alive(None, zero_s));
+    assert!(sig_.signature_alive(now, zero_s));
+    assert!(!sig_.signature_alive(now - five_minutes, zero_s));
+    assert!(sig_.signature_alive(now + ten_minutes, zero_s));
 
     sig = sig.set_exportable_certification(true).unwrap();
     let sig_ =
@@ -2492,27 +2810,27 @@ fn accessors() {
         sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
     assert_eq!(sig_.key_expiration_time(), Some(five_minutes));
 
-    assert!(!sig_.key_expired(&key));
-    assert!(!sig_.key_expired_at(&key, now));
-    assert!(sig_.key_expired_at(&key, now + ten_minutes));
+    assert!(!sig_.key_expired(&key, None));
+    assert!(!sig_.key_expired(&key, now));
+    assert!(sig_.key_expired(&key, now + ten_minutes));
 
-    assert!(sig_.key_alive(&key));
-    assert!(sig_.key_alive_at(&key, now));
-    assert!(!sig_.key_alive_at(&key, now - five_minutes));
-    assert!(!sig_.key_alive_at(&key, now + ten_minutes));
+    assert!(sig_.key_alive(&key, None));
+    assert!(sig_.key_alive(&key, now));
+    assert!(!sig_.key_alive(&key, now - five_minutes));
+    assert!(!sig_.key_alive(&key, now + ten_minutes));
 
     sig = sig.set_key_expiration_time(None).unwrap();
     let sig_ =
         sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
     assert_eq!(sig_.key_expiration_time(), None);
-    assert!(!sig_.key_expired(&key));
-    assert!(!sig_.key_expired_at(&key, now));
-    assert!(!sig_.key_expired_at(&key, now + ten_minutes));
+    assert!(!sig_.key_expired(&key, None));
+    assert!(!sig_.key_expired(&key, now));
+    assert!(!sig_.key_expired(&key, now + ten_minutes));
 
-    assert!(sig_.key_alive(&key));
-    assert!(sig_.key_alive_at(&key, now));
-    assert!(!sig_.key_alive_at(&key, now - five_minutes));
-    assert!(sig_.key_alive_at(&key, now + ten_minutes));
+    assert!(sig_.key_alive(&key, None));
+    assert!(sig_.key_alive(&key, now));
+    assert!(!sig_.key_alive(&key, now - five_minutes));
+    assert!(sig_.key_alive(&key, now + ten_minutes));
 
     let pref = vec![SymmetricAlgorithm::AES256,
                     SymmetricAlgorithm::AES192,
@@ -2661,10 +2979,10 @@ fn accessors() {
 #[cfg(feature = "compression-deflate")]
 #[test]
 fn subpacket_test_1 () {
-    use PacketPile;
-    use parse::Parse;
+    use crate::PacketPile;
+    use crate::parse::Parse;
 
-    let pile = PacketPile::from_bytes(::tests::message("signed.gpg")).unwrap();
+    let pile = PacketPile::from_bytes(crate::tests::message("signed.gpg")).unwrap();
     eprintln!("PacketPile has {} top-level packets.", pile.children().len());
     eprintln!("PacketPile: {:?}", pile);
 
@@ -2714,9 +3032,9 @@ fn subpacket_test_1 () {
 
 #[test]
 fn subpacket_test_2() {
-    use conversions::Time;
-    use parse::Parse;
-    use PacketPile;
+    use crate::conversions::Time;
+    use crate::parse::Parse;
+    use crate::PacketPile;
 
     //   Test #    Subpacket
     // 1 2 3 4 5 6   SignatureCreationTime
@@ -2747,7 +3065,7 @@ fn subpacket_test_2() {
     // XXX: The subpackets marked with * are not tested.
 
     let pile = PacketPile::from_bytes(
-        ::tests::key("subpackets/shaw.gpg")).unwrap();
+        crate::tests::key("subpackets/shaw.gpg")).unwrap();
 
     // Test #1
     if let (Some(&Packet::PublicKey(ref key)),
@@ -2772,17 +3090,17 @@ fn subpacket_test_2() {
         // }
 
         assert_eq!(sig.signature_creation_time(),
-                   Some(time::Tm::from_pgp(1515791508)));
+                   Some(time::SystemTime::from_pgp(1515791508)));
         assert_eq!(sig.subpacket(SubpacketTag::SignatureCreationTime),
                    Some(Subpacket {
                        critical: false,
                        tag: SubpacketTag::SignatureCreationTime,
                        value: SubpacketValue::SignatureCreationTime(
-                           time::Tm::from_pgp(1515791508))
+                           time::SystemTime::from_pgp(1515791508))
                    }));
 
         // The signature does not expire.
-        assert!(! sig.signature_expired());
+        assert!(! sig.signature_expired(None));
 
         assert_eq!(sig.key_expiration_time(),
                    Some(time::Duration::from_pgp(63072000)));
@@ -2795,12 +3113,12 @@ fn subpacket_test_2() {
                    }));
 
         // Check key expiration.
-        assert!(! sig.key_expired_at(
+        assert!(! sig.key_expired(
             key,
-            *key.creation_time() + time::Duration::seconds(63072000 - 1)));
-        assert!(sig.key_expired_at(
+            key.creation_time() + time::Duration::new(63072000 - 1, 0)));
+        assert!(sig.key_expired(
             key,
-            *key.creation_time() + time::Duration::seconds(63072000)));
+            key.creation_time() + time::Duration::new(63072000, 0)));
 
         assert_eq!(sig.preferred_symmetric_algorithms(),
                    Some(vec![SymmetricAlgorithm::AES256,
@@ -2933,13 +3251,13 @@ fn subpacket_test_2() {
         // }
 
         assert_eq!(sig.signature_creation_time(),
-                   Some(time::Tm::from_pgp(1515791490)));
+                   Some(time::SystemTime::from_pgp(1515791490)));
         assert_eq!(sig.subpacket(SubpacketTag::SignatureCreationTime),
                    Some(Subpacket {
                        critical: false,
                        tag: SubpacketTag::SignatureCreationTime,
                        value: SubpacketValue::SignatureCreationTime(
-                           time::Tm::from_pgp(1515791490))
+                           time::SystemTime::from_pgp(1515791490))
                    }));
 
         assert_eq!(sig.exportable_certification(), Some(false));
@@ -2952,7 +3270,7 @@ fn subpacket_test_2() {
     }
 
     let pile = PacketPile::from_bytes(
-        ::tests::key("subpackets/marven.gpg")).unwrap();
+        crate::tests::key("subpackets/marven.gpg")).unwrap();
 
     // Test #3
     if let Some(&Packet::Signature(ref sig)) = pile.children().nth(1) {
@@ -2969,13 +3287,13 @@ fn subpacket_test_2() {
         // }
 
         assert_eq!(sig.signature_creation_time(),
-                   Some(time::Tm::from_pgp(1515791376)));
+                   Some(time::SystemTime::from_pgp(1515791376)));
         assert_eq!(sig.subpacket(SubpacketTag::SignatureCreationTime),
                    Some(Subpacket {
                        critical: false,
                        tag: SubpacketTag::SignatureCreationTime,
                        value: SubpacketValue::SignatureCreationTime(
-                           time::Tm::from_pgp(1515791376))
+                           time::SystemTime::from_pgp(1515791376))
                    }));
 
         assert_eq!(sig.revocable(), Some(false));
@@ -3040,13 +3358,13 @@ fn subpacket_test_2() {
         // }
 
         assert_eq!(sig.signature_creation_time(),
-                   Some(time::Tm::from_pgp(1515886658)));
+                   Some(time::SystemTime::from_pgp(1515886658)));
         assert_eq!(sig.subpacket(SubpacketTag::SignatureCreationTime),
                    Some(Subpacket {
                        critical: false,
                        tag: SubpacketTag::SignatureCreationTime,
                        value: SubpacketValue::SignatureCreationTime(
-                           time::Tm::from_pgp(1515886658))
+                           time::SystemTime::from_pgp(1515886658))
                    }));
 
         assert_eq!(sig.reason_for_revocation(),
@@ -3070,13 +3388,13 @@ fn subpacket_test_2() {
         // has multiple notations.
 
         assert_eq!(sig.signature_creation_time(),
-                   Some(time::Tm::from_pgp(1515791467)));
+                   Some(time::SystemTime::from_pgp(1515791467)));
         assert_eq!(sig.subpacket(SubpacketTag::SignatureCreationTime),
                    Some(Subpacket {
                        critical: false,
                        tag: SubpacketTag::SignatureCreationTime,
                        value: SubpacketValue::SignatureCreationTime(
-                           time::Tm::from_pgp(1515791467))
+                           time::SystemTime::from_pgp(1515791467))
                    }));
 
         let n1 = NotationData {
@@ -3144,13 +3462,13 @@ fn subpacket_test_2() {
         // }
 
         assert_eq!(sig.signature_creation_time(),
-                   Some(time::Tm::from_pgp(1515791223)));
+                   Some(time::SystemTime::from_pgp(1515791223)));
         assert_eq!(sig.subpacket(SubpacketTag::SignatureCreationTime),
                    Some(Subpacket {
                        critical: false,
                        tag: SubpacketTag::SignatureCreationTime,
                        value: SubpacketValue::SignatureCreationTime(
-                           time::Tm::from_pgp(1515791223))
+                           time::SystemTime::from_pgp(1515791223))
                    }));
 
         assert_eq!(sig.trust_signature(), Some((2, 120)));

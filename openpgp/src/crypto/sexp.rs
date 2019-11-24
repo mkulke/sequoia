@@ -10,11 +10,11 @@ use std::fmt;
 use std::ops::Deref;
 use quickcheck::{Arbitrary, Gen};
 
-use crypto::{self, mpis, SessionKey};
-use crypto::mem::Protected;
+use crate::crypto::{self, mpis, SessionKey};
+use crate::crypto::mem::Protected;
 
-use Error;
-use Result;
+use crate::Error;
+use crate::Result;
 
 /// An *S-Expression*.
 ///
@@ -42,7 +42,7 @@ impl Sexp {
     /// The resulting expression is suitable for gpg-agent's `INQUIRE
     /// CIPHERTEXT` inquiry.
     pub fn from_ciphertext(ciphertext: &mpis::Ciphertext) -> Result<Self> {
-        use crypto::mpis::Ciphertext::*;
+        use crate::crypto::mpis::Ciphertext::*;
         match ciphertext {
             RSA { ref c } =>
                 Ok(Sexp::List(vec![
@@ -90,12 +90,15 @@ impl Sexp {
     /// Such an expression is returned from gpg-agent's `PKDECRYPT`
     /// command.  `padding` must be set according to the status
     /// messages sent.
-    pub fn finish_decryption(&self,
-                             recipient: &::packet::Key,
-                             ciphertext: &mpis::Ciphertext,
-                             padding: bool)
-                             -> Result<SessionKey> {
-        use crypto::mpis::PublicKey;
+    pub fn finish_decryption<R>(&self,
+                                recipient: &crate::packet::Key<
+                                        crate::packet::key::PublicParts, R>,
+                                ciphertext: &mpis::Ciphertext,
+                                padding: bool)
+        -> Result<SessionKey>
+        where R: crate::packet::key::KeyRole
+    {
+        use crate::crypto::mpis::PublicKey;
         let not_a_session_key = || -> failure::Error {
             Error::MalformedMPI(
                 format!("Not a session key: {:?}", self)).into()
@@ -309,7 +312,7 @@ impl fmt::Debug for String_ {
             write!(f, "b\"")?;
             for &b in buf {
                 match b {
-                    0...31 | 128...255 =>
+                    0..=31 | 128..=255 =>
                         write!(f, "\\x{:02x}", b)?,
                     0x22 => // "
                         write!(f, "\\\"")?,
@@ -386,8 +389,8 @@ impl Arbitrary for String_ {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use parse::Parse;
-    use serialize::Serialize;
+    use crate::parse::Parse;
+    use crate::serialize::Serialize;
 
     quickcheck! {
         fn roundtrip(s: Sexp) -> bool {
@@ -401,18 +404,18 @@ mod tests {
 
     #[test]
     fn to_signature() {
-        use crypto::mpis::Signature::*;
+        use crate::crypto::mpis::Signature::*;
         assert_match!(DSA { .. } = Sexp::from_bytes(
-            ::tests::file("sexp/dsa-signature.sexp")).unwrap()
+            crate::tests::file("sexp/dsa-signature.sexp")).unwrap()
                       .to_signature().unwrap());
         assert_match!(ECDSA { .. } = Sexp::from_bytes(
-            ::tests::file("sexp/ecdsa-signature.sexp")).unwrap()
+            crate::tests::file("sexp/ecdsa-signature.sexp")).unwrap()
                       .to_signature().unwrap());
         assert_match!(EdDSA { .. } = Sexp::from_bytes(
-            ::tests::file("sexp/eddsa-signature.sexp")).unwrap()
+            crate::tests::file("sexp/eddsa-signature.sexp")).unwrap()
                       .to_signature().unwrap());
         assert_match!(RSA { .. } = Sexp::from_bytes(
-            ::tests::file("sexp/rsa-signature.sexp")).unwrap()
+            crate::tests::file("sexp/rsa-signature.sexp")).unwrap()
                       .to_signature().unwrap());
     }
 }

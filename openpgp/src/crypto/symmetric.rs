@@ -4,9 +4,10 @@ use std::io;
 use std::cmp;
 use std::fmt;
 
-use Result;
-use Error;
-use SymmetricAlgorithm;
+use crate::Result;
+use crate::Error;
+use crate::SymmetricAlgorithm;
+use crate::vec_truncate;
 
 use buffered_reader::BufferedReader;
 
@@ -21,7 +22,8 @@ impl SymmetricAlgorithm {
         match self {
             SymmetricAlgorithm::TripleDES => Ok(cipher::Des3::KEY_SIZE),
             SymmetricAlgorithm::CAST5 => Ok(cipher::Cast128::KEY_SIZE),
-            SymmetricAlgorithm::Blowfish => Ok(cipher::Blowfish::KEY_SIZE),
+            // RFC4880, Section 9.2: Blowfish (128 bit key, 16 rounds)
+            SymmetricAlgorithm::Blowfish => Ok(16),
             SymmetricAlgorithm::AES128 => Ok(cipher::Aes128::KEY_SIZE),
             SymmetricAlgorithm::AES192 => Ok(cipher::Aes192::KEY_SIZE),
             SymmetricAlgorithm::AES256 => Ok(cipher::Aes256::KEY_SIZE),
@@ -53,7 +55,7 @@ impl SymmetricAlgorithm {
     }
 
     /// Creates a Nettle context for encrypting in CFB mode.
-    pub fn make_encrypt_cfb(self, key: &[u8]) -> Result<Box<Mode>> {
+    pub fn make_encrypt_cfb(self, key: &[u8]) -> Result<Box<dyn Mode>> {
         use nettle::{mode, cipher};
         match self {
             SymmetricAlgorithm::TripleDES =>
@@ -91,7 +93,7 @@ impl SymmetricAlgorithm {
     }
 
     /// Creates a Nettle context for decrypting in CFB mode.
-    pub fn make_decrypt_cfb(self, key: &[u8]) -> Result<Box<Mode>> {
+    pub fn make_decrypt_cfb(self, key: &[u8]) -> Result<Box<dyn Mode>> {
         use nettle::{mode, cipher};
         match self {
             SymmetricAlgorithm::TripleDES =>
@@ -134,7 +136,7 @@ pub struct Decryptor<R: io::Read> {
     // The encrypted data.
     source: R,
 
-    dec: Box<Mode>,
+    dec: Box<dyn Mode>,
     block_size: usize,
     iv: Vec<u8>,
     // Up to a block of unread data.
@@ -194,7 +196,7 @@ fn read_exact<R: io::Read>(reader: &mut R, mut buffer: &mut [u8])
 // Note: this implementation tries *very* hard to make sure we don't
 // gratuitiously do a short read.  Specifically, if the return value
 // is less than `plaintext.len()`, then it is either because we
-// reached the end of the input or an error occured.
+// reached the end of the input or an error occurred.
 impl<R: io::Read> io::Read for Decryptor<R> {
     fn read(&mut self, plaintext: &mut [u8]) -> io::Result<usize> {
         let mut pos = 0;
@@ -221,7 +223,7 @@ impl<R: io::Read> io::Read for Decryptor<R> {
             Ok(amount) => {
                 short_read = amount < to_copy;
                 to_copy = amount;
-                ciphertext.truncate(to_copy);
+                vec_truncate(&mut ciphertext, to_copy);
             },
             // We encountered an error, but we did read some.
             Err(_) if pos > 0 => return Ok(pos),
@@ -251,7 +253,7 @@ impl<R: io::Read> io::Read for Decryptor<R> {
             Ok(amount) => {
                 // Make sure `ciphertext` is not larger than the
                 // amount of data that was actually read.
-                ciphertext.truncate(amount);
+                vec_truncate(&mut ciphertext, amount);
 
                 // Make sure we don't read more than is available.
                 to_copy = cmp::min(to_copy, ciphertext.len());
@@ -265,7 +267,7 @@ impl<R: io::Read> io::Read for Decryptor<R> {
         while self.buffer.len() < ciphertext.len() {
             self.buffer.push(0u8);
         }
-        self.buffer.truncate(ciphertext.len());
+        vec_truncate(&mut self.buffer, ciphertext.len());
 
         self.dec.decrypt(&mut self.iv, &mut self.buffer, &ciphertext[..])
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput,
@@ -368,16 +370,16 @@ impl<R: BufferedReader<C>, C> BufferedReader<C>
         return self.reader.steal_eof();
     }
 
-    fn get_mut(&mut self) -> Option<&mut BufferedReader<C>> {
+    fn get_mut(&mut self) -> Option<&mut dyn BufferedReader<C>> {
         Some(&mut self.reader.reader.source)
     }
 
-    fn get_ref(&self) -> Option<&BufferedReader<C>> {
+    fn get_ref(&self) -> Option<&dyn BufferedReader<C>> {
         Some(&self.reader.reader.source)
     }
 
     fn into_inner<'b>(self: Box<Self>)
-            -> Option<Box<BufferedReader<C> + 'b>> where Self: 'b {
+            -> Option<Box<dyn BufferedReader<C> + 'b>> where Self: 'b {
         Some(Box::new(self.reader.reader.source))
     }
 
@@ -398,7 +400,7 @@ impl<R: BufferedReader<C>, C> BufferedReader<C>
 pub struct Encryptor<W: io::Write> {
     inner: Option<W>,
 
-    cipher: Box<Mode>,
+    cipher: Box<dyn Mode>,
     block_size: usize,
     iv: Vec<u8>,
     // Up to a block of unencrypted data.
@@ -431,7 +433,7 @@ impl<W: io::Write> Encryptor<W> {
             if self.buffer.len() > 0 {
                 unsafe { self.scratch.set_len(self.buffer.len()) }
                 self.cipher.encrypt(&mut self.iv, &mut self.scratch, &self.buffer)?;
-                self.buffer.clear();
+                crate::vec_truncate(&mut self.buffer, 0);
                 inner.write_all(&self.scratch)?;
             }
             Ok(inner)
@@ -439,6 +441,17 @@ impl<W: io::Write> Encryptor<W> {
             Err(io::Error::new(io::ErrorKind::BrokenPipe,
                                "Inner writer was taken").into())
         }
+    }
+
+    /// Acquires a reference to the underlying writer.
+    pub fn get_ref(&self) -> Option<&W> {
+        self.inner.as_ref()
+    }
+
+    /// Acquires a mutable reference to the underlying writer.
+    #[allow(dead_code)]
+    pub fn get_mut(&mut self) -> Option<&mut W> {
+        self.inner.as_mut()
     }
 }
 
@@ -463,7 +476,7 @@ impl<W: io::Write> io::Write for Encryptor<W> {
                 self.cipher.encrypt(&mut self.iv, &mut self.scratch, &self.buffer)
                     .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput,
                                                 format!("{}", e)))?;
-                self.buffer.clear();
+                crate::vec_truncate(&mut self.buffer, 0);
                 inner.write_all(&self.scratch)?;
             }
         }
@@ -532,7 +545,7 @@ mod tests {
             let filename = &format!(
                     "raw/a-cypherpunks-manifesto.aes{}.key_ascending_from_0",
                 algo.key_size().unwrap() * 8);
-            let ciphertext = Cursor::new(::tests::file(filename));
+            let ciphertext = Cursor::new(crate::tests::file(filename));
             let decryptor = Decryptor::new(*algo, &key, ciphertext).unwrap();
 
             // Read bytewise to test the buffer logic.
@@ -541,7 +554,7 @@ mod tests {
                 plaintext.push(b.unwrap());
             }
 
-            assert_eq!(::tests::manifesto(), &plaintext[..]);
+            assert_eq!(crate::tests::manifesto(), &plaintext[..]);
         }
     }
 
@@ -564,7 +577,7 @@ mod tests {
                     .unwrap();
 
                 // Write bytewise to test the buffer logic.
-                for b in ::tests::manifesto().chunks(1) {
+                for b in crate::tests::manifesto().chunks(1) {
                     encryptor.write_all(b).unwrap();
                 }
             }
@@ -572,7 +585,7 @@ mod tests {
             let filename = format!(
                 "raw/a-cypherpunks-manifesto.aes{}.key_ascending_from_0",
                 algo.key_size().unwrap() * 8);
-            let mut cipherfile = Cursor::new(::tests::file(&filename));
+            let mut cipherfile = Cursor::new(crate::tests::file(&filename));
             let mut reference = Vec::new();
             cipherfile.read_to_end(&mut reference).unwrap();
             assert_eq!(&reference[..], &ciphertext[..]);
@@ -595,14 +608,14 @@ mod tests {
                      SymmetricAlgorithm::Camellia192,
                      SymmetricAlgorithm::Camellia256].iter() {
             let mut key = vec![0; algo.key_size().unwrap()];
-            ::crypto::random(&mut key);
+            crate::crypto::random(&mut key);
 
             let mut ciphertext = Vec::new();
             {
                 let mut encryptor = Encryptor::new(*algo, &key, &mut ciphertext)
                     .unwrap();
 
-                encryptor.write_all(::tests::manifesto()).unwrap();
+                encryptor.write_all(crate::tests::manifesto()).unwrap();
             }
 
             let mut plaintext = Vec::new();
@@ -614,7 +627,7 @@ mod tests {
                 decryptor.read_to_end(&mut plaintext).unwrap();
             }
 
-            assert_eq!(&plaintext[..], &::tests::manifesto()[..]);
+            assert_eq!(&plaintext[..], &crate::tests::manifesto()[..]);
         }
     }
 }

@@ -1,15 +1,16 @@
 //! Functionality to hash packets, and generate hashes.
 
-use HashAlgorithm;
-use packet::UserID;
-use packet::UserAttribute;
-use packet::Key;
-use packet::key::Key4;
-use packet::Signature;
-use packet::signature::{self, Signature4};
-use Error;
-use Result;
-use conversions::Time;
+use crate::HashAlgorithm;
+use crate::packet::Key;
+use crate::packet::UserID;
+use crate::packet::UserAttribute;
+use crate::packet::key;
+use crate::packet::key::Key4;
+use crate::packet::Signature;
+use crate::packet::signature::{self, Signature4};
+use crate::Error;
+use crate::Result;
+use crate::conversions::Time;
 
 use nettle;
 use nettle::Hash as NettleHash;
@@ -23,17 +24,25 @@ const DUMP_HASHED_VALUES: Option<&str> = None;
 
 /// State of a hash function.
 #[derive(Clone)]
-pub struct Context(Box<nettle::Hash>);
+pub struct Context {
+    algo: HashAlgorithm,
+    ctx: Box<dyn nettle::Hash>,
+}
 
 impl Context {
+    /// Returns the algorithm.
+    pub fn algo(&self) -> HashAlgorithm {
+        self.algo
+    }
+
     /// Size of the digest in bytes
     pub fn digest_size(&self) -> usize {
-        self.0.digest_size()
+        self.ctx.digest_size()
     }
 
     /// Writes data into the hash function.
     pub fn update<D: AsRef<[u8]>>(&mut self, data: D) {
-        self.0.update(data.as_ref());
+        self.ctx.update(data.as_ref());
     }
 
     /// Finalizes the hash function and writes the digest into the
@@ -44,7 +53,7 @@ impl Context {
     /// `digest` must be at least `self.digest_size()` bytes large,
     /// otherwise the digest will be truncated.
     pub fn digest<D: AsMut<[u8]>>(&mut self, mut digest: D) {
-        self.0.digest(digest.as_mut());
+        self.ctx.digest(digest.as_mut());
     }
 }
 
@@ -75,7 +84,7 @@ impl HashAlgorithm {
         }
     }
 
-    /// Creates a new Nettle hash context for this algorith.
+    /// Creates a new Nettle hash context for this algorithm.
     ///
     /// # Errors
     ///
@@ -88,7 +97,7 @@ impl HashAlgorithm {
         use nettle::hash::*;
         use nettle::hash::insecure_do_not_use::Sha1;
 
-        let c: Result<Box<nettle::Hash>> = match self {
+        let c: Result<Box<dyn nettle::Hash>> = match self {
             HashAlgorithm::SHA1 => Ok(Box::new(Sha1::default())),
             HashAlgorithm::SHA224 => Ok(Box::new(Sha224::default())),
             HashAlgorithm::SHA256 => Ok(Box::new(Sha256::default())),
@@ -101,11 +110,14 @@ impl HashAlgorithm {
         };
 
         if let Some(prefix) = DUMP_HASHED_VALUES {
-            c.map(|c: Box<nettle::Hash>| {
-                Context(Box::new(HashDumper::new(c, prefix)))
+            c.map(|c: Box<dyn nettle::Hash>| {
+                Context {
+                    algo: self,
+                    ctx: Box::new(HashDumper::new(c, prefix)),
+                }
             })
         } else {
-            c.map(|c| Context(c))
+            c.map(|c| Context { algo: self, ctx: c })
         }
     }
 
@@ -128,14 +140,14 @@ impl HashAlgorithm {
 }
 
 struct HashDumper {
-    h: Box<nettle::Hash>,
+    h: Box<dyn nettle::Hash>,
     sink: File,
     filename: String,
     written: usize,
 }
 
 impl HashDumper {
-    fn new(h: Box<nettle::Hash>, prefix: &str) -> Self {
+    fn new(h: Box<dyn nettle::Hash>, prefix: &str) -> Self {
         let mut n = 0;
         let mut filename;
         let sink = loop {
@@ -176,7 +188,7 @@ impl nettle::Hash for HashDumper {
     fn digest(&mut self, digest: &mut [u8]) {
         self.h.digest(digest);
     }
-    fn box_clone(&self) -> Box<nettle::Hash> {
+    fn box_clone(&self) -> Box<dyn nettle::Hash> {
         Box::new(Self::new(self.h.box_clone(), &DUMP_HASHED_VALUES.unwrap()))
     }
 }
@@ -221,7 +233,10 @@ impl Hash for UserAttribute {
     }
 }
 
-impl Hash for Key4 {
+impl<P, R> Hash for Key4<P, R>
+    where P: key::KeyParts,
+          R: key::KeyRole,
+{
     /// Update the Hash with a hash of the key.
     fn hash(&self, hash: &mut Context) {
         // We hash 8 bytes plus the MPIs.  But, the len doesn't
@@ -280,7 +295,7 @@ impl Hash for signature::Builder {
         // A version 4 signature packet is laid out as follows:
         //
         //   version - 1 byte                    \
-        //   sigtype - 1 byte                     \
+        //   type - 1 byte                        \
         //   pk_algo - 1 byte                      \
         //   hash_algo - 1 byte                      Included in the hash
         //   hashed_area_len - 2 bytes (big endian)/
@@ -291,7 +306,7 @@ impl Hash for signature::Builder {
 
         // Version.
         header[0] = 4;
-        header[1] = self.sigtype().into();
+        header[1] = self.typ().into();
         header[2] = self.pk_algo().into();
         header[3] = self.hash_algo().into();
 
@@ -333,11 +348,33 @@ impl Hash for signature::Builder {
 
 /// Hashing-related functionality.
 impl Signature {
+    /// Computes the message digest of standalone signatures.
+    pub fn standalone_hash<'a, S>(sig: S) -> Result<Vec<u8>>
+        where S: Into<&'a signature::Builder>
+    {
+        let sig = sig.into();
+        let mut h = sig.hash_algo().context()?;
+
+        sig.hash(&mut h);
+
+        let mut digest = vec![0u8; h.digest_size()];
+        h.digest(&mut digest);
+        Ok(digest)
+    }
+
+    /// Computes the message digest of timestamp signatures.
+    pub fn timestamp_hash<'a, S>(sig: S) -> Result<Vec<u8>>
+        where S: Into<&'a signature::Builder>
+    {
+        Self::standalone_hash(sig)
+    }
+
     /// Returns the message digest of the primary key binding over the
     /// specified primary key.
-    pub fn primary_key_binding_hash<'a, S>(sig: S, key: &Key)
+    pub fn primary_key_binding_hash<'a, S>(sig: S, key: &key::PublicKey)
         -> Result<Vec<u8>>
-        where S: Into<&'a signature::Builder> {
+        where S: Into<&'a signature::Builder>
+    {
 
         let sig = sig.into();
         let mut h = sig.hash_algo().context()?;
@@ -352,9 +389,13 @@ impl Signature {
 
     /// Returns the message digest of the subkey binding over the
     /// specified primary key and subkey.
-    pub fn subkey_binding_hash<'a, S>(sig: S, key: &Key, subkey: &Key)
+    pub fn subkey_binding_hash<'a, P, S>(sig: S,
+                                         key: &key::PublicKey,
+                                         subkey: &Key<P, key::SubordinateRole>)
         -> Result<Vec<u8>>
-        where S: Into<&'a signature::Builder> {
+        where P: key::KeyParts,
+              S: Into<&'a signature::Builder>
+    {
 
         let sig = sig.into();
         let mut h = sig.hash_algo().context()?;
@@ -370,10 +411,12 @@ impl Signature {
 
     /// Returns the message digest of the user ID binding over the
     /// specified primary key, user ID, and signature.
-    pub fn userid_binding_hash<'a, S>(sig: S, key: &Key, userid: &UserID)
+    pub fn userid_binding_hash<'a, S>(sig: S,
+                                      key: &key::PublicKey,
+                                      userid: &UserID)
         -> Result<Vec<u8>>
-        where S: Into<&'a signature::Builder> {
-
+        where S: Into<&'a signature::Builder>
+    {
         let sig = sig.into();
         let mut h = sig.hash_algo().context()?;
 
@@ -388,10 +431,12 @@ impl Signature {
 
     /// Returns the message digest of the user attribute binding over
     /// the specified primary key, user attribute, and signature.
-    pub fn user_attribute_binding_hash<'a, S>(sig: S, key: &Key,
+    pub fn user_attribute_binding_hash<'a, S>(sig: S,
+                                              key: &key::PublicKey,
                                               ua: &UserAttribute)
         -> Result<Vec<u8>>
-        where S: Into<&'a signature::Builder> {
+        where S: Into<&'a signature::Builder>
+    {
 
         let sig = sig.into();
         let mut h = sig.hash_algo().context()?;
@@ -409,15 +454,15 @@ impl Signature {
 #[cfg(test)]
 mod test {
     use super::*;
-    use TPK;
-    use parse::Parse;
+    use crate::TPK;
+    use crate::parse::Parse;
 
     #[test]
     fn hash_verification() {
         fn check(tpk: TPK) -> (usize, usize, usize) {
             let mut userid_sigs = 0;
             for (i, binding) in tpk.userids().enumerate() {
-                for selfsig in binding.selfsigs() {
+                for selfsig in binding.self_signatures() {
                     let h = Signature::userid_binding_hash(
                         selfsig,
                         tpk.primary(),
@@ -433,7 +478,7 @@ mod test {
             }
             let mut ua_sigs = 0;
             for (i, binding) in tpk.user_attributes().enumerate() {
-                for selfsig in binding.selfsigs() {
+                for selfsig in binding.self_signatures() {
                     let h = Signature::user_attribute_binding_hash(
                         selfsig,
                         tpk.primary(),
@@ -449,11 +494,11 @@ mod test {
             }
             let mut subkey_sigs = 0;
             for (i, binding) in tpk.subkeys().enumerate() {
-                for selfsig in binding.selfsigs() {
+                for selfsig in binding.self_signatures() {
                     let h = Signature::subkey_binding_hash(
                         selfsig,
                         tpk.primary(),
-                        binding.subkey()).unwrap();
+                        binding.key()).unwrap();
                     if &h[..2] != selfsig.hash_prefix() {
                         eprintln!("{:?}: {:?}", i, binding);
                         eprintln!("  Hash: {:?}", h);
@@ -467,13 +512,13 @@ mod test {
             (userid_sigs, ua_sigs, subkey_sigs)
         }
 
-        check(TPK::from_bytes(::tests::key("hash-algos/SHA224.gpg")).unwrap());
-        check(TPK::from_bytes(::tests::key("hash-algos/SHA256.gpg")).unwrap());
-        check(TPK::from_bytes(::tests::key("hash-algos/SHA384.gpg")).unwrap());
-        check(TPK::from_bytes(::tests::key("hash-algos/SHA512.gpg")).unwrap());
-        check(TPK::from_bytes(::tests::key("bannon-all-uids-subkeys.gpg")).unwrap());
+        check(TPK::from_bytes(crate::tests::key("hash-algos/SHA224.gpg")).unwrap());
+        check(TPK::from_bytes(crate::tests::key("hash-algos/SHA256.gpg")).unwrap());
+        check(TPK::from_bytes(crate::tests::key("hash-algos/SHA384.gpg")).unwrap());
+        check(TPK::from_bytes(crate::tests::key("hash-algos/SHA512.gpg")).unwrap());
+        check(TPK::from_bytes(crate::tests::key("bannon-all-uids-subkeys.gpg")).unwrap());
         let (_userid_sigs, ua_sigs, _subkey_sigs)
-            = check(TPK::from_bytes(::tests::key("dkg.gpg")).unwrap());
+            = check(TPK::from_bytes(crate::tests::key("dkg.gpg")).unwrap());
         assert!(ua_sigs > 0);
     }
 }

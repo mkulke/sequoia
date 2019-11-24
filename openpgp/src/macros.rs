@@ -38,35 +38,38 @@ pub(crate) fn indent(i: usize) -> &'static str {
 }
 
 macro_rules! tracer {
+    ( $TRACE:expr, $func:expr ) => {
+        tracer!($TRACE, $func, 0)
+    };
     ( $TRACE:expr, $func:expr, $indent:expr ) => {
         // Currently, Rust doesn't support $( ... ) in a nested
         // macro's definition.  See:
         // https://users.rust-lang.org/t/nested-macros-issue/8348/2
         macro_rules! t {
             ( $fmt:expr ) =>
-            { trace!($TRACE, "{}{}: {}", ::macros::indent($indent as usize), $func, $fmt) };
+            { trace!($TRACE, "{}{}: {}", crate::macros::indent($indent as usize), $func, $fmt) };
             ( $fmt:expr, $a:expr ) =>
-            { trace!($TRACE, "{}{}: {}", ::macros::indent($indent as usize), $func, format!($fmt, $a)) };
+            { trace!($TRACE, "{}{}: {}", crate::macros::indent($indent as usize), $func, format!($fmt, $a)) };
             ( $fmt:expr, $a:expr, $b:expr ) =>
-            { trace!($TRACE, "{}{}: {}", ::macros::indent($indent as usize), $func, format!($fmt, $a, $b)) };
+            { trace!($TRACE, "{}{}: {}", crate::macros::indent($indent as usize), $func, format!($fmt, $a, $b)) };
             ( $fmt:expr, $a:expr, $b:expr, $c:expr ) =>
-            { trace!($TRACE, "{}{}: {}", ::macros::indent($indent as usize), $func, format!($fmt, $a, $b, $c)) };
+            { trace!($TRACE, "{}{}: {}", crate::macros::indent($indent as usize), $func, format!($fmt, $a, $b, $c)) };
             ( $fmt:expr, $a:expr, $b:expr, $c:expr, $d:expr ) =>
-            { trace!($TRACE, "{}{}: {}", ::macros::indent($indent as usize), $func, format!($fmt, $a, $b, $c, $d)) };
+            { trace!($TRACE, "{}{}: {}", crate::macros::indent($indent as usize), $func, format!($fmt, $a, $b, $c, $d)) };
             ( $fmt:expr, $a:expr, $b:expr, $c:expr, $d:expr, $e:expr ) =>
-            { trace!($TRACE, "{}{}: {}", ::macros::indent($indent as usize), $func, format!($fmt, $a, $b, $c, $d, $e)) };
+            { trace!($TRACE, "{}{}: {}", crate::macros::indent($indent as usize), $func, format!($fmt, $a, $b, $c, $d, $e)) };
             ( $fmt:expr, $a:expr, $b:expr, $c:expr, $d:expr, $e:expr, $f:expr ) =>
-            { trace!($TRACE, "{}{}: {}", ::macros::indent($indent as usize), $func, format!($fmt, $a, $b, $c, $d, $e, $f)) };
+            { trace!($TRACE, "{}{}: {}", crate::macros::indent($indent as usize), $func, format!($fmt, $a, $b, $c, $d, $e, $f)) };
             ( $fmt:expr, $a:expr, $b:expr, $c:expr, $d:expr, $e:expr, $f:expr, $g:expr ) =>
-            { trace!($TRACE, "{}{}: {}", ::macros::indent($indent as usize), $func, format!($fmt, $a, $b, $c, $d, $e, $f, $g)) };
+            { trace!($TRACE, "{}{}: {}", crate::macros::indent($indent as usize), $func, format!($fmt, $a, $b, $c, $d, $e, $f, $g)) };
             ( $fmt:expr, $a:expr, $b:expr, $c:expr, $d:expr, $e:expr, $f:expr, $g:expr, $h:expr ) =>
-            { trace!($TRACE, "{}{}: {}", ::macros::indent($indent as usize), $func, format!($fmt, $a, $b, $c, $d, $e, $f, $g, $h)) };
+            { trace!($TRACE, "{}{}: {}", crate::macros::indent($indent as usize), $func, format!($fmt, $a, $b, $c, $d, $e, $f, $g, $h)) };
             ( $fmt:expr, $a:expr, $b:expr, $c:expr, $d:expr, $e:expr, $f:expr, $g:expr, $h:expr, $i:expr ) =>
-            { trace!($TRACE, "{}{}: {}", ::macros::indent($indent as usize), $func, format!($fmt, $a, $b, $c, $d, $e, $f, $g, $h, $i)) };
+            { trace!($TRACE, "{}{}: {}", crate::macros::indent($indent as usize), $func, format!($fmt, $a, $b, $c, $d, $e, $f, $g, $h, $i)) };
             ( $fmt:expr, $a:expr, $b:expr, $c:expr, $d:expr, $e:expr, $f:expr, $g:expr, $h:expr, $i:expr, $j:expr ) =>
-            { trace!($TRACE, "{}{}: {}", ::macros::indent($indent as usize), $func, format!($fmt, $a, $b, $c, $d, $e, $f, $g, $h, $i, $j)) };
+            { trace!($TRACE, "{}{}: {}", crate::macros::indent($indent as usize), $func, format!($fmt, $a, $b, $c, $d, $e, $f, $g, $h, $i, $j)) };
             ( $fmt:expr, $a:expr, $b:expr, $c:expr, $d:expr, $e:expr, $f:expr, $g:expr, $h:expr, $i:expr, $j:expr, $k:expr ) =>
-            { trace!($TRACE, "{}{}: {}", ::macros::indent($indent as usize), $func, format!($fmt, $a, $b, $c, $d, $e, $f, $g, $h, $i, $j, $k)) };
+            { trace!($TRACE, "{}{}: {}", crate::macros::indent($indent as usize), $func, format!($fmt, $a, $b, $c, $d, $e, $f, $g, $h, $i, $j, $k)) };
         }
     }
 }

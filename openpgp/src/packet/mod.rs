@@ -8,17 +8,14 @@ use std::fmt;
 use std::ops::{Deref, DerefMut};
 use std::slice;
 use std::vec;
-use std::io;
 
-use Result;
-use Packet;
+use crate::Error;
+use crate::Result;
+use crate::Packet;
 
 pub mod prelude;
 
-pub mod ctb;
-use self::ctb::PacketLengthType;
-
-use buffered_reader::BufferedReader;
+use crate::crypto::KeyPair;
 
 mod tag;
 pub use self::tag::Tag;
@@ -48,12 +45,6 @@ pub mod pkesk;
 mod mdc;
 pub use self::mdc::MDC;
 pub mod aed;
-mod features;
-pub use self::features::Features;
-mod key_flags;
-pub use self::key_flags::KeyFlags;
-mod server_preferences;
-pub use self::server_preferences::KeyServerPreferences;
 
 // Allow transparent access of common fields.
 impl<'a> Deref for Packet {
@@ -111,124 +102,6 @@ impl<'a> DerefMut for Packet {
     }
 }
 
-/// The size of a packet.
-///
-/// A packet's size can be expressed in three different ways.  Either
-/// the size of the packet is fully known (Full), the packet is
-/// chunked using OpenPGP's partial body encoding (Partial), or the
-/// packet extends to the end of the file (Indeterminate).  See
-/// [Section 4.2 of RFC 4880] for more details.
-///
-///   [Section 4.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-4.2
-#[derive(Debug)]
-// We need PartialEq so that assert_eq! works.
-#[derive(PartialEq)]
-#[derive(Clone, Copy)]
-pub enum BodyLength {
-    /// Packet size is fully known.
-    Full(u32),
-    /// The parameter is the number of bytes in the current chunk.
-    /// This type is only used with new format packets.
-    Partial(u32),
-    /// The packet extends until an EOF is encountered.  This type is
-    /// only used with old format packets.
-    Indeterminate,
-}
-
-impl BodyLength {
-    /// Decodes a new format body length as described in [Section
-    /// 4.2.2 of RFC 4880].
-    ///
-    ///   [Section 4.2.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-4.2.2
-    pub(crate) fn parse_new_format<T: BufferedReader<C>, C> (bio: &mut T)
-        -> io::Result<BodyLength>
-    {
-        let octet1 : u8 = bio.data_consume_hard(1)?[0];
-        match octet1 {
-            0...191 => // One octet.
-                Ok(BodyLength::Full(octet1 as u32)),
-            192...223 => { // Two octets length.
-                let octet2 = bio.data_consume_hard(1)?[0];
-                Ok(BodyLength::Full(((octet1 as u32 - 192) << 8)
-                                    + octet2 as u32 + 192))
-            },
-            224...254 => // Partial body length.
-                Ok(BodyLength::Partial(1 << (octet1 & 0x1F))),
-            255 => // Five octets.
-                Ok(BodyLength::Full(bio.read_be_u32()?)),
-        }
-    }
-
-    /// Decodes an old format body length as described in [Section
-    /// 4.2.1 of RFC 4880].
-    ///
-    ///   [Section 4.2.1 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-4.2.1
-    pub(crate) fn parse_old_format<T: BufferedReader<C>, C>
-        (bio: &mut T, length_type: PacketLengthType)
-         -> Result<BodyLength>
-    {
-        match length_type {
-            PacketLengthType::OneOctet =>
-                Ok(BodyLength::Full(bio.data_consume_hard(1)?[0] as u32)),
-            PacketLengthType::TwoOctets =>
-                Ok(BodyLength::Full(bio.read_be_u16()? as u32)),
-            PacketLengthType::FourOctets =>
-                Ok(BodyLength::Full(bio.read_be_u32()? as u32)),
-            PacketLengthType::Indeterminate =>
-                Ok(BodyLength::Indeterminate),
-        }
-    }
-}
-
-#[test]
-fn body_length_new_format() {
-    fn test(input: &[u8], expected_result: BodyLength) {
-        assert_eq!(
-            BodyLength::parse_new_format(
-                &mut buffered_reader::Memory::new(input)).unwrap(),
-            expected_result);
-    }
-
-    // Examples from Section 4.2.3 of RFC4880.
-
-    // Example #1.
-    test(&[0x64][..], BodyLength::Full(100));
-
-    // Example #2.
-    test(&[0xC5, 0xFB][..], BodyLength::Full(1723));
-
-    // Example #3.
-    test(&[0xFF, 0x00, 0x01, 0x86, 0xA0][..], BodyLength::Full(100000));
-
-    // Example #4.
-    test(&[0xEF][..], BodyLength::Partial(32768));
-    test(&[0xE1][..], BodyLength::Partial(2));
-    test(&[0xF0][..], BodyLength::Partial(65536));
-    test(&[0xC5, 0xDD][..], BodyLength::Full(1693));
-}
-
-#[test]
-fn body_length_old_format() {
-    fn test(input: &[u8], plt: PacketLengthType,
-            expected_result: BodyLength, expected_rest: &[u8]) {
-        let mut bio = buffered_reader::Memory::new(input);
-        assert_eq!(BodyLength::parse_old_format(&mut bio, plt).unwrap(),
-                   expected_result);
-        let rest = bio.data_eof();
-        assert_eq!(rest.unwrap(), expected_rest);
-    }
-
-    test(&[1], PacketLengthType::OneOctet, BodyLength::Full(1), &b""[..]);
-    test(&[1, 2], PacketLengthType::TwoOctets,
-         BodyLength::Full((1 << 8) + 2), &b""[..]);
-    test(&[1, 2, 3, 4], PacketLengthType::FourOctets,
-         BodyLength::Full((1 << 24) + (2 << 16) + (3 << 8) + 4), &b""[..]);
-    test(&[1, 2, 3, 4, 5, 6], PacketLengthType::FourOctets,
-         BodyLength::Full((1 << 24) + (2 << 16) + (3 << 8) + 4), &[5, 6][..]);
-    test(&[1, 2, 3, 4], PacketLengthType::Indeterminate,
-         BodyLength::Indeterminate, &[1, 2, 3, 4][..]);
-}
-
 /// Fields used by multiple packet types.
 #[derive(PartialEq, Eq, Hash, Clone)]
 pub struct Common {
@@ -245,7 +118,7 @@ pub struct Common {
     ///   [`PacketPile`]: ../struct.PacketPile.html
     ///   [`PacketPile::from_file`]: ../struct.PacketPile.html#method.from_file
     ///   [`PacketParser`]: ../parse/struct.PacketParser.html
-    pub children: Option<Container>,
+    children: Option<Container>,
 
     /// Holds a packet's body.
     ///
@@ -290,7 +163,7 @@ pub struct Common {
     /// `PacketParser` is configured to buffer unread content, then
     /// this is not the packet's entire content; it is just the unread
     /// content.
-    pub body: Option<Vec<u8>>,
+    body: Option<Vec<u8>>,
 }
 
 impl fmt::Debug for Common {
@@ -313,16 +186,40 @@ impl Default for Common {
 }
 
 impl Common {
+    pub(crate) // for packet_pile.rs
+    fn children_ref(&self) -> Option<&Container> {
+        self.children.as_ref()
+    }
+
+    pub(crate) // for packet_pile.rs
+    fn children_mut(&mut self) -> Option<&mut Container> {
+        self.children.as_mut()
+    }
+
+    pub(crate) // for packet_pile.rs
+    fn set_children(&mut self, v: Option<Container>) -> Option<Container> {
+        std::mem::replace(&mut self.children, v)
+    }
+
+    fn children_iter<'a>(&'a self) -> slice::Iter<'a, Packet> {
+        if let Some(ref container) = self.children {
+            container.packets.iter()
+        } else {
+            let empty_packet_slice : &[Packet] = &[];
+            empty_packet_slice.iter()
+        }
+    }
+
+    /// Returns an iterator over the packet's immediate children.
+    pub fn children<'a>(&'a self) -> impl Iterator<Item = &'a Packet> {
+        self.children_iter()
+    }
+
     /// Returns an iterator over all of the packet's descendants, in
     /// depth-first order.
-    pub fn descendants(&self) -> PacketIter {
-        return PacketIter {
-            children: if let Some(ref container) = self.children {
-                container.packets.iter()
-            } else {
-                let empty_packet_slice : &[Packet] = &[];
-                empty_packet_slice.iter()
-            },
+    pub fn descendants(&self) -> Iter {
+        return Iter {
+            children: self.children_iter(),
             child: None,
             grandchildren: None,
             depth: 0,
@@ -348,6 +245,11 @@ impl Common {
                             if data.len() == 0 { None } else { Some(data) })
             .unwrap_or(Vec::new())
     }
+
+    pub(crate) // For parse.rs
+    fn body_mut(&mut self) -> Option<&mut Vec<u8>> {
+        self.body.as_mut()
+    }
 }
 
 /// Holds zero or more OpenPGP packets.
@@ -355,7 +257,7 @@ impl Common {
 /// This is used by OpenPGP container packets, like the compressed
 /// data packet, to store the containing packets.
 #[derive(PartialEq, Eq, Hash, Clone)]
-pub struct Container {
+pub(crate) struct Container {
     pub(crate) packets: Vec<Packet>,
 }
 
@@ -387,8 +289,8 @@ impl Container {
 
     /// Returns an iterator over the packet's descendants.  The
     /// descendants are visited in depth-first order.
-    pub fn descendants(&self) -> PacketIter {
-        return PacketIter {
+    pub fn descendants(&self) -> Iter {
+        return Iter {
             // Iterate over each packet in the message.
             children: self.children(),
             child: None,
@@ -431,23 +333,23 @@ impl Container {
     }
 }
 
-/// A `PacketIter` iterates over the *contents* of a packet in
+/// A `Iter` iterates over the *contents* of a packet in
 /// depth-first order.  It starts by returning the current packet.
-pub struct PacketIter<'a> {
+pub struct Iter<'a> {
     // An iterator over the current message's children.
     children: slice::Iter<'a, Packet>,
     // The current child (i.e., the last value returned by
     // children.next()).
     child: Option<&'a Packet>,
     // The an iterator over the current child's children.
-    grandchildren: Option<Box<PacketIter<'a>>>,
+    grandchildren: Option<Box<Iter<'a>>>,
 
     // The depth of the last returned packet.  This is used by the
     // `paths` iter.
     depth: usize,
 }
 
-impl<'a> Iterator for PacketIter<'a> {
+impl<'a> Iterator for Iter<'a> {
     type Item = &'a Packet;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -477,13 +379,13 @@ impl<'a> Iterator for PacketIter<'a> {
     }
 }
 
-impl<'a> PacketIter<'a> {
-    /// Extends a `PacketIter` to also return each packet's path.
+impl<'a> Iter<'a> {
+    /// Extends a `Iter` to also return each packet's path.
     ///
     /// This is similar to `enumerate`, but instead of counting, this
     /// returns each packet's path in addition to a reference to the
     /// packet.
-    pub fn paths(self) -> PacketPathIter<'a> {
+    pub fn paths(self) -> impl Iterator<Item = (Vec<usize>, &'a Packet)> {
         PacketPathIter {
             iter: self,
             path: None,
@@ -493,9 +395,9 @@ impl<'a> PacketIter<'a> {
 
 
 /// Like `enumerate`, this augments the packet returned by a
-/// `PacketIter` with its `Path`.
-pub struct PacketPathIter<'a> {
-    iter: PacketIter<'a>,
+/// `Iter` with its `Path`.
+struct PacketPathIter<'a> {
+    iter: Iter<'a>,
 
     // The path to the most recently returned node relative to the
     // start of the iterator.
@@ -540,8 +442,8 @@ impl<'a> Iterator for PacketPathIter<'a> {
 // Tests the `paths`() iter and `path_ref`().
 #[test]
 fn packet_path_iter() {
-    use parse::Parse;
-    use PacketPile;
+    use crate::parse::Parse;
+    use crate::PacketPile;
 
     fn paths(iter: slice::Iter<Packet>) -> Vec<Vec<usize>> {
         let mut lpaths : Vec<Vec<usize>> = Vec::new();
@@ -562,7 +464,7 @@ fn packet_path_iter() {
 
     for i in 1..5 {
         let pile = PacketPile::from_bytes(
-            ::tests::message(&format!("recursive-{}.gpg", i)[..])).unwrap();
+            crate::tests::message(&format!("recursive-{}.gpg", i)[..])).unwrap();
 
         let mut paths1 : Vec<Vec<usize>> = Vec::new();
         for path in paths(pile.children()).iter() {
@@ -773,12 +675,12 @@ impl From<SKESK> for Packet {
 ///
 ///   [Section 5.5 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.5
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
-pub enum Key {
+pub enum Key<P: key::KeyParts, R: key::KeyRole> {
     /// Key packet version 4.
-    V4(self::key::Key4),
+    V4(self::key::Key4<P, R>),
 }
 
-impl fmt::Display for Key {
+impl<P: key::KeyParts, R: key::KeyRole> fmt::Display for Key<P, R> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Key::V4(k) => k.fmt(f),
@@ -786,7 +688,7 @@ impl fmt::Display for Key {
     }
 }
 
-impl Key {
+impl<P: key::KeyParts, R: key::KeyRole> Key<P, R> {
     /// Gets the version.
     pub fn version(&self) -> u8 {
         match self {
@@ -805,30 +707,85 @@ impl Key {
             (Key::V4(a), Key::V4(b)) => self::key::Key4::public_cmp(a, b),
         }
     }
+}
 
+impl From<Key<key::PublicParts, key::PrimaryRole>> for Packet {
+    /// Convert the `Key` struct to a `Packet`.
+    fn from(k: Key<key::PublicParts, key::PrimaryRole>) -> Self {
+        Packet::PublicKey(k.into())
+    }
+}
+
+impl From<Key<key::PublicParts, key::SubordinateRole>> for Packet {
+    /// Convert the `Key` struct to a `Packet`.
+    fn from(k: Key<key::PublicParts, key::SubordinateRole>) -> Self {
+        Packet::PublicSubkey(k.into())
+    }
+}
+
+impl From<Key<key::SecretParts, key::PrimaryRole>> for Packet {
+    /// Convert the `Key` struct to a `Packet`.
+    fn from(k: Key<key::SecretParts, key::PrimaryRole>) -> Self {
+        Packet::SecretKey(k.into())
+    }
+}
+
+impl From<Key<key::SecretParts, key::SubordinateRole>> for Packet {
+    /// Convert the `Key` struct to a `Packet`.
+    fn from(k: Key<key::SecretParts, key::SubordinateRole>) -> Self {
+        Packet::SecretSubkey(k.into())
+    }
+}
+
+impl<R: key::KeyRole> Key<key::SecretParts, R> {
     /// Creates a new key pair from a Key packet with an unencrypted
     /// secret key.
     ///
     /// # Errors
     ///
     /// Fails if the secret key is missing, or encrypted.
-    pub fn into_keypair(self) -> Result<::crypto::KeyPair> {
-        match self {
-            Key::V4(p) => p.into_keypair(),
-        }
-    }
+    pub fn into_keypair(mut self) -> Result<KeyPair<R>> {
+        use crate::packet::key::SecretKeyMaterial;
+        let secret = match self.set_secret(None) {
+            Some(SecretKeyMaterial::Unencrypted(secret)) => secret,
+            Some(SecretKeyMaterial::Encrypted(_)) =>
+                return Err(Error::InvalidArgument(
+                    "secret key is encrypted".into()).into()),
+            None =>
+                return Err(Error::InvalidArgument(
+                    "no secret key".into()).into()),
+        };
 
-    /// Convert the `Key` struct to a `Packet`.
-    pub fn into_packet(self, tag: Tag) -> Result<Packet> {
-        match self {
-            Key::V4(p) => p.into_packet(tag),
-        }
+        KeyPair::new(self.into(), secret)
+    }
+}
+
+impl<R: key::KeyRole> key::Key4<key::SecretParts, R> {
+    /// Creates a new key pair from a Key packet with an unencrypted
+    /// secret key.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the secret key is missing, or encrypted.
+    pub fn into_keypair(mut self) -> Result<KeyPair<R>> {
+        use crate::packet::key::SecretKeyMaterial;
+        let secret = match self.set_secret(None) {
+            Some(SecretKeyMaterial::Unencrypted(secret)) => secret,
+            Some(SecretKeyMaterial::Encrypted(_)) =>
+                return Err(Error::InvalidArgument(
+                    "secret key is encrypted".into()).into()),
+            None =>
+                return Err(Error::InvalidArgument(
+                    "no secret key".into()).into()),
+        };
+
+        KeyPair::new(self.mark_parts_public().into(), secret)
     }
 }
 
 // Trivial forwarder for singleton enum.
-impl Deref for Key {
-    type Target = self::key::Key4;
+impl<P: key::KeyParts, R: key::KeyRole> Deref for Key<P, R> {
+    type Target = self::key::Key4<P, R>;
 
     fn deref(&self) -> &Self::Target {
         match self {
@@ -838,7 +795,7 @@ impl Deref for Key {
 }
 
 // Trivial forwarder for singleton enum.
-impl DerefMut for Key {
+impl<P: key::KeyParts, R: key::KeyRole> DerefMut for Key<P, R> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         match self {
             Key::V4(ref mut p) => p,
@@ -937,5 +894,16 @@ impl DerefMut for AED {
         match self {
             AED::V1(ref mut p) => p,
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn packet_is_send_and_sync() {
+        fn f<T: Send + Sync>(_: T) {}
+        f(Packet::Marker(Default::default()));
     }
 }

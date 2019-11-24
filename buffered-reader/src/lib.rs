@@ -31,7 +31,7 @@
 //! # Details
 //!
 //! Because the [`BufRead`] trait doesn't provide a mechanism for the
-//! user to size the interal buffer, a parser can't generally be sure
+//! user to size the internal buffer, a parser can't generally be sure
 //! that the internal buffer will be large enough to allow it to work
 //! with all data in place.
 //!
@@ -164,7 +164,7 @@
 //! lazily.  This is done by implementing the `BufferedReader` trait
 //! for the framing parser, and stacking the `BufferedReader`s.
 //!
-//! For our next example, we rewrite the previous code asssuming that
+//! For our next example, we rewrite the previous code assuming that
 //! the object parser reads from a `BufferedReader` object.  Since the
 //! framing parser is really just a limit on the object's size, we
 //! don't need to implement a special `BufferedReader`, but can use a
@@ -275,6 +275,25 @@ pub use self::file_unix::File;
 // The default buffer size.
 const DEFAULT_BUF_SIZE: usize = 8 * 1024;
 
+// On debug builds, Vec<u8>::truncate is very, very slow.  For
+// instance, running the decrypt_test_stream test takes 51 seconds on
+// my (Neal's) computer using Vec<u8>::truncate and <0.1 seconds using
+// `unsafe { v.set_len(len); }`.
+//
+// The issue is that the compiler calls drop on every element that is
+// dropped, even though a u8 doesn't have a drop implementation.  The
+// compiler optimizes this away at high optimization levels, but those
+// levels make debugging harder.
+fn vec_truncate(v: &mut Vec<u8>, len: usize) {
+    if cfg!(debug_assertions) {
+        if len < v.len() {
+            unsafe { v.set_len(len); }
+        }
+    } else {
+        v.truncate(len);
+    }
+}
+
 /// The generic `BufferReader` interface.
 pub trait BufferedReader<C> : io::Read + fmt::Debug + fmt::Display {
     /// Returns a reference to the internal buffer.
@@ -307,9 +326,7 @@ pub trait BufferedReader<C> : io::Read + fmt::Debug + fmt::Display {
     /// EOF has been reached or an error occurs, in which case the
     /// returned slice will contain the rest of the file.
     ///
-    /// If an error occurs, it is not discarded, but saved.  It is
-    /// returned when `data` (or a related function) is called and the
-    /// internal buffer is empty.
+    /// Errors are returned only when the internal buffer is empty.
     ///
     /// This function does not advance the cursor.  To advance the
     /// cursor, use `consume()`.
@@ -694,7 +711,14 @@ pub trait BufferedReader<C> : io::Read + fmt::Debug + fmt::Display {
         let mut total = 0;
         let position = 'outer: loop {
             let len = {
-                let buffer = self.data(DEFAULT_BUF_SIZE)?;
+                // Try self.buffer.  Only if it is empty, use
+                // self.data.
+                let buffer = if self.buffer().len() == 0 {
+                    self.data(DEFAULT_BUF_SIZE)?
+                } else {
+                    self.buffer()
+                };
+
                 if buffer.len() == 0 {
                     break 'outer 0;
                 }
@@ -723,16 +747,21 @@ pub trait BufferedReader<C> : io::Read + fmt::Debug + fmt::Display {
     ///
     /// Returns the terminal byte and the number of bytes discarded.
     ///
-    /// Unlike `drop_until`, The end of file is *not* considered a
-    /// match.
+    /// If match_eof is true, then the end of file is considered a
+    /// match.  Otherwise, if the end of file is encountered, an error
+    /// is returned.
     ///
     /// `terminals` must be sorted.
-    fn drop_through(&mut self, terminals: &[u8])
-        -> Result<(u8, usize), std::io::Error>
+    fn drop_through(&mut self, terminals: &[u8], match_eof: bool)
+        -> Result<(Option<u8>, usize), std::io::Error>
     {
         let dropped = self.drop_until(terminals)?;
-        let terminal = self.data_consume_hard(1)?[0];
-        Ok((terminal, dropped + 1))
+        match self.data_consume(1) {
+            Ok([]) if match_eof => Ok((None, dropped)),
+            Ok([]) => Err(Error::new(ErrorKind::UnexpectedEof, "EOF")),
+            Ok(rest) => Ok((Some(rest[0]), dropped + 1)),
+            Err(err) => Err(err),
+        }
     }
 
     /// Like `data_consume_hard()`, but returns the data in a
@@ -799,7 +828,7 @@ pub trait BufferedReader<C> : io::Read + fmt::Debug + fmt::Display {
     /// ```text
     /// let inner = Box::new(br).into_inner();
     /// ```
-    fn into_inner<'a>(self: Box<Self>) -> Option<Box<BufferedReader<C> + 'a>>
+    fn into_inner<'a>(self: Box<Self>) -> Option<Box<dyn BufferedReader<C> + 'a>>
         where Self: 'a;
 
     /// Returns a mutable reference to the inner `BufferedReader`, if
@@ -809,10 +838,10 @@ pub trait BufferedReader<C> : io::Read + fmt::Debug + fmt::Display {
     /// `BufferedReader`, because this `BufferedReader` may have some
     /// data buffered.  However, this function can be useful to get
     /// the cookie.
-    fn get_mut(&mut self) -> Option<&mut BufferedReader<C>>;
+    fn get_mut(&mut self) -> Option<&mut dyn BufferedReader<C>>;
 
     /// Returns a reference to the inner `BufferedReader`, if any.
-    fn get_ref(&self) -> Option<&BufferedReader<C>>;
+    fn get_ref(&self) -> Option<&dyn BufferedReader<C>>;
 
     /// Sets the `BufferedReader`'s cookie and returns the old value.
     fn cookie_set(&mut self, cookie: C) -> C;
@@ -865,7 +894,7 @@ pub fn buffered_reader_generic_read_impl<T: BufferedReader<C>, C>
 }
 
 /// Make a `Box<BufferedReader>` look like a BufferedReader.
-impl <'a, C> BufferedReader<C> for Box<BufferedReader<C> + 'a> {
+impl <'a, C> BufferedReader<C> for Box<dyn BufferedReader<C> + 'a> {
     fn buffer(&self) -> &[u8] {
         return self.as_ref().buffer();
     }
@@ -924,17 +953,17 @@ impl <'a, C> BufferedReader<C> for Box<BufferedReader<C> + 'a> {
         return self.as_mut().drop_eof();
     }
 
-    fn get_mut(&mut self) -> Option<&mut BufferedReader<C>> {
+    fn get_mut(&mut self) -> Option<&mut dyn BufferedReader<C>> {
         // Strip the outer box.
         self.as_mut().get_mut()
     }
 
-    fn get_ref(&self) -> Option<&BufferedReader<C>> {
+    fn get_ref(&self) -> Option<&dyn BufferedReader<C>> {
         // Strip the outer box.
         self.as_ref().get_ref()
     }
 
-    fn into_inner<'b>(self: Box<Self>) -> Option<Box<BufferedReader<C> + 'b>>
+    fn into_inner<'b>(self: Box<Self>) -> Option<Box<dyn BufferedReader<C> + 'b>>
             where Self: 'b {
         // Strip the outer box.
         (*self).into_inner()
@@ -1110,15 +1139,17 @@ mod test {
         let mut reader = Memory::new(data);
 
         // Matches the 'a' at 0 and consumes 1 byte.
-        assert_eq!(reader.drop_through(b"ab").unwrap(),
-                   (b'a', 1));
+        assert_eq!(reader.drop_through(b"ab", false).unwrap(),
+                   (Some(b'a'), 1));
         // Matches the 'b' at 1 and consumes 1 byte.
-        assert_eq!(reader.drop_through(b"ab").unwrap(),
-                   (b'b', 1));
+        assert_eq!(reader.drop_through(b"ab", false).unwrap(),
+                   (Some(b'b'), 1));
         // Matches the 'd' at 4 and consumes 2 byte.
-        assert_eq!(reader.drop_through(b"def").unwrap(),
-                   (b'd', 2));
+        assert_eq!(reader.drop_through(b"def", false).unwrap(),
+                   (Some(b'd'), 2));
         // Doesn't match (eof).
-        assert!(reader.drop_through(b"def").is_err())
+        assert!(reader.drop_through(b"def", false).is_err());
+        // Matches EOF.
+        assert!(reader.drop_through(b"def", true).unwrap().0.is_none());
     }
 }
