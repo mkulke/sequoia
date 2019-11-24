@@ -338,12 +338,6 @@ impl VerificationHelper for VHelper {
     fn get_public_keys(&mut self, ids: &[openpgp::KeyID])
         -> Result<Vec<openpgp::TPK>, failure::Error>
     {
-        tracer!(true, "VHelper::get_public_keys");
-        t!("{} ids", ids.len());
-        for (i, id) in ids.iter().enumerate() {
-            t!("  {}. {:?}", i, id);
-        }
-
         // The size of KeyID is not known in C.  Convert from an array
         // of KeyIDs to an array of KeyID refs.
         let ids : Vec<*mut keyid::KeyID> =
@@ -360,8 +354,6 @@ impl VerificationHelper for VHelper {
             &mut tpk_refs_raw, &mut tpk_refs_raw_len as *mut usize,
             &mut free);
 
-        t!("get_public_keys -> {:?}", result);
-
         // Free the KeyID wrappers.
         ids.into_iter().for_each(|id| super::super::keyid::pgp_keyid_free(id));
 
@@ -370,7 +362,6 @@ impl VerificationHelper for VHelper {
             // status contains less information, but we should do the
             // best we can.  For now, we just use
             // Error::InvalidArgument.
-            t!("get_public_keys failed, returning an error");
             return Err(openpgp::Error::InvalidArgument(
                 format!("{:?}", result)).into());
         }
@@ -383,25 +374,16 @@ impl VerificationHelper for VHelper {
             tpks.push(tpk_raw.move_from_raw());
         }
 
-        t!("tpks: {}", tpks.len());
-        for (i, tpk) in tpks.iter().enumerate() {
-            t!("   {}. {:?}", i, tpk);
-        }
-
         (free)(tpk_refs_raw as *mut c_void);
 
-        t!("Returning {} tpks", tpks.len());
         Ok(tpks)
     }
 
     fn check(&mut self, structure: &stream::MessageStructure)
         -> Result<(), failure::Error>
     {
-        tracer!(true, "VHelper::check");
-        t!("Calling check on: {:?}", structure);
         let result = (self.check_signatures_cb)(self.cookie,
                                                 structure.move_into_raw());
-        t!(" -> {:?}", result);
         if result != Status::Success {
             // XXX: We need to convert the status to an error.  A
             // status contains less information, but we should do the
@@ -699,17 +681,12 @@ impl VerificationHelper for DHelper {
 
 impl DecryptionHelper for DHelper {
     fn inspect(&mut self, pp: &PacketParser) -> failure::Fallible<()> {
-        tracer!(true, "DHelper::inspect", 0);
-        t!("Got a {:?}", pp);
         if let Some(cb) = self.inspect_cb {
             match cb(self.vhelper.cookie, pp) {
                 Status::Success => Ok(()),
                 // XXX: Convert the status to an error better.
-                status => {
-                    t!("inspect_cb return non-zero: {:?}!", status);
-                    Err(failure::format_err!(
-                        "Inspect Callback returned an error: {:?}", status).into())
-                }
+                status => Err(failure::format_err!(
+                    "Inspect Callback returned an error: {:?}", status).into()),
             }
         } else {
             Ok(())
@@ -721,19 +698,7 @@ impl DecryptionHelper for DHelper {
                   -> openpgp::Result<Option<openpgp::Fingerprint>>
         where D: FnMut(SymmetricAlgorithm, &SessionKey) -> openpgp::Result<()>
     {
-        tracer!(true, "DHelper::decrypt");
-
         let mut identity: Maybe<super::super::fingerprint::Fingerprint> = None;
-
-        t!("{} pkesks, {} skesks", pkesks.len(), skesks.len());
-        t!("PKESKS:");
-        for (i, pkesk) in pkesks.iter().enumerate() {
-            t!("  {}. {:?}", i, pkesk);
-        }
-        t!("SKESKS:");
-        for (i, skesk) in skesks.iter().enumerate() {
-            t!("  {}. {:?}", i, skesk);
-        }
 
         // The size of PKESK is not known in C.  Convert from an array
         // of PKESKs to an array of PKESK refs.  Likewise for SKESKs.
@@ -759,19 +724,15 @@ impl DecryptionHelper for DHelper {
                            -> openpgp::Result<()>
         {
             let closure: &mut D = unsafe { &mut *(data as *mut D) };
-            let r = (*closure)(algo.into(), sk.ref_raw()).into();
-            t!("trampoline -> {:?}", r);
-            r
+            (*closure)(algo.into(), sk.ref_raw()).into()
         }
 
-        t!("Calling decrypt_cb");
         let result = (self.decrypt_cb)(
             self.vhelper.cookie,
             pkesks.as_ptr(), pkesks.len(), skesks.as_ptr(), skesks.len(),
             trampoline::<D>,
             &mut decrypt as *mut _ as *mut c_void,
             &mut identity);
-        t!("decrypt_cb -> {:?} / {:?}", identity, result);
         if result != Status::Success {
             // XXX: We need to convert the status to an error.  A
             // status contains less information, but we should do the
@@ -947,22 +908,10 @@ fn pgp_decryptor_new<'a>(errp: Option<&mut *mut ::error::Error>,
                          time: time_t)
                          -> Maybe<io::Reader>
 {
-    use std::io::Read;
-    use crc16;
-
-    tracer!(true, "pgp_decryptor_new");
-
     let helper = DHelper::new(
         get_public_keys, decrypt, check, inspect, cookie);
 
-    let input = input.ref_mut_raw();
-    let mut buffer = Vec::new();
-    input.read_to_end(&mut buffer).unwrap();
-    let crc = crc16::State::<crc16::ARC>::calculate(&buffer[..]);
-    t!("crc: {:x}, {} bytes", crc, buffer.len());
-    let input = std::io::Cursor::new(buffer);
-
-    Decryptor::from_reader(input, helper, maybe_time(time))
+    Decryptor::from_reader(input.ref_mut_raw(), helper, maybe_time(time))
         .map(|r| io::ReaderKind::Generic(Box::new(r)))
         .move_into_raw(errp)
 }
