@@ -145,6 +145,8 @@ use crate::types::{
 
 mod fingerprint;
 mod keyid;
+mod id;
+pub use id::ID;
 
 #[cfg(test)]
 mod tests;
@@ -417,7 +419,7 @@ pub struct Message {
 /// 4880].
 ///
 ///   [Section 12.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-12.2
-#[derive(PartialEq, Eq, Clone, Hash)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
 pub enum Fingerprint {
     /// 20 byte SHA-1 hash.
     V4([u8;20]),
