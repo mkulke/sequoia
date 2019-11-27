@@ -87,7 +87,7 @@ const BUFFER_SIZE: usize = 25 * 1024 * 1024;
 /// // This fetches keys and computes the validity of the verification.
 /// struct Helper {};
 /// impl VerificationHelper for Helper {
-///     fn get_public_keys(&mut self, _ids: &[KeyID]) -> Result<Vec<TPK>> {
+///     fn get_public_keys(&mut self, _ids: &[openpgp::KeyHandle]) -> Result<Vec<TPK>> {
 ///         Ok(Vec::new()) // Feed the TPKs to the verifier here...
 ///     }
 ///     fn check(&mut self, structure: &MessageStructure) -> Result<()> {
@@ -125,7 +125,7 @@ pub struct Verifier<'a, H: VerificationHelper> {
     helper: H,
     tpks: Vec<TPK>,
     /// Maps KeyID to tpks[i].keys_all().nth(j).
-    keys: HashMap<KeyID, (usize, usize)>,
+    keys: HashMap<crate::KeyHandle, (usize, usize)>,
     oppr: Option<PacketParserResult<'a>>,
     structure: IMessageStructure,
 
@@ -149,21 +149,68 @@ pub enum VerificationResult<'a> {
     /// model, such as the [web of trust] (WoT).
     ///
     /// [web of trust]: https://en.wikipedia.org/wiki/Web_of_trust
-    GoodChecksum(Signature,
-                 &'a TPK,
-                 &'a key::UnspecifiedPublic,
-                 Option<&'a Signature>,
-                 RevocationStatus<'a>),
+    GoodChecksum {
+        /// The signature.
+        sig: Signature,
+
+        /// The signature's issuer.
+        tpk: &'a TPK,
+
+        /// The signing key that made the signature.
+        key: &'a key::UnspecifiedPublic,
+
+        /// The signing key's binding signature.
+        binding: Option<&'a Signature>,
+
+        /// The signing key's revocation status
+        revoked: RevocationStatus<'a>,
+    },
+
     /// The signature is good, but it is not alive at the specified
     /// time.
     ///
     /// See `SubpacketAreas::signature_alive` for a definition of
     /// liveness.
-    NotAlive(Signature),
+    NotAlive {
+        /// The signature.
+        sig: Signature,
+
+        /// The signature's issuer.
+        tpk: &'a TPK,
+
+        /// The signing key that made the signature.
+        key: &'a key::UnspecifiedPublic,
+
+        /// The signing key's binding signature.
+        binding: Option<&'a Signature>,
+
+        /// The signing key's revocation status
+        revoked: RevocationStatus<'a>,
+    },
+
     /// Unable to verify the signature because the key is missing.
-    MissingKey(Signature),
+    MissingKey {
+        /// The signature.
+        sig: Signature,
+    },
+
     /// The signature is bad.
-    BadChecksum(Signature),
+    BadChecksum {
+        /// The signature.
+        sig: Signature,
+
+        /// The signature's issuer.
+        tpk: &'a TPK,
+
+        /// The signing key that made the signature.
+        key: &'a key::UnspecifiedPublic,
+
+        /// The signing key's binding signature.
+        binding: Option<&'a Signature>,
+
+        /// The signing key's revocation status
+        revoked: RevocationStatus<'a>,
+    },
 }
 
 impl<'a> VerificationResult<'a> {
@@ -171,10 +218,10 @@ impl<'a> VerificationResult<'a> {
     pub fn level(&self) -> usize {
         use self::VerificationResult::*;
         match self {
-            &GoodChecksum(ref sig, ..) => sig.level(),
-            &NotAlive(ref sig, ..) => sig.level(),
-            &MissingKey(ref sig) => sig.level(),
-            &BadChecksum(ref sig) => sig.level(),
+            GoodChecksum { sig, .. } => sig.level(),
+            NotAlive { sig, .. } => sig.level(),
+            MissingKey { sig, .. } => sig.level(),
+            BadChecksum { sig, .. } => sig.level(),
         }
     }
 }
@@ -382,7 +429,7 @@ enum IMessageLayer {
 /// Helper for signature verification.
 pub trait VerificationHelper {
     /// Retrieves the TPKs containing the specified keys.
-    fn get_public_keys(&mut self, _: &[KeyID]) -> Result<Vec<TPK>>;
+    fn get_public_keys(&mut self, _: &[crate::KeyHandle]) -> Result<Vec<TPK>>;
 
     /// Conveys the message structure.
     ///
@@ -522,7 +569,7 @@ impl<'a, H: VerificationHelper> Verifier<'a, H> {
                     v.structure.new_compression_layer(p.algorithm()),
                 Packet::OnePassSig(ref ops) => {
                     v.structure.push_ops(ops);
-                    issuers.push(ops.issuer().clone());
+                    issuers.push(ops.issuer().clone().into());
                 },
                 Packet::Literal(_) => {
                     v.structure.insert_missing_signature_group();
@@ -532,13 +579,16 @@ impl<'a, H: VerificationHelper> Verifier<'a, H> {
                     for (i, tpk) in v.tpks.iter().enumerate() {
                         if can_sign(tpk.primary(),
                                     tpk.primary_key_signature(None), t) {
-                            v.keys.insert(tpk.keyid(), (i, 0));
+                            v.keys.insert(tpk.fingerprint().into(), (i, 0));
+                            v.keys.insert(tpk.keyid().into(), (i, 0));
                         }
 
                         for (j, skb) in tpk.subkeys().enumerate() {
                             let key = skb.key();
                             if can_sign(key, skb.binding_signature(None), t) {
-                                v.keys.insert(key.keyid(),
+                                v.keys.insert(key.fingerprint().into(),
+                                              (i, j + 1));
+                                v.keys.insert(key.keyid().into(),
                                               (i, j + 1));
                             }
                         }
@@ -559,10 +609,13 @@ impl<'a, H: VerificationHelper> Verifier<'a, H> {
                 //
                 // In this case, we get the issuer from the
                 // signature itself.
-                if let Some(issuer) = sig.get_issuer() {
-                    issuers.push(issuer);
+                let sig_issuers = sig.get_issuers();
+                if sig_issuers.is_empty() {
+                    issuers.push(KeyID::wildcard().into());
                 } else {
-                    issuers.push(KeyID::wildcard());
+                    for issuer in sig_issuers {
+                        issuers.push(issuer);
+                    }
                 }
 
                 v.structure.push_bare_signature(sig);
@@ -608,33 +661,44 @@ impl<'a, H: VerificationHelper> Verifier<'a, H> {
                     unreachable!("not decrypting messages"),
                 IMessageLayer::SignatureGroup { sigs, .. } => {
                     results.new_signature_group();
-                    for sig in sigs.into_iter() {
-                        let r = if let Some(issuer) = sig.get_issuer() {
-                            if let Some((i, j)) =
-                                self.keys.get(&issuer)
-                            {
+                    'sigs: for sig in sigs.into_iter() {
+                        for issuer in sig.get_issuers() {
+                            if let Some((i, j)) = self.keys.get(&issuer) {
                                 let tpk = &self.tpks[*i];
-                                let (binding, revocation, key)
+                                let (binding, revoked, key)
                                     = tpk.keys_all().nth(*j).unwrap();
-                                if sig.verify(key).unwrap_or(false) {
-                                    if sig.signature_alive(self.time, None) {
-                                        VerificationResult::GoodChecksum
-                                            (sig, tpk, key, binding,
-                                             revocation)
+                                results.push_verification_result(
+                                    if sig.verify(key).unwrap_or(false) {
+                                        if sig.signature_alive(self.time, None)
+                                        {
+                                            VerificationResult::GoodChecksum {
+                                                sig: sig.clone(),
+                                                tpk, key, binding, revoked,
+                                            }
+                                        } else {
+                                            VerificationResult::NotAlive {
+                                                sig: sig.clone(),
+                                                tpk, key, binding, revoked,
+                                            }
+                                        }
                                     } else {
-                                        VerificationResult::NotAlive(sig)
+                                        VerificationResult::BadChecksum {
+                                            sig: sig.clone(),
+                                            tpk, key, binding, revoked,
+                                        }
                                     }
-                                } else {
-                                    VerificationResult::BadChecksum(sig)
-                                }
-                            } else {
-                                VerificationResult::MissingKey(sig)
+                                );
+
+                                // We found a key, continue to next sig.
+                                continue 'sigs;
                             }
-                        } else {
-                            // No issuer.
-                            VerificationResult::BadChecksum(sig)
-                        };
-                        results.push_verification_result(r)
+                        }
+
+                        results.push_verification_result(
+                            VerificationResult::MissingKey {
+                                sig,
+                            }
+                        );
                     }
                 },
             }
@@ -936,7 +1000,7 @@ impl<'a> io::Read for Transformer<'a> {
 /// // This fetches keys and computes the validity of the verification.
 /// struct Helper {};
 /// impl VerificationHelper for Helper {
-///     fn get_public_keys(&mut self, _ids: &[KeyID]) -> Result<Vec<TPK>> {
+///     fn get_public_keys(&mut self, _ids: &[openpgp::KeyHandle]) -> Result<Vec<TPK>> {
 ///         Ok(Vec::new()) // Feed the TPKs to the verifier here...
 ///     }
 ///     fn check(&mut self, structure: &MessageStructure) -> Result<()> {
@@ -1076,7 +1140,7 @@ impl DetachedVerifier {
 /// // This fetches keys and computes the validity of the verification.
 /// struct Helper {};
 /// impl VerificationHelper for Helper {
-///     fn get_public_keys(&mut self, _ids: &[KeyID]) -> Result<Vec<TPK>> {
+///     fn get_public_keys(&mut self, _ids: &[openpgp::KeyHandle]) -> Result<Vec<TPK>> {
 ///         Ok(Vec::new()) // Feed the TPKs to the verifier here...
 ///     }
 ///     fn check(&mut self, structure: &MessageStructure) -> Result<()> {
@@ -1123,7 +1187,7 @@ pub struct Decryptor<'a, H: VerificationHelper + DecryptionHelper> {
     helper: H,
     tpks: Vec<TPK>,
     /// Maps KeyID to tpks[i].keys_all().nth(j).
-    keys: HashMap<KeyID, (usize, usize)>,
+    keys: HashMap<crate::KeyHandle, (usize, usize)>,
     oppr: Option<PacketParserResult<'a>>,
     identity: Option<Fingerprint>,
     structure: IMessageStructure,
@@ -1312,7 +1376,7 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                 },
                 Packet::OnePassSig(ref ops) => {
                     v.structure.push_ops(ops);
-                    issuers.push(ops.issuer().clone());
+                    issuers.push(ops.issuer().clone().into());
                 },
                 Packet::Literal(_) => {
                     v.structure.insert_missing_signature_group();
@@ -1335,13 +1399,17 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
 
                         if can_sign(tpk.primary().into(),
                                     tpk.primary_key_signature(None)) {
-                            v.keys.insert(tpk.keyid(), (i, 0));
+                            v.keys.insert(tpk.fingerprint().into(), (i, 0));
+                            v.keys.insert(tpk.keyid().into(), (i, 0));
                         }
 
                         for (j, skb) in tpk.subkeys().enumerate() {
                             let key = skb.key();
                             if can_sign(key.into(), skb.binding_signature(None)) {
-                                v.keys.insert(key.keyid(), (i, j + 1));
+                                v.keys.insert(key.fingerprint().into(),
+                                              (i, j + 1));
+                                v.keys.insert(key.keyid().into(),
+                                              (i, j + 1));
                             }
                         }
                     }
@@ -1369,10 +1437,13 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                         //
                         // In this case, we get the issuer from the
                         // signature itself.
-                        if let Some(issuer) = sig.get_issuer() {
-                            issuers.push(issuer);
+                        let sig_issuers = sig.get_issuers();
+                        if sig_issuers.is_empty() {
+                            issuers.push(KeyID::wildcard().into());
                         } else {
-                            issuers.push(KeyID::wildcard());
+                            for issuer in sig_issuers {
+                                issuers.push(issuer);
+                            }
                         }
                     }
                     v.structure.push_bare_signature(sig);
@@ -1465,13 +1536,13 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                     results.new_encryption_layer(sym_algo, aead_algo),
                 IMessageLayer::SignatureGroup { sigs, .. } => {
                     results.new_signature_group();
-                    for sig in sigs.into_iter() {
-                        results.push_verification_result(
-                            if let Some(issuer) = sig.get_issuer() {
-                                if let Some((i, j)) = self.keys.get(&issuer) {
-                                    let tpk = &self.tpks[*i];
-                                    let (binding, revocation, key)
-                                        = tpk.keys_all().nth(*j).unwrap();
+                    'sigs: for sig in sigs.into_iter() {
+                        for issuer in sig.get_issuers() {
+                            if let Some((i, j)) = self.keys.get(&issuer) {
+                                let tpk = &self.tpks[*i];
+                                let (binding, revoked, key)
+                                    = tpk.keys_all().nth(*j).unwrap();
+                                results.push_verification_result(
                                     if sig.verify(key).unwrap_or(false) &&
                                         sig.signature_alive(self.time, None)
                                     {
@@ -1490,33 +1561,44 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                                                 // the signature as
                                                 // bad.
                                                 VerificationResult::BadChecksum
-                                                    (sig)
+                                                {
+                                                    sig: sig.clone(),
+                                                    tpk, key, binding, revoked,
+                                                }
                                             } else {
                                                 VerificationResult::GoodChecksum
-                                                    (sig, tpk,
-                                                     key,
-                                                     binding,
-                                                     revocation)
+                                                {
+                                                    sig: sig.clone(),
+                                                    tpk, key, binding, revoked,
+                                                }
                                             }
                                         } else {
                                             // No identity information.
-                                            VerificationResult::GoodChecksum
-                                                (sig, tpk, key, binding,
-                                                 revocation)
+                                            VerificationResult::GoodChecksum {
+                                                sig: sig.clone(),
+                                                tpk, key, binding, revoked,
+                                            }
                                         }
                                     } else {
-                                        VerificationResult::BadChecksum(sig)
+                                        VerificationResult::BadChecksum {
+                                            sig: sig.clone(),
+                                            tpk, key, binding, revoked,
+                                        }
                                     }
-                                } else {
-                                    VerificationResult::MissingKey(sig)
-                                }
-                            } else {
-                                // No issuer.
-                                VerificationResult::BadChecksum(sig)
+                                );
+
+                                // We found a key, continue to next sig.
+                                continue 'sigs;
                             }
-                        )
+                        }
+
+                        results.push_verification_result(
+                            VerificationResult::MissingKey {
+                                sig,
+                            }
+                        );
                     }
-                }
+                },
             }
         }
 
@@ -1583,13 +1665,24 @@ mod test {
     use super::*;
     use crate::parse::Parse;
 
-    #[derive(Debug, PartialEq)]
+    #[derive(PartialEq)]
     struct VHelper {
         good: usize,
         unknown: usize,
         bad: usize,
         error: usize,
         keys: Vec<TPK>,
+    }
+
+    impl std::fmt::Debug for VHelper {
+        fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.debug_struct("VHelper")
+                .field("good", &self.good)
+                .field("unknown", &self.unknown)
+                .field("bad", &self.bad)
+                .field("error", &self.error)
+                .finish()
+        }
     }
 
     impl Default for VHelper {
@@ -1617,7 +1710,7 @@ mod test {
     }
 
     impl VerificationHelper for VHelper {
-        fn get_public_keys(&mut self, _ids: &[KeyID]) -> Result<Vec<TPK>> {
+        fn get_public_keys(&mut self, _ids: &[crate::KeyHandle]) -> Result<Vec<TPK>> {
             Ok(self.keys.clone())
         }
 
@@ -1628,10 +1721,10 @@ mod test {
                     MessageLayer::SignatureGroup { ref results } =>
                         for result in results {
                             match result {
-                                GoodChecksum(..) => self.good += 1,
-                                MissingKey(_) => self.unknown += 1,
-                                NotAlive(_) => self.bad += 1,
-                                BadChecksum(_) => self.bad += 1,
+                                GoodChecksum { .. } => self.good += 1,
+                                MissingKey { .. } => self.unknown += 1,
+                                NotAlive { .. } => self.bad += 1,
+                                BadChecksum { .. } => self.bad += 1,
                             }
                         }
                     MessageLayer::Compression { .. } => (),
@@ -1738,7 +1831,8 @@ mod test {
     fn verifier_levels() {
         struct VHelper(());
         impl VerificationHelper for VHelper {
-            fn get_public_keys(&mut self, _ids: &[KeyID]) -> Result<Vec<TPK>> {
+            fn get_public_keys(&mut self, _ids: &[crate::KeyHandle])
+                               -> Result<Vec<TPK>> {
                 Ok(Vec::new())
             }
 
@@ -1748,8 +1842,8 @@ mod test {
                     match layer {
                         MessageLayer::SignatureGroup { ref results } => {
                             assert_eq!(results.len(), 1);
-                            if let VerificationResult::MissingKey(ref sig) =
-                                results[0]
+                            if let VerificationResult::MissingKey { sig, .. } =
+                                &results[0]
                             {
                                 assert_eq!(
                                     &sig.issuer_fingerprint().unwrap()

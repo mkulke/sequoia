@@ -112,7 +112,7 @@ impl<'a> DecryptionHelper for Helper<'a> {
 }
 
 impl<'a> VerificationHelper for Helper<'a> {
-    fn get_public_keys(&mut self, _ids: &[openpgp::KeyID])
+    fn get_public_keys(&mut self, _ids: &[openpgp::KeyHandle])
                        -> failure::Fallible<Vec<openpgp::TPK>> {
         Ok(Vec::new()) // Feed the TPKs to the verifier here.
     }
@@ -133,32 +133,19 @@ impl<'a> VerificationHelper for Helper<'a> {
                 MessageLayer::SignatureGroup { ref results } =>
                     for result in results {
                         match result {
-                            GoodChecksum(ref sig, ..) => {
-                                let issuer = sig.issuer()
-                                    .expect("good checksum has an issuer");
-                                eprintln!("Good signature from {}", issuer);
+                            GoodChecksum { tpk, .. } => {
+                                eprintln!("Good signature from {}", tpk);
                             },
-                            NotAlive(ref sig) => {
-                                let issuer = sig.issuer()
-                                    .expect("Good, but not live signature has an \
-                                             issuer");
-                                eprintln!("Good, but not live signature from {}",
-                                          issuer);
+                            NotAlive { tpk, .. } => {
+                                eprintln!("Good, but not alive signature from {}",
+                                          tpk);
                             },
-                            MissingKey(ref sig) => {
-                                let issuer = sig.issuer()
-                                    .expect("missing key checksum has an \
-                                             issuer");
-                                eprintln!("No key to check signature from {}",
-                                          issuer);
+                            MissingKey { .. } => {
+                                eprintln!("No key to check signature");
                             },
-                            BadChecksum(ref sig) =>
-                                if let Some(issuer) = sig.issuer() {
-                                    eprintln!("Bad signature from {}", issuer);
-                                } else {
-                                    eprintln!("Bad signature without issuer \
-                                               information");
-                                },
+                            BadChecksum { tpk, .. } => {
+                                eprintln!("Bad signature from {}", tpk);
+                            },
                         }
                     }
             }
