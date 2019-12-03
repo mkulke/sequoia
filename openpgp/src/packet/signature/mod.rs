@@ -38,14 +38,26 @@ const TRACE : bool = false;
 /// Builds a signature packet.
 ///
 /// This is the mutable version of a `Signature4` packet.  To convert
-/// it to one, use `sign_hash(..)`.
+/// it to one, use [`sign_hash`], [`sign_message`],
+/// [`sign_primary_key_binding`], [`sign_subkey_binding`],
+/// [`sign_userid_binding`], [`sign_user_attribute_binding`],
+/// [`sign_standalone`], or [`sign_timestamp`],
+///
+///   [`sign_hash`]: #method.sign_hash
+///   [`sign_message`]: #method.sign_message
+///   [`sign_primary_key_binding`]: #method.sign_primary_key_binding
+///   [`sign_subkey_binding`]: #method.sign_subkey_binding
+///   [`sign_userid_binding`]: #method.sign_userid_binding
+///   [`sign_user_attribute_binding`]: #method.sign_user_attribute_binding
+///   [`sign_standalone`]: #method.sign_standalone
+///   [`sign_timestamp`]: #method.sign_timestamp
 ///
 /// Signatures must always include a creation time.  We automatically
 /// insert a creation time subpacket with the current time into the
 /// hashed subpacket area.  To override the creation time, use
-/// [`Builder::set_signature_creation_time`].
+/// [`set_signature_creation_time`].
 ///
-///   [`Builder::set_signature_creation_time`]: #method.set_signature_creation_time
+///   [`set_signature_creation_time`]: #method.set_signature_creation_time
 #[derive(Clone, Hash, PartialEq, Eq)]
 pub struct Builder {
     /// Version of the signature packet. Must be 4.
@@ -123,6 +135,9 @@ impl Builder {
     }
 
     /// Creates a standalone signature.
+    ///
+    /// The Signature's public-key algorithm field is set to the
+    /// algorithm used by `signer`.
     pub fn sign_standalone<R>(mut self, signer: &mut dyn Signer<R>)
                               -> Result<Signature>
         where R: key::KeyRole
@@ -133,6 +148,9 @@ impl Builder {
     }
 
     /// Creates a timestamp signature.
+    ///
+    /// The Signature's public-key algorithm field is set to the
+    /// algorithm used by `signer`.
     pub fn sign_timestamp<R>(mut self, signer: &mut dyn Signer<R>)
                               -> Result<Signature>
         where R: key::KeyRole
@@ -145,8 +163,7 @@ impl Builder {
     /// Signs `signer` using itself.
     ///
     /// The Signature's public-key algorithm field is set to the
-    /// algorithm used by `signer`, the hash-algorithm field is set to
-    /// `hash_algo`.
+    /// algorithm used by `signer`.
     pub fn sign_primary_key_binding<R>(mut self, signer: &mut dyn Signer<R>)
         -> Result<Signature>
         where R: key::KeyRole
@@ -163,8 +180,7 @@ impl Builder {
     /// Signs binding between `userid` and `key` using `signer`.
     ///
     /// The Signature's public-key algorithm field is set to the
-    /// algorithm used by `signer`, the hash-algorithm field is set to
-    /// `hash_algo`.
+    /// algorithm used by `signer`.
     pub fn sign_userid_binding<R>(mut self, signer: &mut dyn Signer<R>,
                                  key: &key::PublicKey,
                                  userid: &UserID)
@@ -180,8 +196,7 @@ impl Builder {
     /// Signs subkey binding from `primary` to `subkey` using `signer`.
     ///
     /// The Signature's public-key algorithm field is set to the
-    /// algorithm used by `signer`, the hash-algorithm field is set to
-    /// `hash_algo`.
+    /// algorithm used by `signer`.
     pub fn sign_subkey_binding<P, R>(mut self, signer: &mut dyn Signer<R>,
                                      primary: &key::PublicKey,
                                      subkey: &Key<P, key::SubordinateRole>)
@@ -198,8 +213,7 @@ impl Builder {
     /// Signs binding between `ua` and `key` using `signer`.
     ///
     /// The Signature's public-key algorithm field is set to the
-    /// algorithm used by `signer`, the hash-algorithm field is set to
-    /// `hash_algo`.
+    /// algorithm used by `signer`.
     pub fn sign_user_attribute_binding<R>(mut self, signer: &mut dyn Signer<R>,
                                           key: &key::PublicKey,
                                           ua: &UserAttribute)
@@ -216,16 +230,15 @@ impl Builder {
     /// Signs `hash` using `signer`.
     ///
     /// The Signature's public-key algorithm field is set to the
-    /// algorithm used by `signer`, the hash-algorithm field is set to
-    /// `hash_algo`.
+    /// algorithm used by `signer`.
     pub fn sign_hash<R>(mut self, signer: &mut dyn Signer<R>,
-                        hash_algo: HashAlgorithm, mut hash: hash::Context)
+                        mut hash: hash::Context)
         -> Result<Signature>
         where R: key::KeyRole
     {
         // Fill out some fields, then hash the packet.
         self.pk_algo = signer.public().pk_algo();
-        self.hash_algo = hash_algo;
+        self.hash_algo = hash.algo();
         self.hash(&mut hash);
 
         // Compute the digest.
@@ -238,8 +251,7 @@ impl Builder {
     /// Signs `message` using `signer`.
     ///
     /// The Signature's public-key algorithm field is set to the
-    /// algorithm used by `signer`, the hash-algorithm field is set to
-    /// `hash_algo`.
+    /// algorithm used by `signer`.
     pub fn sign_message<R>(mut self, signer: &mut dyn Signer<R>, msg: &[u8])
         -> Result<Signature>
         where R: key::KeyRole
@@ -1291,7 +1303,7 @@ mod test {
             let hash = hash_algo.context().unwrap();
 
             // Make signature.
-            let sig = sig.sign_hash(&mut pair, hash_algo, hash).unwrap();
+            let sig = sig.sign_hash(&mut pair, hash).unwrap();
 
             // Good signature.
             let mut hash = hash_algo.context().unwrap();
@@ -1376,7 +1388,7 @@ mod test {
         hash.update(&msg[..]);
 
         Builder::new(SignatureType::Text)
-            .sign_hash(&mut pair, HashAlgorithm::SHA256, hash).unwrap();
+            .sign_hash(&mut pair, hash).unwrap();
     }
 
     #[test]
@@ -1431,11 +1443,11 @@ mod test {
 
         // Build and add an embedded sig.
         let embedded_sig = Builder::new(SignatureType::PrimaryKeyBinding)
-            .sign_hash(&mut pair, HashAlgorithm::SHA256, hash.clone()).unwrap();
+            .sign_hash(&mut pair, hash.clone()).unwrap();
         builder.unhashed_area_mut().add(Subpacket::new(
             SubpacketValue::EmbeddedSignature(embedded_sig.into()), false)
                                         .unwrap()).unwrap();
-        let sig = builder.sign_hash(&mut pair, HashAlgorithm::SHA256,
+        let sig = builder.sign_hash(&mut pair,
                                     hash.clone()).unwrap().normalize();
         assert_eq!(sig.unhashed_area().iter().count(), 2);
         assert_eq!(sig.unhashed_area().iter().nth(0).unwrap().2,
@@ -1448,7 +1460,7 @@ mod test {
         // the hashed area for compatibility.
         let sig = Builder::new(SignatureType::Text)
             .set_issuer_fingerprint(fp).unwrap()
-            .sign_hash(&mut pair, HashAlgorithm::SHA256,
+            .sign_hash(&mut pair,
                        hash.clone()).unwrap().normalize();
         assert_eq!(sig.unhashed_area().iter().count(), 1);
         assert_eq!(sig.unhashed_area().iter().nth(0).unwrap().2,
