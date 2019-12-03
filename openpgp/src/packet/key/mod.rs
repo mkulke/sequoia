@@ -53,7 +53,7 @@
 
 use std::fmt;
 use std::cmp::Ordering;
-use std::convert::TryFrom;
+use std::convert::{TryFrom, TryInto};
 use std::time;
 
 use crate::Error;
@@ -63,10 +63,9 @@ use crate::packet::prelude::*;
 use crate::PublicKeyAlgorithm;
 use crate::SymmetricAlgorithm;
 use crate::HashAlgorithm;
-use crate::types::Curve;
+use crate::types::{Curve, Timestamp};
 use crate::crypto::s2k::S2K;
 use crate::Result;
-use crate::conversions::Time;
 use crate::crypto::Password;
 use crate::KeyID;
 use crate::Fingerprint;
@@ -555,7 +554,7 @@ pub struct Key4<P, R>
     /// CTB packet header fields.
     pub(crate) common: packet::Common,
     /// When the key was created.
-    creation_time: time::SystemTime,
+    creation_time: Timestamp,
     /// Public key algorithm of this signature.
     pk_algo: PublicKeyAlgorithm,
     /// Public key MPIs.
@@ -628,7 +627,7 @@ impl<R> Key4<key::PublicParts, R>
     {
         Ok(Key4 {
             common: Default::default(),
-            creation_time: creation_time.into(),
+            creation_time: creation_time.into().try_into()?,
             pk_algo: pk_algo,
             mpis: mpis,
             secret: None,
@@ -654,7 +653,7 @@ impl<R> Key4<key::PublicParts, R>
 
         Self::new(
             ctime.into()
-                .unwrap_or_else(|| time::SystemTime::now().canonicalize()),
+                .unwrap_or_else(|| time::SystemTime::now()),
             PublicKeyAlgorithm::ECDH,
             mpis::PublicKey::ECDH {
                 curve: Curve::Cv25519,
@@ -678,7 +677,7 @@ impl<R> Key4<key::PublicParts, R>
 
         Self::new(
             ctime.into()
-                .unwrap_or_else(|| time::SystemTime::now().canonicalize()),
+                .unwrap_or_else(|| time::SystemTime::now()),
             PublicKeyAlgorithm::EdDSA,
             mpis::PublicKey::EdDSA {
                 curve: Curve::Ed25519,
@@ -696,7 +695,7 @@ impl<R> Key4<key::PublicParts, R>
     {
         Self::new(
             ctime.into()
-                .unwrap_or_else(|| time::SystemTime::now().canonicalize()),
+                .unwrap_or_else(|| time::SystemTime::now()),
             PublicKeyAlgorithm::RSAEncryptSign,
             mpis::PublicKey::RSA {
                 e: mpis::MPI::new(e),
@@ -717,7 +716,7 @@ impl<R> Key4<SecretParts, R>
     {
         Ok(Key4 {
             common: Default::default(),
-            creation_time: creation_time.into(),
+            creation_time: creation_time.into().try_into()?,
             pk_algo: pk_algo,
             mpis: mpis,
             secret: Some(secret),
@@ -748,7 +747,7 @@ impl<R> Key4<SecretParts, R>
 
         Self::with_secret(
             ctime.into()
-                .unwrap_or_else(|| time::SystemTime::now().canonicalize()),
+                .unwrap_or_else(|| time::SystemTime::now()),
             PublicKeyAlgorithm::ECDH,
             mpis::PublicKey::ECDH {
                 curve: Curve::Cv25519,
@@ -777,7 +776,7 @@ impl<R> Key4<SecretParts, R>
 
         Self::with_secret(
             ctime.into()
-                .unwrap_or_else(|| time::SystemTime::now().canonicalize()),
+                .unwrap_or_else(|| time::SystemTime::now()),
             PublicKeyAlgorithm::EdDSA,
             mpis::PublicKey::EdDSA {
                 curve: Curve::Ed25519,
@@ -804,7 +803,7 @@ impl<R> Key4<SecretParts, R>
 
         Self::with_secret(
             ctime.into()
-                .unwrap_or_else(|| time::SystemTime::now().canonicalize()),
+                .unwrap_or_else(|| time::SystemTime::now()),
             PublicKeyAlgorithm::RSAEncryptSign,
             mpis::PublicKey::RSA {
                 e: mpis::MPI::new(&key.e()[..]),
@@ -838,7 +837,7 @@ impl<R> Key4<SecretParts, R>
         };
 
         Self::with_secret(
-            time::SystemTime::now().canonicalize(),
+            time::SystemTime::now(),
             PublicKeyAlgorithm::RSAEncryptSign,
             public_mpis,
             private_mpis.into())
@@ -989,7 +988,7 @@ impl<R> Key4<SecretParts, R>
         };
 
         Self::with_secret(
-            time::SystemTime::now().canonicalize(),
+            time::SystemTime::now(),
             pk_algo,
             mpis,
             secret)
@@ -1002,13 +1001,14 @@ impl<P, R> Key4<P, R>
 {
     /// Gets the key packet's creation time field.
     pub fn creation_time(&self) -> time::SystemTime {
-        self.creation_time
+        self.creation_time.into()
     }
 
     /// Sets the key packet's creation time field.
     pub fn set_creation_time(&mut self, timestamp: time::SystemTime)
-                             -> time::SystemTime {
-        ::std::mem::replace(&mut self.creation_time, timestamp.canonicalize())
+                             -> Result<time::SystemTime> {
+        Ok(std::mem::replace(&mut self.creation_time, timestamp.try_into()?)
+           .into())
     }
 
     /// Gets the public key algorithm.
@@ -1574,8 +1574,7 @@ mod tests {
         let mut unhashed = SubpacketArea::empty();
         let fpr = Fingerprint::from_hex("D81A 5DC0 DEBF EE5F 9AC8  20EB 6769 5DB9 920D 4FAC").unwrap();
         let kid = KeyID::from_hex("6769 5DB9 920D 4FAC").unwrap();
-        let ctime =
-            time::UNIX_EPOCH + time::Duration::new(1549460479, 0);
+        let ctime = 1549460479.into();
         let r = b"\x5A\xF9\xC7\x42\x70\x24\x73\xFF\x7F\x27\xF9\x20\x9D\x20\x0F\xE3\x8F\x71\x3C\x5F\x97\xFD\x60\x80\x39\x29\xC2\x14\xFD\xC2\x4D\x70";
         let s = b"\x6E\x68\x74\x11\x72\xF4\x9C\xE1\x99\x99\x1F\x67\xFC\x3A\x68\x33\xF9\x3F\x3A\xB9\x1A\xA5\x72\x4E\x78\xD4\x81\xCB\x7B\xA5\xE5\x0A";
 

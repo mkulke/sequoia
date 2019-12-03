@@ -11,7 +11,6 @@ use std::ops::{Deref, DerefMut};
 use std::time;
 
 use crate::{
-    conversions::Time,
     crypto::{hash::Hash, Signer},
     Error,
     Result,
@@ -170,7 +169,7 @@ impl<C> ComponentBinding<C> {
     pub fn binding_signature<T>(&self, t: T) -> Option<&Signature>
         where T: Into<Option<time::SystemTime>>
     {
-        let t = t.into().unwrap_or_else(|| time::SystemTime::now().canonicalize());
+        let t = t.into().unwrap_or_else(|| time::SystemTime::now());
 
         // Recall: the signatures are sorted by their creation time in
         // descending order, i.e., newest first.
@@ -281,7 +280,7 @@ impl<C> ComponentBinding<C> {
         // Fallback time.
         let time_zero = || time::UNIX_EPOCH;
         let t = t.into()
-            .unwrap_or_else(|| time::SystemTime::now().canonicalize());
+            .unwrap_or_else(|| time::SystemTime::now());
         let selfsig_creation_time
             = selfsig.and_then(|s| s.signature_creation_time())
                      .unwrap_or_else(time_zero);
@@ -800,7 +799,7 @@ impl Cert {
         where T: Into<Option<time::SystemTime>>
     {
         let t = t.into()
-            .unwrap_or_else(|| time::SystemTime::now().canonicalize());
+            .unwrap_or_else(|| time::SystemTime::now());
         self.userids()
             // Filter out User IDs that are not alive at time `t`.
             //
@@ -876,7 +875,7 @@ impl Cert {
         where T: Into<Option<time::SystemTime>>
     {
         let t = t.into()
-            .unwrap_or_else(|| time::SystemTime::now().canonicalize());
+            .unwrap_or_else(|| time::SystemTime::now());
 
         // 1. Self-signature from the non-revoked primary UserID.
         let primary_userid = self.primary_userid_full(t);
@@ -1099,7 +1098,7 @@ impl Cert {
         where R: key::KeyRole
     {
         self.set_expiry_as_of(primary_signer, expiration,
-                              time::SystemTime::now().canonicalize())
+                              time::SystemTime::now())
     }
 
     /// Returns an iterator over the Cert's `UserIDBinding`s.
@@ -1557,7 +1556,7 @@ mod test {
 
     #[test]
     fn broken() {
-        use crate::conversions::Time;
+        use crate::types::Timestamp;
         for i in 0..2 {
             let cert = parse_cert(crate::tests::key("testy-broken-no-pk.pgp"),
                                 i == 0);
@@ -1575,7 +1574,8 @@ mod test {
             //   [ pk, user id, sig, subkey ]
             let cert = parse_cert(crate::tests::key("testy-broken-no-sig-on-subkey.pgp"),
                                 i == 0).unwrap();
-            assert_eq!(cert.primary.key().creation_time().to_pgp().unwrap(), 1511355130);
+            assert_eq!(cert.primary.key().creation_time(),
+                       Timestamp::from(1511355130).into());
             assert_eq!(cert.userids.len(), 1);
             assert_eq!(cert.userids[0].userid().value(),
                        &b"Testy McTestface <testy@example.org>"[..]);
@@ -1589,11 +1589,12 @@ mod test {
 
     #[test]
     fn basics() {
-        use crate::conversions::Time;
+        use crate::types::Timestamp;
         for i in 0..2 {
             let cert = parse_cert(crate::tests::key("testy.pgp"),
                                 i == 0).unwrap();
-            assert_eq!(cert.primary.key().creation_time().to_pgp().unwrap(), 1511355130);
+            assert_eq!(cert.primary.key().creation_time(),
+                       Timestamp::from(1511355130).into());
             assert_eq!(cert.fingerprint().to_hex(),
                        "3E8877C877274692975189F5D03F6F865226FE8B");
 
@@ -1607,14 +1608,15 @@ mod test {
             assert_eq!(cert.user_attributes.len(), 0);
 
             assert_eq!(cert.subkeys.len(), 1, "number of subkeys");
-            assert_eq!(cert.subkeys[0].key().creation_time().to_pgp().unwrap(),
-                       1511355130);
+            assert_eq!(cert.subkeys[0].key().creation_time(),
+                       Timestamp::from(1511355130).into());
             assert_eq!(cert.subkeys[0].self_signatures[0].hash_prefix(),
                        &[ 0xb7, 0xb9 ]);
 
             let cert = parse_cert(crate::tests::key("testy-no-subkey.pgp"),
                                 i == 0).unwrap();
-            assert_eq!(cert.primary.key().creation_time().to_pgp().unwrap(), 1511355130);
+            assert_eq!(cert.primary.key().creation_time(),
+                       Timestamp::from(1511355130).into());
             assert_eq!(cert.fingerprint().to_hex(),
                        "3E8877C877274692975189F5D03F6F865226FE8B");
 
@@ -2078,7 +2080,7 @@ mod test {
 
     #[test]
     fn set_expiry() {
-        let now = time::SystemTime::now().canonicalize();
+        let now = time::SystemTime::now();
         let a_sec = time::Duration::new(1, 0);
 
         let (cert, _) = CertBuilder::autocrypt(None, Some("Test"))
@@ -2608,7 +2610,7 @@ mod test {
                 crate::tests::key(
                     &format!("really-revoked-{}-0-public.pgp", f))).unwrap();
 
-            let now = time::SystemTime::now().canonicalize();
+            let now = time::SystemTime::now();
             let selfsig0
                 = cert.userids().map(|b| {
                     b.binding_signature(now).unwrap()
@@ -2858,7 +2860,7 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
         let cert = Cert::from_bytes(
             crate::tests::key("really-revoked-userid-0-public.pgp")).unwrap();
 
-        let now = time::SystemTime::now().canonicalize();
+        let now = time::SystemTime::now();
         let selfsig0
             = cert.userids().map(|b| {
                 b.binding_signature(now).unwrap()

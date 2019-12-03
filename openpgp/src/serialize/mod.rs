@@ -11,6 +11,7 @@
 
 use std::io::{self, Write};
 use std::cmp;
+use std::convert::TryFrom;
 
 use crate::autocrypt;
 use super::*;
@@ -35,11 +36,10 @@ use crate::packet::header::{
 use crate::packet::signature::subpacket::{
     Subpacket, SubpacketValue, SubpacketLengthTrait,
 };
-use crate::conversions::{
-    Time,
-    Duration,
-};
 use crate::packet::prelude::*;
+use crate::types::{
+    Timestamp,
+};
 
 // Whether to trace the modules execution (on stderr).
 const TRACE : bool = false;
@@ -978,9 +978,9 @@ impl<'a> Serialize for SubpacketValue<'a> {
         use self::SubpacketValue::*;
         match self {
             SignatureCreationTime(t) =>
-                write_be_u32(o, t.to_pgp()?)?,
+                write_be_u32(o, t.clone().into())?,
             SignatureExpirationTime(t) =>
-                write_be_u32(o, t.to_pgp()?)?,
+                write_be_u32(o, t.clone().into())?,
             ExportableCertification(e) =>
                 o.write_all(&[if *e { 1 } else { 0 }])?,
             TrustSignature { ref level, ref trust } =>
@@ -992,7 +992,7 @@ impl<'a> Serialize for SubpacketValue<'a> {
             Revocable(r) =>
                 o.write_all(&[if *r { 1 } else { 0 }])?,
             KeyExpirationTime(t) =>
-                write_be_u32(o, t.to_pgp()?)?,
+                write_be_u32(o, t.clone().into())?,
             PreferredSymmetricAlgorithms(ref p) =>
                 for a in p {
                     o.write_all(&[(*a).into()])?;
@@ -1360,7 +1360,7 @@ impl<P, R> Key4<P, R>
         let have_secret_key = self.secret().is_some() && serialize_secrets;
 
         write_byte(o, 4)?; // Version.
-        write_be_u32(o, self.creation_time().to_pgp()?)?;
+        write_be_u32(o, Timestamp::try_from(self.creation_time())?.into())?;
         write_byte(o, self.pk_algo().into())?;
         self.mpis().serialize(o)?;
 
@@ -1606,7 +1606,7 @@ impl Literal {
         };
 
         let date = if let Some(d) = self.date() {
-            d.to_pgp()?
+            Timestamp::try_from(d)?.into()
         } else {
             0
         };

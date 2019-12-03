@@ -1,7 +1,7 @@
 use std::io::{self, Read};
 
 extern crate sequoia_openpgp as openpgp;
-use self::openpgp::types::SymmetricAlgorithm;
+use self::openpgp::types::{Duration, Timestamp, SymmetricAlgorithm};
 use self::openpgp::conversions::hex;
 use self::openpgp::crypto::mpis;
 use self::openpgp::{Packet, Result};
@@ -34,9 +34,21 @@ impl Convert<chrono::Duration> for std::time::Duration {
     }
 }
 
+impl Convert<chrono::Duration> for Duration {
+    fn convert(self) -> chrono::Duration {
+        chrono::Duration::seconds(self.as_secs() as i64)
+    }
+}
+
 impl Convert<chrono::DateTime<chrono::offset::Utc>> for std::time::SystemTime {
     fn convert(self) -> chrono::DateTime<chrono::offset::Utc> {
         chrono::DateTime::<chrono::offset::Utc>::from(self)
+    }
+}
+
+impl Convert<chrono::DateTime<chrono::offset::Utc>> for Timestamp {
+    fn convert(self) -> chrono::DateTime<chrono::offset::Utc> {
+        std::time::SystemTime::from(self).convert()
     }
 }
 
@@ -727,7 +739,7 @@ impl PacketDumper {
                 write!(output, "{}    Signature expiration time: {} ({})",
                        i, t.convert(),
                        if let Some(creation) = sig.signature_creation_time() {
-                           (creation + *t).convert().to_string()
+                           (creation + t.clone().into()).convert().to_string()
                        } else {
                            " (no Signature Creation Time subpacket)".into()
                        })?,
