@@ -120,7 +120,7 @@ macro_rules! assert_match {
 #[macro_use]
 pub mod armor;
 pub mod autocrypt;
-pub mod conversions;
+pub mod fmt;
 pub mod crypto;
 
 pub mod packet;
@@ -147,6 +147,8 @@ mod fingerprint;
 mod keyid;
 mod keyhandle;
 pub use keyhandle::KeyHandle;
+
+pub(crate) mod utils;
 
 #[cfg(test)]
 mod tests;
