@@ -340,31 +340,31 @@ pgp_fingerprint_t pgp_signature_issuer_fingerprint(pgp_signature_t sig);
 /// Returns whether the KeyFlags indicates that the key can be used to
 /// make certifications.
 /*/
-bool pgp_signature_can_certify(pgp_signature_t signature);
+bool pgp_signature_for_certification(pgp_signature_t signature);
 
 /*/
 /// Returns whether the KeyFlags indicates that the key can be used to
 /// make signatures.
 /*/
-bool pgp_signature_can_sign(pgp_signature_t signature);
+bool pgp_signature_for_signing(pgp_signature_t signature);
 
 /*/
 /// Returns whether the KeyFlags indicates that the key can be used to
 /// encrypt data for transport.
 /*/
-bool pgp_signature_can_encrypt_for_transport(pgp_signature_t signature);
+bool pgp_signature_for_transport_encryption(pgp_signature_t signature);
 
 /*/
 /// Returns whether the KeyFlags indicates that the key can be used to
 /// encrypt data at rest.
 /*/
-bool pgp_signature_can_encrypt_at_rest(pgp_signature_t signature);
+bool pgp_signature_for_storage_encryption(pgp_signature_t signature);
 
 /*/
 /// Returns whether the KeyFlags indicates that the key can be used
 /// for authentication.
 /*/
-bool pgp_signature_can_authenticate(pgp_signature_t signature);
+bool pgp_signature_for_authentication(pgp_signature_t signature);
 
 /*/
 /// Returns whether the KeyFlags indicates that the key is a split
@@ -621,53 +621,53 @@ void pgp_user_id_binding_iter_free (pgp_user_id_binding_iter_t iter);
 /// Changes the iterator to only return keys that are certification
 /// capable.
 ///
-/// If you call this function and, e.g., the `signing_capable`
+/// If you call this function and, e.g., the `for_signing`
 /// function, the *union* of the values is used.  That is, the
 /// iterator will return keys that are certification capable *or*
 /// signing capable.
 ///
 /// Note: you may not call this function after starting to iterate.
 /*/
-void pgp_cert_key_iter_certification_capable (pgp_cert_key_iter_t iter);
+void pgp_cert_key_iter_for_certification (pgp_cert_key_iter_t iter);
 
 /*/
 /// Changes the iterator to only return keys that are certification
 /// capable.
 ///
-/// If you call this function and, e.g., the `signing_capable`
+/// If you call this function and, e.g., the `for_signing`
 /// function, the *union* of the values is used.  That is, the
 /// iterator will return keys that are certification capable *or*
 /// signing capable.
 ///
 /// Note: you may not call this function after starting to iterate.
 /*/
-void pgp_cert_key_iter_signing_capable (pgp_cert_key_iter_t iter);
+void pgp_cert_key_iter_for_signing (pgp_cert_key_iter_t iter);
 
 /*/
 /// Changes the iterator to only return keys that are capable of
 /// encrypting data at rest.
 ///
-/// If you call this function and, e.g., the `signing_capable`
+/// If you call this function and, e.g., the `for_signing`
 /// function, the *union* of the values is used.  That is, the
 /// iterator will return keys that are certification capable *or*
 /// signing capable.
 ///
 /// Note: you may not call this function after starting to iterate.
 /*/
-void pgp_cert_key_iter_encrypting_capable_at_rest (pgp_cert_key_iter_t);
+void pgp_cert_key_iter_for_storage_encryption (pgp_cert_key_iter_t);
 
 /*/
 /// Changes the iterator to only return keys that are capable of
 /// encrypting data for transport.
 ///
-/// If you call this function and, e.g., the `signing_capable`
+/// If you call this function and, e.g., the `for_signing`
 /// function, the *union* of the values is used.  That is, the
 /// iterator will return keys that are certification capable *or*
 /// signing capable.
 ///
 /// Note: you may not call this function after starting to iterate.
 /*/
-void pgp_cert_key_iter_encrypting_capable_for_transport (pgp_cert_key_iter_t);
+void pgp_cert_key_iter_for_transport_encryption (pgp_cert_key_iter_t);
 
 /*/
 /// Changes the iterator to only return keys that are alive.
@@ -1045,7 +1045,7 @@ void pgp_cert_builder_add_signing_subkey(pgp_cert_builder_t *certb);
 /*/
 /// Adds an encryption capable subkey.
 /*/
-void pgp_cert_builder_add_encryption_subkey(pgp_cert_builder_t *certb);
+void pgp_cert_builder_add_transport_encryption_subkey(pgp_cert_builder_t *certb);
 
 /*/
 /// Adds an certification capable subkey.

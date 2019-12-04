@@ -95,7 +95,7 @@ fn sign() {
         gpg_import(&ctx, &buf);
 
         let keypair = KeyPair::new(
-            &ctx, cert.keys_valid().signing_capable().take(1).next().unwrap().2)
+            &ctx, cert.keys_valid().for_signing().take(1).next().unwrap().2)
             .unwrap();
 
         let mut message = Vec::new();
@@ -198,7 +198,7 @@ fn decrypt() {
         let (cert, _) = CertBuilder::new()
             .set_cipher_suite(*cs)
             .add_userid("someone@example.org")
-            .add_encryption_subkey()
+            .add_transport_encryption_subkey()
             .generate().unwrap();
 
         let mut buf = Vec::new();
@@ -209,7 +209,7 @@ fn decrypt() {
         {
             let recipient =
                 cert.keys_valid().key_flags(
-                    KeyFlags::default().set_encrypt_for_transport(true))
+                    KeyFlags::default().set_transport_encryption(true))
                 .map(|(_, _, key)| key.into())
                 .nth(0).unwrap();
 
@@ -276,7 +276,7 @@ fn decrypt() {
                 let mut keypair = KeyPair::new(
                     self.ctx,
                     self.cert.keys_valid().key_flags(
-                        KeyFlags::default().set_encrypt_for_transport(true))
+                        KeyFlags::default().set_transport_encryption(true))
                         .take(1).next().unwrap().2)
                     .unwrap();
 

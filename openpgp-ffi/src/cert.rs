@@ -498,14 +498,14 @@ pub extern "C" fn pgp_cert_key_iter_free(
 /// Changes the iterator to only return keys that are certification
 /// capable.
 ///
-/// If you call this function and, e.g., the `signing_capable`
+/// If you call this function and, e.g., the `for_signing`
 /// function, the *union* of the values is used.  That is, the
 /// iterator will return keys that are certification capable *or*
 /// signing capable.
 ///
 /// Note: you may not call this function after starting to iterate.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle]
-pub extern "C" fn pgp_cert_key_iter_certification_capable<'a>(
+pub extern "C" fn pgp_cert_key_iter_for_certification<'a>(
     iter_wrapper: *mut KeyIterWrapper<'a>)
 {
     let iter_wrapper = ffi_param_ref_mut!(iter_wrapper);
@@ -515,20 +515,20 @@ pub extern "C" fn pgp_cert_key_iter_certification_capable<'a>(
 
     use std::mem;
     let tmp = mem::replace(&mut iter_wrapper.iter, KeyIter::empty());
-    iter_wrapper.iter = tmp.certification_capable();
+    iter_wrapper.iter = tmp.for_certification();
 }
 
 /// Changes the iterator to only return keys that are certification
 /// capable.
 ///
-/// If you call this function and, e.g., the `signing_capable`
+/// If you call this function and, e.g., the `for_signing`
 /// function, the *union* of the values is used.  That is, the
 /// iterator will return keys that are certification capable *or*
 /// signing capable.
 ///
 /// Note: you may not call this function after starting to iterate.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle]
-pub extern "C" fn pgp_cert_key_iter_signing_capable<'a>(
+pub extern "C" fn pgp_cert_key_iter_for_signing<'a>(
     iter_wrapper: *mut KeyIterWrapper<'a>)
 {
     let iter_wrapper = ffi_param_ref_mut!(iter_wrapper);
@@ -538,20 +538,20 @@ pub extern "C" fn pgp_cert_key_iter_signing_capable<'a>(
 
     use std::mem;
     let tmp = mem::replace(&mut iter_wrapper.iter, KeyIter::empty());
-    iter_wrapper.iter = tmp.signing_capable();
+    iter_wrapper.iter = tmp.for_signing();
 }
 
 /// Changes the iterator to only return keys that are capable of
 /// encrypting data at rest.
 ///
-/// If you call this function and, e.g., the `signing_capable`
+/// If you call this function and, e.g., the `for_signing`
 /// function, the *union* of the values is used.  That is, the
 /// iterator will return keys that are certification capable *or*
 /// signing capable.
 ///
 /// Note: you may not call this function after starting to iterate.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle]
-pub extern "C" fn pgp_cert_key_iter_encrypting_capable_at_rest<'a>(
+pub extern "C" fn pgp_cert_key_iter_for_storage_encryption<'a>(
     iter_wrapper: *mut KeyIterWrapper<'a>)
 {
     let iter_wrapper = ffi_param_ref_mut!(iter_wrapper);
@@ -560,20 +560,20 @@ pub extern "C" fn pgp_cert_key_iter_encrypting_capable_at_rest<'a>(
     }
 
     let tmp = std::mem::replace(&mut iter_wrapper.iter, KeyIter::empty());
-    iter_wrapper.iter = tmp.encrypting_capable_at_rest();
+    iter_wrapper.iter = tmp.for_storage_encryption();
 }
 
 /// Changes the iterator to only return keys that are capable of
 /// encrypting data for transport.
 ///
-/// If you call this function and, e.g., the `signing_capable`
+/// If you call this function and, e.g., the `for_signing`
 /// function, the *union* of the values is used.  That is, the
 /// iterator will return keys that are certification capable *or*
 /// signing capable.
 ///
 /// Note: you may not call this function after starting to iterate.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle]
-pub extern "C" fn pgp_cert_key_iter_encrypting_capable_for_transport<'a>(
+pub extern "C" fn pgp_cert_key_iter_for_transport_encryption<'a>(
     iter_wrapper: *mut KeyIterWrapper<'a>)
 {
     let iter_wrapper = ffi_param_ref_mut!(iter_wrapper);
@@ -582,7 +582,7 @@ pub extern "C" fn pgp_cert_key_iter_encrypting_capable_for_transport<'a>(
     }
 
     let tmp = std::mem::replace(&mut iter_wrapper.iter, KeyIter::empty());
-    iter_wrapper.iter = tmp.encrypting_capable_for_transport();
+    iter_wrapper.iter = tmp.for_transport_encryption();
 }
 
 /// Changes the iterator to only return keys that are alive.
@@ -797,7 +797,7 @@ pub extern "C" fn pgp_cert_parser_free(parser: Option<&mut CertParserWrapper>)
 /// pgp_cert_builder_set_cipher_suite (&builder, PGP_CERT_CIPHER_SUITE_CV25519);
 /// pgp_cert_builder_add_userid (&builder, "some@example.org");
 /// pgp_cert_builder_add_signing_subkey (&builder);
-/// pgp_cert_builder_add_encryption_subkey (&builder);
+/// pgp_cert_builder_add_transport_encryption_subkey (&builder);
 /// pgp_cert_builder_generate (NULL, builder, &cert, &revocation);
 /// assert (cert);
 /// assert (revocation);
@@ -918,12 +918,12 @@ pub extern "C" fn pgp_cert_builder_add_signing_subkey
 
 /// Adds an encryption capable subkey.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle]
-pub extern "C" fn pgp_cert_builder_add_encryption_subkey
+pub extern "C" fn pgp_cert_builder_add_transport_encryption_subkey
     (certb: *mut *mut CertBuilder)
 {
     let certb = ffi_param_ref_mut!(certb);
     let certb_ = ffi_param_move!(*certb);
-    let certb_ = certb_.add_encryption_subkey();
+    let certb_ = certb_.add_transport_encryption_subkey();
     *certb = box_raw!(certb_);
 }
 

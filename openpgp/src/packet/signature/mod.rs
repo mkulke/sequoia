@@ -868,7 +868,7 @@ impl Signature4 {
             return Ok(false);
         }
 
-        if ! self.key_flags().can_sign() {
+        if ! self.key_flags().for_signing() {
             // No backsig required.
             return Ok(true)
         }
@@ -1398,7 +1398,7 @@ mod test {
         let test1 = Cert::from_bytes(
             crate::tests::key("test1-certification-key.pgp")).unwrap();
         let cert_key1 = test1.keys_all()
-            .certification_capable()
+            .for_certification()
             .nth(0)
             .map(|x| x.2)
             .unwrap();

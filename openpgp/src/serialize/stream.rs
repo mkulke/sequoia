@@ -228,7 +228,7 @@ impl<'a> Signer<'a> {
     /// # let tsk = Cert::from_bytes(&include_bytes!(
     /// #     "../../tests/data/keys/testy-new-private.pgp")[..])
     /// #     .unwrap();
-    /// # let keypair = tsk.keys_valid().signing_capable().nth(0).unwrap().2
+    /// # let keypair = tsk.keys_valid().for_signing().nth(0).unwrap().2
     /// #     .clone().mark_parts_secret().unwrap().into_keypair().unwrap();
     /// # f(tsk, keypair).unwrap();
     /// # fn f(cert: Cert, mut signing_keypair: KeyPair<key::UnspecifiedRole>)
@@ -331,7 +331,7 @@ impl<'a> Signer<'a> {
     /// # let tsk = Cert::from_bytes(&include_bytes!(
     /// #     "../../tests/data/keys/testy-new-private.pgp")[..])
     /// #     .unwrap();
-    /// # let keypair = tsk.keys_valid().signing_capable().nth(0).unwrap().2
+    /// # let keypair = tsk.keys_valid().for_signing().nth(0).unwrap().2
     /// #     .clone().mark_parts_secret().unwrap().into_keypair().unwrap();
     /// # f(tsk, keypair).unwrap();
     /// # fn f(cert: Cert, mut signing_keypair: KeyPair<key::UnspecifiedRole>)
@@ -985,8 +985,8 @@ impl<'a> Encryptor<'a> {
     /// let recipient =
     ///     cert.keys_valid()
     ///     .key_flags(KeyFlags::default()
-    ///                .set_encrypt_at_rest(true)
-    ///                .set_encrypt_for_transport(true))
+    ///                .set_storage_encryption(true)
+    ///                .set_transport_encryption(true))
     ///     .map(|(_, _, key)| key.into())
     ///     .nth(0).unwrap();
     ///
@@ -1468,7 +1468,7 @@ mod test {
             Cert::from_bytes(crate::tests::key("testy-private.pgp")).unwrap(),
             Cert::from_bytes(crate::tests::key("testy-new-private.pgp")).unwrap(),
         ] {
-            for key in tsk.keys_all().signing_capable().map(|x| x.2)
+            for key in tsk.keys_all().for_signing().map(|x| x.2)
             {
                 keys.insert(key.fingerprint(), key.clone());
             }
@@ -1653,7 +1653,7 @@ mod test {
 
         let (tsk, _) = CertBuilder::new()
             .set_cipher_suite(CipherSuite::Cv25519)
-            .add_encryption_subkey()
+            .add_transport_encryption_subkey()
             .generate().unwrap();
 
         struct Helper<'a> {
@@ -1676,7 +1676,7 @@ mod test {
                 let mut keypair = self.tsk.keys_all()
                     .key_flags(
                         KeyFlags::default()
-                            .set_encrypt_for_transport(true))
+                            .set_transport_encryption(true))
                     .map(|(_, _, key)| key).next().unwrap()
                     .clone().mark_parts_secret().unwrap()
                     .into_keypair().unwrap();
@@ -1704,8 +1704,8 @@ mod test {
                     let recipient =
                         tsk.keys_all()
                         .key_flags(KeyFlags::default()
-                                   .set_encrypt_at_rest(true)
-                                   .set_encrypt_for_transport(true))
+                                   .set_storage_encryption(true)
+                                   .set_transport_encryption(true))
                         .map(|(_, _, key)| key.into())
                         .nth(0).unwrap();
                     let encryptor = Encryptor::for_recipient(m, recipient)

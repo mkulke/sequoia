@@ -13,7 +13,7 @@ use std::io::{self, Write};
 
 extern crate sequoia_openpgp as openpgp;
 use openpgp::crypto::SessionKey;
-use openpgp::types::{KeyFlags, SymmetricAlgorithm};
+use openpgp::types::SymmetricAlgorithm;
 use openpgp::serialize::stream::*;
 use openpgp::parse::stream::*;
 
@@ -38,7 +38,7 @@ fn main() {
 # fn generate() -> openpgp::Result<openpgp::Cert> {
 #     let (cert, _revocation) = openpgp::cert::CertBuilder::new()
 #         .add_userid("someone@example.org")
-#         .add_encryption_subkey()
+#         .add_transport_encryption_subkey()
 #         .generate()?;
 #
 #     // Save the revocation certificate somewhere.
@@ -52,9 +52,7 @@ fn main() {
 #    // Build a vector of recipients to hand to Encryptor.
 #    let mut recipients =
 #        recipient.keys_valid()
-#        .key_flags(KeyFlags::default()
-#                   .set_encrypt_at_rest(true)
-#                   .set_encrypt_for_transport(true))
+#        .for_transport_encryption()
 #        .map(|(_, _, key)| key.into())
 #        .collect::<Vec<_>>();
 #
@@ -156,7 +154,7 @@ create it:
 #
 # extern crate sequoia_openpgp as openpgp;
 # use openpgp::crypto::SessionKey;
-# use openpgp::types::{KeyFlags, SymmetricAlgorithm};
+# use openpgp::types::SymmetricAlgorithm;
 # use openpgp::serialize::stream::*;
 # use openpgp::parse::stream::*;
 #
@@ -181,7 +179,7 @@ create it:
 fn generate() -> openpgp::Result<openpgp::Cert> {
     let (cert, _revocation) = openpgp::cert::CertBuilder::new()
         .add_userid("someone@example.org")
-        .add_encryption_subkey()
+        .add_transport_encryption_subkey()
         .generate()?;
 
     // Save the revocation certificate somewhere.
@@ -195,9 +193,7 @@ fn generate() -> openpgp::Result<openpgp::Cert> {
 #    // Build a vector of recipients to hand to Encryptor.
 #    let mut recipients =
 #        recipient.keys_valid()
-#        .key_flags(KeyFlags::default()
-#                   .set_encrypt_at_rest(true)
-#                   .set_encrypt_for_transport(true))
+#        .for_transport_encryption()
 #        .map(|(_, _, key)| key.into())
 #        .collect::<Vec<_>>();
 #
@@ -299,7 +295,7 @@ implements [`io::Write`], and we simply write the plaintext to it.
 #
 # extern crate sequoia_openpgp as openpgp;
 # use openpgp::crypto::SessionKey;
-# use openpgp::types::{KeyFlags, SymmetricAlgorithm};
+# use openpgp::types::SymmetricAlgorithm;
 # use openpgp::serialize::stream::*;
 # use openpgp::parse::stream::*;
 #
@@ -324,7 +320,7 @@ implements [`io::Write`], and we simply write the plaintext to it.
 # fn generate() -> openpgp::Result<openpgp::Cert> {
 #     let (cert, _revocation) = openpgp::cert::CertBuilder::new()
 #         .add_userid("someone@example.org")
-#         .add_encryption_subkey()
+#         .add_transport_encryption_subkey()
 #         .generate()?;
 #
 #     // Save the revocation certificate somewhere.
@@ -338,9 +334,7 @@ fn encrypt(sink: &mut Write, plaintext: &str, recipient: &openpgp::Cert)
     // Build a vector of recipients to hand to Encryptor.
     let mut recipients =
         recipient.keys_valid()
-        .key_flags(KeyFlags::default()
-                   .set_encrypt_at_rest(true)
-                   .set_encrypt_for_transport(true))
+        .for_transport_encryption()
         .map(|(_, _, key)| key.into())
         .collect::<Vec<_>>();
 
@@ -456,7 +450,7 @@ Decrypted data can be read from this using [`io::Read`].
 #
 # extern crate sequoia_openpgp as openpgp;
 # use openpgp::crypto::SessionKey;
-# use openpgp::types::{KeyFlags, SymmetricAlgorithm};
+# use openpgp::types::SymmetricAlgorithm;
 # use openpgp::serialize::stream::*;
 # use openpgp::parse::stream::*;
 #
@@ -481,7 +475,7 @@ Decrypted data can be read from this using [`io::Read`].
 # fn generate() -> openpgp::Result<openpgp::Cert> {
 #     let (cert, _revocation) = openpgp::cert::CertBuilder::new()
 #         .add_userid("someone@example.org")
-#         .add_encryption_subkey()
+#         .add_transport_encryption_subkey()
 #         .generate()?;
 #
 #     // Save the revocation certificate somewhere.
@@ -495,9 +489,7 @@ Decrypted data can be read from this using [`io::Read`].
 #    // Build a vector of recipients to hand to Encryptor.
 #    let mut recipients =
 #        recipient.keys_valid()
-#        .key_flags(KeyFlags::default()
-#                   .set_encrypt_at_rest(true)
-#                   .set_encrypt_for_transport(true))
+#        .for_transport_encryption()
 #        .map(|(_, _, key)| key.into())
 #        .collect::<Vec<_>>();
 #

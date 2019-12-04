@@ -1418,7 +1418,7 @@ impl Cert {
         if ! self.subkeys.is_empty() {
             let pk_can_certify =
                 self.primary_key_signature(None)
-                .map(|sig| sig.key_flags().can_certify())
+                .map(|sig| sig.key_flags().for_certification())
                 .unwrap_or(true);
 
             if ! pk_can_certify {
@@ -2305,7 +2305,7 @@ mod test {
         use std::{thread, time};
 
         let (cert, _) = CertBuilder::new()
-            .add_encryption_subkey()
+            .add_transport_encryption_subkey()
             .generate().unwrap();
 
         thread::sleep(time::Duration::from_secs(2));
@@ -2776,7 +2776,7 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
         let (cert, _) = CertBuilder::new()
             .add_userid("test1@example.com")
             .add_userid("test2@example.com")
-            .add_encryption_subkey()
+            .add_transport_encryption_subkey()
             .add_certification_subkey()
             .generate().unwrap();
         assert_eq!(cert.subkeys().len(), 2);
