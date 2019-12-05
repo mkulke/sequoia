@@ -601,18 +601,21 @@ impl<P, R> Key4<P, R>
     /// creation time and algorithm of the two `Key4`s match.  This
     /// does not consider the packet's encoding, packet's tag or the
     /// secret key material.
-    pub fn public_cmp(a: &Self, b: &Self) -> Ordering {
-        match a.mpis.cmp(&b.mpis) {
+    pub fn public_cmp<PB, RB>(&self, b: &Key4<PB, RB>) -> Ordering
+        where PB: key::KeyParts,
+              RB: key::KeyRole,
+    {
+        match self.mpis.cmp(&b.mpis) {
             Ordering::Equal => (),
             o => return o,
         }
 
-        match a.creation_time.cmp(&b.creation_time) {
+        match self.creation_time.cmp(&b.creation_time) {
             Ordering::Equal => (),
             o => return o,
         }
 
-        a.pk_algo.cmp(&b.pk_algo)
+        self.pk_algo.cmp(&b.pk_algo)
     }
 }
 
