@@ -1,7 +1,7 @@
-//! Constants used in OpenPGP.
+//! Primitive OpenPGP types.
 //!
-//! This module defines enumerations describing algorithms used in
-//! OpenPGP.
+//! This module provides types used in OpenPGP, like enumerations
+//! describing algorithms.
 
 use std::fmt;
 use std::str::FromStr;
@@ -18,6 +18,8 @@ mod key_flags;
 pub use self::key_flags::KeyFlags;
 mod server_preferences;
 pub use self::server_preferences::KeyServerPreferences;
+mod timestamp;
+pub use timestamp::{Timestamp, Duration};
 
 /// The OpenPGP public key algorithms as defined in [Section 9.1 of
 /// RFC 4880], and [Section 5 of RFC 6637].
@@ -59,7 +61,7 @@ pub enum PublicKeyAlgorithm {
 
 impl PublicKeyAlgorithm {
     /// Returns true if the algorithm can sign data.
-    pub fn can_sign(&self) -> bool {
+    pub fn for_signing(&self) -> bool {
         use self::PublicKeyAlgorithm::*;
         #[allow(deprecated)]
         match &self {

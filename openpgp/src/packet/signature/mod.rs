@@ -3,7 +3,7 @@
 use std::fmt;
 use std::ops::{Deref, DerefMut};
 
-use crate::constants::Curve;
+use crate::types::Curve;
 use crate::Error;
 use crate::Result;
 use crate::crypto::{
@@ -19,7 +19,6 @@ use crate::packet::{
     key,
     Key,
 };
-use crate::KeyID;
 use crate::packet::UserID;
 use crate::packet::UserAttribute;
 use crate::Packet;
@@ -39,7 +38,26 @@ const TRACE : bool = false;
 /// Builds a signature packet.
 ///
 /// This is the mutable version of a `Signature4` packet.  To convert
-/// it to one, use `sign_hash(..)`.
+/// it to one, use [`sign_hash`], [`sign_message`],
+/// [`sign_primary_key_binding`], [`sign_subkey_binding`],
+/// [`sign_userid_binding`], [`sign_user_attribute_binding`],
+/// [`sign_standalone`], or [`sign_timestamp`],
+///
+///   [`sign_hash`]: #method.sign_hash
+///   [`sign_message`]: #method.sign_message
+///   [`sign_primary_key_binding`]: #method.sign_primary_key_binding
+///   [`sign_subkey_binding`]: #method.sign_subkey_binding
+///   [`sign_userid_binding`]: #method.sign_userid_binding
+///   [`sign_user_attribute_binding`]: #method.sign_user_attribute_binding
+///   [`sign_standalone`]: #method.sign_standalone
+///   [`sign_timestamp`]: #method.sign_timestamp
+///
+/// Signatures must always include a creation time.  We automatically
+/// insert a creation time subpacket with the current time into the
+/// hashed subpacket area.  To override the creation time, use
+/// [`set_signature_creation_time`].
+///
+///   [`set_signature_creation_time`]: #method.set_signature_creation_time
 #[derive(Clone, Hash, PartialEq, Eq)]
 pub struct Builder {
     /// Version of the signature packet. Must be 4.
@@ -78,6 +96,10 @@ impl Builder {
             hash_algo: HashAlgorithm::default(),
             subpackets: SubpacketAreas::empty(),
         }
+        .set_signature_creation_time(
+            std::time::SystemTime::now())
+            .expect("area is empty, insertion cannot fail; \
+                     time is representable for the foreseeable future")
     }
 
     /// Gets the version.
@@ -113,6 +135,9 @@ impl Builder {
     }
 
     /// Creates a standalone signature.
+    ///
+    /// The Signature's public-key algorithm field is set to the
+    /// algorithm used by `signer`.
     pub fn sign_standalone<R>(mut self, signer: &mut dyn Signer<R>)
                               -> Result<Signature>
         where R: key::KeyRole
@@ -123,6 +148,9 @@ impl Builder {
     }
 
     /// Creates a timestamp signature.
+    ///
+    /// The Signature's public-key algorithm field is set to the
+    /// algorithm used by `signer`.
     pub fn sign_timestamp<R>(mut self, signer: &mut dyn Signer<R>)
                               -> Result<Signature>
         where R: key::KeyRole
@@ -135,8 +163,7 @@ impl Builder {
     /// Signs `signer` using itself.
     ///
     /// The Signature's public-key algorithm field is set to the
-    /// algorithm used by `signer`, the hash-algorithm field is set to
-    /// `hash_algo`.
+    /// algorithm used by `signer`.
     pub fn sign_primary_key_binding<R>(mut self, signer: &mut dyn Signer<R>)
         -> Result<Signature>
         where R: key::KeyRole
@@ -153,8 +180,7 @@ impl Builder {
     /// Signs binding between `userid` and `key` using `signer`.
     ///
     /// The Signature's public-key algorithm field is set to the
-    /// algorithm used by `signer`, the hash-algorithm field is set to
-    /// `hash_algo`.
+    /// algorithm used by `signer`.
     pub fn sign_userid_binding<R>(mut self, signer: &mut dyn Signer<R>,
                                  key: &key::PublicKey,
                                  userid: &UserID)
@@ -170,8 +196,7 @@ impl Builder {
     /// Signs subkey binding from `primary` to `subkey` using `signer`.
     ///
     /// The Signature's public-key algorithm field is set to the
-    /// algorithm used by `signer`, the hash-algorithm field is set to
-    /// `hash_algo`.
+    /// algorithm used by `signer`.
     pub fn sign_subkey_binding<P, R>(mut self, signer: &mut dyn Signer<R>,
                                      primary: &key::PublicKey,
                                      subkey: &Key<P, key::SubordinateRole>)
@@ -188,8 +213,7 @@ impl Builder {
     /// Signs binding between `ua` and `key` using `signer`.
     ///
     /// The Signature's public-key algorithm field is set to the
-    /// algorithm used by `signer`, the hash-algorithm field is set to
-    /// `hash_algo`.
+    /// algorithm used by `signer`.
     pub fn sign_user_attribute_binding<R>(mut self, signer: &mut dyn Signer<R>,
                                           key: &key::PublicKey,
                                           ua: &UserAttribute)
@@ -206,16 +230,15 @@ impl Builder {
     /// Signs `hash` using `signer`.
     ///
     /// The Signature's public-key algorithm field is set to the
-    /// algorithm used by `signer`, the hash-algorithm field is set to
-    /// `hash_algo`.
+    /// algorithm used by `signer`.
     pub fn sign_hash<R>(mut self, signer: &mut dyn Signer<R>,
-                        hash_algo: HashAlgorithm, mut hash: hash::Context)
+                        mut hash: hash::Context)
         -> Result<Signature>
         where R: key::KeyRole
     {
         // Fill out some fields, then hash the packet.
         self.pk_algo = signer.public().pk_algo();
-        self.hash_algo = hash_algo;
+        self.hash_algo = hash.algo();
         self.hash(&mut hash);
 
         // Compute the digest.
@@ -228,8 +251,7 @@ impl Builder {
     /// Signs `message` using `signer`.
     ///
     /// The Signature's public-key algorithm field is set to the
-    /// algorithm used by `signer`, the hash-algorithm field is set to
-    /// `hash_algo`.
+    /// algorithm used by `signer`.
     pub fn sign_message<R>(mut self, signer: &mut dyn Signer<R>, msg: &[u8])
         -> Result<Signature>
         where R: key::KeyRole
@@ -351,10 +373,10 @@ impl fmt::Debug for Signature4 {
             .field("hashed_area", self.hashed_area())
             .field("unhashed_area", self.unhashed_area())
             .field("hash_prefix",
-                   &crate::conversions::to_hex(&self.hash_prefix, false))
+                   &crate::fmt::to_hex(&self.hash_prefix, false))
             .field("computed_hash",
                    &if let Some((algo, ref hash)) = self.computed_hash {
-                       Some((algo, crate::conversions::to_hex(&hash[..], false)))
+                       Some((algo, crate::fmt::to_hex(&hash[..], false)))
                    } else {
                        None
                    })
@@ -476,13 +498,25 @@ impl Signature4 {
         ::std::mem::replace(&mut self.level, level)
     }
 
-    /// Gets the issuer.
-    pub fn get_issuer(&self) -> Option<KeyID> {
-        if let Some(id) = self.issuer() {
-            Some(id)
-        } else {
-            None
-        }
+    /// Collects all the issuers.
+    ///
+    /// A signature can contain multiple hints as to who issued the
+    /// signature.
+    pub fn get_issuers(&self) -> std::collections::HashSet<crate::KeyHandle> {
+        use crate::packet::signature::subpacket:: SubpacketValue;
+
+        self.hashed_area().iter()
+            .chain(self.unhashed_area().iter())
+            .filter_map(|(_, _, subpacket)| {
+                match subpacket.value() {
+                    SubpacketValue::Issuer(i) =>
+                        Some(crate::KeyHandle::KeyID(i.clone())),
+                    SubpacketValue::IssuerFingerprint(i) =>
+                        Some(crate::KeyHandle::Fingerprint(i.clone())),
+                    _ => None,
+                }
+            })
+            .collect()
     }
 
     /// Normalizes the signature.
@@ -507,7 +541,7 @@ impl Signature4 {
             if let Some(issuer) = self.issuer_fingerprint() {
                 // Prefer the IssuerFingerprint.
                 area.add(Subpacket::new(
-                    SubpacketValue::Issuer(issuer.to_keyid()), false).unwrap())
+                    SubpacketValue::Issuer(issuer.into()), false).unwrap())
                     .unwrap();
             } else if let Some(issuer) = self.issuer() {
                 // Fall back to the Issuer, which we will also get
@@ -834,7 +868,7 @@ impl Signature4 {
             return Ok(false);
         }
 
-        if ! self.key_flags().can_sign() {
+        if ! self.key_flags().for_signing() {
             // No backsig required.
             return Ok(true)
         }
@@ -1098,10 +1132,10 @@ impl From<Signature4> for super::Signature {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::conversions::Time;
+    use crate::KeyID;
     use crate::crypto;
     use crate::crypto::mpis::MPI;
-    use crate::TPK;
+    use crate::Cert;
     use crate::parse::Parse;
     use crate::packet::Key;
     use crate::packet::key::Key4;
@@ -1111,7 +1145,7 @@ mod test {
     fn signature_verification_test() {
         use super::*;
 
-        use crate::TPK;
+        use crate::Cert;
         use crate::parse::{PacketParserResult, PacketParser};
 
         struct Test<'a> {
@@ -1193,21 +1227,21 @@ mod test {
             eprintln!("{}, expect {} good signatures:",
                       test.data, test.good);
 
-            let tpk = TPK::from_bytes(crate::tests::key(test.key)).unwrap();
+            let cert = Cert::from_bytes(crate::tests::key(test.key)).unwrap();
 
             let mut good = 0;
             let mut ppr = PacketParser::from_bytes(
                 crate::tests::message(test.data)).unwrap();
             while let PacketParserResult::Some(pp) = ppr {
                 if let Packet::Signature(ref sig) = pp.packet {
-                    let result = sig.verify(tpk.primary()).unwrap_or(false);
+                    let result = sig.verify(cert.primary()).unwrap_or(false);
                     eprintln!("  Primary {:?}: {:?}",
-                              tpk.primary().fingerprint(), result);
+                              cert.primary().fingerprint(), result);
                     if result {
                         good += 1;
                     }
 
-                    for sk in tpk.subkeys() {
+                    for sk in cert.subkeys() {
                         let result = sig.verify(sk.key()).unwrap_or(false);
                         eprintln!("   Subkey {:?}: {:?}",
                                   sk.key().fingerprint(), result);
@@ -1259,8 +1293,8 @@ mod test {
             "erika-corinna-daniela-simone-antonia-nistp521-private.pgp",
             "emmelie-dorothea-dina-samantha-awina-ed25519-private.pgp",
         ] {
-            let tpk = TPK::from_bytes(crate::tests::key(key)).unwrap();
-            let mut pair = tpk.primary().clone()
+            let cert = Cert::from_bytes(crate::tests::key(key)).unwrap();
+            let mut pair = cert.primary().clone()
                 .mark_parts_secret().unwrap()
                 .into_keypair()
                 .expect("secret key is encrypted/missing");
@@ -1269,7 +1303,7 @@ mod test {
             let hash = hash_algo.context().unwrap();
 
             // Make signature.
-            let sig = sig.sign_hash(&mut pair, hash_algo, hash).unwrap();
+            let sig = sig.sign_hash(&mut pair, hash).unwrap();
 
             // Good signature.
             let mut hash = hash_algo.context().unwrap();
@@ -1286,7 +1320,7 @@ mod test {
 
     #[test]
     fn sign_message() {
-        use crate::constants::Curve;
+        use crate::types::Curve;
 
         let key: Key<key::SecretParts, key::PrimaryRole>
             = Key4::generate_ecc(true, Curve::Ed25519)
@@ -1295,7 +1329,7 @@ mod test {
         let mut pair = key.into_keypair().unwrap();
         let sig = Builder::new(SignatureType::Binary)
             .set_signature_creation_time(
-                std::time::SystemTime::now().canonicalize()).unwrap()
+                std::time::SystemTime::now()).unwrap()
             .set_issuer_fingerprint(pair.public().fingerprint()).unwrap()
             .set_issuer(pair.public().keyid()).unwrap()
             .sign_message(&mut pair, msg).unwrap();
@@ -1305,7 +1339,7 @@ mod test {
 
     #[test]
     fn verify_message() {
-        let tpk = TPK::from_bytes(crate::tests::key(
+        let cert = Cert::from_bytes(crate::tests::key(
                 "emmelie-dorothea-dina-samantha-awina-ed25519.pgp")).unwrap();
         let msg = crate::tests::manifesto();
         let p = Packet::from_bytes(
@@ -1317,12 +1351,11 @@ mod test {
             panic!("Expected a Signature, got: {:?}", p);
         };
 
-        assert!(sig.verify_message(tpk.primary(), &msg[..]).unwrap());
+        assert!(sig.verify_message(cert.primary(), &msg[..]).unwrap());
     }
 
     #[test]
     fn sign_with_short_ed25519_secret_key() {
-        use crate::conversions::Time;
         use nettle;
 
         // 20 byte sec key
@@ -1343,7 +1376,7 @@ mod test {
             scalar: MPI::new(&sec[..]).into(),
         };
         let key : key::SecretKey
-            = Key4::with_secret(std::time::SystemTime::now().canonicalize(),
+            = Key4::with_secret(std::time::SystemTime::now(),
                                 PublicKeyAlgorithm::EdDSA,
                                 public_mpis, private_mpis.into())
             .unwrap()
@@ -1355,21 +1388,21 @@ mod test {
         hash.update(&msg[..]);
 
         Builder::new(SignatureType::Text)
-            .sign_hash(&mut pair, HashAlgorithm::SHA256, hash).unwrap();
+            .sign_hash(&mut pair, hash).unwrap();
     }
 
     #[test]
     fn verify_gpg_3rd_party_cert() {
-        use crate::TPK;
+        use crate::Cert;
 
-        let test1 = TPK::from_bytes(
+        let test1 = Cert::from_bytes(
             crate::tests::key("test1-certification-key.pgp")).unwrap();
         let cert_key1 = test1.keys_all()
-            .certification_capable()
+            .for_certification()
             .nth(0)
             .map(|x| x.2)
             .unwrap();
-        let test2 = TPK::from_bytes(
+        let test2 = Cert::from_bytes(
             crate::tests::key("test2-signed-by-test1.pgp")).unwrap();
         let uid_binding = &test2.primary_key_signature_full(None)
             .unwrap().1.unwrap().0;
@@ -1394,7 +1427,7 @@ mod test {
         hash.update(&msg[..]);
 
         let fp = Fingerprint::from_bytes(b"bbbbbbbbbbbbbbbbbbbb");
-        let keyid = fp.to_keyid();
+        let keyid = KeyID::from(&fp);
 
         // First, make sure any superfluous subpackets are removed,
         // yet the Issuer and EmbeddedSignature ones are kept.
@@ -1410,11 +1443,11 @@ mod test {
 
         // Build and add an embedded sig.
         let embedded_sig = Builder::new(SignatureType::PrimaryKeyBinding)
-            .sign_hash(&mut pair, HashAlgorithm::SHA256, hash.clone()).unwrap();
+            .sign_hash(&mut pair, hash.clone()).unwrap();
         builder.unhashed_area_mut().add(Subpacket::new(
             SubpacketValue::EmbeddedSignature(embedded_sig.into()), false)
                                         .unwrap()).unwrap();
-        let sig = builder.sign_hash(&mut pair, HashAlgorithm::SHA256,
+        let sig = builder.sign_hash(&mut pair,
                                     hash.clone()).unwrap().normalize();
         assert_eq!(sig.unhashed_area().iter().count(), 2);
         assert_eq!(sig.unhashed_area().iter().nth(0).unwrap().2,
@@ -1427,7 +1460,7 @@ mod test {
         // the hashed area for compatibility.
         let sig = Builder::new(SignatureType::Text)
             .set_issuer_fingerprint(fp).unwrap()
-            .sign_hash(&mut pair, HashAlgorithm::SHA256,
+            .sign_hash(&mut pair,
                        hash.clone()).unwrap().normalize();
         assert_eq!(sig.unhashed_area().iter().count(), 1);
         assert_eq!(sig.unhashed_area().iter().nth(0).unwrap().2,
@@ -1443,7 +1476,7 @@ mod test {
 
         let sig = Builder::new(SignatureType::Standalone)
             .set_signature_creation_time(
-                std::time::SystemTime::now().canonicalize()).unwrap()
+                std::time::SystemTime::now()).unwrap()
             .set_issuer_fingerprint(pair.public().fingerprint()).unwrap()
             .set_issuer(pair.public().keyid()).unwrap()
             .sign_standalone(&mut pair)
@@ -1454,13 +1487,13 @@ mod test {
 
     #[test]
     fn timestamp_signature() {
-        let alpha = TPK::from_bytes(crate::tests::file(
+        let alpha = Cert::from_bytes(crate::tests::file(
             "contrib/gnupg/keys/alpha.pgp")).unwrap();
         let p = Packet::from_bytes(crate::tests::file(
             "contrib/gnupg/timestamp-signature-by-alice.asc")).unwrap();
         if let Packet::Signature(sig) = p {
             let digest = Signature::standalone_hash(&sig).unwrap();
-            eprintln!("{}", crate::conversions::hex::encode(&digest));
+            eprintln!("{}", crate::fmt::hex::encode(&digest));
             assert!(sig.verify_timestamp(alpha.primary()).unwrap());
         } else {
             panic!("expected a signature packet");
@@ -1475,7 +1508,7 @@ mod test {
 
         let sig = Builder::new(SignatureType::Timestamp)
             .set_signature_creation_time(
-                std::time::SystemTime::now().canonicalize()).unwrap()
+                std::time::SystemTime::now()).unwrap()
             .set_issuer_fingerprint(pair.public().fingerprint()).unwrap()
             .set_issuer(pair.public().keyid()).unwrap()
             .sign_timestamp(&mut pair)

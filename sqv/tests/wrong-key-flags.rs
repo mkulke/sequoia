@@ -6,7 +6,7 @@ mod integration {
     use std::path;
 
     #[test]
-    fn not_signing_capable_subkey() {
+    fn not_for_signing_subkey() {
         Assert::cargo_binary("sqv")
             .current_dir(path::Path::new("tests").join("data"))
             .with_args(
@@ -26,24 +26,24 @@ mod integration {
 // fn create_key() {
 //     use std::fs::File;
 //     use sequoia_openpgp::{
-//         tpk::TPKBuilder,
+//         cert::CertBuilder,
 //         packet::{
 //             signature,
 //             key::SecretKey,
 //         },
 //         crypto::KeyPair,
 //         serialize::Serialize,
-//         constants::{
+//         types::{
 //             SignatureType,
 //             HashAlgorithm,
 //         }
 //     };
 //
-//     let (tpk, _) = TPKBuilder::default()
+//     let (cert, _) = CertBuilder::default()
 //         .add_userid("Testy Mc Test")
-//         .add_encryption_subkey()
+//         .add_transport_encryption_subkey()
 //         .generate().unwrap();
-//     let subkey = tpk.subkeys().next().unwrap();
+//     let subkey = cert.subkeys().next().unwrap();
 //     let key = subkey.subkey();
 //     let sig = {
 //         let mpis = match key.secret() {
@@ -53,7 +53,7 @@ mod integration {
 //         let mut b = signature::Builder::new(SignatureType::Binary);
 //         b.set_signature_creation_time(time::now()).unwrap();
 //         b.set_issuer_fingerprint(key.fingerprint()).unwrap();
-//         b.set_issuer(key.fingerprint().to_keyid()).unwrap();
+//         b.set_issuer(key.fingerprint().into()).unwrap();
 //         b.sign_message(
 //             &mut KeyPair::new(key.clone(), mpis.clone()).unwrap(),
 //             HashAlgorithm::SHA512, b"Hello, World").unwrap()
@@ -61,7 +61,7 @@ mod integration {
 //
 //     {
 //         let mut fd = File::create("key").unwrap();
-//         tpk.serialize(&mut fd).unwrap();
+//         cert.serialize(&mut fd).unwrap();
 //     }
 //
 //     {

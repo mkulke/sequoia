@@ -8,7 +8,7 @@ extern crate sequoia_openpgp as openpgp;
 extern crate sequoia_ipc as ipc;
 
 use crate::openpgp::crypto::SessionKey;
-use crate::openpgp::constants::SymmetricAlgorithm;
+use crate::openpgp::types::SymmetricAlgorithm;
 use crate::openpgp::parse::{
     Parse,
     stream::{
@@ -29,7 +29,7 @@ fn main() {
         .arg(clap::Arg::with_name("homedir").value_name("PATH")
              .long("homedir")
              .help("Use this GnuPG home directory, default: $GNUPGHOME"))
-        .arg(clap::Arg::with_name("tpk").value_name("TPK")
+        .arg(clap::Arg::with_name("cert").value_name("Cert")
              .required(true)
              .multiple(true)
              .help("Public part of the secret keys managed by gpg-agent"))
@@ -41,16 +41,16 @@ fn main() {
         Context::new().unwrap()
     };
 
-    // Read the TPKs from the given files.
-    let tpks =
-        matches.values_of("tpk").expect("required").map(|f| {
-            openpgp::TPK::from_file(f)
+    // Read the Certs from the given files.
+    let certs =
+        matches.values_of("cert").expect("required").map(|f| {
+            openpgp::Cert::from_file(f)
                 .expect("Failed to read key")
         }).collect();
 
-    // Now, create a decryptor with a helper using the given TPKs.
+    // Now, create a decryptor with a helper using the given Certs.
     let mut decryptor =
-        Decryptor::from_reader(io::stdin(), Helper::new(&ctx, tpks), None)
+        Decryptor::from_reader(io::stdin(), Helper::new(&ctx, certs), None)
         .unwrap();
 
     // Finally, stream the decrypted data to stdout.
@@ -67,14 +67,14 @@ struct Helper<'a> {
 }
 
 impl<'a> Helper<'a> {
-    /// Creates a Helper for the given TPKs with appropriate secrets.
-    fn new(ctx: &'a Context, tpks: Vec<openpgp::TPK>) -> Self {
+    /// Creates a Helper for the given Certs with appropriate secrets.
+    fn new(ctx: &'a Context, certs: Vec<openpgp::Cert>) -> Self {
         // Map (sub)KeyIDs to secrets.
         let mut keys = HashMap::new();
-        for tpk in tpks {
-            for (sig, _, key) in tpk.keys_all() {
-                if sig.map(|s| (s.key_flags().can_encrypt_at_rest()
-                                || s.key_flags().can_encrypt_for_transport()))
+        for cert in certs {
+            for (sig, _, key) in cert.keys_all() {
+                if sig.map(|s| (s.key_flags().for_storage_encryption()
+                                || s.key_flags().for_transport_encryption()))
                     .unwrap_or(false)
                 {
                     keys.insert(key.keyid(), key.clone().into());
@@ -106,15 +106,15 @@ impl<'a> DecryptionHelper for Helper<'a> {
             }
         }
         // XXX: In production code, return the Fingerprint of the
-        // recipient's TPK here
+        // recipient's Cert here
         Ok(None)
     }
 }
 
 impl<'a> VerificationHelper for Helper<'a> {
-    fn get_public_keys(&mut self, _ids: &[openpgp::KeyID])
-                       -> failure::Fallible<Vec<openpgp::TPK>> {
-        Ok(Vec::new()) // Feed the TPKs to the verifier here.
+    fn get_public_keys(&mut self, _ids: &[openpgp::KeyHandle])
+                       -> failure::Fallible<Vec<openpgp::Cert>> {
+        Ok(Vec::new()) // Feed the Certs to the verifier here.
     }
     fn check(&mut self, structure: &MessageStructure)
              -> failure::Fallible<()> {
@@ -133,32 +133,19 @@ impl<'a> VerificationHelper for Helper<'a> {
                 MessageLayer::SignatureGroup { ref results } =>
                     for result in results {
                         match result {
-                            GoodChecksum(ref sig, ..) => {
-                                let issuer = sig.issuer()
-                                    .expect("good checksum has an issuer");
-                                eprintln!("Good signature from {}", issuer);
+                            GoodChecksum { cert, .. } => {
+                                eprintln!("Good signature from {}", cert);
                             },
-                            NotAlive(ref sig) => {
-                                let issuer = sig.issuer()
-                                    .expect("Good, but not live signature has an \
-                                             issuer");
-                                eprintln!("Good, but not live signature from {}",
-                                          issuer);
+                            NotAlive { cert, .. } => {
+                                eprintln!("Good, but not alive signature from {}",
+                                          cert);
                             },
-                            MissingKey(ref sig) => {
-                                let issuer = sig.issuer()
-                                    .expect("missing key checksum has an \
-                                             issuer");
-                                eprintln!("No key to check signature from {}",
-                                          issuer);
+                            MissingKey { .. } => {
+                                eprintln!("No key to check signature");
                             },
-                            BadChecksum(ref sig) =>
-                                if let Some(issuer) = sig.issuer() {
-                                    eprintln!("Bad signature from {}", issuer);
-                                } else {
-                                    eprintln!("Bad signature without issuer \
-                                               information");
-                                },
+                            BadChecksum { cert, .. } => {
+                                eprintln!("Bad signature from {}", cert);
+                            },
                         }
                     }
             }

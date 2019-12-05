@@ -45,6 +45,30 @@ impl From<u64> for KeyID {
     }
 }
 
+impl From<&Fingerprint> for KeyID {
+    fn from(fp: &Fingerprint) -> Self {
+        match fp {
+            Fingerprint::V4(fp) =>
+                KeyID::from_bytes(&fp[fp.len() - 8..]),
+            Fingerprint::Invalid(fp) => {
+                KeyID::Invalid(fp.clone())
+            }
+        }
+    }
+}
+
+impl From<Fingerprint> for KeyID {
+    fn from(fp: Fingerprint) -> Self {
+        match fp {
+            Fingerprint::V4(fp) =>
+                KeyID::from_bytes(&fp[fp.len() - 8..]),
+            Fingerprint::Invalid(fp) => {
+                KeyID::Invalid(fp)
+            }
+        }
+    }
+}
+
 impl KeyID {
     /// Converts a u64 to a KeyID.
     pub fn new(data: u64) -> KeyID {
@@ -92,7 +116,7 @@ impl KeyID {
 
     /// Reads a hex-encoded Key ID.
     pub fn from_hex(hex: &str) -> Result<KeyID> {
-        let bytes = crate::conversions::from_hex(hex, true)?;
+        let bytes = crate::fmt::from_hex(hex, true)?;
 
         // A KeyID is exactly 8 bytes long.
         if bytes.len() == 8 {
@@ -100,7 +124,7 @@ impl KeyID {
         } else {
             // Maybe a fingerprint was given.  Try to parse it and
             // convert it to a KeyID.
-            Ok(Fingerprint::from_hex(hex)?.to_keyid())
+            Ok(Fingerprint::from_hex(hex)?.into())
         }
     }
 

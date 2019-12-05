@@ -4,15 +4,15 @@ use clap::ArgMatches;
 use itertools::Itertools;
 
 use crate::openpgp::Packet;
-use crate::openpgp::tpk::{TPKBuilder, CipherSuite};
-use crate::openpgp::constants::KeyFlags;
+use crate::openpgp::cert::{CertBuilder, CipherSuite};
+use crate::openpgp::types::KeyFlags;
 use crate::openpgp::armor::{Writer, Kind};
 use crate::openpgp::serialize::Serialize;
 
 use crate::create_or_stdout;
 
 pub fn generate(m: &ArgMatches, force: bool) -> failure::Fallible<()> {
-    let mut builder = TPKBuilder::new();
+    let mut builder = CertBuilder::new();
 
     // User ID
     match m.values_of("userid") {
@@ -145,16 +145,17 @@ pub fn generate(m: &ArgMatches, force: bool) -> failure::Fallible<()> {
 
     // Encryption Capability
     match (m.value_of("can-encrypt"), m.is_present("cannot-encrypt")) {
-        (Some("all"), false) | (None, false) => {
-            builder = builder.add_encryption_subkey();
-        }
-        (Some("rest"), false) => {
+        (Some("universal"), false) | (None, false) => {
             builder = builder.add_subkey(KeyFlags::default()
-                                         .set_encrypt_at_rest(true));
+                                         .set_transport_encryption(true)
+                                         .set_storage_encryption(true),
+                                         None);
+        }
+        (Some("storage"), false) => {
+            builder = builder.add_storage_encryption_subkey();
         }
         (Some("transport"), false) => {
-            builder = builder.add_subkey(KeyFlags::default()
-                                         .set_encrypt_for_transport(true));
+            builder = builder.add_transport_encryption_subkey();
         }
         (None, true) => { /* no encryption subkey */ }
         (Some(_), true) => {
@@ -182,7 +183,7 @@ pub fn generate(m: &ArgMatches, force: bool) -> failure::Fallible<()> {
     }
 
     // Generate the key
-    let (tpk, rev) = builder.generate()?;
+    let (cert, rev) = builder.generate()?;
 
     // Export
     if m.is_present("export") {
@@ -208,7 +209,7 @@ pub fn generate(m: &ArgMatches, force: bool) -> failure::Fallible<()> {
                                      --export")),
             };
 
-        let headers = tpk.armor_headers();
+        let headers = cert.armor_headers();
 
         // write out key
         {
@@ -218,7 +219,7 @@ pub fn generate(m: &ArgMatches, force: bool) -> failure::Fallible<()> {
 
             let w = create_or_stdout(Some(&key_path), force)?;
             let mut w = Writer::new(w, Kind::SecretKey, &headers)?;
-            tpk.as_tsk().serialize(&mut w)?;
+            cert.as_tsk().serialize(&mut w)?;
         }
 
         // write out rev cert

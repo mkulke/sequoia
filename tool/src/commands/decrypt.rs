@@ -6,10 +6,10 @@ extern crate termsize;
 
 extern crate sequoia_openpgp as openpgp;
 use sequoia_core::Context;
-use crate::openpgp::constants::SymmetricAlgorithm;
-use crate::openpgp::conversions::hex;
+use crate::openpgp::types::SymmetricAlgorithm;
+use crate::openpgp::fmt::hex;
 use crate::openpgp::crypto::{self, SessionKey};
-use crate::openpgp::{Fingerprint, TPK, KeyID, Result};
+use crate::openpgp::{Fingerprint, Cert, KeyID, Result};
 use crate::openpgp::packet::prelude::*;
 use crate::openpgp::parse::PacketParser;
 use crate::openpgp::parse::stream::{
@@ -32,7 +32,7 @@ struct Helper<'a> {
 
 impl<'a> Helper<'a> {
     fn new(ctx: &'a Context, mapping: &'a mut store::Mapping,
-           signatures: usize, tpks: Vec<TPK>, secrets: Vec<TPK>,
+           signatures: usize, certs: Vec<Cert>, secrets: Vec<Cert>,
            dump_session_key: bool, dump: bool, hex: bool)
            -> Self {
         let mut keys: HashMap<KeyID, key::UnspecifiedSecret>
@@ -45,8 +45,8 @@ impl<'a> Helper<'a> {
                       R: key::KeyRole,
             {
                 if let Some(sig) = sig {
-                    sig.key_flags().can_encrypt_at_rest()
-                        || sig.key_flags().can_encrypt_for_transport()
+                    sig.key_flags().for_storage_encryption()
+                        || sig.key_flags().for_transport_encryption()
                 } else {
                     false
                 }
@@ -54,12 +54,12 @@ impl<'a> Helper<'a> {
 
             let hint = match tsk.userids().nth(0) {
                 Some(uid) => format!("{} ({})", uid.userid(),
-                                     tsk.fingerprint().to_keyid()),
-                None => format!("{}", tsk.fingerprint().to_keyid()),
+                                     KeyID::from(tsk.fingerprint())),
+                None => format!("{}", KeyID::from(tsk.fingerprint())),
             };
 
             if can_encrypt(tsk.primary(), tsk.primary_key_signature(None)) {
-                let id = tsk.fingerprint().to_keyid();
+                let id: KeyID = tsk.fingerprint().into();
                 keys.insert(id.clone(), tsk.primary().clone().into());
                 identities.insert(id.clone(), tsk.fingerprint());
                 hints.insert(id, hint.clone());
@@ -68,7 +68,7 @@ impl<'a> Helper<'a> {
             for skb in tsk.subkeys() {
                 let key = skb.key();
                 if can_encrypt(key, skb.binding_signature(None)) {
-                    let id = key.fingerprint().to_keyid();
+                    let id: KeyID = key.fingerprint().into();
                     keys.insert(id.clone(), key.clone().into());
                     identities.insert(id.clone(), tsk.fingerprint());
                     hints.insert(id, hint.clone());
@@ -77,7 +77,7 @@ impl<'a> Helper<'a> {
         }
 
         Helper {
-            vhelper: VHelper::new(ctx, mapping, signatures, tpks),
+            vhelper: VHelper::new(ctx, mapping, signatures, certs),
             secret_keys: keys,
             key_identities: identities,
             key_hints: hints,
@@ -101,7 +101,7 @@ impl<'a> Helper<'a> {
                       -> openpgp::Result<Option<Fingerprint>>
         where D: FnMut(SymmetricAlgorithm, &SessionKey) -> openpgp::Result<()>
     {
-        let keyid = keypair.public().fingerprint().to_keyid();
+        let keyid = keypair.public().fingerprint().into();
         match pkesk.decrypt(keypair)
             .and_then(|(algo, sk)| {
                 decrypt(algo, &sk)?; Ok(sk)
@@ -123,7 +123,7 @@ impl<'a> Helper<'a> {
 }
 
 impl<'a> VerificationHelper for Helper<'a> {
-    fn get_public_keys(&mut self, ids: &[KeyID]) -> Result<Vec<TPK>> {
+    fn get_public_keys(&mut self, ids: &[openpgp::KeyHandle]) -> Result<Vec<Cert>> {
         self.vhelper.get_public_keys(ids)
     }
     fn check(&mut self, structure: &MessageStructure) -> Result<()> {
@@ -294,11 +294,11 @@ impl<'a> DecryptionHelper for Helper<'a> {
 
 pub fn decrypt(ctx: &Context, mapping: &mut store::Mapping,
                input: &mut dyn io::Read, output: &mut dyn io::Write,
-               signatures: usize, tpks: Vec<TPK>, secrets: Vec<TPK>,
+               signatures: usize, certs: Vec<Cert>, secrets: Vec<Cert>,
                dump_session_key: bool,
                dump: bool, hex: bool)
                -> Result<()> {
-    let helper = Helper::new(ctx, mapping, signatures, tpks, secrets,
+    let helper = Helper::new(ctx, mapping, signatures, certs, secrets,
                              dump_session_key, dump, hex);
     let mut decryptor = Decryptor::from_reader(input, helper, None)
         .context("Decryption failed")?;

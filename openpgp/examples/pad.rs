@@ -7,7 +7,7 @@ use std::io;
 extern crate sequoia_openpgp as openpgp;
 use crate::openpgp::armor;
 use crate::openpgp::KeyID;
-use crate::openpgp::constants::KeyFlags;
+use crate::openpgp::types::KeyFlags;
 use crate::openpgp::parse::Parse;
 use crate::openpgp::serialize::stream::{
     Message, LiteralWriter, Encryptor, Recipient,
@@ -23,23 +23,23 @@ fn main() {
     }
 
     let mode = match args[1].as_ref() {
-        "at-rest" => KeyFlags::default().set_encrypt_at_rest(true),
-        "for-transport" => KeyFlags::default().set_encrypt_for_transport(true),
+        "at-rest" => KeyFlags::default().set_storage_encryption(true),
+        "for-transport" => KeyFlags::default().set_transport_encryption(true),
         x => panic!("invalid mode: {:?}, \
                      must be either 'at-rest' or 'for-transport'",
                     x),
     };
 
-    // Read the transferable public keys from the given files.
-    let tpks: Vec<openpgp::TPK> = args[2..].iter().map(|f| {
-        openpgp::TPK::from_file(f)
+    // Read the certificates from the given files.
+    let certs: Vec<openpgp::Cert> = args[2..].iter().map(|f| {
+        openpgp::Cert::from_file(f)
             .expect("Failed to read key")
     }).collect();
 
     // Build a vector of recipients to hand to Encryptor.
     let mut recipients =
-        tpks.iter()
-        .flat_map(|tpk| tpk.keys_valid().key_flags(mode.clone()))
+        certs.iter()
+        .flat_map(|cert| cert.keys_valid().key_flags(mode.clone()))
         .map(|(_, _, key)| Recipient::new(KeyID::wildcard(), key))
         .collect::<Vec<_>>();
 

@@ -10,7 +10,8 @@
 use std::env;
 
 extern crate sequoia_openpgp as openpgp;
-use crate::openpgp::tpk::TPKParser;
+use crate::openpgp::KeyID;
+use crate::openpgp::cert::CertParser;
 use crate::openpgp::parse::Parse;
 
 fn main() {
@@ -30,29 +31,27 @@ fn main() {
     // For each input file, create a parser.
     for input in &args[1..] {
         eprintln!("Parsing {}...", input);
-        let parser = TPKParser::from_file(input)
+        let parser = CertParser::from_file(input)
             .expect("Failed to create reader");
 
-        for tpk in parser {
-            match tpk {
-                Ok(tpk) => {
-                    let keyid = tpk.keyid();
-                    for uidb in tpk.userids() {
+        for cert in parser {
+            match cert {
+                Ok(cert) => {
+                    let keyid = cert.keyid();
+                    for uidb in cert.userids() {
                         for tps in uidb.certifications() {
-                            if let Some(issuer) = tps.get_issuer() {
+                            for issuer in tps.get_issuers() {
                                 println!("{}, {:?}, {}",
-                                         issuer.as_u64().unwrap(),
+                                         KeyID::from(issuer).as_u64().unwrap(),
                                          String::from_utf8_lossy(
                                              uidb.userid().value()),
                                          keyid.as_u64().unwrap());
-                            } else {
-                                eprintln!("No issuer!?");
                             }
                         }
                     }
                 },
                 Err(e) =>
-                    eprintln!("Parsing TPK failed: {}", e),
+                    eprintln!("Parsing Cert failed: {}", e),
             }
         }
     }

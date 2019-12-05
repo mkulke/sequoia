@@ -5,11 +5,11 @@ use std::io;
 use nettle::{aead, cipher};
 use buffered_reader::BufferedReader;
 
-use crate::constants::{
+use crate::types::{
     AEADAlgorithm,
     SymmetricAlgorithm,
 };
-use crate::conversions::{
+use crate::utils::{
     write_be_u64,
 };
 use crate::Error;

@@ -1,7 +1,6 @@
 use std::fmt;
 
 use crate::Fingerprint;
-use crate::KeyID;
 use crate::Result;
 
 impl fmt::Display for Fingerprint {
@@ -53,7 +52,7 @@ impl Fingerprint {
     /// assert_eq!(fp.unwrap().to_hex(), hex);
     /// ```
     pub fn from_hex(hex: &str) -> Result<Fingerprint> {
-        Ok(Fingerprint::from_bytes(&crate::conversions::from_hex(hex, true)?[..]))
+        Ok(Fingerprint::from_bytes(&crate::fmt::from_hex(hex, true)?[..]))
     }
 
     /// Returns a reference to the raw Fingerprint.
@@ -127,17 +126,6 @@ impl Fingerprint {
 
         // We know the content is valid UTF-8.
         String::from_utf8(output).unwrap()
-    }
-
-    /// Converts the fingerprint to a key ID.
-    pub fn to_keyid(&self) -> KeyID {
-        match self {
-            &Fingerprint::V4(ref fp) =>
-                KeyID::from_bytes(&fp[fp.len() - 8..]),
-            &Fingerprint::Invalid(ref fp) => {
-                KeyID::Invalid(fp.clone())
-            }
-        }
     }
 
     /// Converts the hex representation of the fingerprint to a phrase in the

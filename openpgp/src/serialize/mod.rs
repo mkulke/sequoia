@@ -11,15 +11,16 @@
 
 use std::io::{self, Write};
 use std::cmp;
+use std::convert::TryFrom;
 
 use crate::autocrypt;
 use super::*;
 
 mod partial_body;
 mod sexp;
-mod tpk;
-pub use self::tpk::TSK;
-mod tpk_armored;
+mod cert;
+pub use self::cert::TSK;
+mod cert_armored;
 use self::partial_body::PartialBodyFilter;
 pub mod writer;
 pub mod stream;
@@ -35,11 +36,10 @@ use crate::packet::header::{
 use crate::packet::signature::subpacket::{
     Subpacket, SubpacketValue, SubpacketLengthTrait,
 };
-use crate::conversions::{
-    Time,
-    Duration,
-};
 use crate::packet::prelude::*;
+use crate::types::{
+    Timestamp,
+};
 
 // Whether to trace the modules execution (on stderr).
 const TRACE : bool = false;
@@ -55,13 +55,13 @@ pub trait Serialize {
     ///
     ///   - It is an error to export a [`Signature`] if it is marked
     ///     as non-exportable.
-    ///   - When exporting a [`TPK`], non-exportable signatures are
+    ///   - When exporting a [`Cert`], non-exportable signatures are
     ///     not exported, and any component bound merely by
     ///     non-exportable signatures is not exported.
     ///
     ///   [`serialize(..)`]: #tymethod.serialize
     ///   [`Signature`]: ../packet/enum.Signature.html
-    ///   [`TPK`]: ../struct.TPK.html
+    ///   [`Cert`]: ../struct.Cert.html
     fn export(&self, o: &mut dyn std::io::Write) -> Result<()> {
         self.serialize(o)
     }
@@ -104,13 +104,13 @@ pub trait SerializeInto {
     ///
     ///   - It is an error to export a [`Signature`] if it is marked
     ///     as non-exportable.
-    ///   - When exporting a [`TPK`], non-exportable signatures are
+    ///   - When exporting a [`Cert`], non-exportable signatures are
     ///     not exported, and any component bound merely by
     ///     non-exportable signatures is not exported.
     ///
     ///   [`serialize_into(..)`]: #tymethod.serialize_into
     ///   [`Signature`]: ../packet/enum.Signature.html
-    ///   [`TPK`]: ../struct.TPK.html
+    ///   [`Cert`]: ../struct.Cert.html
     ///
     /// Returns the length of the serialized representation.
     ///
@@ -129,13 +129,13 @@ pub trait SerializeInto {
     ///
     ///   - It is an error to export a [`Signature`] if it is marked
     ///     as non-exportable.
-    ///   - When exporting a [`TPK`], non-exportable signatures are
+    ///   - When exporting a [`Cert`], non-exportable signatures are
     ///     not exported, and any component bound merely by
     ///     non-exportable signatures is not exported.
     ///
     ///   [`to_vec()`]: #method.to_vec
     ///   [`Signature`]: ../packet/enum.Signature.html
-    ///   [`TPK`]: ../struct.TPK.html
+    ///   [`Cert`]: ../struct.Cert.html
     fn export_to_vec(&self) -> Result<Vec<u8>> {
         let mut o = vec![0; self.serialized_len()];
         let len = self.export_into(&mut o[..])?;
@@ -978,9 +978,9 @@ impl<'a> Serialize for SubpacketValue<'a> {
         use self::SubpacketValue::*;
         match self {
             SignatureCreationTime(t) =>
-                write_be_u32(o, t.to_pgp()?)?,
+                write_be_u32(o, t.clone().into())?,
             SignatureExpirationTime(t) =>
-                write_be_u32(o, t.to_pgp()?)?,
+                write_be_u32(o, t.clone().into())?,
             ExportableCertification(e) =>
                 o.write_all(&[if *e { 1 } else { 0 }])?,
             TrustSignature { ref level, ref trust } =>
@@ -992,7 +992,7 @@ impl<'a> Serialize for SubpacketValue<'a> {
             Revocable(r) =>
                 o.write_all(&[if *r { 1 } else { 0 }])?,
             KeyExpirationTime(t) =>
-                write_be_u32(o, t.to_pgp()?)?,
+                write_be_u32(o, t.clone().into())?,
             PreferredSymmetricAlgorithms(ref p) =>
                 for a in p {
                     o.write_all(&[(*a).into()])?;
@@ -1360,7 +1360,7 @@ impl<P, R> Key4<P, R>
         let have_secret_key = self.secret().is_some() && serialize_secrets;
 
         write_byte(o, 4)?; // Version.
-        write_be_u32(o, self.creation_time().to_pgp()?)?;
+        write_be_u32(o, Timestamp::try_from(self.creation_time())?.into())?;
         write_byte(o, self.pk_algo().into())?;
         self.mpis().serialize(o)?;
 
@@ -1606,7 +1606,7 @@ impl Literal {
         };
 
         let date = if let Some(d) = self.date() {
-            d.to_pgp()?
+            Timestamp::try_from(d)?.into()
         } else {
             0
         };
@@ -2486,7 +2486,7 @@ impl Serialize for autocrypt::AutocryptHeader {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::constants::CompressionAlgorithm;
+    use crate::types::CompressionAlgorithm;
     use crate::parse::to_unknown_packet;
     use crate::parse::PacketParserBuilder;
     use crate::parse::Parse;
@@ -2744,7 +2744,7 @@ mod test {
     // reparse them, and make sure we get the same result.
     #[test]
     fn serialize_test_3() {
-        use crate::constants::DataFormat::Text as T;
+        use crate::types::DataFormat::Text as T;
 
         // serialize_test_1 and serialize_test_2 parse a byte stream.
         // This tests creates the message, and then serializes and
@@ -2934,16 +2934,16 @@ mod test {
 
     #[test]
     fn export_signature() {
-        use crate::tpk::TPKBuilder;
+        use crate::cert::CertBuilder;
 
-        let (tpk, _) = TPKBuilder::new().generate().unwrap();
-        let mut keypair = tpk.primary().clone().mark_parts_secret()
+        let (cert, _) = CertBuilder::new().generate().unwrap();
+        let mut keypair = cert.primary().clone().mark_parts_secret()
             .unwrap().into_keypair().unwrap();
         let uid = UserID::from("foo");
 
         // Make a signature w/o an exportable certification subpacket.
         let sig = uid.bind(
-            &mut keypair, &tpk,
+            &mut keypair, &cert,
             signature::Builder::new(SignatureType::GenericCertificate),
             None).unwrap();
 
@@ -2967,7 +2967,7 @@ mod test {
 
         // Make a signature that is explicitly marked as exportable.
         let sig = uid.bind(
-            &mut keypair, &tpk,
+            &mut keypair, &cert,
             signature::Builder::new(SignatureType::GenericCertificate)
                 .set_exportable_certification(true).unwrap(),
             None).unwrap();
@@ -2992,7 +2992,7 @@ mod test {
 
         // Make a non-exportable signature.
         let sig = uid.bind(
-            &mut keypair, &tpk,
+            &mut keypair, &cert,
             signature::Builder::new(SignatureType::GenericCertificate)
                 .set_exportable_certification(false).unwrap(),
             None).unwrap();

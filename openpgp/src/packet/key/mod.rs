@@ -16,7 +16,7 @@
 //! secret) and roles (primary or secondary).  We also add
 //! unspecified variants, because sometimes we want a slice of
 //! keys, and we don't care about the key's role.  For instance,
-//! when iterating over all of the keys in a TPK, we want the
+//! when iterating over all of the keys in a Cert, we want the
 //! primary and the subkeys.  These can't be put in the same slice
 //! without first wrapping them, which is awkward.
 //!
@@ -30,30 +30,30 @@
 //! # extern crate sequoia_openpgp as openpgp;
 //! # use openpgp::Result;
 //! # use openpgp::parse::{Parse, PacketParserResult, PacketParser};
-//! # use openpgp::tpk::TPKParser;
-//! # use openpgp::tpk::{CipherSuite, TPKBuilder};
+//! # use openpgp::cert::CertParser;
+//! # use openpgp::cert::{CipherSuite, CertBuilder};
 //! use openpgp::packet::{Key, key};
 //!
 //! # fn main() { f().unwrap(); }
 //! # fn f() -> Result<()>
 //! # {
-//! #     let (tpk, _) = TPKBuilder::new()
+//! #     let (cert, _) = CertBuilder::new()
 //! #         .set_cipher_suite(CipherSuite::Cv25519)
 //! #         .generate()?;
-//! // Get a handle to the TPK's primary key that allows using the
+//! // Get a handle to the Cert's primary key that allows using the
 //! // secret key material.
 //! use std::convert::TryInto;
-//! let sk : &key::SecretKey = tpk.primary().try_into()?;
+//! let sk : &key::SecretKey = cert.primary().try_into()?;
 //!
 //! // Make the conversion explicit.
-//! let sk : &key::SecretKey = tpk.primary().mark_parts_secret_ref()?;
+//! let sk : &key::SecretKey = cert.primary().mark_parts_secret_ref()?;
 //! #     Ok(())
 //! # }
 //! ```
 
 use std::fmt;
 use std::cmp::Ordering;
-use std::convert::TryFrom;
+use std::convert::{TryFrom, TryInto};
 use std::time;
 
 use crate::Error;
@@ -63,10 +63,9 @@ use crate::packet::prelude::*;
 use crate::PublicKeyAlgorithm;
 use crate::SymmetricAlgorithm;
 use crate::HashAlgorithm;
-use crate::constants::Curve;
+use crate::types::{Curve, Timestamp};
 use crate::crypto::s2k::S2K;
 use crate::Result;
-use crate::conversions::Time;
 use crate::crypto::Password;
 use crate::KeyID;
 use crate::Fingerprint;
@@ -540,7 +539,7 @@ macro_rules! create_conversions {
 create_conversions!(Key);
 create_conversions!(Key4);
 
-use crate::tpk::KeyBinding;
+use crate::cert::KeyBinding;
 create_conversions!(KeyBinding);
 
 /// Holds a public key, public subkey, private key or private subkey packet.
@@ -555,7 +554,7 @@ pub struct Key4<P, R>
     /// CTB packet header fields.
     pub(crate) common: packet::Common,
     /// When the key was created.
-    creation_time: time::SystemTime,
+    creation_time: Timestamp,
     /// Public key algorithm of this signature.
     pk_algo: PublicKeyAlgorithm,
     /// Public key MPIs.
@@ -628,7 +627,7 @@ impl<R> Key4<key::PublicParts, R>
     {
         Ok(Key4 {
             common: Default::default(),
-            creation_time: creation_time.into(),
+            creation_time: creation_time.into().try_into()?,
             pk_algo: pk_algo,
             mpis: mpis,
             secret: None,
@@ -654,7 +653,7 @@ impl<R> Key4<key::PublicParts, R>
 
         Self::new(
             ctime.into()
-                .unwrap_or_else(|| time::SystemTime::now().canonicalize()),
+                .unwrap_or_else(|| time::SystemTime::now()),
             PublicKeyAlgorithm::ECDH,
             mpis::PublicKey::ECDH {
                 curve: Curve::Cv25519,
@@ -678,7 +677,7 @@ impl<R> Key4<key::PublicParts, R>
 
         Self::new(
             ctime.into()
-                .unwrap_or_else(|| time::SystemTime::now().canonicalize()),
+                .unwrap_or_else(|| time::SystemTime::now()),
             PublicKeyAlgorithm::EdDSA,
             mpis::PublicKey::EdDSA {
                 curve: Curve::Ed25519,
@@ -696,7 +695,7 @@ impl<R> Key4<key::PublicParts, R>
     {
         Self::new(
             ctime.into()
-                .unwrap_or_else(|| time::SystemTime::now().canonicalize()),
+                .unwrap_or_else(|| time::SystemTime::now()),
             PublicKeyAlgorithm::RSAEncryptSign,
             mpis::PublicKey::RSA {
                 e: mpis::MPI::new(e),
@@ -717,7 +716,7 @@ impl<R> Key4<SecretParts, R>
     {
         Ok(Key4 {
             common: Default::default(),
-            creation_time: creation_time.into(),
+            creation_time: creation_time.into().try_into()?,
             pk_algo: pk_algo,
             mpis: mpis,
             secret: Some(secret),
@@ -748,7 +747,7 @@ impl<R> Key4<SecretParts, R>
 
         Self::with_secret(
             ctime.into()
-                .unwrap_or_else(|| time::SystemTime::now().canonicalize()),
+                .unwrap_or_else(|| time::SystemTime::now()),
             PublicKeyAlgorithm::ECDH,
             mpis::PublicKey::ECDH {
                 curve: Curve::Cv25519,
@@ -777,7 +776,7 @@ impl<R> Key4<SecretParts, R>
 
         Self::with_secret(
             ctime.into()
-                .unwrap_or_else(|| time::SystemTime::now().canonicalize()),
+                .unwrap_or_else(|| time::SystemTime::now()),
             PublicKeyAlgorithm::EdDSA,
             mpis::PublicKey::EdDSA {
                 curve: Curve::Ed25519,
@@ -804,7 +803,7 @@ impl<R> Key4<SecretParts, R>
 
         Self::with_secret(
             ctime.into()
-                .unwrap_or_else(|| time::SystemTime::now().canonicalize()),
+                .unwrap_or_else(|| time::SystemTime::now()),
             PublicKeyAlgorithm::RSAEncryptSign,
             mpis::PublicKey::RSA {
                 e: mpis::MPI::new(&key.e()[..]),
@@ -838,7 +837,7 @@ impl<R> Key4<SecretParts, R>
         };
 
         Self::with_secret(
-            time::SystemTime::now().canonicalize(),
+            time::SystemTime::now(),
             PublicKeyAlgorithm::RSAEncryptSign,
             public_mpis,
             private_mpis.into())
@@ -989,7 +988,7 @@ impl<R> Key4<SecretParts, R>
         };
 
         Self::with_secret(
-            time::SystemTime::now().canonicalize(),
+            time::SystemTime::now(),
             pk_algo,
             mpis,
             secret)
@@ -1002,13 +1001,14 @@ impl<P, R> Key4<P, R>
 {
     /// Gets the key packet's creation time field.
     pub fn creation_time(&self) -> time::SystemTime {
-        self.creation_time
+        self.creation_time.into()
     }
 
     /// Sets the key packet's creation time field.
     pub fn set_creation_time(&mut self, timestamp: time::SystemTime)
-                             -> time::SystemTime {
-        ::std::mem::replace(&mut self.creation_time, timestamp.canonicalize())
+                             -> Result<time::SystemTime> {
+        Ok(std::mem::replace(&mut self.creation_time, timestamp.try_into()?)
+           .into())
     }
 
     /// Gets the public key algorithm.
@@ -1070,7 +1070,7 @@ impl<P, R> Key4<P, R>
     /// Computes and returns the key's key ID as per Section 12.2 of
     /// RFC 4880.
     pub fn keyid(&self) -> KeyID {
-        self.fingerprint().to_keyid()
+        self.fingerprint().into()
     }
 }
 
@@ -1279,7 +1279,7 @@ impl Encrypted {
 #[cfg(test)]
 mod tests {
     use crate::packet::Key;
-    use crate::TPK;
+    use crate::Cert;
     use crate::packet::pkesk::PKESK3;
     use crate::packet::key;
     use crate::packet::key::SecretKeyMaterial;
@@ -1291,9 +1291,9 @@ mod tests {
 
     #[test]
     fn encrypted_rsa_key() {
-        let tpk = TPK::from_bytes(
+        let cert = Cert::from_bytes(
             crate::tests::key("testy-new-encrypted-with-123.pgp")).unwrap();
-        let mut pair = tpk.primary().clone();
+        let mut pair = cert.primary().clone();
         let pk_algo = pair.pk_algo();
         let secret = pair.secret.as_mut().unwrap();
 
@@ -1312,7 +1312,7 @@ mod tests {
 
     #[test]
     fn eq() {
-        use crate::constants::Curve::*;
+        use crate::types::Curve::*;
 
         for curve in vec![NistP256, NistP384, NistP521] {
             let sign_key : Key4<_, key::UnspecifiedRole>
@@ -1336,7 +1336,7 @@ mod tests {
 
     #[test]
     fn roundtrip() {
-        use crate::constants::Curve::*;
+        use crate::types::Curve::*;
 
         let keys = vec![NistP256, NistP384, NistP521].into_iter().flat_map(|cv|
         {
@@ -1389,7 +1389,7 @@ mod tests {
     #[test]
     fn encryption_roundtrip() {
         use crate::crypto::SessionKey;
-        use crate::constants::Curve::*;
+        use crate::types::Curve::*;
 
         let keys = vec![NistP256, NistP384, NistP521].into_iter().map(|cv| {
             Key4::generate_ecc(false, cv).unwrap()
@@ -1415,7 +1415,7 @@ mod tests {
 
     #[test]
     fn secret_encryption_roundtrip() {
-        use crate::constants::Curve::*;
+        use crate::types::Curve::*;
 
         let keys = vec![NistP256, NistP384, NistP521].into_iter().map(|cv| {
             let k : Key4<key::SecretParts, key::PrimaryRole>
@@ -1558,7 +1558,7 @@ mod tests {
     #[test]
     fn import_ed25519() {
         use crate::{Fingerprint, KeyID};
-        use crate::constants::SignatureType;
+        use crate::types::SignatureType;
         use crate::packet::signature::Signature4;
         use crate::packet::signature::subpacket::{
             Subpacket, SubpacketValue, SubpacketArea};
@@ -1574,8 +1574,7 @@ mod tests {
         let mut unhashed = SubpacketArea::empty();
         let fpr = Fingerprint::from_hex("D81A 5DC0 DEBF EE5F 9AC8  20EB 6769 5DB9 920D 4FAC").unwrap();
         let kid = KeyID::from_hex("6769 5DB9 920D 4FAC").unwrap();
-        let ctime =
-            time::UNIX_EPOCH + time::Duration::new(1549460479, 0);
+        let ctime = 1549460479.into();
         let r = b"\x5A\xF9\xC7\x42\x70\x24\x73\xFF\x7F\x27\xF9\x20\x9D\x20\x0F\xE3\x8F\x71\x3C\x5F\x97\xFD\x60\x80\x39\x29\xC2\x14\xFD\xC2\x4D\x70";
         let s = b"\x6E\x68\x74\x11\x72\xF4\x9C\xE1\x99\x99\x1F\x67\xFC\x3A\x68\x33\xF9\x3F\x3A\xB9\x1A\xA5\x72\x4E\x78\xD4\x81\xCB\x7B\xA5\xE5\x0A";
 

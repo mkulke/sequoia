@@ -207,7 +207,7 @@ impl Arbitrary for PKESK3 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::TPK;
+    use crate::Cert;
     use crate::PacketPile;
     use crate::Packet;
     use crate::parse::Parse;
@@ -223,12 +223,12 @@ mod tests {
 
     #[test]
     fn decrypt_rsa() {
-        let tpk = TPK::from_bytes(
+        let cert = Cert::from_bytes(
             crate::tests::key("testy-private.pgp")).unwrap();
         let pile = PacketPile::from_bytes(
             crate::tests::message("encrypted-to-testy.gpg")).unwrap();
         let mut keypair =
-            tpk.subkeys().next().unwrap()
+            cert.subkeys().next().unwrap()
             .key().clone().mark_parts_secret().unwrap().into_keypair().unwrap();
 
         let pkg = pile.descendants().skip(0).next().clone();
@@ -244,12 +244,12 @@ mod tests {
 
     #[test]
     fn decrypt_ecdh_cv25519() {
-        let tpk = TPK::from_bytes(
+        let cert = Cert::from_bytes(
             crate::tests::key("testy-new-private.pgp")).unwrap();
         let pile = PacketPile::from_bytes(
             crate::tests::message("encrypted-to-testy-new.pgp")).unwrap();
         let mut keypair =
-            tpk.subkeys().next().unwrap()
+            cert.subkeys().next().unwrap()
             .key().clone().mark_parts_secret().unwrap().into_keypair().unwrap();
 
         let pkg = pile.descendants().skip(0).next().clone();
@@ -265,12 +265,12 @@ mod tests {
 
     #[test]
     fn decrypt_ecdh_nistp256() {
-        let tpk = TPK::from_bytes(
+        let cert = Cert::from_bytes(
             crate::tests::key("testy-nistp256-private.pgp")).unwrap();
         let pile = PacketPile::from_bytes(
             crate::tests::message("encrypted-to-testy-nistp256.pgp")).unwrap();
         let mut keypair =
-            tpk.subkeys().next().unwrap()
+            cert.subkeys().next().unwrap()
             .key().clone().mark_parts_secret().unwrap().into_keypair().unwrap();
 
         let pkg = pile.descendants().skip(0).next().clone();
@@ -286,12 +286,12 @@ mod tests {
 
     #[test]
     fn decrypt_ecdh_nistp384() {
-        let tpk = TPK::from_bytes(
+        let cert = Cert::from_bytes(
             crate::tests::key("testy-nistp384-private.pgp")).unwrap();
         let pile = PacketPile::from_bytes(
             crate::tests::message("encrypted-to-testy-nistp384.pgp")).unwrap();
         let mut keypair =
-            tpk.subkeys().next().unwrap()
+            cert.subkeys().next().unwrap()
             .key().clone().mark_parts_secret().unwrap().into_keypair().unwrap();
 
         let pkg = pile.descendants().skip(0).next().clone();
@@ -307,12 +307,12 @@ mod tests {
 
     #[test]
     fn decrypt_ecdh_nistp521() {
-        let tpk = TPK::from_bytes(
+        let cert = Cert::from_bytes(
             crate::tests::key("testy-nistp521-private.pgp")).unwrap();
         let pile = PacketPile::from_bytes(
             crate::tests::message("encrypted-to-testy-nistp521.pgp")).unwrap();
         let mut keypair =
-            tpk.subkeys().next().unwrap()
+            cert.subkeys().next().unwrap()
             .key().clone().mark_parts_secret().unwrap().into_keypair().unwrap();
 
         let pkg = pile.descendants().skip(0).next().clone();
@@ -329,14 +329,13 @@ mod tests {
 
     #[test]
     fn decrypt_with_short_cv25519_secret_key() {
-        use crate::conversions::Time;
         use super::PKESK3;
         use crate::crypto::SessionKey;
         use crate::crypto::mpis::{self, MPI};
         use crate::PublicKeyAlgorithm;
         use crate::SymmetricAlgorithm;
         use crate::HashAlgorithm;
-        use crate::constants::Curve;
+        use crate::types::Curve;
         use crate::packet::key;
         use crate::packet::key::Key4;
         use nettle::curve25519;
@@ -362,7 +361,7 @@ mod tests {
             scalar: MPI::new(&sec[..]).into(),
         };
         let mut key: key::UnspecifiedPublic
-            = Key4::new(std::time::SystemTime::now().canonicalize(),
+            = Key4::new(std::time::SystemTime::now(),
                         PublicKeyAlgorithm::ECDH,
                         public_mpis)
                 .unwrap().into();

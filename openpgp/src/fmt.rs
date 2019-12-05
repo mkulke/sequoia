@@ -1,74 +1,7 @@
-//! Conversions for primitive OpenPGP types.
-
+//! Utilities for formatting, printing, and user communication.
 
 use crate::Error;
 use crate::Result;
-
-/// Conversions for OpenPGP time stamps.
-pub trait Time {
-    /// Converts an OpenPGP time stamp to broken-down time.
-    fn from_pgp(_: u32) -> Self;
-    /// Converts broken-down time to an OpenPGP time stamp.
-    fn to_pgp(&self) -> Result<u32>;
-    /// Strips off any subseconds that OpenPGP cannot represent, and
-    /// converts to UTC.
-    fn canonicalize(self) -> Self;
-}
-
-impl Time for std::time::SystemTime {
-    fn from_pgp(timestamp: u32) -> Self {
-        std::time::UNIX_EPOCH + std::time::Duration::new(timestamp as u64, 0)
-    }
-
-    fn to_pgp(&self) -> Result<u32> {
-        match self.duration_since(std::time::UNIX_EPOCH) {
-            Ok(d) if d.as_secs() <= std::u32::MAX as u64 =>
-                Ok(d.as_secs() as u32),
-            _ => Err(Error::InvalidArgument(
-                format!("Time exceeds u32 epoch: {:?}", self))
-                     .into()),
-        }
-    }
-
-    fn canonicalize(self) -> Self {
-        match self.duration_since(std::time::UNIX_EPOCH) {
-            Ok(d) if d.as_secs() <= std::u32::MAX as u64 =>
-                Self::from_pgp(d.as_secs() as u32),
-            _ =>
-                Self::from_pgp(0), // XXX
-        }
-    }
-}
-
-/// Conversions for OpenPGP durations.
-pub trait Duration {
-    /// Converts an OpenPGP duration to ISO 8601 time duration.
-    fn from_pgp(_: u32) -> Self;
-    /// Converts ISO 8601 time duration to an OpenPGP duration.
-    fn to_pgp(&self) -> Result<u32>;
-    /// Strips off any subseconds that OpenPGP cannot represent.
-    fn canonicalize(self) -> Self;
-}
-
-impl Duration for std::time::Duration {
-    fn from_pgp(duration: u32) -> Self {
-        std::time::Duration::new(duration as u64, 0)
-    }
-
-    fn to_pgp(&self) -> Result<u32> {
-        if self.as_secs() <= std::u32::MAX as u64 {
-            Ok(self.as_secs() as u32)
-        } else {
-            Err(Error::InvalidArgument(
-                format!("Duration exceeds u32: {:?}", self))
-                       .into())
-        }
-    }
-
-    fn canonicalize(self) -> Self {
-        std::time::Duration::new(self.as_secs(), 0)
-    }
-}
 
 /// Converts buffers to and from hexadecimal numbers.
 pub mod hex {
@@ -99,7 +32,7 @@ pub mod hex {
     /// # Example
     ///
     /// ```rust
-    ///  use sequoia_openpgp::conversions::hex;
+    ///  use sequoia_openpgp::fmt::hex;
     ///
     /// let mut dumper = hex::Dumper::new(Vec::new(), "");
     /// dumper.write(&[0x89, 0x01, 0x33], "frame").unwrap();
@@ -293,34 +226,8 @@ pub(crate) fn from_hex(hex: &str, pretty: bool) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-pub(crate) fn read_be_u64(b: &[u8]) -> u64 {
-    assert_eq!(b.len(), 8);
-    ((b[0] as u64) << 56) as u64
-        | ((b[1] as u64) << 48)
-        | ((b[2] as u64) << 40)
-        | ((b[3] as u64) << 32)
-        | ((b[4] as u64) << 24)
-        | ((b[5] as u64) << 16)
-        | ((b[6] as u64) <<  8)
-        | ((b[7] as u64) <<  0)
-}
-
-pub(crate) fn write_be_u64(b: &mut [u8], n: u64) {
-    assert_eq!(b.len(), 8);
-    b[0] = (n >> 56) as u8;
-    b[1] = (n >> 48) as u8;
-    b[2] = (n >> 40) as u8;
-    b[3] = (n >> 32) as u8;
-    b[4] = (n >> 24) as u8;
-    b[5] = (n >> 16) as u8;
-    b[6] = (n >>  8) as u8;
-    b[7] = (n >>  0) as u8;
-}
-
 #[cfg(test)]
 mod test {
-    use super::*;
-
     #[test]
     fn from_hex() {
         use super::from_hex as fh;
@@ -446,13 +353,5 @@ mod test {
              00000004              00                                     \
              type\n\
              ");
-    }
-
-    quickcheck! {
-        fn be_u64_roundtrip(n: u64) -> bool {
-            let mut b = [0; 8];
-            write_be_u64(&mut b, n);
-            n == read_be_u64(&b)
-        }
     }
 }

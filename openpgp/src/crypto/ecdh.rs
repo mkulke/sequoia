@@ -7,13 +7,13 @@ use crate::packet::{
     key,
 };
 use crate::Result;
-use crate::constants::{
+use crate::types::{
     Curve,
     HashAlgorithm,
     SymmetricAlgorithm,
     PublicKeyAlgorithm,
 };
-use crate::conversions::{
+use crate::utils::{
     write_be_u64,
     read_be_u64,
 };

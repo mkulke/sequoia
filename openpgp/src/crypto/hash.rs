@@ -1,5 +1,7 @@
 //! Functionality to hash packets, and generate hashes.
 
+use std::convert::TryFrom;
+
 use crate::HashAlgorithm;
 use crate::packet::Key;
 use crate::packet::UserID;
@@ -10,7 +12,7 @@ use crate::packet::Signature;
 use crate::packet::signature::{self, Signature4};
 use crate::Error;
 use crate::Result;
-use crate::conversions::Time;
+use crate::types::Timestamp;
 
 use nettle;
 use nettle::Hash as NettleHash;
@@ -256,8 +258,10 @@ impl<P, R> Hash for Key4<P, R>
         header.push(4);
 
         // Creation time.
-        let creation_time = self.creation_time().to_pgp()
-            .unwrap_or(0);
+        let creation_time: u32 =
+            Timestamp::try_from(self.creation_time())
+            .unwrap_or_else(|_| Timestamp::try_from(0).unwrap())
+            .into();
         header.push((creation_time >> 24) as u8);
         header.push((creation_time >> 16) as u8);
         header.push((creation_time >> 8) as u8);
@@ -454,18 +458,18 @@ impl Signature {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::TPK;
+    use crate::Cert;
     use crate::parse::Parse;
 
     #[test]
     fn hash_verification() {
-        fn check(tpk: TPK) -> (usize, usize, usize) {
+        fn check(cert: Cert) -> (usize, usize, usize) {
             let mut userid_sigs = 0;
-            for (i, binding) in tpk.userids().enumerate() {
+            for (i, binding) in cert.userids().enumerate() {
                 for selfsig in binding.self_signatures() {
                     let h = Signature::userid_binding_hash(
                         selfsig,
-                        tpk.primary(),
+                        cert.primary(),
                         binding.userid()).unwrap();
                     if &h[..2] != selfsig.hash_prefix() {
                         eprintln!("{:?}: {:?} / {:?}",
@@ -477,11 +481,11 @@ mod test {
                 }
             }
             let mut ua_sigs = 0;
-            for (i, binding) in tpk.user_attributes().enumerate() {
+            for (i, binding) in cert.user_attributes().enumerate() {
                 for selfsig in binding.self_signatures() {
                     let h = Signature::user_attribute_binding_hash(
                         selfsig,
-                        tpk.primary(),
+                        cert.primary(),
                         binding.user_attribute()).unwrap();
                     if &h[..2] != selfsig.hash_prefix() {
                         eprintln!("{:?}: {:?} / {:?}",
@@ -493,11 +497,11 @@ mod test {
                 }
             }
             let mut subkey_sigs = 0;
-            for (i, binding) in tpk.subkeys().enumerate() {
+            for (i, binding) in cert.subkeys().enumerate() {
                 for selfsig in binding.self_signatures() {
                     let h = Signature::subkey_binding_hash(
                         selfsig,
-                        tpk.primary(),
+                        cert.primary(),
                         binding.key()).unwrap();
                     if &h[..2] != selfsig.hash_prefix() {
                         eprintln!("{:?}: {:?}", i, binding);
@@ -512,13 +516,13 @@ mod test {
             (userid_sigs, ua_sigs, subkey_sigs)
         }
 
-        check(TPK::from_bytes(crate::tests::key("hash-algos/SHA224.gpg")).unwrap());
-        check(TPK::from_bytes(crate::tests::key("hash-algos/SHA256.gpg")).unwrap());
-        check(TPK::from_bytes(crate::tests::key("hash-algos/SHA384.gpg")).unwrap());
-        check(TPK::from_bytes(crate::tests::key("hash-algos/SHA512.gpg")).unwrap());
-        check(TPK::from_bytes(crate::tests::key("bannon-all-uids-subkeys.gpg")).unwrap());
+        check(Cert::from_bytes(crate::tests::key("hash-algos/SHA224.gpg")).unwrap());
+        check(Cert::from_bytes(crate::tests::key("hash-algos/SHA256.gpg")).unwrap());
+        check(Cert::from_bytes(crate::tests::key("hash-algos/SHA384.gpg")).unwrap());
+        check(Cert::from_bytes(crate::tests::key("hash-algos/SHA512.gpg")).unwrap());
+        check(Cert::from_bytes(crate::tests::key("bannon-all-uids-subkeys.gpg")).unwrap());
         let (_userid_sigs, ua_sigs, _subkey_sigs)
-            = check(TPK::from_bytes(crate::tests::key("dkg.gpg")).unwrap());
+            = check(Cert::from_bytes(crate::tests::key("dkg.gpg")).unwrap());
         assert!(ua_sigs > 0);
     }
 }

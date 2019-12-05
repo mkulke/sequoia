@@ -25,22 +25,22 @@ fn main() {
 }
 
 /// Generates an signing-capable key.
-fn generate() -> openpgp::Result<openpgp::TPK> {
-    let (tpk, _revocation) = openpgp::tpk::TPKBuilder::new()
+fn generate() -> openpgp::Result<openpgp::Cert> {
+    let (cert, _revocation) = openpgp::cert::CertBuilder::new()
         .add_userid("someone@example.org")
         .add_signing_subkey()
         .generate()?;
 
     // Save the revocation certificate somewhere.
 
-    Ok(tpk)
+    Ok(cert)
 }
 
 /// Signs the given message.
-fn sign(sink: &mut dyn Write, plaintext: &str, tsk: &openpgp::TPK)
+fn sign(sink: &mut dyn Write, plaintext: &str, tsk: &openpgp::Cert)
            -> openpgp::Result<()> {
-    // Get the keypair to do the signing from the TPK.
-    let keypair = tsk.keys_valid().signing_capable().nth(0).unwrap().2
+    // Get the keypair to do the signing from the Cert.
+    let keypair = tsk.keys_valid().for_signing().nth(0).unwrap().2
         .clone().mark_parts_secret().unwrap().into_keypair()?;
 
     // Start streaming an OpenPGP message.
@@ -63,15 +63,15 @@ fn sign(sink: &mut dyn Write, plaintext: &str, tsk: &openpgp::TPK)
 }
 
 /// Verifies the given message.
-fn verify(sink: &mut dyn Write, signed_message: &[u8], sender: &openpgp::TPK)
+fn verify(sink: &mut dyn Write, signed_message: &[u8], sender: &openpgp::Cert)
           -> openpgp::Result<()> {
     // Make a helper that that feeds the sender's public key to the
     // verifier.
     let helper = Helper {
-        tpk: sender,
+        cert: sender,
     };
 
-    // Now, create a verifier with a helper using the given TPKs.
+    // Now, create a verifier with a helper using the given Certs.
     let mut verifier = Verifier::from_bytes(signed_message, helper, None)?;
 
     // Verify the data.
@@ -81,14 +81,14 @@ fn verify(sink: &mut dyn Write, signed_message: &[u8], sender: &openpgp::TPK)
 }
 
 struct Helper<'a> {
-    tpk: &'a openpgp::TPK,
+    cert: &'a openpgp::Cert,
 }
 
 impl<'a> VerificationHelper for Helper<'a> {
-    fn get_public_keys(&mut self, _ids: &[openpgp::KeyID])
-                       -> openpgp::Result<Vec<openpgp::TPK>> {
+    fn get_public_keys(&mut self, _ids: &[openpgp::KeyHandle])
+                       -> openpgp::Result<Vec<openpgp::Cert>> {
         // Return public keys for signature verification here.
-        Ok(vec![self.tpk.clone()])
+        Ok(vec![self.cert.clone()])
     }
 
     fn check(&mut self, structure: &MessageStructure)
@@ -106,15 +106,15 @@ impl<'a> VerificationHelper for Helper<'a> {
                     // whether the signature checks out mathematically, we apply
                     // our policy.
                     match results.get(0) {
-                        Some(VerificationResult::GoodChecksum(..)) =>
+                        Some(VerificationResult::GoodChecksum { .. }) =>
                             good = true,
-                        Some(VerificationResult::NotAlive(..)) =>
+                        Some(VerificationResult::NotAlive { .. }) =>
                             return Err(failure::err_msg(
                                 "Signature good, but not alive")),
-                        Some(VerificationResult::MissingKey(_)) =>
+                        Some(VerificationResult::MissingKey { .. }) =>
                             return Err(failure::err_msg(
                                 "Missing key to verify signature")),
-                        Some(VerificationResult::BadChecksum(_)) =>
+                        Some(VerificationResult::BadChecksum { .. }) =>
                             return Err(failure::err_msg("Bad signature")),
                         None =>
                             return Err(failure::err_msg("No signature")),

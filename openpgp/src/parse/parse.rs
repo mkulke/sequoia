@@ -6,7 +6,6 @@ use std::str;
 use std::mem;
 use std::fmt;
 use std::path::Path;
-use std::time;
 use failure;
 
 use ::buffered_reader::*;
@@ -28,15 +27,15 @@ use crate::{
     KeyID,
     crypto::SessionKey,
 };
-use crate::constants::{
+use crate::types::{
     AEADAlgorithm,
     CompressionAlgorithm,
     SignatureType,
     HashAlgorithm,
     PublicKeyAlgorithm,
     SymmetricAlgorithm,
+    Timestamp,
 };
-use crate::conversions::Time;
 use crate::crypto::{self, mpis::{PublicKey, MPI}};
 use crate::crypto::symmetric::{Decryptor, BufferedReaderDecryptor};
 use crate::message;
@@ -1011,7 +1010,7 @@ impl Signature4 {
                                    unhashed_area_len as usize));
         let hash_prefix1 = php_try!(php.parse_u8("hash_prefix1"));
         let hash_prefix2 = php_try!(php.parse_u8("hash_prefix2"));
-        if ! pk_algo.can_sign() {
+        if ! pk_algo.for_signing() {
             return php.fail("not a signature algorithm");
         }
         let mpis = php_try!(
@@ -1386,10 +1385,10 @@ fn one_pass_sig_test () {
             } else if let Packet::Signature(ref sig) = pp.packet {
                 eprintln!("  {}:\n  prefix: expected: {}, in sig: {}",
                           test.filename,
-                          crate::conversions::to_hex(&test.hash_prefix[sigs][..], false),
-                          crate::conversions::to_hex(sig.hash_prefix(), false));
+                          crate::fmt::to_hex(&test.hash_prefix[sigs][..], false),
+                          crate::fmt::to_hex(sig.hash_prefix(), false));
                 eprintln!("  computed hash: {}",
-                          crate::conversions::to_hex(&sig.computed_hash().unwrap().1,
+                          crate::fmt::to_hex(&sig.computed_hash().unwrap().1,
                                                 false));
 
                 assert_eq!(&test.hash_prefix[sigs], sig.hash_prefix());
@@ -1530,7 +1529,7 @@ impl Key4<key::UnspecifiedParts, key::UnspecifiedRole>
             -> Result<Key4<key::PublicParts, R>>
             where R: key::KeyRole
         {
-            Key4::new(std::time::SystemTime::from_pgp(creation_time),
+            Key4::new(Timestamp::from(creation_time),
                       pk_algo, mpis)
         }
         fn s<R>(creation_time: u32,
@@ -1540,7 +1539,7 @@ impl Key4<key::UnspecifiedParts, key::UnspecifiedRole>
             -> Result<Key4<key::SecretParts, R>>
             where R: key::KeyRole
         {
-            Key4::with_secret(std::time::SystemTime::from_pgp(creation_time),
+            Key4::with_secret(Timestamp::from(creation_time),
                               pk_algo, mpis, secret)
         }
 
@@ -1716,10 +1715,11 @@ impl Literal {
 
         let mut literal = Literal::new(format.into());
         if let Some(filename) = filename {
-            literal.set_filename_from_bytes(&filename)
+            literal.set_filename(&filename)
                 .expect("length checked above");
         }
-        literal.set_date(Some(time::SystemTime::from_pgp(date)));
+        literal.set_date(
+            Some(std::time::SystemTime::from(Timestamp::from(date))))?;
         let mut pp = php.ok(Packet::Literal(literal))?;
 
         // Enable hashing of the body.
@@ -1734,7 +1734,7 @@ impl_parse_generic_packet!(Literal);
 
 #[test]
 fn literal_parser_test () {
-    use crate::constants::DataFormat;
+    use crate::types::DataFormat;
     {
         let data = crate::tests::message("literal-mode-b.gpg");
         let mut pp = PacketParser::from_bytes(data).unwrap().unwrap();
@@ -1745,7 +1745,7 @@ fn literal_parser_test () {
         if let &Packet::Literal(ref p) = p {
             assert_eq!(p.format(), DataFormat::Binary);
             assert_eq!(p.filename().unwrap()[..], b"foobar"[..]);
-            assert_eq!(p.date(), Some(time::SystemTime::from_pgp(1507458744)));
+            assert_eq!(p.date().unwrap(), Timestamp::from(1507458744).into());
             assert_eq!(content, b"FOOBAR");
         } else {
             panic!("Wrong packet!");
@@ -1762,7 +1762,7 @@ fn literal_parser_test () {
             assert_eq!(p.format(), DataFormat::Text);
             assert_eq!(p.filename().unwrap()[..],
                        b"manifesto.txt"[..]);
-            assert_eq!(p.date(), Some(time::SystemTime::from_pgp(1508000649)));
+            assert_eq!(p.date().unwrap(), Timestamp::from(1508000649).into());
 
             let expected = crate::tests::manifesto();
 
@@ -1840,7 +1840,7 @@ impl_parse_generic_packet!(CompressedData);
 #[cfg(any(feature = "compression-deflate", feature = "compression-bzip2"))]
 #[test]
 fn compressed_data_parser_test () {
-    use crate::constants::DataFormat;
+    use crate::types::DataFormat;
 
     let expected = crate::tests::manifesto();
 
@@ -1878,8 +1878,8 @@ fn compressed_data_parser_test () {
         if let Packet::Literal(literal) = literal {
             assert_eq!(literal.filename(), None);
             assert_eq!(literal.format(), DataFormat::Binary);
-            assert_eq!(literal.date(),
-                       Some(time::SystemTime::from_pgp(1509219866)));
+            assert_eq!(literal.date().unwrap(),
+                       Timestamp::from(1509219866).into());
             assert_eq!(content, expected.to_vec());
         } else {
             panic!("Wrong packet!");
@@ -1987,7 +1987,7 @@ fn skesk_parser_test() {
 
             match skesk.decrypt(&test.password) {
                 Ok((_sym_algo, key)) => {
-                    let key = crate::conversions::to_hex(&key[..], false);
+                    let key = crate::fmt::to_hex(&key[..], false);
                     assert_eq!(&key[..], &test.key_hex[..]);
                 }
                 Err(e) => {
@@ -2254,10 +2254,10 @@ struct PacketParserState {
     message_validator: MessageValidator,
 
     /// Whether the packet sequence is a valid OpenPGP keyring.
-    keyring_validator: crate::tpk::KeyringValidator,
+    keyring_validator: crate::cert::KeyringValidator,
 
-    /// Whether the packet sequence is a valid OpenPGP TPK.
-    tpk_validator: crate::tpk::TPKValidator,
+    /// Whether the packet sequence is a valid OpenPGP Cert.
+    cert_validator: crate::cert::CertValidator,
 
     // Whether this is the first packet in the packet sequence.
     first_packet: bool,
@@ -2269,7 +2269,7 @@ impl PacketParserState {
             settings: settings,
             message_validator: Default::default(),
             keyring_validator: Default::default(),
-            tpk_validator: Default::default(),
+            cert_validator: Default::default(),
             first_packet: true,
         }
     }
@@ -2397,7 +2397,7 @@ impl PacketParserEOF {
     fn new(mut state: PacketParserState) -> Self {
         state.message_validator.finish();
         state.keyring_validator.finish();
-        state.tpk_validator.finish();
+        state.cert_validator.finish();
 
         PacketParserEOF {
             state: state,
@@ -2407,7 +2407,7 @@ impl PacketParserEOF {
 
     /// Whether the message is an OpenPGP Message.
     ///
-    /// As opposed to a TPK or just a bunch of packets.
+    /// As opposed to a Cert or just a bunch of packets.
     pub fn is_message(&self) -> Result<()> {
         use crate::message::MessageValidity;
 
@@ -2422,7 +2422,7 @@ impl PacketParserEOF {
     ///
     /// As opposed to a Message or just a bunch of packets.
     pub fn is_keyring(&self) -> Result<()> {
-        use crate::tpk::KeyringValidity;
+        use crate::cert::KeyringValidity;
 
         match self.state.keyring_validator.check() {
             KeyringValidity::Keyring => Ok(()),
@@ -2431,16 +2431,16 @@ impl PacketParserEOF {
         }
     }
 
-    /// Whether the message is an OpenPGP TPK.
+    /// Whether the message is an OpenPGP Cert.
     ///
     /// As opposed to a Message or just a bunch of packets.
-    pub fn is_tpk(&self) -> Result<()> {
-        use crate::tpk::TPKValidity;
+    pub fn is_cert(&self) -> Result<()> {
+        use crate::cert::CertValidity;
 
-        match self.state.tpk_validator.check() {
-            TPKValidity::TPK => Ok(()),
-            TPKValidity::TPKPrefix => unreachable!(),
-            TPKValidity::Error(err) => Err(err),
+        match self.state.cert_validator.check() {
+            CertValidity::Cert => Ok(()),
+            CertValidity::CertPrefix => unreachable!(),
+            CertValidity::Error(err) => Err(err),
         }
     }
 
@@ -2713,7 +2713,7 @@ impl <'a> PacketParser<'a> {
     /// Before that, it is only possible to say that the message is a
     /// valid prefix or definitely not an OpenPGP keyring.
     pub fn possible_keyring(&self) -> Result<()> {
-        use crate::tpk::KeyringValidity;
+        use crate::cert::KeyringValidity;
 
         match self.state.keyring_validator.check() {
             KeyringValidity::Keyring => unreachable!(),
@@ -2722,19 +2722,19 @@ impl <'a> PacketParser<'a> {
         }
     }
 
-    /// Returns whether the message appears to be an OpenPGP TPK.
+    /// Returns whether the message appears to be an OpenPGP Cert.
     ///
     /// Only when the whole message has been processed is it possible
-    /// to say whether the message is definitely an OpenPGP TPK.
+    /// to say whether the message is definitely an OpenPGP Cert.
     /// Before that, it is only possible to say that the message is a
-    /// valid prefix or definitely not an OpenPGP TPK.
-    pub fn possible_tpk(&self) -> Result<()> {
-        use crate::tpk::TPKValidity;
+    /// valid prefix or definitely not an OpenPGP Cert.
+    pub fn possible_cert(&self) -> Result<()> {
+        use crate::cert::CertValidity;
 
-        match self.state.tpk_validator.check() {
-            TPKValidity::TPK => unreachable!(),
-            TPKValidity::TPKPrefix => Ok(()),
-            TPKValidity::Error(err) => Err(err),
+        match self.state.cert_validator.check() {
+            CertValidity::Cert => unreachable!(),
+            CertValidity::CertPrefix => Ok(()),
+            CertValidity::Error(err) => Err(err),
         }
     }
 
@@ -2774,7 +2774,7 @@ impl <'a> PacketParser<'a> {
             Tag::UserID => bad,
             Tag::UserAttribute => bad,
 
-            // It is reasonable to try and ignore garbage in TPKs,
+            // It is reasonable to try and ignore garbage in Certs,
             // because who knows what the keyservers return, etc.
             // But, if we have what appears to be an OpenPGP message,
             // then, ignore.
@@ -2863,7 +2863,7 @@ impl <'a> PacketParser<'a> {
                     if state.first_packet || skip > 32 * 1024 {
                         // Limit the search space.  This should be
                         // enough to find a reasonable recovery point
-                        // in a TPK.
+                        // in a Cert.
                         return Err(orig_error.unwrap());
                     }
                 }
@@ -3136,7 +3136,7 @@ impl <'a> PacketParser<'a> {
                     let path = pp.path().to_vec();
                     pp.state.message_validator.push(pp.packet.tag(), &path);
                     pp.state.keyring_validator.push(pp.packet.tag());
-                    pp.state.tpk_validator.push(pp.packet.tag());
+                    pp.state.cert_validator.push(pp.packet.tag());
 
                     pp.last_path = self.last_path;
 
@@ -3205,7 +3205,7 @@ impl <'a> PacketParser<'a> {
                             pp.state.message_validator.push(
                                 pp.packet.tag(), &path);
                             pp.state.keyring_validator.push(pp.packet.tag());
-                            pp.state.tpk_validator.push(pp.packet.tag());
+                            pp.state.cert_validator.push(pp.packet.tag());
 
                             pp.last_path = last_path;
 
@@ -3574,7 +3574,7 @@ impl<'a> PacketParser<'a> {
                         return Err(Error::InvalidSessionKey(
                             format!(
                                 "Last two 16-bit quantities don't match: {}",
-                                crate::conversions::to_hex(&header[..], false)))
+                                crate::fmt::to_hex(&header[..], false)))
                                    .into());
                     }
                 }
@@ -3903,7 +3903,7 @@ mod test {
                 ppr, false, &[ Tag::SEIP, Tag::AED ][..],
                 &[ Tag::SKESK, Tag::PKESK ][..] );
             if let PacketParserResult::Some(ref mut pp) = ppr {
-                let key = crate::conversions::from_hex(test.key_hex, false)
+                let key = crate::fmt::from_hex(test.key_hex, false)
                     .unwrap().into();
 
                 pp.decrypt(test.algo, &key).unwrap();
@@ -3972,7 +3972,7 @@ mod test {
 
                 match pp.packet {
                     Packet::SEIP(_) | Packet::AED(_) => {
-                        let key = crate::conversions::from_hex(test.key_hex, false)
+                        let key = crate::fmt::from_hex(test.key_hex, false)
                             .unwrap().into();
                         pp.decrypt(test.algo, &key).unwrap();
                     },
@@ -4014,7 +4014,7 @@ mod test {
             }
             if let PacketParserResult::EOF(eof) = ppr {
                 assert!(eof.is_keyring().is_ok());
-                assert!(eof.is_tpk().is_err());
+                assert!(eof.is_cert().is_err());
             } else {
                 unreachable!();
             }
@@ -4022,7 +4022,7 @@ mod test {
     }
 
     #[test]
-    fn tpk_validator() {
+    fn cert_validator() {
         for test in &["testy.pgp",
                       "lutz.gpg",
                       "testy-new.pgp",
@@ -4035,12 +4035,12 @@ mod test {
 
             while let PacketParserResult::Some(pp) = ppr {
                 assert!(pp.possible_keyring().is_ok());
-                assert!(pp.possible_tpk().is_ok());
+                assert!(pp.possible_cert().is_ok());
                 ppr = pp.recurse().unwrap().1;
             }
             if let PacketParserResult::EOF(eof) = ppr {
                 assert!(eof.is_keyring().is_ok());
-                assert!(eof.is_tpk().is_ok());
+                assert!(eof.is_cert().is_ok());
             } else {
                 unreachable!();
             }
@@ -4109,7 +4109,7 @@ mod test {
 
                 match pp.packet {
                     Packet::SEIP(_) | Packet::AED(_) => {
-                        let key = crate::conversions::from_hex(test.key_hex, false)
+                        let key = crate::fmt::from_hex(test.key_hex, false)
                             .unwrap().into();
 
                         pp.decrypt(test.algo, &key).unwrap();
@@ -4133,10 +4133,10 @@ mod test {
     }
 
     #[test]
-    fn corrupted_tpk() {
+    fn corrupted_cert() {
         use crate::armor::{Reader, ReaderMode, Kind};
 
-        // The following TPK is corrupted about a third the way
+        // The following Cert is corrupted about a third the way
         // through.  Make sure we can recover.
         let mut ppr = PacketParser::from_reader(
             Reader::from_bytes(crate::tests::key("corrupted.pgp"),

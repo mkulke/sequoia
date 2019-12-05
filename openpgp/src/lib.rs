@@ -120,7 +120,7 @@ macro_rules! assert_match {
 #[macro_use]
 pub mod armor;
 pub mod autocrypt;
-pub mod conversions;
+pub mod fmt;
 pub mod crypto;
 
 pub mod packet;
@@ -128,15 +128,15 @@ use crate::packet::{Container, key};
 
 pub mod parse;
 
-pub mod tpk;
-pub use tpk::TPK;
+pub mod cert;
+pub use cert::Cert;
 pub mod serialize;
 
 mod packet_pile;
 pub mod message;
 
-pub mod constants;
-use crate::constants::{
+pub mod types;
+use crate::types::{
     PublicKeyAlgorithm,
     SymmetricAlgorithm,
     HashAlgorithm,
@@ -145,6 +145,10 @@ use crate::constants::{
 
 mod fingerprint;
 mod keyid;
+mod keyhandle;
+pub use keyhandle::KeyHandle;
+
+pub(crate) mod utils;
 
 #[cfg(test)]
 mod tests;
@@ -155,8 +159,7 @@ mod tests;
 /// openpgp/tests/data/keys/neal.pgp are not expired.
 #[cfg(test)]
 fn frozen_time() -> std::time::SystemTime {
-    use crate::conversions::Time;
-    std::time::SystemTime::from_pgp(1554542220 - 1)
+    crate::types::Timestamp::from(1554542220 - 1).into()
 }
 
 /// Crate result specialization.
@@ -196,7 +199,7 @@ pub enum Error {
 
     /// Unsupported elliptic curve ASN.1 OID.
     #[fail(display = "Unsupported elliptic curve: {}", _0)]
-    UnsupportedEllipticCurve(constants::Curve),
+    UnsupportedEllipticCurve(types::Curve),
 
     /// Unsupported symmetric key algorithm.
     #[fail(display = "Unsupported symmetric algorithm: {}", _0)]
@@ -204,11 +207,11 @@ pub enum Error {
 
     /// Unsupported AEAD algorithm.
     #[fail(display = "Unsupported AEAD algorithm: {}", _0)]
-    UnsupportedAEADAlgorithm(constants::AEADAlgorithm),
+    UnsupportedAEADAlgorithm(types::AEADAlgorithm),
 
     /// Unsupported Compression algorithm.
     #[fail(display = "Unsupported Compression algorithm: {}", _0)]
-    UnsupportedCompressionAlgorithm(constants::CompressionAlgorithm),
+    UnsupportedCompressionAlgorithm(types::CompressionAlgorithm),
 
     /// Unsupported signature type.
     #[fail(display = "Unsupported signature type: {}", _0)]
@@ -243,16 +246,16 @@ pub enum Error {
     MalformedMessage(String),
 
     /// Malformed tranferable public key.
-    #[fail(display = "Malformed TPK: {}", _0)]
-    MalformedTPK(String),
+    #[fail(display = "Malformed Cert: {}", _0)]
+    MalformedCert(String),
 
-    /// Unsupported TPK.
+    /// Unsupported Cert.
     ///
     /// This usually occurs, because the primary key is in an
     /// unsupported format.  In particular, Sequoia does not support
     /// version 3 keys.
-    #[fail(display = "Unsupported TPK: {}", _0)]
-    UnsupportedTPK(String),
+    #[fail(display = "Unsupported Cert: {}", _0)]
+    UnsupportedCert(String),
 
     /// Index out of range.
     #[fail(display = "Index out of range")]
@@ -383,7 +386,7 @@ impl Packet {
 /// [`PacketPileParser`], or [`PacketPile::from_file`] (or related
 /// routines).
 ///
-/// Normally, you'll want to convert the `PacketPile` to a TPK or a
+/// Normally, you'll want to convert the `PacketPile` to a Cert or a
 /// `Message`.
 ///
 ///   [`PacketParser`]: parse/struct.PacketParser.html
@@ -417,7 +420,7 @@ pub struct Message {
 /// 4880].
 ///
 ///   [Section 12.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-12.2
-#[derive(PartialEq, Eq, Clone, Hash)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
 pub enum Fingerprint {
     /// 20 byte SHA-1 hash.
     V4([u8;20]),

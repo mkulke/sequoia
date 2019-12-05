@@ -6,7 +6,7 @@ use std::cmp::Ordering;
 use quickcheck::{Arbitrary, Gen};
 use rand::Rng;
 
-use crate::constants::{
+use crate::types::{
     Curve,
     HashAlgorithm,
     PublicKeyAlgorithm,
@@ -170,7 +170,7 @@ impl fmt::Debug for MPI {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.write_fmt(format_args!(
             "{} bits: {}", self.bits(),
-            crate::conversions::to_hex(&*self.value, true)))
+            crate::fmt::to_hex(&*self.value, true)))
     }
 }
 
@@ -264,7 +264,7 @@ impl fmt::Debug for ProtectedMPI {
         if cfg!(debug_assertions) {
             f.write_fmt(format_args!(
                 "{} bits: {}", self.bits(),
-                crate::conversions::to_hex(&*self.value, true)))
+                crate::fmt::to_hex(&*self.value, true)))
         } else {
             f.write_str("<Redacted>")
         }
@@ -1046,10 +1046,10 @@ mod tests {
             ("erika-corinna-daniela-simone-antonia-nistp384.pgp", 0, 384),
             ("erika-corinna-daniela-simone-antonia-nistp521.pgp", 0, 521),
         ] {
-            let tpk = crate::TPK::from_bytes(crate::tests::key(name)).unwrap();
-            let key = tpk.keys_all().nth(*key_no).unwrap().2;
+            let cert = crate::Cert::from_bytes(crate::tests::key(name)).unwrap();
+            let key = cert.keys_all().nth(*key_no).unwrap().2;
             assert_eq!(key.mpis().bits().unwrap(), *bits,
-                       "TPK {}, key no {}", name, *key_no);
+                       "Cert {}, key no {}", name, *key_no);
         }
     }
 

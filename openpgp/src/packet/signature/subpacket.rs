@@ -56,6 +56,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::convert::TryInto;
 use std::hash::{Hash, Hasher};
 use std::iter::FromIterator;
 use std::sync::Mutex;
@@ -63,7 +64,7 @@ use std::ops::{Deref, DerefMut};
 use std::fmt;
 use std::io;
 use std::cmp;
-use std::time; 
+use std::time;
 
 use quickcheck::{Arbitrary, Gen};
 
@@ -81,9 +82,10 @@ use crate::{
     KeyID,
     SignatureType,
 };
-use crate::constants::{
+use crate::types::{
     AEADAlgorithm,
     CompressionAlgorithm,
+    Duration,
     Features,
     HashAlgorithm,
     KeyFlags,
@@ -91,10 +93,7 @@ use crate::constants::{
     PublicKeyAlgorithm,
     ReasonForRevocation,
     SymmetricAlgorithm,
-};
-use crate::conversions::{
-    Time,
-    Duration,
+    Timestamp,
 };
 
 lazy_static!{
@@ -128,8 +127,8 @@ lazy_static!{
     /// is probably not what you want.
     pub static ref CLOCK_SKEW_TOLERANCE: time::Duration
         = time::Duration::new(30 * 60, 0);
-}
 
+}
 /// The subpacket types specified by [Section 5.2.3.1 of RFC 4880].
 ///
 /// [Section 5.2.3.1 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.1
@@ -702,9 +701,9 @@ pub enum SubpacketValue<'a> {
     Invalid(&'a [u8]),
 
     /// 4-octet time field
-    SignatureCreationTime(time::SystemTime),
+    SignatureCreationTime(Timestamp),
     /// 4-octet time field
-    SignatureExpirationTime(time::Duration),
+    SignatureExpirationTime(Duration),
     /// 1 octet of exportability, 0 for not, 1 for exportable
     ExportableCertification(bool),
     /// 1 octet "level" (depth), 1 octet of trust amount
@@ -733,7 +732,7 @@ pub enum SubpacketValue<'a> {
     /// 1 octet of revocability, 0 for not, 1 for revocable
     Revocable(bool),
     /// 4-octet time field.
-    KeyExpirationTime(time::Duration),
+    KeyExpirationTime(Duration),
     /// Array of one-octet values
     PreferredSymmetricAlgorithms(Vec<SymmetricAlgorithm>),
     /// 1 octet of class, 1 octet of public-key algorithm ID, 20 octets of
@@ -993,14 +992,14 @@ impl<'a> From<SubpacketRaw<'a>> for Subpacket<'a> {
                 // The timestamp is in big endian format.
                 from_be_u32(raw.value).map(|v| {
                     SubpacketValue::SignatureCreationTime(
-                        time::SystemTime::from_pgp(v))
+                        v.into())
                 }),
 
             SubpacketTag::SignatureExpirationTime =>
                 // The time delta is in big endian format.
                 from_be_u32(raw.value).map(|v| {
                     SubpacketValue::SignatureExpirationTime(
-                        time::Duration::from_pgp(v))
+                        v.into())
                 }),
 
             SubpacketTag::ExportableCertification =>
@@ -1042,7 +1041,7 @@ impl<'a> From<SubpacketRaw<'a>> for Subpacket<'a> {
                 // The time delta is in big endian format.
                 from_be_u32(raw.value).map(|v| {
                     SubpacketValue::KeyExpirationTime(
-                        time::Duration::from_pgp(v))
+                        v.into())
                 }),
 
             SubpacketTag::PreferredSymmetricAlgorithms =>
@@ -1337,7 +1336,7 @@ impl SubpacketArea {
         if let Some(sb)
                 = self.subpacket(SubpacketTag::SignatureCreationTime) {
             if let SubpacketValue::SignatureCreationTime(v) = sb.value {
-                Some(v)
+                Some(v.into())
             } else {
                 None
             }
@@ -1360,7 +1359,7 @@ impl SubpacketArea {
         if let Some(sb)
                 = self.subpacket(SubpacketTag::SignatureExpirationTime) {
             if let SubpacketValue::SignatureExpirationTime(v) = sb.value {
-                Some(v)
+                Some(v.into())
             } else {
                 None
             }
@@ -1495,7 +1494,7 @@ impl SubpacketArea {
         if let Some(sb)
                 = self.subpacket(SubpacketTag::KeyExpirationTime) {
             if let SubpacketValue::KeyExpirationTime(v) = sb.value {
-                Some(v)
+                Some(v.into())
             } else {
                 None
             }
@@ -2097,7 +2096,7 @@ impl SubpacketAreas {
         where T: Into<Option<time::SystemTime>>
     {
         let t = t.into()
-            .unwrap_or_else(|| time::SystemTime::now().canonicalize());
+            .unwrap_or_else(|| time::SystemTime::now());
         match (self.signature_creation_time(), self.signature_expiration_time())
         {
             (Some(_), Some(e)) if e.as_secs() == 0 =>
@@ -2170,10 +2169,10 @@ impl SubpacketAreas {
         let (time, tolerance)
             = match (time.into(), clock_skew_tolerance.into()) {
                 (None, None) =>
-                    (time::SystemTime::now().canonicalize(),
+                    (time::SystemTime::now(),
                      *CLOCK_SKEW_TOLERANCE),
                 (None, Some(tolerance)) =>
-                    (time::SystemTime::now().canonicalize(),
+                    (time::SystemTime::now(),
                      tolerance),
                 (Some(time), None) =>
                     (time, time::Duration::new(0, 0)),
@@ -2204,7 +2203,7 @@ impl SubpacketAreas {
               T: Into<Option<time::SystemTime>>
     {
         let t = t.into()
-            .unwrap_or_else(|| time::SystemTime::now().canonicalize());
+            .unwrap_or_else(|| time::SystemTime::now());
         match self.key_expiration_time() {
             Some(e) if e.as_secs() == 0 =>
                 false, // Zero expiration time, does not expire.
@@ -2231,7 +2230,7 @@ impl SubpacketAreas {
               T: Into<Option<time::SystemTime>>
     {
         let t = t.into()
-            .unwrap_or_else(|| time::SystemTime::now().canonicalize());
+            .unwrap_or_else(|| time::SystemTime::now());
         key.creation_time() <= t && ! self.key_expired(key, t)
     }
 
@@ -2335,14 +2334,13 @@ impl DerefMut for Signature4 {
     }
 }
 
+// We'd like to implement Deref for Signature4 for both
+// signature::Builder and SubpacketArea.  Unfortunately, it is
+// only possible to implement Deref for one of them.  Since
+// SubpacketArea has more methods with much more documentation,
+// implement deref for that, and write provider forwarders for
+// signature::Builder.
 impl Signature4 {
-    /// We'd like to implement Deref for Signature4 for both
-    /// signature::Builder and SubpacketArea.  Unfortunately, it is
-    /// only possible to implement Deref for one of them.  Since
-    /// SubpacketArea has more methods with much more documentation,
-    /// implement deref for that, and write provider forwarders for
-    /// signature::Builder.
-
     /// Gets the version.
     pub fn version(&self) -> u8 {
         self.fields.version()
@@ -2351,12 +2349,6 @@ impl Signature4 {
     /// Gets the signature type.
     pub fn typ(&self) -> SignatureType {
         self.fields.typ()
-    }
-
-    /// Sets the signature type.
-    pub fn set_type(mut self, t: SignatureType) -> Self {
-        self.fields = self.fields.set_type(t);
-        self
     }
 
     /// Gets the public key algorithm.
@@ -2372,10 +2364,13 @@ impl Signature4 {
 
 impl signature::Builder {
     /// Sets the value of the Creation Time subpacket.
-    pub fn set_signature_creation_time(mut self, creation_time: time::SystemTime)
-                                       -> Result<Self> {
+    pub fn set_signature_creation_time<T>(mut self, creation_time: T)
+                                          -> Result<Self>
+        where T: Into<time::SystemTime>
+    {
         self.hashed_area.replace(Subpacket::new(
-            SubpacketValue::SignatureCreationTime(creation_time.canonicalize()),
+            SubpacketValue::SignatureCreationTime(
+                creation_time.into().try_into()?),
             true)?)?;
 
         Ok(self)
@@ -2389,7 +2384,7 @@ impl signature::Builder {
                                          -> Result<Self> {
         if let Some(e) = expiration {
             self.hashed_area.replace(Subpacket::new(
-                SubpacketValue::SignatureExpirationTime(e.canonicalize()),
+                SubpacketValue::SignatureExpirationTime(e.try_into()?),
                 true)?)?;
         } else {
             self.hashed_area.remove_all(SubpacketTag::SignatureExpirationTime);
@@ -2453,7 +2448,7 @@ impl signature::Builder {
                                    -> Result<Self> {
         if let Some(e) = expiration {
             self.hashed_area.replace(Subpacket::new(
-                SubpacketValue::KeyExpirationTime(e.canonicalize()),
+                SubpacketValue::KeyExpirationTime(e.try_into()?),
                 true)?)?;
         } else {
             self.hashed_area.remove_all(SubpacketTag::KeyExpirationTime);
@@ -2727,22 +2722,24 @@ impl signature::Builder {
 
 #[test]
 fn accessors() {
-    use crate::constants::Curve;
+    use crate::types::Curve;
 
     let pk_algo = PublicKeyAlgorithm::EdDSA;
     let hash_algo = HashAlgorithm::SHA512;
     let hash = hash_algo.context().unwrap();
-    let mut sig = signature::Builder::new(crate::constants::SignatureType::Binary);
+    let mut sig = signature::Builder::new(crate::types::SignatureType::Binary);
     let mut key: crate::packet::key::SecretKey =
         crate::packet::key::Key4::generate_ecc(true, Curve::Ed25519).unwrap().into();
     let mut keypair = key.clone().into_keypair().unwrap();
 
     // Cook up a timestamp without ns resolution.
-    let now = time::SystemTime::now().canonicalize();
+    use std::convert::TryFrom;
+    let now: time::SystemTime =
+        Timestamp::try_from(time::SystemTime::now()).unwrap().into();
 
     sig = sig.set_signature_creation_time(now).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.signature_creation_time(), Some(now));
 
     let zero_s = time::Duration::new(0, 0);
@@ -2751,7 +2748,7 @@ fn accessors() {
     let ten_minutes = 10 * minute;
     sig = sig.set_signature_expiration_time(Some(five_minutes)).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.signature_expiration_time(), Some(five_minutes));
 
     assert!(!sig_.signature_expired(None));
@@ -2765,7 +2762,7 @@ fn accessors() {
 
     sig = sig.set_signature_expiration_time(None).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.signature_expiration_time(), None);
     assert!(!sig_.signature_expired(None));
     assert!(!sig_.signature_expired(now));
@@ -2778,36 +2775,36 @@ fn accessors() {
 
     sig = sig.set_exportable_certification(true).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.exportable_certification(), Some(true));
     sig = sig.set_exportable_certification(false).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.exportable_certification(), Some(false));
 
     sig = sig.set_trust_signature(2, 3).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.trust_signature(), Some((2, 3)));
 
     sig = sig.set_regular_expression(b"foobar").unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.regular_expression(), Some(&b"foobar"[..]));
 
     sig = sig.set_revocable(true).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.revocable(), Some(true));
     sig = sig.set_revocable(false).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.revocable(), Some(false));
 
-    key.set_creation_time(now);
+    key.set_creation_time(now).unwrap();
     sig = sig.set_key_expiration_time(Some(five_minutes)).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.key_expiration_time(), Some(five_minutes));
 
     assert!(!sig_.key_expired(&key, None));
@@ -2821,7 +2818,7 @@ fn accessors() {
 
     sig = sig.set_key_expiration_time(None).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.key_expiration_time(), None);
     assert!(!sig_.key_expired(&key, None));
     assert!(!sig_.key_expired(&key, now));
@@ -2837,27 +2834,27 @@ fn accessors() {
                     SymmetricAlgorithm::AES128];
     sig = sig.set_preferred_symmetric_algorithms(pref.clone()).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.preferred_symmetric_algorithms(), Some(pref));
 
     let fp = Fingerprint::from_bytes(b"bbbbbbbbbbbbbbbbbbbb");
     sig = sig.set_revocation_key(2, pk_algo, fp.clone()).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.revocation_key(),
                Some((2, pk_algo.into(), fp.clone())));
 
-    sig = sig.set_issuer(fp.to_keyid()).unwrap();
+    sig = sig.set_issuer(fp.clone().into()).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
-    assert_eq!(sig_.issuer(), Some(fp.to_keyid()));
+        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
+    assert_eq!(sig_.issuer(), Some(fp.clone().into()));
 
     let pref = vec![HashAlgorithm::SHA512,
                     HashAlgorithm::SHA384,
                     HashAlgorithm::SHA256];
     sig = sig.set_preferred_hash_algorithms(pref.clone()).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.preferred_hash_algorithms(), Some(pref));
 
     let pref = vec![CompressionAlgorithm::BZip2,
@@ -2865,66 +2862,66 @@ fn accessors() {
                     CompressionAlgorithm::Zip];
     sig = sig.set_preferred_compression_algorithms(pref.clone()).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.preferred_compression_algorithms(), Some(pref));
 
     let pref = KeyServerPreferences::default()
         .set_no_modify(true);
     sig = sig.set_key_server_preferences(pref.clone()).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.key_server_preferences(), pref);
 
     sig = sig.set_primary_userid(true).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.primary_userid(), Some(true));
     sig = sig.set_primary_userid(false).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.primary_userid(), Some(false));
 
     sig = sig.set_policy_uri(b"foobar").unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.policy_uri(), Some(&b"foobar"[..]));
 
     let key_flags = KeyFlags::default()
-        .set_certify(true)
-        .set_sign(true);
+        .set_certification(true)
+        .set_signing(true);
     sig = sig.set_key_flags(&key_flags).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.key_flags(), key_flags);
 
     sig = sig.set_signers_user_id(b"foobar").unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.signers_user_id(), Some(&b"foobar"[..]));
 
     sig = sig.set_reason_for_revocation(ReasonForRevocation::KeyRetired,
                                   b"foobar").unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.reason_for_revocation(),
                Some((ReasonForRevocation::KeyRetired, &b"foobar"[..])));
 
     let feats = Features::default().set_mdc(true);
     sig = sig.set_features(&feats).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.features(), feats);
 
     let feats = Features::default().set_aead(true);
     sig = sig.set_features(&feats).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.features(), feats);
 
     let digest = vec![0; hash_algo.context().unwrap().digest_size()];
     sig = sig.set_signature_target(pk_algo, hash_algo, &digest).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.signature_target(), Some((pk_algo.into(),
                                              hash_algo.into(),
                                              &digest[..])));
@@ -2932,19 +2929,19 @@ fn accessors() {
     let embedded_sig = sig_.clone();
     sig = sig.set_embedded_signature(embedded_sig.clone()).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.embedded_signature(), Some(Packet::Signature(embedded_sig)));
 
     sig = sig.set_issuer_fingerprint(fp.clone()).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.issuer_fingerprint(), Some(fp));
 
     let pref = vec![AEADAlgorithm::EAX,
                     AEADAlgorithm::OCB];
     sig = sig.set_preferred_aead_algorithms(pref.clone()).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.preferred_aead_algorithms(), Some(pref));
 
     let fps = vec![
@@ -2953,26 +2950,26 @@ fn accessors() {
     ];
     sig = sig.set_intended_recipients(fps.clone()).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.intended_recipients(), fps);
 
     sig = sig.set_notation("test@example.org", &[0, 1, 2], None, false)
         .unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.notation("test@example.org"), vec![&[0, 1, 2]]);
 
     sig = sig.add_notation("test@example.org", &[3, 4, 5], None, false)
         .unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.notation("test@example.org"), vec![&[0, 1, 2],
                                                        &[3, 4, 5]]);
 
     sig = sig.set_notation("test@example.org", &[6, 7, 8], None, false)
         .unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash_algo, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.notation("test@example.org"), vec![&[6, 7, 8]]);
 }
 
@@ -3032,7 +3029,6 @@ fn subpacket_test_1 () {
 
 #[test]
 fn subpacket_test_2() {
-    use crate::conversions::Time;
     use crate::parse::Parse;
     use crate::PacketPile;
 
@@ -3090,26 +3086,26 @@ fn subpacket_test_2() {
         // }
 
         assert_eq!(sig.signature_creation_time(),
-                   Some(time::SystemTime::from_pgp(1515791508)));
+                   Some(Timestamp::from(1515791508).into()));
         assert_eq!(sig.subpacket(SubpacketTag::SignatureCreationTime),
                    Some(Subpacket {
                        critical: false,
                        tag: SubpacketTag::SignatureCreationTime,
                        value: SubpacketValue::SignatureCreationTime(
-                           time::SystemTime::from_pgp(1515791508))
+                           1515791508.into())
                    }));
 
         // The signature does not expire.
         assert!(! sig.signature_expired(None));
 
         assert_eq!(sig.key_expiration_time(),
-                   Some(time::Duration::from_pgp(63072000)));
+                   Some(Duration::from(63072000).into()));
         assert_eq!(sig.subpacket(SubpacketTag::KeyExpirationTime),
                    Some(Subpacket {
                        critical: false,
                        tag: SubpacketTag::KeyExpirationTime,
                        value: SubpacketValue::KeyExpirationTime(
-                           time::Duration::from_pgp(63072000))
+                           63072000.into())
                    }));
 
         // Check key expiration.
@@ -3178,13 +3174,13 @@ fn subpacket_test_2() {
                            KeyServerPreferences::default().set_no_modify(true)),
                    }));
 
-        assert!(sig.key_flags().can_certify() && sig.key_flags().can_sign());
+        assert!(sig.key_flags().for_certification() && sig.key_flags().for_signing());
         assert_eq!(sig.subpacket(SubpacketTag::KeyFlags),
                    Some(Subpacket {
                        critical: false,
                        tag: SubpacketTag::KeyFlags,
                        value: SubpacketValue::KeyFlags(
-                           KeyFlags::default().set_certify(true).set_sign(true))
+                           KeyFlags::default().set_certification(true).set_signing(true))
                    }));
 
         assert_eq!(sig.features(), Features::default().set_mdc(true));
@@ -3251,13 +3247,13 @@ fn subpacket_test_2() {
         // }
 
         assert_eq!(sig.signature_creation_time(),
-                   Some(time::SystemTime::from_pgp(1515791490)));
+                   Some(Timestamp::from(1515791490).into()));
         assert_eq!(sig.subpacket(SubpacketTag::SignatureCreationTime),
                    Some(Subpacket {
                        critical: false,
                        tag: SubpacketTag::SignatureCreationTime,
                        value: SubpacketValue::SignatureCreationTime(
-                           time::SystemTime::from_pgp(1515791490))
+                           1515791490.into())
                    }));
 
         assert_eq!(sig.exportable_certification(), Some(false));
@@ -3287,13 +3283,13 @@ fn subpacket_test_2() {
         // }
 
         assert_eq!(sig.signature_creation_time(),
-                   Some(time::SystemTime::from_pgp(1515791376)));
+                   Some(Timestamp::from(1515791376).into()));
         assert_eq!(sig.subpacket(SubpacketTag::SignatureCreationTime),
                    Some(Subpacket {
                        critical: false,
                        tag: SubpacketTag::SignatureCreationTime,
                        value: SubpacketValue::SignatureCreationTime(
-                           time::SystemTime::from_pgp(1515791376))
+                           1515791376.into())
                    }));
 
         assert_eq!(sig.revocable(), Some(false));
@@ -3358,13 +3354,13 @@ fn subpacket_test_2() {
         // }
 
         assert_eq!(sig.signature_creation_time(),
-                   Some(time::SystemTime::from_pgp(1515886658)));
+                   Some(Timestamp::from(1515886658).into()));
         assert_eq!(sig.subpacket(SubpacketTag::SignatureCreationTime),
                    Some(Subpacket {
                        critical: false,
                        tag: SubpacketTag::SignatureCreationTime,
                        value: SubpacketValue::SignatureCreationTime(
-                           time::SystemTime::from_pgp(1515886658))
+                           1515886658.into())
                    }));
 
         assert_eq!(sig.reason_for_revocation(),
@@ -3388,13 +3384,13 @@ fn subpacket_test_2() {
         // has multiple notations.
 
         assert_eq!(sig.signature_creation_time(),
-                   Some(time::SystemTime::from_pgp(1515791467)));
+                   Some(Timestamp::from(1515791467).into()));
         assert_eq!(sig.subpacket(SubpacketTag::SignatureCreationTime),
                    Some(Subpacket {
                        critical: false,
                        tag: SubpacketTag::SignatureCreationTime,
                        value: SubpacketValue::SignatureCreationTime(
-                           time::SystemTime::from_pgp(1515791467))
+                           1515791467.into())
                    }));
 
         let n1 = NotationData {
@@ -3462,13 +3458,13 @@ fn subpacket_test_2() {
         // }
 
         assert_eq!(sig.signature_creation_time(),
-                   Some(time::SystemTime::from_pgp(1515791223)));
+                   Some(Timestamp::from(1515791223).into()));
         assert_eq!(sig.subpacket(SubpacketTag::SignatureCreationTime),
                    Some(Subpacket {
                        critical: false,
                        tag: SubpacketTag::SignatureCreationTime,
                        value: SubpacketValue::SignatureCreationTime(
-                           time::SystemTime::from_pgp(1515791223))
+                           1515791223.into())
                    }));
 
         assert_eq!(sig.trust_signature(), Some((2, 120)));
@@ -3515,13 +3511,13 @@ fn subpacket_test_2() {
         // }
 
         assert_eq!(sig.key_expiration_time(),
-                   Some(time::Duration::from_pgp(63072000)));
+                   Some(Duration::from(63072000).into()));
         assert_eq!(sig.subpacket(SubpacketTag::KeyExpirationTime),
                    Some(Subpacket {
                        critical: false,
                        tag: SubpacketTag::KeyExpirationTime,
                        value: SubpacketValue::KeyExpirationTime(
-                           time::Duration::from_pgp(63072000))
+                           63072000.into())
                    }));
 
         let keyid = KeyID::from_hex("CEAD 0621 0934 7957").unwrap();
