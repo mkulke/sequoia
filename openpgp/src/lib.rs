@@ -245,7 +245,7 @@ pub enum Error {
     #[fail(display = "Malformed Message: {}", _0)]
     MalformedMessage(String),
 
-    /// Malformed tranferable public key.
+    /// Malformed certificate.
     #[fail(display = "Malformed Cert: {}", _0)]
     MalformedCert(String),
 
@@ -260,6 +260,14 @@ pub enum Error {
     /// Index out of range.
     #[fail(display = "Index out of range")]
     IndexOutOfRange,
+
+    /// Expired.
+    #[fail(display = "Expired on {:?}", _0)]
+    Expired(std::time::SystemTime),
+
+    /// Not yet live.
+    #[fail(display = "Not live until {:?}", _0)]
+    NotYetLive(std::time::SystemTime),
 }
 
 /// The OpenPGP packets that Sequoia understands.

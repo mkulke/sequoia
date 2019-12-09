@@ -568,8 +568,8 @@ impl<'a, H: VerificationHelper> Verifier<'a, H> {
             if let Some(sig) = sig {
                 sig.key_flags().for_signing()
                 // Check expiry.
-                    && sig.signature_alive(time, tolerance)
-                    && sig.key_alive(key, time)
+                    && sig.signature_alive(time, tolerance).is_ok()
+                    && sig.key_alive(key, time).is_ok()
             } else {
                 false
             }
@@ -704,6 +704,7 @@ impl<'a, H: VerificationHelper> Verifier<'a, H> {
                                     if sig.verify(key).unwrap_or(false) {
                                         if sig.signature_alive(
                                             self.time, self.clock_skew_tolerance)
+                                            .is_ok()
                                         {
                                             VerificationResult::GoodChecksum {
                                                 sig: sig.clone(),
@@ -1440,7 +1441,8 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                                 sig.key_flags().for_signing()
                                 // Check expiry.
                                     && sig.signature_alive(time, tolerance)
-                                    && sig.key_alive(key, time)
+                                       .is_ok()
+                                    && sig.key_alive(key, time).is_ok()
                             } else {
                                 false
                             }
@@ -1595,6 +1597,7 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                                     if sig.verify(key).unwrap_or(false) &&
                                         sig.signature_alive(
                                             self.time, self.clock_skew_tolerance)
+                                        .is_ok()
                                     {
                                         // Check intended recipients.
                                         if let Some(identity) =

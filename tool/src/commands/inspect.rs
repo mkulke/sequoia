@@ -151,11 +151,10 @@ fn inspect_cert(output: &mut dyn io::Write, cert: &openpgp::Cert,
         writeln!(output, "         UserID: {}", uidb.userid())?;
         inspect_revocation(output, "", uidb.revoked(None))?;
         if let Some(sig) = uidb.binding_signature(None) {
-            if sig.signature_expired(None) {
-                writeln!(output, "                 Expired")?;
-            } else if ! sig.signature_alive(None,
-                                            std::time::Duration::new(0, 0)) {
-                writeln!(output, "                 Not yet valid")?;
+            if let Err(e) =
+                sig.signature_alive(None, std::time::Duration::new(0, 0))
+            {
+                writeln!(output, "                 Invalid: {}", e)?;
             }
         }
         inspect_certifications(output,
@@ -179,10 +178,8 @@ fn inspect_key<P, R>(output: &mut dyn io::Write,
               R: openpgp::packet::key::KeyRole
 {
     if let Some(sig) = binding_signature {
-        if sig.key_expired(key, None) {
-            writeln!(output, "{}                 Expired", indent)?;
-        } else if ! sig.key_alive(key, None) {
-            writeln!(output, "{}                 Not yet valid", indent)?;
+        if let Err(e) = sig.key_alive(key, None) {
+            writeln!(output, "{}                 Invalid: {}", indent, e)?;
         }
     }
 

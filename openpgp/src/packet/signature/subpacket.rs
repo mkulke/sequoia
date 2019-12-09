@@ -2080,36 +2080,6 @@ impl SubpacketAreas {
         self.unhashed_area().lookup(tag)
     }
 
-    /// Returns whether or not the signature is expired at the given time.
-    ///
-    /// If `t` is None, uses the current time.
-    ///
-    /// Note that [Section 5.2.3.4 of RFC 4880] states that "[[A
-    /// Signature Creation Time subpacket]] MUST be present in the
-    /// hashed area."  Consequently, if such a packet does not exist,
-    /// but a "Signature Expiration Time" subpacket exists, we
-    /// conservatively treat the signature as expired, because there
-    /// is no way to evaluate the expiration time.
-    ///
-    ///  [Section 5.2.3.4 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.4
-    pub fn signature_expired<T>(&self, t: T) -> bool
-        where T: Into<Option<time::SystemTime>>
-    {
-        let t = t.into()
-            .unwrap_or_else(|| time::SystemTime::now());
-        match (self.signature_creation_time(), self.signature_expiration_time())
-        {
-            (Some(_), Some(e)) if e.as_secs() == 0 =>
-                false, // Zero expiration time, does not expire.
-            (Some(c), Some(e)) =>
-                (c + e) <= t,
-            (None, Some(_)) =>
-                true, // No creation time, treat as always expired.
-            (_, None) =>
-                false, // No expiration time, does not expire.
-        }
-    }
-
     /// Returns whether or not the signature is alive at the specified
     /// time.
     ///
@@ -2162,7 +2132,7 @@ impl SubpacketAreas {
     ///
     ///  [Section 5.2.3.4 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.4
     pub fn signature_alive<T, U>(&self, time: T, clock_skew_tolerance: U)
-        -> bool
+        -> Result<()>
         where T: Into<Option<time::SystemTime>>,
               U: Into<Option<time::Duration>>
     {
@@ -2180,37 +2150,19 @@ impl SubpacketAreas {
                     (time, tolerance)
             };
 
-        if let Some(creation_time) = self.signature_creation_time() {
+        match (self.signature_creation_time(), self.signature_expiration_time())
+        {
+            (None, _) =>
+                Err(Error::MalformedPacket("no signature creation time".into())
+                    .into()),
+            (Some(c), Some(e)) if e.as_secs() > 0 && (c + e) < time =>
+                Err(Error::Expired(c + e).into()),
             // Be careful to avoid underflow.
-            cmp::max(creation_time, time::UNIX_EPOCH + tolerance)
-                - tolerance <= time
-                && ! self.signature_expired(time)
-        } else {
-            false
-        }
-    }
-
-    /// Returns whether or not the key is expired at the given time.
-    ///
-    /// If `t` is None, uses the current time.
-    ///
-    /// See [Section 5.2.3.6 of RFC 4880].
-    ///
-    ///  [Section 5.2.3.6 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.6
-    pub fn key_expired<P, R, T>(&self, key: &Key<P, R>, t: T) -> bool
-        where P: key::KeyParts,
-              R: key::KeyRole,
-              T: Into<Option<time::SystemTime>>
-    {
-        let t = t.into()
-            .unwrap_or_else(|| time::SystemTime::now());
-        match self.key_expiration_time() {
-            Some(e) if e.as_secs() == 0 =>
-                false, // Zero expiration time, does not expire.
-            Some(e) =>
-                key.creation_time() + e <= t,
-            None =>
-                false, // No expiration time, does not expire.
+            (Some(c), _) if cmp::max(c, time::UNIX_EPOCH + tolerance)
+                - tolerance > time =>
+                Err(Error::NotYetLive(cmp::max(c, time::UNIX_EPOCH + tolerance)
+                                      - tolerance).into()),
+            _ => Ok(()),
         }
     }
 
@@ -2224,14 +2176,21 @@ impl SubpacketAreas {
     /// See [Section 5.2.3.6 of RFC 4880].
     ///
     ///  [Section 5.2.3.6 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.6
-    pub fn key_alive<P, R, T>(&self, key: &Key<P, R>, t: T) -> bool
+    pub fn key_alive<P, R, T>(&self, key: &Key<P, R>, t: T) -> Result<()>
         where P: key::KeyParts,
               R: key::KeyRole,
               T: Into<Option<time::SystemTime>>
     {
         let t = t.into()
             .unwrap_or_else(|| time::SystemTime::now());
-        key.creation_time() <= t && ! self.key_expired(key, t)
+
+        match self.key_expiration_time() {
+            Some(e) if e.as_secs() > 0 && key.creation_time() + e < t =>
+                Err(Error::Expired(key.creation_time() + e).into()),
+            _ if key.creation_time() > t =>
+                Err(Error::NotYetLive(key.creation_time()).into()),
+            _ => Ok(()),
+        }
     }
 
     /// Returns the value of the Issuer subpacket, which contains the
@@ -2751,27 +2710,20 @@ fn accessors() {
         sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.signature_expiration_time(), Some(five_minutes));
 
-    assert!(!sig_.signature_expired(None));
-    assert!(!sig_.signature_expired(now));
-    assert!(sig_.signature_expired(now + ten_minutes));
-
-    assert!(sig_.signature_alive(None, zero_s));
-    assert!(sig_.signature_alive(now, zero_s));
-    assert!(!sig_.signature_alive(now - five_minutes, zero_s));
-    assert!(!sig_.signature_alive(now + ten_minutes, zero_s));
+    assert!(sig_.signature_alive(None, zero_s).is_ok());
+    assert!(sig_.signature_alive(now, zero_s).is_ok());
+    assert!(!sig_.signature_alive(now - five_minutes, zero_s).is_ok());
+    assert!(!sig_.signature_alive(now + ten_minutes, zero_s).is_ok());
 
     sig = sig.set_signature_expiration_time(None).unwrap();
     let sig_ =
         sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.signature_expiration_time(), None);
-    assert!(!sig_.signature_expired(None));
-    assert!(!sig_.signature_expired(now));
-    assert!(!sig_.signature_expired(now + ten_minutes));
 
-    assert!(sig_.signature_alive(None, zero_s));
-    assert!(sig_.signature_alive(now, zero_s));
-    assert!(!sig_.signature_alive(now - five_minutes, zero_s));
-    assert!(sig_.signature_alive(now + ten_minutes, zero_s));
+    assert!(sig_.signature_alive(None, zero_s).is_ok());
+    assert!(sig_.signature_alive(now, zero_s).is_ok());
+    assert!(!sig_.signature_alive(now - five_minutes, zero_s).is_ok());
+    assert!(sig_.signature_alive(now + ten_minutes, zero_s).is_ok());
 
     sig = sig.set_exportable_certification(true).unwrap();
     let sig_ =
@@ -2807,27 +2759,20 @@ fn accessors() {
         sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.key_expiration_time(), Some(five_minutes));
 
-    assert!(!sig_.key_expired(&key, None));
-    assert!(!sig_.key_expired(&key, now));
-    assert!(sig_.key_expired(&key, now + ten_minutes));
-
-    assert!(sig_.key_alive(&key, None));
-    assert!(sig_.key_alive(&key, now));
-    assert!(!sig_.key_alive(&key, now - five_minutes));
-    assert!(!sig_.key_alive(&key, now + ten_minutes));
+    assert!(sig_.key_alive(&key, None).is_ok());
+    assert!(sig_.key_alive(&key, now).is_ok());
+    assert!(!sig_.key_alive(&key, now - five_minutes).is_ok());
+    assert!(!sig_.key_alive(&key, now + ten_minutes).is_ok());
 
     sig = sig.set_key_expiration_time(None).unwrap();
     let sig_ =
         sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.key_expiration_time(), None);
-    assert!(!sig_.key_expired(&key, None));
-    assert!(!sig_.key_expired(&key, now));
-    assert!(!sig_.key_expired(&key, now + ten_minutes));
 
-    assert!(sig_.key_alive(&key, None));
-    assert!(sig_.key_alive(&key, now));
-    assert!(!sig_.key_alive(&key, now - five_minutes));
-    assert!(sig_.key_alive(&key, now + ten_minutes));
+    assert!(sig_.key_alive(&key, None).is_ok());
+    assert!(sig_.key_alive(&key, now).is_ok());
+    assert!(!sig_.key_alive(&key, now - five_minutes).is_ok());
+    assert!(sig_.key_alive(&key, now + ten_minutes).is_ok());
 
     let pref = vec![SymmetricAlgorithm::AES256,
                     SymmetricAlgorithm::AES192,
@@ -3096,7 +3041,7 @@ fn subpacket_test_2() {
                    }));
 
         // The signature does not expire.
-        assert!(! sig.signature_expired(None));
+        assert!(sig.signature_alive(None, None).is_ok());
 
         assert_eq!(sig.key_expiration_time(),
                    Some(Duration::from(63072000).into()));
@@ -3109,12 +3054,14 @@ fn subpacket_test_2() {
                    }));
 
         // Check key expiration.
-        assert!(! sig.key_expired(
+        assert!(sig.key_alive(
             key,
-            key.creation_time() + time::Duration::new(63072000 - 1, 0)));
-        assert!(sig.key_expired(
+            key.creation_time() + time::Duration::new(63072000 - 1, 0))
+                .is_ok());
+        assert!(! sig.key_alive(
             key,
-            key.creation_time() + time::Duration::new(63072000, 0)));
+            key.creation_time() + time::Duration::new(63072000 + 1, 0))
+                .is_ok());
 
         assert_eq!(sig.preferred_symmetric_algorithms(),
                    Some(vec![SymmetricAlgorithm::AES256,

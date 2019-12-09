@@ -428,7 +428,8 @@ bool pgp_signature_is_group_key(pgp_signature_t signature);
 ///
 ///  [Section 5.2.3.4 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.4
 /*/
-bool pgp_signature_alive(pgp_signature_t signature, time_t when);
+pgp_status_t pgp_signature_alive(pgp_error_t *errp,
+				 pgp_signature_t signature, time_t when);
 
 /*/
 /// Returns whether the signature is alive at the specified time.
@@ -480,15 +481,10 @@ bool pgp_signature_alive(pgp_signature_t signature, time_t when);
 ///
 ///  [Section 5.2.3.4 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.4
 /*/
-bool pgp_signature_alive_with_tolerance(pgp_signature_t signature,
-                                        time_t time, unsigned int tolerance);
-
-/*/
-/// Returns whether the signature is expired at the specified time.
-///
-/// If `when` is 0, then the current time is used.
-/*/
-bool pgp_signature_expired(pgp_signature_t signature, time_t when);
+pgp_status_t pgp_signature_alive_with_tolerance(pgp_error_t *errp,
+						pgp_signature_t signature,
+						time_t time,
+						unsigned int tolerance);
 
 /*/
 /// Returns whether the signature is alive at the specified time.
@@ -498,16 +494,9 @@ bool pgp_signature_expired(pgp_signature_t signature, time_t when);
 ///
 /// If `when` is 0, then the current time is used.
 /*/
-bool pgp_signature_key_alive(pgp_signature_t signature, pgp_key_t key,
-                             time_t when);
-
-/*/
-/// Returns whether the signature is expired at the specified time.
-///
-/// If `when` is 0, then the current time is used.
-/*/
-bool pgp_signature_key_expired(pgp_signature_t signature, pgp_key_t key,
-                               time_t when);
+pgp_status_t pgp_signature_key_alive(pgp_error_t *errp,
+				     pgp_signature_t signature, pgp_key_t key,
+				     time_t when);
 
 /*/
 /// Returns the PKESK's recipient.
@@ -890,18 +879,11 @@ pgp_cert_t pgp_cert_revoke_in_place (pgp_error_t *errp,
                                  const char *reason);
 
 /*/
-/// Returns whether the Cert has expired.
-///
-/// If `when` is 0, then the current time is used.
-/*/
-int pgp_cert_expired(pgp_cert_t cert, time_t at);
-
-/*/
 /// Returns whether the Cert is alive at the specified time.
 ///
 /// If `when` is 0, then the current time is used.
 /*/
-int pgp_cert_alive(pgp_cert_t cert, time_t when);
+pgp_status_t pgp_cert_alive(pgp_error_t *errp, pgp_cert_t cert, time_t when);
 
 /*/
 /// Changes the Cert's expiration.
