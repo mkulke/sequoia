@@ -1312,7 +1312,7 @@ impl Cert {
                         $binding.$sigs.push(sig);
                     } else {
                         t!("Sig {:02X}{:02X}, type = {} doesn't belong to {}",
-                           sig.hash_prefix()[0], sig.hash_prefix()[1],
+                           sig.digest_prefix()[0], sig.digest_prefix()[1],
                            sig.typ(), $desc);
 
                         self.bad.push(sig);
@@ -1347,7 +1347,7 @@ impl Cert {
                     // Use hash prefix as heuristic.
                     if let Ok(hash) = Signature::$hash_method(
                         &sig, self.primary.key(), $($verify_args),*) {
-                        if &sig.hash_prefix()[..] == &hash[..2] {
+                        if &sig.digest_prefix()[..] == &hash[..2] {
                             // See if we can get the key for a
                             // positive verification.
                             if let Some(key) = $lookup_fn(&sig) {
@@ -1358,8 +1358,8 @@ impl Cert {
                                 } else {
                                     t!("Sig {:02X}{:02X}, type = {} \
                                         doesn't belong to {}",
-                                       sig.hash_prefix()[0],
-                                       sig.hash_prefix()[1],
+                                       sig.digest_prefix()[0],
+                                       sig.digest_prefix()[1],
                                        sig.typ(), $desc);
 
                                     self.bad.push(sig);
@@ -1371,7 +1371,7 @@ impl Cert {
                         } else {
                             t!("Sig {:02X}{:02X}, type = {} \
                                 doesn't belong to {}",
-                               sig.hash_prefix()[0], sig.hash_prefix()[1],
+                               sig.digest_prefix()[0], sig.digest_prefix()[1],
                                sig.typ(), $desc);
 
                             self.bad.push(sig);
@@ -1381,7 +1381,7 @@ impl Cert {
                         // the hash algorithm.
                         t!("Sig {:02X}{:02X}, type = {}: \
                             Hashing failed",
-                           sig.hash_prefix()[0], sig.hash_prefix()[1],
+                           sig.digest_prefix()[0], sig.digest_prefix()[1],
                            sig.typ());
 
                         self.bad.push(sig);
@@ -1407,10 +1407,10 @@ impl Cert {
                self.primary, self_revocations, verify_primary_key_revocation);
         check_3rd_party!("primary key",
                          self.primary, certifications, lookup_fn,
-                         verify_primary_key_binding, primary_key_binding_hash);
+                         verify_primary_key_binding, hash_primary_key_binding);
         check_3rd_party!("primary key",
                          self.primary, other_revocations, lookup_fn,
-                         verify_primary_key_revocation, primary_key_binding_hash);
+                         verify_primary_key_revocation, hash_primary_key_binding);
 
         for binding in self.userids.iter_mut() {
             check!(format!("userid \"{}\"",
@@ -1425,13 +1425,13 @@ impl Cert {
                 format!("userid \"{}\"",
                         String::from_utf8_lossy(binding.userid().value())),
                 binding, certifications, lookup_fn,
-                verify_userid_binding, userid_binding_hash,
+                verify_userid_binding, hash_userid_binding,
                 binding.userid());
             check_3rd_party!(
                 format!("userid \"{}\"",
                         String::from_utf8_lossy(binding.userid().value())),
                 binding, other_revocations, lookup_fn,
-                verify_userid_revocation, userid_binding_hash,
+                verify_userid_revocation, hash_userid_binding,
                 binding.userid());
         }
 
@@ -1445,12 +1445,12 @@ impl Cert {
             check_3rd_party!(
                 "user attribute",
                 binding, certifications, lookup_fn,
-                verify_user_attribute_binding, user_attribute_binding_hash,
+                verify_user_attribute_binding, hash_user_attribute_binding,
                 binding.user_attribute());
             check_3rd_party!(
                 "user attribute",
                 binding, other_revocations, lookup_fn,
-                verify_user_attribute_revocation, user_attribute_binding_hash,
+                verify_user_attribute_revocation, hash_user_attribute_binding,
                 binding.user_attribute());
         }
 
@@ -1464,12 +1464,12 @@ impl Cert {
             check_3rd_party!(
                 format!("subkey {}", binding.key().keyid()),
                 binding, certifications, lookup_fn,
-                verify_subkey_binding, subkey_binding_hash,
+                verify_subkey_binding, hash_subkey_binding,
                 binding.key());
             check_3rd_party!(
                 format!("subkey {}", binding.key().keyid()),
                 binding, other_revocations, lookup_fn,
-                verify_subkey_revocation, subkey_binding_hash,
+                verify_subkey_revocation, hash_subkey_binding,
                 binding.key());
         }
 
@@ -1490,8 +1490,8 @@ impl Cert {
                      {
                          t!("Sig {:02X}{:02X}, {:?} \
                              was out of place.  Belongs to {}.",
-                            $sig.hash_prefix()[0],
-                            $sig.hash_prefix()[1],
+                            $sig.digest_prefix()[0],
+                            $sig.digest_prefix()[1],
                             $sig.typ(), $desc);
 
                          $sigs.push($sig);
@@ -1527,8 +1527,8 @@ impl Cert {
                         {
                             t!("Sig {:02X}{:02X}, {:?} \
                                 was out of place.  Belongs to {}.",
-                               $sig.hash_prefix()[0],
-                               $sig.hash_prefix()[1],
+                               $sig.digest_prefix()[0],
+                               $sig.digest_prefix()[1],
                                $sig.typ(), $desc);
 
                             $sigs.push($sig);
@@ -1538,11 +1538,11 @@ impl Cert {
                         // Use hash prefix as heuristic.
                         if let Ok(hash) = Signature::$hash_method(
                             &sig, self.primary.key(), $($verify_args),*) {
-                            if &sig.hash_prefix()[..] == &hash[..2] {
+                            if &sig.digest_prefix()[..] == &hash[..2] {
                                 t!("Sig {:02X}{:02X}, {:?} \
                                     was out of place.  Likely belongs to {}.",
-                                   $sig.hash_prefix()[0],
-                                   $sig.hash_prefix()[1],
+                                   $sig.digest_prefix()[0],
+                                   $sig.digest_prefix()[1],
                                    $sig.typ(), $desc);
 
                                 $sigs.push($sig);
@@ -1564,10 +1564,10 @@ impl Cert {
                        verify_primary_key_revocation);
             check_one_3rd_party!(
                 "primary key", self.primary.certifications, sig, lookup_fn,
-                verify_primary_key_binding, primary_key_binding_hash);
+                verify_primary_key_binding, hash_primary_key_binding);
             check_one_3rd_party!(
                 "primary key", self.primary.other_revocations, sig, lookup_fn,
-                verify_primary_key_revocation, primary_key_binding_hash);
+                verify_primary_key_revocation, hash_primary_key_binding);
 
             for binding in self.userids.iter_mut() {
                 check_one!(format!("userid \"{}\"",
@@ -1584,13 +1584,13 @@ impl Cert {
                     format!("userid \"{}\"",
                             String::from_utf8_lossy(binding.userid().value())),
                     binding.certifications, sig, lookup_fn,
-                    verify_userid_binding, userid_binding_hash,
+                    verify_userid_binding, hash_userid_binding,
                     binding.userid());
                 check_one_3rd_party!(
                     format!("userid \"{}\"",
                             String::from_utf8_lossy(binding.userid().value())),
                     binding.other_revocations, sig, lookup_fn,
-                    verify_userid_revocation, userid_binding_hash,
+                    verify_userid_revocation, hash_userid_binding,
                     binding.userid());
             }
 
@@ -1606,13 +1606,13 @@ impl Cert {
                 check_one_3rd_party!(
                     "user attribute",
                     binding.certifications, sig, lookup_fn,
-                    verify_user_attribute_binding, user_attribute_binding_hash,
+                    verify_user_attribute_binding, hash_user_attribute_binding,
                     binding.user_attribute());
                 check_one_3rd_party!(
                     "user attribute",
                     binding.other_revocations, sig, lookup_fn,
                     verify_user_attribute_revocation,
-                    user_attribute_binding_hash,
+                    hash_user_attribute_binding,
                     binding.user_attribute());
             }
 
@@ -1626,19 +1626,19 @@ impl Cert {
                 check_one_3rd_party!(
                     format!("subkey {}", binding.key().keyid()),
                     binding.certifications, sig, lookup_fn,
-                    verify_subkey_binding, subkey_binding_hash,
+                    verify_subkey_binding, hash_subkey_binding,
                     binding.key());
                 check_one_3rd_party!(
                     format!("subkey {}", binding.key().keyid()),
                     binding.other_revocations, sig, lookup_fn,
-                    verify_subkey_revocation, subkey_binding_hash,
+                    verify_subkey_revocation, hash_subkey_binding,
                     binding.key());
             }
 
             // Keep them for later.
             t!("Self-sig {:02X}{:02X}, {:?} doesn't belong \
                 to any known component or is bad.",
-               sig.hash_prefix()[0], sig.hash_prefix()[1],
+               sig.digest_prefix()[0], sig.digest_prefix()[1],
                sig.typ());
             self.bad.push(sig);
         }
@@ -1898,7 +1898,7 @@ mod test {
             assert_eq!(cert.userids[0].userid().value(),
                        &b"Testy McTestface <testy@example.org>"[..]);
             assert_eq!(cert.userids[0].self_signatures.len(), 1);
-            assert_eq!(cert.userids[0].self_signatures[0].hash_prefix(),
+            assert_eq!(cert.userids[0].self_signatures[0].digest_prefix(),
                        &[ 0xc6, 0x8f ]);
             assert_eq!(cert.user_attributes.len(), 0);
             assert_eq!(cert.subkeys.len(), 0);
@@ -1920,7 +1920,7 @@ mod test {
             assert_eq!(cert.userids[0].userid().value(),
                        &b"Testy McTestface <testy@example.org>"[..]);
             assert_eq!(cert.userids[0].self_signatures.len(), 1);
-            assert_eq!(cert.userids[0].self_signatures[0].hash_prefix(),
+            assert_eq!(cert.userids[0].self_signatures[0].digest_prefix(),
                        &[ 0xc6, 0x8f ]);
 
             assert_eq!(cert.user_attributes.len(), 0);
@@ -1928,7 +1928,7 @@ mod test {
             assert_eq!(cert.subkeys.len(), 1, "number of subkeys");
             assert_eq!(cert.subkeys[0].key().creation_time(),
                        Timestamp::from(1511355130).into());
-            assert_eq!(cert.subkeys[0].self_signatures[0].hash_prefix(),
+            assert_eq!(cert.subkeys[0].self_signatures[0].digest_prefix(),
                        &[ 0xb7, 0xb9 ]);
 
             let cert = parse_cert(crate::tests::key("testy-no-subkey.pgp"),
@@ -1944,7 +1944,7 @@ mod test {
             assert_eq!(cert.userids[0].userid().value(),
                        &b"Testy McTestface <testy@example.org>"[..]);
             assert_eq!(cert.userids[0].self_signatures.len(), 1);
-            assert_eq!(cert.userids[0].self_signatures[0].hash_prefix(),
+            assert_eq!(cert.userids[0].self_signatures[0].digest_prefix(),
                        &[ 0xc6, 0x8f ]);
 
             assert_eq!(cert.subkeys.len(), 0, "number of subkeys");
@@ -2707,8 +2707,9 @@ mod test {
         let t3 = time::UNIX_EPOCH + time::Duration::new(1009839600, 0); // 2002-1-1
         let t4 = time::UNIX_EPOCH + time::Duration::new(1041375600, 0); // 2003-1-1
 
-        let key: key::SecretKey
+        let mut key: key::SecretKey
             = Key4::generate_ecc(true, Curve::Ed25519).unwrap().into();
+        key.set_creation_time(t1).unwrap();
         let mut pair = key.clone().into_keypair().unwrap();
         let (bind1, rev1, bind2, rev2) = {
             let bind1 = signature::Builder::new(SignatureType::DirectKey)

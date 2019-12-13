@@ -447,8 +447,8 @@ impl PacketDumper {
                         self.dump_subpacket(output, i, pkt, s)?;
                     }
                 }
-                writeln!(output, "{}  Hash prefix: {}", i,
-                         hex::encode(s.hash_prefix()))?;
+                writeln!(output, "{}  Digest prefix: {}", i,
+                         hex::encode(s.digest_prefix()))?;
                 write!(output, "{}  Level: {} ", i, s.level())?;
                 match s.level() {
                     0 => writeln!(output, "(signature over data)")?,
@@ -648,10 +648,10 @@ impl PacketDumper {
             },
 
             MDC(ref m) => {
-                writeln!(output, "{}  Hash: {}",
-                         i, hex::encode(m.hash()))?;
-                writeln!(output, "{}  Computed hash: {}",
-                         i, hex::encode(m.computed_hash()))?;
+                writeln!(output, "{}  Digest: {}",
+                         i, hex::encode(m.digest()))?;
+                writeln!(output, "{}  Computed digest: {}",
+                         i, hex::encode(m.computed_digest()))?;
             },
 
             AED(ref a) => {

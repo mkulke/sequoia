@@ -1008,8 +1008,8 @@ impl Signature4 {
         let unhashed_area
             = php_try!(php.parse_bytes("unhashed_area",
                                    unhashed_area_len as usize));
-        let hash_prefix1 = php_try!(php.parse_u8("hash_prefix1"));
-        let hash_prefix2 = php_try!(php.parse_u8("hash_prefix2"));
+        let digest_prefix1 = php_try!(php.parse_u8("digest_prefix1"));
+        let digest_prefix2 = php_try!(php.parse_u8("digest_prefix2"));
         if ! pk_algo.for_signing() {
             return php.fail("not a signature algorithm");
         }
@@ -1021,12 +1021,12 @@ impl Signature4 {
             typ.into(), pk_algo.into(), hash_algo,
             SubpacketArea::new(hashed_area),
             SubpacketArea::new(unhashed_area),
-            [hash_prefix1, hash_prefix2],
+            [digest_prefix1, digest_prefix2],
             mpis).into()))?;
 
         // Locate the corresponding HashedReader and extract the
         // computed hash.
-        let mut computed_hash = None;
+        let mut computed_digest = None;
         {
             let recursion_depth = pp.recursion_depth();
 
@@ -1057,8 +1057,8 @@ impl Signature4 {
                                 })
                         {
                             t!("popped a {:?} HashedReader", hash_algo);
-                            computed_hash = Some((cookie.signature_level(),
-                                                  hash_algo, hash.clone()));
+                            computed_digest = Some((cookie.signature_level(),
+                                                    hash.clone()));
                         }
 
                         if cookie.sig_group_unused() {
@@ -1072,14 +1072,14 @@ impl Signature4 {
             }
         }
 
-        if let Some((level, algo, mut hash)) = computed_hash {
+        if let Some((level, mut hash)) = computed_digest {
             if let Packet::Signature(ref mut sig) = pp.packet {
                 sig.hash(&mut hash);
 
                 let mut digest = vec![0u8; hash.digest_size()];
                 hash.digest(&mut digest);
 
-                sig.set_computed_hash(Some((algo, digest)));
+                sig.set_computed_digest(Some(digest));
                 sig.set_level(level);
             } else {
                 unreachable!()
@@ -1150,7 +1150,7 @@ fn signature_parser_test () {
             assert_eq!(p.hash_algo(), HashAlgorithm::SHA512);
             assert_eq!(p.hashed_area().data.len(), 29);
             assert_eq!(p.unhashed_area().data.len(), 10);
-            assert_eq!(p.hash_prefix(), &[0x65u8, 0x74]);
+            assert_eq!(p.digest_prefix(), &[0x65u8, 0x74]);
             assert_eq!(p.mpis().serialized_len(), 258);
         } else {
             panic!("Wrong packet!");
@@ -1351,21 +1351,21 @@ impl<'a> Parse<'a, OnePassSig3> for OnePassSig3 {
 fn one_pass_sig_test () {
     struct Test<'a> {
         filename: &'a str,
-        hash_prefix: Vec<[u8; 2]>,
+        digest_prefix: Vec<[u8; 2]>,
     };
 
     let tests = [
             Test {
                 filename: "signed-1.gpg",
-                hash_prefix: vec![ [ 0x83, 0xF5 ] ],
+                digest_prefix: vec![ [ 0x83, 0xF5 ] ],
             },
             Test {
                 filename: "signed-2-partial-body.gpg",
-                hash_prefix: vec![ [ 0x2F, 0xBE ] ],
+                digest_prefix: vec![ [ 0x2F, 0xBE ] ],
             },
             Test {
                 filename: "signed-3-partial-body-multiple-sigs.gpg",
-                hash_prefix: vec![ [ 0x29, 0x64 ], [ 0xff, 0x7d ] ],
+                digest_prefix: vec![ [ 0x29, 0x64 ], [ 0xff, 0x7d ] ],
             },
     ];
 
@@ -1385,19 +1385,19 @@ fn one_pass_sig_test () {
             } else if let Packet::Signature(ref sig) = pp.packet {
                 eprintln!("  {}:\n  prefix: expected: {}, in sig: {}",
                           test.filename,
-                          crate::fmt::to_hex(&test.hash_prefix[sigs][..], false),
-                          crate::fmt::to_hex(sig.hash_prefix(), false));
+                          crate::fmt::to_hex(&test.digest_prefix[sigs][..], false),
+                          crate::fmt::to_hex(sig.digest_prefix(), false));
                 eprintln!("  computed hash: {}",
-                          crate::fmt::to_hex(&sig.computed_hash().unwrap().1,
-                                                false));
+                          crate::fmt::to_hex(&sig.computed_digest().unwrap(),
+                                             false));
 
-                assert_eq!(&test.hash_prefix[sigs], sig.hash_prefix());
-                assert_eq!(&test.hash_prefix[sigs][..],
-                           &sig.computed_hash().unwrap().1[..2]);
+                assert_eq!(&test.digest_prefix[sigs], sig.digest_prefix());
+                assert_eq!(&test.digest_prefix[sigs][..],
+                           &sig.computed_digest().unwrap()[..2]);
 
                 sigs += 1;
             } else if one_pass_sigs > 0 {
-                assert_eq!(one_pass_sigs, test.hash_prefix.len(),
+                assert_eq!(one_pass_sigs, test.digest_prefix.len(),
                            "Number of OnePassSig packets does not match \
                             number of expected OnePassSig packets.");
             }
@@ -2029,7 +2029,7 @@ impl MDC {
         // Nevertheless, we take some basic precautions to check
         // whether it is really the matching HashedReader.
 
-        let mut computed_hash : [u8; 20] = Default::default();
+        let mut computed_digest : [u8; 20] = Default::default();
         {
             let mut r : Option<&mut dyn BufferedReader<Cookie>>
                 = Some(&mut php.reader);
@@ -2046,7 +2046,7 @@ impl MDC {
                                     } else {
                                         None
                                     }).unwrap();
-                            h.digest(&mut computed_hash);
+                            h.digest(&mut computed_digest);
                         }
 
                         // If the outer most HashedReader is not the
@@ -2060,10 +2060,10 @@ impl MDC {
             }
         }
 
-        let mut hash : [u8; 20] = Default::default();
-        hash.copy_from_slice(&php_try!(php.parse_bytes("hash", 20)));
+        let mut digest: [u8; 20] = Default::default();
+        digest.copy_from_slice(&php_try!(php.parse_bytes("digest", 20)));
 
-        php.ok(Packet::MDC(MDC::new(hash, computed_hash)))
+        php.ok(Packet::MDC(MDC::new(digest, computed_digest)))
     }
 }
 
@@ -3943,7 +3943,7 @@ mod test {
             if let PacketParserResult::Some(
                 PacketParser { packet: Packet::MDC(ref mdc), .. }) = ppr
             {
-                assert_eq!(mdc.computed_hash(), mdc.hash(),
+                assert_eq!(mdc.computed_digest(), mdc.digest(),
                            "MDC doesn't match");
             }
 
