@@ -373,9 +373,9 @@ impl Signature {
         Self::hash_standalone(sig)
     }
 
-    /// Returns the message digest of the primary key binding over the
-    /// specified primary key.
-    pub fn hash_primary_key_binding<'a, S>(sig: S, key: &key::PublicKey)
+    /// Returns the message digest of the direct key signature over
+    /// the specified primary key.
+    pub fn hash_direct_key<'a, S>(sig: S, key: &key::PublicKey)
         -> Result<Vec<u8>>
         where S: Into<&'a signature::Builder>
     {
@@ -413,6 +413,20 @@ impl Signature {
         let mut digest = vec![0u8; h.digest_size()];
         h.digest(&mut digest);
         Ok(digest)
+    }
+
+    /// Returns the message digest of the primary key binding over the
+    /// specified primary key and subkey.
+    pub fn hash_primary_key_binding<'a, P, Q, S>(
+        sig: S,
+        key: &Key<P, key::PrimaryRole>,
+        subkey: &Key<Q, key::SubordinateRole>)
+        -> Result<Vec<u8>>
+        where P: key::KeyParts,
+              Q: key::KeyParts,
+              S: Into<&'a signature::Builder>
+    {
+        Self::hash_subkey_binding(sig.into(), key, subkey)
     }
 
     /// Returns the message digest of the user ID binding over the

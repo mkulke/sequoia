@@ -389,8 +389,8 @@ impl CertBuilder {
                         time::SystemTime::now())?
                     .set_issuer_fingerprint(subkey.fingerprint())?
                     .set_issuer(subkey.keyid())?
-                    .sign_subkey_binding(&mut subkey_signer, &primary,
-                                         &subkey.mark_parts_public_ref())?;
+                    .sign_primary_key_binding(&mut subkey_signer, &primary,
+                                              &subkey)?;
                 builder = builder.set_embedded_signature(backsig)?;
             }
 
@@ -435,7 +435,7 @@ impl CertBuilder {
 
         let mut signer = key.clone().into_keypair()
             .expect("key generated above has a secret");
-        let sig = sig.sign_primary_key_binding(&mut signer)?;
+        let sig = sig.sign_direct_key(&mut signer)?;
 
         Ok((key.mark_parts_public(), sig.into()))
     }
