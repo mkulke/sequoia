@@ -1843,7 +1843,6 @@ impl Cert {
                   R: key::KeyRole,
                   Packet: From<packet::Key<P, R>>,
         {
-            use std::cmp::Ordering;
             for q in acc.iter_mut() {
                 let replace = match q {
                     Packet::PublicKey(k_) =>
@@ -3372,7 +3371,7 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
             pk.into(),
         ])).unwrap();
 
-        for (ref t, ref offset) in [ (t2, 0), (t4, 0), (t3, 100), (t1, 300) ].into_iter() {
+        for (t, offset) in &[ (t2, 0), (t4, 0), (t3, 100), (t1, 300) ] {
             for i in 0..100 {
                 let binding = signature::Builder::new(SignatureType::DirectKey)
                     .set_features(&Features::sequoia()).unwrap()
