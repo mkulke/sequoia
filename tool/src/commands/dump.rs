@@ -437,13 +437,13 @@ impl PacketDumper {
                 writeln!(output, "{}  Hash algo: {}", i, s.hash_algo())?;
                 if s.hashed_area().iter().count() > 0 {
                     writeln!(output, "{}  Hashed area:", i)?;
-                    for (_, _, pkt) in s.hashed_area().iter() {
+                    for pkt in s.hashed_area().iter() {
                         self.dump_subpacket(output, i, pkt, s)?;
                     }
                 }
                 if s.unhashed_area().iter().count() > 0 {
                     writeln!(output, "{}  Unhashed area:", i)?;
-                    for (_, _, pkt) in s.unhashed_area().iter() {
+                    for pkt in s.unhashed_area().iter() {
                         self.dump_subpacket(output, i, pkt, s)?;
                     }
                 }
@@ -710,7 +710,7 @@ impl PacketDumper {
     }
 
     fn dump_subpacket(&self, output: &mut dyn io::Write, i: &str,
-                      s: Subpacket, sig: &Signature)
+                      s: &Subpacket, sig: &Signature)
                       -> Result<()> {
         use self::SubpacketValue::*;
 
@@ -723,11 +723,6 @@ impl PacketDumper {
 
         match s.value() {
             Unknown(ref b) => {
-                writeln!(output, "{}    {:?}{}:", i, s.tag(),
-                         if s.critical() { " (critical)" } else { "" })?;
-                hexdump_unknown(output, b)?;
-            },
-            Invalid(ref b) => {
                 writeln!(output, "{}    {:?}{}:", i, s.tag(),
                          if s.critical() { " (critical)" } else { "" })?;
                 hexdump_unknown(output, b)?;
@@ -815,7 +810,7 @@ impl PacketDumper {
         }
 
         match s.value() {
-            Unknown(_) | Invalid(_) => (),
+            Unknown(_) => (),
             EmbeddedSignature(ref sig) => {
                 if s.critical() {
                     write!(output, " (critical)")?;
@@ -823,7 +818,8 @@ impl PacketDumper {
                 writeln!(output)?;
                 let indent = format!("{}      ", i);
                 write!(output, "{}", indent)?;
-                self.dump_packet(output, &indent, None, sig, None, None)?;
+                self.dump_packet(output, &indent, None, &sig.clone().into(),
+                                 None, None)?;
             },
             _ => {
                 if s.critical() {
