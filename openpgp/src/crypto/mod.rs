@@ -15,7 +15,7 @@ pub(crate) mod ecdh;
 pub mod hash;
 mod keygrip;
 pub use self::keygrip::Keygrip;
-pub(crate) mod mem;
+pub mod mem;
 pub mod mpis;
 pub mod s2k;
 pub mod sexp;
@@ -112,33 +112,22 @@ impl fmt::Debug for SessionKey {
 
 /// Holds a password.
 ///
-/// The password is cleared when dropped.
+/// The password is encrypted in memory and only decrypted on demand.
+/// See [`mem::Encrypted`] for details.
+///
+///  [`mem::Encrypted`]: mem/struct.Encrypted.html
 #[derive(Clone, PartialEq, Eq)]
-pub struct Password(mem::Protected);
-
-impl AsRef<[u8]> for Password {
-    fn as_ref(&self) -> &[u8] {
-        &self.0
-    }
-}
-
-impl Deref for Password {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
+pub struct Password(mem::Encrypted);
 
 impl From<Vec<u8>> for Password {
     fn from(v: Vec<u8>) -> Self {
-        Password(v.into())
+        Password(mem::Encrypted::new(v.into()))
     }
 }
 
 impl From<Box<[u8]>> for Password {
     fn from(v: Box<[u8]>) -> Self {
-        Password(v.into())
+        Password(mem::Encrypted::new(v.into()))
     }
 }
 
@@ -162,7 +151,20 @@ impl From<&[u8]> for Password {
 
 impl fmt::Debug for Password {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Password ({:?})", self.0)
+        if cfg!(debug_assertions) {
+            self.map(|p| write!(f, "Password({:?})", p))
+        } else {
+            f.write_str("Password(<Encrypted>)")
+        }
+    }
+}
+
+impl Password {
+    /// Maps the given function over the password.
+    pub fn map<F, T>(&self, fun: F) -> T
+        where F: FnMut(&mem::Protected) -> T
+    {
+        self.0.map(fun)
     }
 }
 
