@@ -923,21 +923,14 @@ impl SerializeInto for S2K {
 
 impl Serialize for Unknown {
     fn serialize(&self, o: &mut dyn std::io::Write) -> Result<()> {
-        let body = if let Some(body) = self.body() {
-            &body[..]
-        } else {
-            &b""[..]
-        };
-
-        o.write_all(&body[..])?;
-
+        o.write_all(self.body())?;
         Ok(())
     }
 }
 
 impl NetLength for Unknown {
     fn net_len(&self) -> usize {
-        self.body().unwrap_or(&b""[..]).len()
+        self.body().len()
     }
 }
 
@@ -1628,7 +1621,7 @@ impl Literal {
 
         if write_tag {
             let len = 1 + (1 + filename.len()) + 4
-                + self.body().as_ref().map(|b| b.len()).unwrap_or(0);
+                + self.body().len();
             CTB::new(Tag::Literal).serialize(o)?;
             BodyLength::Full(len as u32).serialize(o)?;
         }
@@ -1642,12 +1635,7 @@ impl Literal {
 
 impl Serialize for Literal {
     fn serialize(&self, o: &mut dyn std::io::Write) -> Result<()> {
-        let body = if let Some(body) = self.body() {
-            &body[..]
-        } else {
-            &b""[..]
-        };
-
+        let body = self.body();
         if TRACE {
             let prefix = &body[..cmp::min(body.len(), 20)];
             eprintln!("Literal::serialize({}{}, {} bytes)",
@@ -1666,7 +1654,7 @@ impl Serialize for Literal {
 impl NetLength for Literal {
     fn net_len(&self) -> usize {
         1 + (1 + self.filename().map(|f| f.len()).unwrap_or(0)) + 4
-            + self.body().as_ref().map(|b| b.len()).unwrap_or(0)
+            + self.body().len()
     }
 }
 
@@ -1692,7 +1680,7 @@ impl Serialize for CompressedData {
                        algo: {}, {:?} children, {:?} bytes)",
                       self.algorithm(),
                       self.children().count(),
-                      self.body().as_ref().map(|body| body.len()));
+                      self.body().len());
         }
 
         let o = stream::Message::new(o);
@@ -1705,10 +1693,7 @@ impl Serialize for CompressedData {
         }
 
         // Append the data.
-        if let Some(data) = self.body() {
-            o.write_all(data)?;
-        }
-
+        o.write_all(self.body())?;
         o.finalize()
     }
 }
@@ -1717,7 +1702,7 @@ impl NetLength for CompressedData {
     fn net_len(&self) -> usize {
         let inner_length =
             self.children().map(|p| p.serialized_len()).sum::<usize>()
-            + self.body().as_ref().map(|body| body.len()).unwrap_or(0);
+            + self.body().len();
 
         // Worst case, the data gets larger.  Account for that.
         let inner_length = inner_length + cmp::max(inner_length / 2, 128);
@@ -1921,9 +1906,7 @@ impl Serialize for SEIP {
                        .into());
         } else {
             o.write_all(&[self.version()])?;
-            if let Some(body) = self.body() {
-                o.write_all(&body[..])?;
-            }
+            o.write_all(self.body())?;
         }
 
         Ok(())
@@ -1933,7 +1916,7 @@ impl Serialize for SEIP {
 impl NetLength for SEIP {
     fn net_len(&self) -> usize {
         1 // Version.
-            + self.body().as_ref().map(|b| b.len()).unwrap_or(0)
+            + self.body().len()
     }
 }
 
@@ -2024,10 +2007,7 @@ impl Serialize for AED1 {
                        .into());
         } else {
             self.serialize_headers(o)?;
-
-            if let Some(body) = self.body() {
-                o.write_all(&body[..])?;
-            }
+            o.write_all(self.body())?;
         }
 
         Ok(())
@@ -2041,7 +2021,7 @@ impl NetLength for AED1 {
         } else {
             4 // Headers.
                 + self.iv().len()
-                + self.body().as_ref().map(|b| b.len()).unwrap_or(0)
+                + self.body().len()
         }
     }
 }
@@ -2550,16 +2530,8 @@ mod test {
         let expected = to_unknown_packet(expected).unwrap();
         let got = to_unknown_packet(got).unwrap();
 
-        let expected_body = if let Some(ref data) = expected.body() {
-            &data[..]
-        } else {
-            &b""[..]
-        };
-        let got_body = if let Some(ref data) = got.body() {
-            &data[..]
-        } else {
-            &b""[..]
-        };
+        let expected_body = expected.body();
+        let got_body = got.body();
 
         let mut fail = false;
         if expected.tag() != got.tag() {

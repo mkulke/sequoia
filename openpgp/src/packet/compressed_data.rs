@@ -3,7 +3,6 @@ use std::ops::{Deref, DerefMut};
 
 use crate::packet::{self, Common};
 use crate::Packet;
-use crate::Container;
 use crate::types::CompressionAlgorithm;
 
 /// Holds a compressed data packet.
@@ -22,17 +21,19 @@ pub struct CompressedData {
     pub(crate) common: packet::Common,
     /// Algorithm used to compress the payload.
     algo: CompressionAlgorithm,
+
+    /// This is a container packet.
+    container: packet::Container,
 }
 
 impl fmt::Debug for CompressedData {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("CompressedData")
             .field("algo", &self.algo)
-            .field("children",
-                   &self.common.children.as_ref()
-                       .map(|c| &c.packets).unwrap_or(&Vec::new()))
+            .field("children", &self.container.children_ref())
             .field("body (bytes)",
-                   &self.common.body.as_ref().unwrap_or(&b"".to_vec()).len())
+                   &self.container.body().len())
+            .field("body_digest", &self.container.body_digest())
             .finish()
     }
 }
@@ -43,6 +44,7 @@ impl CompressedData {
         CompressedData {
             common: Default::default(),
             algo: algo,
+            container: Default::default(),
         }
     }
 
@@ -57,11 +59,9 @@ impl CompressedData {
     }
 
     /// Adds a new packet to the container.
+    #[cfg(test)]
     pub fn push(mut self, packet: Packet) -> Self {
-        if self.common.children.is_none() {
-            self.common.children = Some(Container::new());
-        }
-        self.common.children.as_mut().unwrap().push(packet);
+        self.container.children_mut().push(packet);
         self
     }
 
@@ -69,14 +69,14 @@ impl CompressedData {
     /// If `i` is 0, the new packet is insert at the front of the
     /// container.  If `i` is one, it is inserted after the first
     /// packet, etc.
+    #[cfg(test)]
     pub fn insert(mut self, i: usize, packet: Packet) -> Self {
-        if self.common.children.is_none() {
-            self.common.children = Some(Container::new());
-        }
-        self.common.children.as_mut().unwrap().insert(i, packet);
+        self.container.children_mut().insert(i, packet);
         self
     }
 }
+
+impl_container_forwards!(CompressedData);
 
 impl From<CompressedData> for Packet {
     fn from(s: CompressedData) -> Self {

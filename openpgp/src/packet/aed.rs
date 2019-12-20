@@ -29,6 +29,9 @@ pub struct AED1 {
     chunk_size: usize,
     /// Initialization vector for the AEAD algorithm.
     iv: Box<[u8]>,
+
+    /// This is a container packet.
+    container: packet::Container,
 }
 
 impl AED1 {
@@ -55,6 +58,7 @@ impl AED1 {
             aead: aead,
             chunk_size: chunk_size,
             iv: iv,
+            container: Default::default(),
         })
     }
 
@@ -118,6 +122,8 @@ impl AED1 {
     }
 }
 
+impl_container_forwards!(AED1);
+
 impl From<AED1> for Packet {
     fn from(p: AED1) -> Self {
         super::AED::from(p).into()
@@ -156,8 +162,8 @@ mod tests {
                               AEADAlgorithm::EAX,
                               64,
                               vec![].into_boxed_slice()).unwrap();
-        assert_eq!(s.body(), None);
+        assert_eq!(s.body(), &[]);
         s.set_body(vec![0, 1, 2]);
-        assert_eq!(s.body(), Some(&[0, 1, 2][..]));
+        assert_eq!(s.body(), &[0, 1, 2]);
     }
 }

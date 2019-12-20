@@ -74,7 +74,7 @@ impl std::str::FromStr for PacketPile {
 
 impl From<Vec<Packet>> for PacketPile {
     fn from(p: Vec<Packet>) -> Self {
-        PacketPile { top_level: Container { packets: p } }
+        PacketPile { top_level: Container::from(p) }
     }
 }
 
@@ -126,7 +126,7 @@ impl PacketPile {
                 if *i < c.packets.len() {
                     let p = &c.packets[*i];
                     packet = Some(p);
-                    cont = p.children_ref();
+                    cont = p.container_ref();
                     continue;
                 }
             }
@@ -156,7 +156,7 @@ impl PacketPile {
                 return Some(p)
             }
 
-            container = p.children_mut().unwrap();
+            container = p.container_mut().unwrap();
         }
 
         None
@@ -188,9 +188,10 @@ impl PacketPile {
     /// // A compressed data packet that contains a literal data packet.
     /// let mut literal = Literal::new(DataFormat::Text);
     /// literal.set_body(b"old".to_vec());
-    /// let mut pile = PacketPile::from(Packet::from(
-    ///     CompressedData::new(CompressionAlgorithm::Uncompressed)
-    ///         .push(literal.into())));
+    /// let mut compressed =
+    ///     CompressedData::new(CompressionAlgorithm::Uncompressed);
+    /// compressed.children_mut().push(literal.into());
+    /// let mut pile = PacketPile::from(Packet::from(compressed));
     ///
     /// // Replace the literal data packet.
     /// let mut literal = Literal::new(DataFormat::Text);
@@ -200,7 +201,7 @@ impl PacketPile {
     ///     [ literal.into() ].to_vec())
     ///     .unwrap();
     /// # if let Some(Packet::Literal(lit)) = pile.path_ref(&[0, 0]) {
-    /// #     assert_eq!(lit.body(), Some(&b"new"[..]), "{:#?}", lit);
+    /// #     assert_eq!(lit.body(), &b"new"[..], "{:#?}", lit);
     /// # } else {
     /// #     panic!("Unexpected packet!");
     /// # }
@@ -243,21 +244,16 @@ impl PacketPile {
                 return Err(Error::IndexOutOfRange.into());
             }
 
-            let p = &mut tmp.packets[i];
-            if p.children_ref().is_none() {
-                match p {
-                    Packet::CompressedData(_) | Packet::SEIP(_) => {
-                        // We have a container with no children.
-                        // That's okay.  We can create the container.
-                        p.set_children(Some(Container::new()));
-                    },
-                    _ => {
-                        return Err(Error::IndexOutOfRange.into());
-                    }
-                }
+            match tmp.packets[i] {
+                // The structured container types.
+                Packet::CompressedData(_)
+                    | Packet::SEIP(_)
+                    | Packet::AED(_)
+                    => (), // Ok.
+                _ => return Err(Error::IndexOutOfRange.into()),
             }
-
-            container = p.children_mut().unwrap();
+            container = tmp.packets[i].container_mut()
+                .expect("The above packets are structured containers");
         }
 
         return Err(Error::IndexOutOfRange.into());
@@ -304,7 +300,7 @@ impl PacketPile {
         }
 
         // Create a top-level container.
-        let mut top_level = Container::new();
+        let mut top_level = Container::default();
 
         let mut last_position = 0;
 
@@ -332,7 +328,7 @@ impl PacketPile {
                 let packets_len = tmp.packets.len();
                 let p = &mut tmp.packets[packets_len - 1];
 
-                container = p.children_mut().unwrap();
+                container = p.container_mut().unwrap();
             }
 
             if relative_position < 0 {
@@ -347,9 +343,7 @@ impl PacketPile {
                     // Create a new container.
                     let tmp = container;
                     let i = tmp.packets.len() - 1;
-                    assert!(tmp.packets[i].children_ref().is_none());
-                    tmp.packets[i].set_children(Some(Container::new()));
-                    container = tmp.packets[i].children_mut().unwrap();
+                    container = tmp.packets[i].container_mut().unwrap();
                 }
 
                 container.packets.push(packet);
@@ -640,8 +634,7 @@ mod test {
         }
 
         let mut seip = SEIP1::new();
-        seip.set_children(Some(Container::new()));
-        seip.children_mut().unwrap().push(cd.into());
+        seip.children_mut().push(cd.into());
         packets.push(seip.into());
 
         eprintln!("{:#?}", packets);
@@ -661,10 +654,18 @@ mod test {
             assert_eq!(pile.path_ref_mut(&[ 0, 0, i ]).unwrap().tag(),
                        Tag::Literal);
 
-            assert_eq!(pile.path_ref(&[ 0, 0, i ]).unwrap().body(),
-                       Some(t));
-            assert_eq!(pile.path_ref_mut(&[ 0, 0, i ]).unwrap().body(),
-                       Some(t));
+            let packet = pile.path_ref(&[ 0, 0, i ]).unwrap();
+            if let Packet::Literal(l) = packet {
+                assert_eq!(l.body(), t);
+            } else {
+                panic!("Expected literal, got: {:?}", packet);
+            }
+            let packet = pile.path_ref_mut(&[ 0, 0, i ]).unwrap();
+            if let Packet::Literal(l) = packet {
+                assert_eq!(l.body(), t);
+            } else {
+                panic!("Expected literal, got: {:?}", packet);
+            }
         }
 
         // Try a few out of bounds accesses.
@@ -717,8 +718,7 @@ mod test {
         let children = pile.into_children().collect::<Vec<Packet>>();
         assert_eq!(children.len(), 1, "{:#?}", children);
         if let Packet::Literal(ref literal) = children[0] {
-            assert_eq!(literal.body(), Some(&b"two"[..]),
-                       "{:#?}", literal);
+            assert_eq!(literal.body(), &b"two"[..], "{:#?}", literal);
         } else {
             panic!("WTF");
         }
@@ -755,7 +755,7 @@ mod test {
                         .children()
                         .map(|p| {
                             if let Packet::Literal(ref literal) = p {
-                                literal.body().unwrap()
+                                literal.body()
                             } else {
                                 panic!("Expected a literal packet, got: {:?}", p);
                             }
@@ -812,7 +812,7 @@ mod test {
                         .children()
                         .map(|p| {
                             if let Packet::Literal(ref literal) = p {
-                                literal.body().unwrap()
+                                literal.body()
                             } else {
                                 panic!("Expected a literal packet, got: {:?}", p);
                             }
