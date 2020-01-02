@@ -1412,8 +1412,10 @@ impl Subpacket {
                 | SubpacketTag::PlaceholderForBackwardCompatibility
                 | SubpacketTag::Private(_)
                 | SubpacketTag::Unknown(_) =>
-                SubpacketValue::Unknown(
-                    php.parse_bytes("unknown subpacket", len)?),
+                SubpacketValue::Unknown {
+                    tag,
+                    body: php.parse_bytes("unknown subpacket", len)?,
+                },
         };
 
         let total_out = php.reader.total_out();
@@ -1424,9 +1426,8 @@ impl Subpacket {
                         len, total_out - total_out_before)).into());
         }
 
-        Ok(Subpacket::with_length_tag(
+        Ok(Subpacket::with_length(
             length,
-            tag,
             value,
             critical,
         ))

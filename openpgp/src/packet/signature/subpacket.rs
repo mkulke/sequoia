@@ -392,7 +392,7 @@ impl SubpacketArea {
         if self.parsed.lock().unwrap().borrow().is_none() {
             let mut hash = HashMap::new();
             for (i, sp) in self.packets.iter().enumerate() {
-                hash.insert(sp.tag, i);
+                hash.insert(sp.tag(), i);
             }
 
             *self.parsed.lock().unwrap().borrow_mut() = Some(hash);
@@ -560,10 +560,18 @@ impl NotationDataFlags {
 ///
 /// The value is well structured.  See `SubpacketTag` for a
 /// description of these tags.
+///
+/// Note: This enum cannot be exhaustively matched to allow future
+/// extensions.
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum SubpacketValue {
-    /// The subpacket is unknown.
-    Unknown(Vec<u8>),
+    /// An unknown subpacket.
+    Unknown {
+        /// The unknown subpacket's tag.
+        tag: SubpacketTag,
+        /// The unknown subpacket's uninterpreted body.
+        body: Vec<u8>
+    },
 
     /// 4-octet time field
     SignatureCreationTime(Timestamp),
@@ -663,6 +671,10 @@ pub enum SubpacketValue {
     PreferredAEADAlgorithms(Vec<AEADAlgorithm>),
     /// Intended Recipient Fingerprint [proposed].
     IntendedRecipient(Fingerprint),
+
+    /// This marks this enum as non-exhaustive.  Do not use this
+    /// variant.
+    #[doc(hidden)] __Nonexhaustive,
 }
 
 impl SubpacketValue {
@@ -704,48 +716,49 @@ impl SubpacketValue {
                 // Educated guess for unknown versions.
                 Fingerprint::Invalid(_) => 1 + fp.as_slice().len(),
             },
-            Unknown(u) => u.len(),
+            Unknown { body, .. } => body.len(),
+            __Nonexhaustive => unreachable!(),
         }
     }
 
     /// Returns the subpacket tag for this value.
-    pub fn tag(&self) -> Result<SubpacketTag> {
+    pub fn tag(&self) -> SubpacketTag {
         use self::SubpacketValue::*;
         match &self {
-            SignatureCreationTime(_) => Ok(SubpacketTag::SignatureCreationTime),
+            SignatureCreationTime(_) => SubpacketTag::SignatureCreationTime,
             SignatureExpirationTime(_) =>
-                Ok(SubpacketTag::SignatureExpirationTime),
+                SubpacketTag::SignatureExpirationTime,
             ExportableCertification(_) =>
-                Ok(SubpacketTag::ExportableCertification),
-            TrustSignature { .. } => Ok(SubpacketTag::TrustSignature),
-            RegularExpression(_) => Ok(SubpacketTag::RegularExpression),
-            Revocable(_) => Ok(SubpacketTag::Revocable),
-            KeyExpirationTime(_) => Ok(SubpacketTag::KeyExpirationTime),
+                SubpacketTag::ExportableCertification,
+            TrustSignature { .. } => SubpacketTag::TrustSignature,
+            RegularExpression(_) => SubpacketTag::RegularExpression,
+            Revocable(_) => SubpacketTag::Revocable,
+            KeyExpirationTime(_) => SubpacketTag::KeyExpirationTime,
             PreferredSymmetricAlgorithms(_) =>
-                Ok(SubpacketTag::PreferredSymmetricAlgorithms),
-            RevocationKey { .. } => Ok(SubpacketTag::RevocationKey),
-            Issuer(_) => Ok(SubpacketTag::Issuer),
-            NotationData(_) => Ok(SubpacketTag::NotationData),
+                SubpacketTag::PreferredSymmetricAlgorithms,
+            RevocationKey { .. } => SubpacketTag::RevocationKey,
+            Issuer(_) => SubpacketTag::Issuer,
+            NotationData(_) => SubpacketTag::NotationData,
             PreferredHashAlgorithms(_) =>
-                Ok(SubpacketTag::PreferredHashAlgorithms),
+                SubpacketTag::PreferredHashAlgorithms,
             PreferredCompressionAlgorithms(_) =>
-                Ok(SubpacketTag::PreferredCompressionAlgorithms),
-            KeyServerPreferences(_) => Ok(SubpacketTag::KeyServerPreferences),
-            PreferredKeyServer(_) => Ok(SubpacketTag::PreferredKeyServer),
-            PrimaryUserID(_) => Ok(SubpacketTag::PrimaryUserID),
-            PolicyURI(_) => Ok(SubpacketTag::PolicyURI),
-            KeyFlags(_) => Ok(SubpacketTag::KeyFlags),
-            SignersUserID(_) => Ok(SubpacketTag::SignersUserID),
-            ReasonForRevocation { .. } => Ok(SubpacketTag::ReasonForRevocation),
-            Features(_) => Ok(SubpacketTag::Features),
-            SignatureTarget { .. } => Ok(SubpacketTag::SignatureTarget),
-            EmbeddedSignature(_) => Ok(SubpacketTag::EmbeddedSignature),
-            IssuerFingerprint(_) => Ok(SubpacketTag::IssuerFingerprint),
+                SubpacketTag::PreferredCompressionAlgorithms,
+            KeyServerPreferences(_) => SubpacketTag::KeyServerPreferences,
+            PreferredKeyServer(_) => SubpacketTag::PreferredKeyServer,
+            PrimaryUserID(_) => SubpacketTag::PrimaryUserID,
+            PolicyURI(_) => SubpacketTag::PolicyURI,
+            KeyFlags(_) => SubpacketTag::KeyFlags,
+            SignersUserID(_) => SubpacketTag::SignersUserID,
+            ReasonForRevocation { .. } => SubpacketTag::ReasonForRevocation,
+            Features(_) => SubpacketTag::Features,
+            SignatureTarget { .. } => SubpacketTag::SignatureTarget,
+            EmbeddedSignature(_) => SubpacketTag::EmbeddedSignature,
+            IssuerFingerprint(_) => SubpacketTag::IssuerFingerprint,
             PreferredAEADAlgorithms(_) =>
-                Ok(SubpacketTag::PreferredAEADAlgorithms),
-            IntendedRecipient(_) => Ok(SubpacketTag::IntendedRecipient),
-            _ => Err(Error::InvalidArgument(
-                "Unknown or invalid subpacket value".into()).into()),
+                SubpacketTag::PreferredAEADAlgorithms,
+            IntendedRecipient(_) => SubpacketTag::IntendedRecipient,
+            Unknown { tag, .. } => *tag,
+            __Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -765,8 +778,6 @@ pub struct Subpacket {
     length: SubpacketLength,
     /// Critical flag.
     critical: bool,
-    /// Packet type.
-    tag: SubpacketTag,
     /// Packet value, must match packet type.
     value: SubpacketValue,
 }
@@ -789,21 +800,19 @@ impl Subpacket {
     /// Creates a new subpacket.
     pub fn new(value: SubpacketValue, critical: bool)
                -> Result<Subpacket> {
-        Ok(Self::with_length_tag(
+        Ok(Self::with_length(
             SubpacketLength::from(1 /* Tag */ + value.len() as u32),
-            value.tag()?, value, critical))
+            value, critical))
     }
 
     /// Creates a new subpacket with the given length and tag.
-    pub(crate) fn with_length_tag(length: SubpacketLength,
-                                  tag: SubpacketTag,
-                                  value: SubpacketValue,
-                                  critical: bool)
-                                  -> Subpacket {
+    pub(crate) fn with_length(length: SubpacketLength,
+                              value: SubpacketValue,
+                              critical: bool)
+                              -> Subpacket {
         Subpacket {
             length,
             critical,
-            tag,
             value,
         }
     }
@@ -815,7 +824,7 @@ impl Subpacket {
 
     /// Returns the subpacket tag.
     pub fn tag(&self) -> SubpacketTag {
-        self.tag
+        self.value.tag()
     }
 
     /// Returns the subpackets value.
@@ -2607,7 +2616,6 @@ fn subpacket_test_2() {
                    Some(&Subpacket {
                        length: 5.into(),
                        critical: false,
-                       tag: SubpacketTag::SignatureCreationTime,
                        value: SubpacketValue::SignatureCreationTime(
                            1515791508.into())
                    }));
@@ -2621,7 +2629,6 @@ fn subpacket_test_2() {
                    Some(&Subpacket {
                        length: 5.into(),
                        critical: false,
-                       tag: SubpacketTag::KeyExpirationTime,
                        value: SubpacketValue::KeyExpirationTime(
                            63072000.into())
                    }));
@@ -2645,7 +2652,6 @@ fn subpacket_test_2() {
                    Some(&Subpacket {
                        length: 5.into(),
                        critical: false,
-                       tag: SubpacketTag::PreferredSymmetricAlgorithms,
                        value: SubpacketValue::PreferredSymmetricAlgorithms(
                            vec![SymmetricAlgorithm::AES256,
                                 SymmetricAlgorithm::AES192,
@@ -2663,7 +2669,6 @@ fn subpacket_test_2() {
                    Some(&Subpacket {
                        length: 6.into(),
                        critical: false,
-                       tag: SubpacketTag::PreferredHashAlgorithms,
                        value: SubpacketValue::PreferredHashAlgorithms(
                            vec![HashAlgorithm::SHA256,
                                 HashAlgorithm::SHA384,
@@ -2680,7 +2685,6 @@ fn subpacket_test_2() {
                    Some(&Subpacket {
                        length: 4.into(),
                        critical: false,
-                       tag: SubpacketTag::PreferredCompressionAlgorithms,
                        value: SubpacketValue::PreferredCompressionAlgorithms(
                            vec![CompressionAlgorithm::Zlib,
                                 CompressionAlgorithm::BZip2,
@@ -2693,7 +2697,6 @@ fn subpacket_test_2() {
                    Some(&Subpacket {
                        length: 2.into(),
                        critical: false,
-                       tag: SubpacketTag::KeyServerPreferences,
                        value: SubpacketValue::KeyServerPreferences(
                            KeyServerPreferences::default().set_no_modify(true)),
                    }));
@@ -2703,7 +2706,6 @@ fn subpacket_test_2() {
                    Some(&Subpacket {
                        length: 2.into(),
                        critical: false,
-                       tag: SubpacketTag::KeyFlags,
                        value: SubpacketValue::KeyFlags(
                            KeyFlags::default().set_certification(true).set_signing(true))
                    }));
@@ -2713,7 +2715,6 @@ fn subpacket_test_2() {
                    Some(&Subpacket {
                        length: 2.into(),
                        critical: false,
-                       tag: SubpacketTag::Features,
                        value: SubpacketValue::Features(
                            Features::default().set_mdc(true))
                    }));
@@ -2724,7 +2725,6 @@ fn subpacket_test_2() {
                    Some(&Subpacket {
                        length: 9.into(),
                        critical: false,
-                       tag: SubpacketTag::Issuer,
                        value: SubpacketValue::Issuer(keyid)
                    }));
 
@@ -2735,7 +2735,6 @@ fn subpacket_test_2() {
                    Some(&Subpacket {
                        length: 22.into(),
                        critical: false,
-                       tag: SubpacketTag::IssuerFingerprint,
                        value: SubpacketValue::IssuerFingerprint(fp)
                    }));
 
@@ -2749,7 +2748,6 @@ fn subpacket_test_2() {
                    Some(&Subpacket {
                        length: 32.into(),
                        critical: false,
-                       tag: SubpacketTag::NotationData,
                        value: SubpacketValue::NotationData(n.clone())
                    }));
         assert_eq!(sig.subpackets(SubpacketTag::NotationData)
@@ -2757,7 +2755,6 @@ fn subpacket_test_2() {
                    vec![&Subpacket {
                        length: 32.into(),
                        critical: false,
-                       tag: SubpacketTag::NotationData,
                        value: SubpacketValue::NotationData(n.clone())
                    }]);
     } else {
@@ -2783,7 +2780,6 @@ fn subpacket_test_2() {
                    Some(&Subpacket {
                        length: 5.into(),
                        critical: false,
-                       tag: SubpacketTag::SignatureCreationTime,
                        value: SubpacketValue::SignatureCreationTime(
                            1515791490.into())
                    }));
@@ -2793,7 +2789,6 @@ fn subpacket_test_2() {
                    Some(&Subpacket {
                        length: 2.into(),
                        critical: false,
-                       tag: SubpacketTag::ExportableCertification,
                        value: SubpacketValue::ExportableCertification(false)
                    }));
     }
@@ -2821,7 +2816,6 @@ fn subpacket_test_2() {
                    Some(&Subpacket {
                        length: 5.into(),
                        critical: false,
-                       tag: SubpacketTag::SignatureCreationTime,
                        value: SubpacketValue::SignatureCreationTime(
                            1515791376.into())
                    }));
@@ -2831,7 +2825,6 @@ fn subpacket_test_2() {
                    Some(&Subpacket {
                        length: 2.into(),
                        critical: false,
-                       tag: SubpacketTag::Revocable,
                        value: SubpacketValue::Revocable(false)
                    }));
 
@@ -2843,7 +2836,6 @@ fn subpacket_test_2() {
                    Some(&Subpacket {
                        length: 23.into(),
                        critical: false,
-                       tag: SubpacketTag::RevocationKey,
                        value: SubpacketValue::RevocationKey {
                            class: 0x80,
                            pk_algo: PublicKeyAlgorithm::RSAEncryptSign,
@@ -2858,7 +2850,6 @@ fn subpacket_test_2() {
                    Some(&Subpacket {
                        length: 9.into(),
                        critical: false,
-                       tag: SubpacketTag::Issuer,
                        value: SubpacketValue::Issuer(keyid)
                    }));
 
@@ -2869,7 +2860,6 @@ fn subpacket_test_2() {
                    Some(&Subpacket {
                        length: 22.into(),
                        critical: false,
-                       tag: SubpacketTag::IssuerFingerprint,
                        value: SubpacketValue::IssuerFingerprint(fp)
                    }));
 
@@ -2896,7 +2886,6 @@ fn subpacket_test_2() {
                    Some(&Subpacket {
                        length: 5.into(),
                        critical: false,
-                       tag: SubpacketTag::SignatureCreationTime,
                        value: SubpacketValue::SignatureCreationTime(
                            1515886658.into())
                    }));
@@ -2908,7 +2897,6 @@ fn subpacket_test_2() {
                    Some(&Subpacket {
                        length: 33.into(),
                        critical: false,
-                       tag: SubpacketTag::ReasonForRevocation,
                        value: SubpacketValue::ReasonForRevocation {
                            code: ReasonForRevocation::Unspecified,
                            reason: b"Forgot to set a sig expiration.".to_vec(),
@@ -2928,7 +2916,6 @@ fn subpacket_test_2() {
                    Some(&Subpacket {
                        length: 5.into(),
                        critical: false,
-                       tag: SubpacketTag::SignatureCreationTime,
                        value: SubpacketValue::SignatureCreationTime(
                            1515791467.into())
                    }));
@@ -2957,7 +2944,6 @@ fn subpacket_test_2() {
                    Some(&Subpacket {
                        length: 35.into(),
                        critical: false,
-                       tag: SubpacketTag::NotationData,
                        value: SubpacketValue::NotationData(n3.clone())
                    }));
 
@@ -2968,19 +2954,16 @@ fn subpacket_test_2() {
                        &Subpacket {
                            length: 38.into(),
                            critical: false,
-                           tag: SubpacketTag::NotationData,
                            value: SubpacketValue::NotationData(n1)
                        },
                        &Subpacket {
                            length: 24.into(),
                            critical: false,
-                           tag: SubpacketTag::NotationData,
                            value: SubpacketValue::NotationData(n2)
                        },
                        &Subpacket {
                            length: 35.into(),
                            critical: false,
-                           tag: SubpacketTag::NotationData,
                            value: SubpacketValue::NotationData(n3)
                        },
                    ]);
@@ -3008,7 +2991,6 @@ fn subpacket_test_2() {
                    Some(&Subpacket {
                        length: 5.into(),
                        critical: false,
-                       tag: SubpacketTag::SignatureCreationTime,
                        value: SubpacketValue::SignatureCreationTime(
                            1515791223.into())
                    }));
@@ -3018,7 +3000,6 @@ fn subpacket_test_2() {
                    Some(&Subpacket {
                        length: 3.into(),
                        critical: false,
-                       tag: SubpacketTag::TrustSignature,
                        value: SubpacketValue::TrustSignature {
                            level: 2,
                            trust: 120,
@@ -3032,7 +3013,6 @@ fn subpacket_test_2() {
                    Some(&Subpacket {
                        length: 23.into(),
                        critical: true,
-                       tag: SubpacketTag::RegularExpression,
                        value: SubpacketValue::RegularExpression(regex.to_vec())
                    }));
     }
@@ -3064,7 +3044,6 @@ fn subpacket_test_2() {
                    Some(&Subpacket {
                        length: 5.into(),
                        critical: false,
-                       tag: SubpacketTag::KeyExpirationTime,
                        value: SubpacketValue::KeyExpirationTime(
                            63072000.into())
                    }));
@@ -3075,7 +3054,6 @@ fn subpacket_test_2() {
                    Some(&Subpacket {
                        length: 9.into(),
                        critical: false,
-                       tag: SubpacketTag::Issuer,
                        value: SubpacketValue::Issuer(keyid)
                    }));
 
@@ -3086,7 +3064,6 @@ fn subpacket_test_2() {
                    Some(&Subpacket {
                        length: 22.into(),
                        critical: false,
-                       tag: SubpacketTag::IssuerFingerprint,
                        value: SubpacketValue::IssuerFingerprint(fp)
                    }));
 

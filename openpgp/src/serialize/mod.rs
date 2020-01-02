@@ -1077,8 +1077,9 @@ impl Serialize for SubpacketValue {
                 _ => return Err(Error::InvalidArgument(
                     "Unknown kind of fingerprint".into()).into()),
             }
-            Unknown(ref raw) =>
-                o.write_all(raw)?,
+            Unknown { body, .. } =>
+                o.write_all(body)?,
+            __Nonexhaustive => unreachable!(),
         }
         Ok(())
     }
@@ -1120,7 +1121,8 @@ impl SerializeInto for SubpacketValue {
                 Fingerprint::V4(_) => 1 + fp.serialized_len(),
                 _ => 0,
             },
-            Unknown(ref raw) => raw.len(),
+            Unknown { body, .. } => body.len(),
+            __Nonexhaustive => unreachable!(),
         }
     }
 

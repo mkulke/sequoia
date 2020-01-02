@@ -727,10 +727,10 @@ impl PacketDumper {
         };
 
         match s.value() {
-            Unknown(ref b) => {
+            Unknown { body, .. } => {
                 writeln!(output, "{}    {:?}{}:", i, s.tag(),
                          if s.critical() { " (critical)" } else { "" })?;
-                hexdump_unknown(output, b)?;
+                hexdump_unknown(output, body)?;
             },
             SignatureCreationTime(t) =>
                 write!(output, "{}    Signature creation time: {}", i,
@@ -812,10 +812,11 @@ impl PacketDumper {
                        .collect::<Vec<String>>().join(", "))?,
             IntendedRecipient(ref fp) =>
                 write!(output, "{}    Intended Recipient: {}", i, fp)?,
+            __Nonexhaustive => unreachable!(),
         }
 
         match s.value() {
-            Unknown(_) => (),
+            Unknown { .. } => (),
             EmbeddedSignature(ref sig) => {
                 if s.critical() {
                     write!(output, " (critical)")?;
