@@ -640,6 +640,9 @@ impl PacketDumper {
                         writeln!(output, "{}  Digest: {}", i,
                                  hex::encode(s.aead_digest()))?;
                     },
+
+                    self::openpgp::packet::SKESK::__Nonexhaustive =>
+                        unreachable!(),
                 }
             },
 
@@ -661,6 +664,8 @@ impl PacketDumper {
                 writeln!(output, "{}  Chunk size: {}", i, a.chunk_size())?;
                 writeln!(output, "{}  IV: {}", i, hex::encode(a.iv()))?;
             },
+
+            __Nonexhaustive => unreachable!(),
         }
 
         if let Some(fields) = additional_fields {
