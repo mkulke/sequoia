@@ -64,7 +64,7 @@ use crate::PublicKeyAlgorithm;
 use crate::SymmetricAlgorithm;
 use crate::HashAlgorithm;
 use crate::types::{Curve, Timestamp};
-use crate::crypto::s2k::S2K;
+use crate::crypto::S2K;
 use crate::Result;
 use crate::crypto::Password;
 use crate::KeyID;
@@ -1171,16 +1171,10 @@ impl SecretKeyMaterial {
 /// demand.  See [`crypto::mem::Encrypted`] for details.
 ///
 ///  [`crypto::mem::Encrypted`]: ../../crypto/mem/struct.Encrypted.html
-#[derive(Eq, Hash, Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Unencrypted {
     /// MPIs of the secret key.
     mpis: mem::Encrypted,
-}
-
-impl PartialEq for Unencrypted {
-    fn eq(&self, other: &Self) -> bool {
-        self.map(|a| other.map(|b| a == b))
-    }
 }
 
 impl From<mpis::SecretKeyMaterial> for Unencrypted {

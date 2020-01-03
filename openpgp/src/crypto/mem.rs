@@ -2,6 +2,7 @@
 
 use std::cmp::{min, Ordering};
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 
@@ -11,7 +12,7 @@ use memsec;
 ///
 /// The memory is guaranteed not to be copied around, and is cleared
 /// when the object is dropped.
-#[derive(Clone, Eq, Hash)]
+#[derive(Clone)]
 pub struct Protected(Pin<Box<[u8]>>);
 
 impl PartialEq for Protected {
@@ -20,9 +21,17 @@ impl PartialEq for Protected {
     }
 }
 
+impl Eq for Protected {}
+
+impl Hash for Protected {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
+
 impl Protected {
     /// Converts to a buffer for modification.
-    pub unsafe fn into_vec(self) -> Vec<u8> {
+    pub(crate) unsafe fn into_vec(self) -> Vec<u8> {
         self.iter().cloned().collect()
     }
 }
@@ -112,10 +121,25 @@ impl fmt::Debug for Protected {
 /// This kind of protection was pioneered by OpenSSH.  The commit
 /// adding it can be found
 /// [here](https://marc.info/?l=openbsd-cvs&m=156109087822676).
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug)]
 pub struct Encrypted {
     ciphertext: Protected,
     iv: Protected,
+}
+
+impl PartialEq for Encrypted {
+    fn eq(&self, other: &Self) -> bool {
+        // Protected::eq is time-constant.
+        self.map(|a| other.map(|b| a == b))
+    }
+}
+
+impl Eq for Encrypted {}
+
+impl Hash for Encrypted {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.map(|k| Hash::hash(k, state));
+    }
 }
 
 /// The number of pages containing random bytes to derive the prekey
