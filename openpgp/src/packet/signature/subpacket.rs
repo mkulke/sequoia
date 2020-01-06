@@ -486,14 +486,15 @@ pub struct NotationData {
 
 impl NotationData {
     /// Creates a new Notation Data subpacket payload.
-    pub fn new<N, F>(name: N, value: &[u8], flags: F) -> Self
+    pub fn new<N, V, F>(name: N, value: V, flags: F) -> Self
         where N: AsRef<str>,
+              V: AsRef<[u8]>,
               F: Into<Option<NotationDataFlags>>,
     {
         Self {
             flags: flags.into().unwrap_or_default(),
             name: name.as_ref().into(),
-            value: value.into(),
+            value: value.as_ref().into(),
         }
     }
 
@@ -1214,11 +1215,13 @@ impl SubpacketArea {
 
     /// Returns the value of all Notation Data subpackets with the
     /// given name.
-    pub fn notation(&self, name: &str) -> Vec<&[u8]> {
+    pub fn notation<N>(&self, name: N) -> Vec<&[u8]>
+        where N: AsRef<str>
+    {
         self.subpackets(SubpacketTag::NotationData)
             .into_iter().filter_map(|s| match s.value {
                 SubpacketValue::NotationData(ref v)
-                    if v.name == name => Some(&v.value[..]),
+                    if v.name == name.as_ref() => Some(&v.value[..]),
                 _ => None,
             })
             .collect()
@@ -1968,9 +1971,14 @@ impl signature::Builder {
     }
 
     /// Sets the value of the Regular Expression subpacket.
-    pub fn set_regular_expression(mut self, re: &[u8]) -> Result<Self> {
+    ///
+    /// Note: Sequoia will add the terminating nul byte when
+    /// serializing the signature.
+    pub fn set_regular_expression<R>(mut self, re: R) -> Result<Self>
+        where R: AsRef<[u8]>
+    {
         self.hashed_area.replace(Subpacket::new(
-            SubpacketValue::RegularExpression(re.to_vec()),
+            SubpacketValue::RegularExpression(re.as_ref().to_vec()),
             true)?)?;
 
         Ok(self)
@@ -2050,19 +2058,21 @@ impl signature::Builder {
     ///
     /// Any existing Notation Data subpacket with the given name are
     /// replaced.
-    pub fn set_notation<F>(mut self, name: &str, value: &[u8], flags: F,
-                           critical: bool)
-                           -> Result<Self>
-        where F: Into<Option<NotationDataFlags>>
+    pub fn set_notation<N, V, F>(mut self, name: N, value: V, flags: F,
+                                 critical: bool)
+                                 -> Result<Self>
+        where N: AsRef<str>,
+              V: AsRef<[u8]>,
+              F: Into<Option<NotationDataFlags>>,
     {
         self.hashed_area.packets.retain(|s| {
             match s.value {
                 SubpacketValue::NotationData(ref v)
-                    if v.name == name => false,
+                    if v.name == name.as_ref() => false,
                 _ => true,
             }
         });
-        self.add_notation(name, value,
+        self.add_notation(name.as_ref(), value.as_ref(),
                           flags.into().unwrap_or_default(),
                           critical)
     }
@@ -2072,13 +2082,15 @@ impl signature::Builder {
     ///
     /// Any existing Notation Data subpacket with the given name are
     /// kept.
-    pub fn add_notation<F>(mut self, name: &str, value: &[u8], flags: F,
+    pub fn add_notation<N, V, F>(mut self, name: N, value: V, flags: F,
                            critical: bool)
                            -> Result<Self>
-        where F: Into<Option<NotationDataFlags>>
+        where N: AsRef<str>,
+              V: AsRef<[u8]>,
+              F: Into<Option<NotationDataFlags>>,
     {
         self.hashed_area.add(Subpacket::new(SubpacketValue::NotationData(
-            NotationData::new(name, value,
+            NotationData::new(name.as_ref(), value.as_ref(),
                               flags.into().unwrap_or_default())),
                                             critical)?)?;
         Ok(self)
@@ -2126,10 +2138,12 @@ impl signature::Builder {
 
     /// Sets the value of the Preferred Key Server subpacket, which
     /// contains the user's preferred key server for updates.
-    pub fn set_preferred_key_server(mut self, uri: &[u8])
-                                    -> Result<Self> {
+    pub fn set_preferred_key_server<U>(mut self, uri: U)
+                                       -> Result<Self>
+        where U: AsRef<[u8]>,
+    {
         self.hashed_area.replace(Subpacket::new(
-            SubpacketValue::PreferredKeyServer(uri.to_vec()),
+            SubpacketValue::PreferredKeyServer(uri.as_ref().to_vec()),
             false)?)?;
 
         Ok(self)
@@ -2147,9 +2161,11 @@ impl signature::Builder {
     }
 
     /// Sets the value of the Policy URI subpacket.
-    pub fn set_policy_uri(mut self, uri: &[u8]) -> Result<Self> {
+    pub fn set_policy_uri<U>(mut self, uri: U) -> Result<Self>
+        where U: AsRef<[u8]>,
+    {
         self.hashed_area.replace(Subpacket::new(
-            SubpacketValue::PolicyURI(uri.to_vec()),
+            SubpacketValue::PolicyURI(uri.as_ref().to_vec()),
             false)?)?;
 
         Ok(self)
@@ -2170,22 +2186,26 @@ impl signature::Builder {
     /// Sets the value of the Signer's UserID subpacket, which
     /// contains the User ID that the key holder considers responsible
     /// for the signature.
-    pub fn set_signers_user_id(mut self, uid: &[u8]) -> Result<Self> {
+    pub fn set_signers_user_id<U>(mut self, uid: U) -> Result<Self>
+        where U: AsRef<[u8]>,
+    {
         self.hashed_area.replace(Subpacket::new(
-            SubpacketValue::SignersUserID(uid.to_vec()),
+            SubpacketValue::SignersUserID(uid.as_ref().to_vec()),
             true)?)?;
 
         Ok(self)
     }
 
     /// Sets the value of the Reason for Revocation subpacket.
-    pub fn set_reason_for_revocation(mut self, code: ReasonForRevocation,
-                                     reason: &[u8])
-                                     -> Result<Self> {
+    pub fn set_reason_for_revocation<R>(mut self, code: ReasonForRevocation,
+                                        reason: R)
+                                        -> Result<Self>
+        where R: AsRef<[u8]>,
+    {
         self.hashed_area.replace(Subpacket::new(
             SubpacketValue::ReasonForRevocation {
                 code: code,
-                reason: reason.to_vec(),
+                reason: reason.as_ref().to_vec(),
             },
             false)?)?;
 
@@ -2205,16 +2225,18 @@ impl signature::Builder {
 
     /// Sets the value of the Signature Target subpacket, which
     /// contains the hash of the referenced signature packet.
-    pub fn set_signature_target(mut self,
-                                pk_algo: PublicKeyAlgorithm,
-                                hash_algo: HashAlgorithm,
-                                digest: &[u8])
-                                -> Result<Self> {
+    pub fn set_signature_target<D>(mut self,
+                                   pk_algo: PublicKeyAlgorithm,
+                                   hash_algo: HashAlgorithm,
+                                   digest: D)
+                                   -> Result<Self>
+        where D: AsRef<[u8]>,
+    {
         self.hashed_area.replace(Subpacket::new(
             SubpacketValue::SignatureTarget {
                 pk_algo: pk_algo,
                 hash_algo: hash_algo,
-                digest: digest.to_vec(),
+                digest: digest.as_ref().to_vec(),
             },
             true)?)?;
 
