@@ -480,14 +480,14 @@ impl SubpacketArea {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct NotationData {
     flags: NotationDataFlags,
-    name: Vec<u8>,
+    name: String,
     value: Vec<u8>,
 }
 
 impl NotationData {
     /// Creates a new Notation Data subpacket payload.
     pub fn new<N, F>(name: N, value: &[u8], flags: F) -> Self
-        where N: AsRef<[u8]>,
+        where N: AsRef<str>,
               F: Into<Option<NotationDataFlags>>,
     {
         Self {
@@ -503,7 +503,7 @@ impl NotationData {
     }
 
     /// Returns the name.
-    pub fn name(&self) -> &[u8] {
+    pub fn name(&self) -> &str {
         &self.name
     }
 
@@ -514,7 +514,7 @@ impl NotationData {
 }
 
 /// Flags for the Notation Data subpacket.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NotationDataFlags(u32);
 
 impl Default for NotationDataFlags {
@@ -526,6 +526,18 @@ impl Default for NotationDataFlags {
 impl From<u32> for NotationDataFlags {
     fn from(v: u32) -> Self {
         Self(v)
+    }
+}
+
+impl fmt::Debug for NotationDataFlags {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let mut d = f.debug_struct("NotationDataFlags");
+        d.field("human_readable", &self.human_readable());
+        let other = self.0 & !NOTATION_DATA_FLAG_HUMAN_READABLE;
+        if other > 0 {
+            d.field("other", &crate::fmt::hex::encode(&other.to_be_bytes()));
+        }
+        d.finish()
     }
 }
 
@@ -1206,7 +1218,7 @@ impl SubpacketArea {
         self.subpackets(SubpacketTag::NotationData)
             .into_iter().filter_map(|s| match s.value {
                 SubpacketValue::NotationData(ref v)
-                    if v.name == name.as_bytes() => Some(&v.value[..]),
+                    if v.name == name => Some(&v.value[..]),
                 _ => None,
             })
             .collect()
@@ -2046,7 +2058,7 @@ impl signature::Builder {
         self.hashed_area.packets.retain(|s| {
             match s.value {
                 SubpacketValue::NotationData(ref v)
-                    if v.name == name.as_bytes() => false,
+                    if v.name == name => false,
                 _ => true,
             }
         });
@@ -2740,7 +2752,7 @@ fn subpacket_test_2() {
 
         let n = NotationData {
             flags: NotationDataFlags::default().set_human_readable(true),
-            name: b"rank@navy.mil".to_vec(),
+            name: "rank@navy.mil".into(),
             value: b"midshipman".to_vec()
         };
         assert_eq!(sig.notation_data(), vec![&n]);
@@ -2922,17 +2934,17 @@ fn subpacket_test_2() {
 
         let n1 = NotationData {
             flags: NotationDataFlags::default().set_human_readable(true),
-            name: b"rank@navy.mil".to_vec(),
+            name: "rank@navy.mil".into(),
             value: b"third lieutenant".to_vec()
         };
         let n2 = NotationData {
             flags: NotationDataFlags::default().set_human_readable(true),
-            name: b"foo@navy.mil".to_vec(),
+            name: "foo@navy.mil".into(),
             value: b"bar".to_vec()
         };
         let n3 = NotationData {
             flags: NotationDataFlags::default().set_human_readable(true),
-            name: b"whistleblower@navy.mil".to_vec(),
+            name: "whistleblower@navy.mil".into(),
             value: b"true".to_vec()
         };
 
