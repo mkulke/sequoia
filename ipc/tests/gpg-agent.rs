@@ -147,21 +147,21 @@ fn sign() {
             Ok(vec![self.cert.clone()])
         }
 
-        fn check(&mut self, structure: &MessageStructure)
+        fn check(&mut self, structure: MessageStructure)
                  -> openpgp::Result<()> {
             // In this function, we implement our signature verification
             // policy.
 
             let mut good = false;
-            for (i, layer) in structure.iter().enumerate() {
+            for (i, layer) in structure.into_iter().enumerate() {
                 match (i, layer) {
                     // First, we are interested in signatures over the
                     // data, i.e. level 0 signatures.
-                    (0, MessageLayer::SignatureGroup { ref results }) => {
+                    (0, MessageLayer::SignatureGroup { results }) => {
                         // Finally, given a VerificationResult, which only says
                         // whether the signature checks out mathematically, we apply
                         // our policy.
-                        match results.get(0) {
+                        match results.into_iter().next() {
                             Some(VerificationResult::GoodChecksum { .. }) =>
                                 good = true,
                             Some(VerificationResult::NotAlive { .. }) =>
@@ -258,7 +258,7 @@ fn decrypt() {
                 Ok(Vec::new())
             }
 
-            fn check(&mut self, _structure: &MessageStructure)
+            fn check(&mut self, _structure: MessageStructure)
                      -> openpgp::Result<()> {
                 // Implement your signature verification policy here.
                 Ok(())
