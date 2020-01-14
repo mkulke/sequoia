@@ -39,6 +39,7 @@ use crate::{
     KeyID,
     Packet,
     Result,
+    RevocationStatus,
     packet,
     packet::Signature,
     Cert,
@@ -677,15 +678,8 @@ impl<'a, H: VerificationHelper> Verifier<'a, H> {
 
                         for ka in self.certs.iter()
                             .flat_map(|cert| {
-                                cert.keys().policy(sig_time).filter_map(|ka| {
-                                    if issuers.iter().any(|i| {
-                                        i.aliases(ka.key().key_handle())
-                                    }) {
-                                        Some(ka)
-                                    } else {
-                                        None
-                                    }
-                                })
+                                cert.keys().policy(sig_time)
+                                    .key_handles(issuers.iter())
                             })
                         {
                             results.push_verification_result(
@@ -694,6 +688,15 @@ impl<'a, H: VerificationHelper> Verifier<'a, H> {
                                         VerificationResult::Error {
                                             sig,
                                             error: err,
+                                        }
+                                    } else if destructures_to!(
+                                        RevocationStatus::Revoked(_) = ka.revoked())
+                                    {
+                                        VerificationResult::Error {
+                                            sig,
+                                            error: Error::InvalidKey(
+                                                "key is revoked".into())
+                                                .into(),
                                         }
                                     } else if ! ka.for_signing() {
                                         VerificationResult::Error {
