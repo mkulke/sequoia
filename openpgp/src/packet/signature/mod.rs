@@ -3,7 +3,6 @@
 use std::fmt;
 use std::ops::{Deref, DerefMut};
 
-use crate::types::Curve;
 use crate::Error;
 use crate::Result;
 use crate::crypto::{
@@ -27,9 +26,6 @@ use crate::packet::signature::subpacket::{
     SubpacketArea,
     SubpacketAreas,
 };
-
-use nettle::{dsa, ecc, ecdsa, ed25519, rsa};
-use nettle::rsa::verify_digest_pkcs1;
 
 pub mod subpacket;
 
@@ -519,7 +515,9 @@ impl Signature4 {
     pub(crate) fn set_level(&mut self, level: usize) -> usize {
         ::std::mem::replace(&mut self.level, level)
     }
+}
 
+impl crate::packet::Signature {
     /// Collects all the issuers.
     ///
     /// A signature can contain multiple hints as to who issued the
@@ -601,15 +599,11 @@ impl Signature4 {
     /// subkey binding signature (if appropriate), has the signing
     /// capability, etc.
     pub fn verify_digest<P, R, D>(&self, key: &Key<P, R>, digest: D)
-        -> Result<bool>
+        -> Result<()>
         where P: key::KeyParts,
               R: key::KeyRole,
               D: AsRef<[u8]>,
     {
-        use crate::PublicKeyAlgorithm::*;
-        use crate::crypto::mpis::PublicKey;
-        let digest = digest.as_ref();
-
         if let Some(creation_time) = self.signature_creation_time() {
             if creation_time < key.creation_time() {
                 return Err(Error::BadSignature(
@@ -621,107 +615,7 @@ impl Signature4 {
                 "Signature has no creation time subpacket".into()).into());
         }
 
-        #[allow(deprecated)]
-        match (self.pk_algo(), key.mpis(), self.mpis()) {
-            (RSASign,
-             &PublicKey::RSA{ ref e, ref n },
-             &mpis::Signature::RSA { ref s }) |
-            (RSAEncryptSign,
-             &PublicKey::RSA{ ref e, ref n },
-             &mpis::Signature::RSA { ref s }) => {
-                let key = rsa::PublicKey::new(n.value(), e.value())?;
-
-                // As described in [Section 5.2.2 and 5.2.3 of RFC 4880],
-                // to verify the signature, we need to encode the
-                // signature data in a PKCS1-v1.5 packet.
-                //
-                //   [Section 5.2.2 and 5.2.3 of RFC 4880]:
-                //   https://tools.ietf.org/html/rfc4880#section-5.2.2
-                verify_digest_pkcs1(&key, digest, self.hash_algo().oid()?,
-                                    s.value())
-            }
-
-            (DSA,
-             &PublicKey::DSA{ ref y, ref p, ref q, ref g },
-             &mpis::Signature::DSA { ref s, ref r }) => {
-                let key = dsa::PublicKey::new(y.value());
-                let params = dsa::Params::new(p.value(), q.value(), g.value());
-                let signature = dsa::Signature::new(r.value(), s.value());
-
-                Ok(dsa::verify(&params, &key, digest, &signature))
-            }
-
-            (EdDSA,
-             &PublicKey::EdDSA{ ref curve, ref q },
-             &mpis::Signature::EdDSA { ref r, ref s }) => match curve {
-                Curve::Ed25519 => {
-                    if q.value().get(0).map(|&b| b != 0x40).unwrap_or(true) {
-                        return Err(Error::MalformedPacket(
-                            "Invalid point encoding".into()).into());
-                    }
-
-                    // OpenPGP encodes R and S separately, but our
-                    // cryptographic library expects them to be
-                    // concatenated.
-                    let mut signature =
-                        Vec::with_capacity(ed25519::ED25519_SIGNATURE_SIZE);
-
-                    // We need to zero-pad them at the front, because
-                    // the MPI encoding drops leading zero bytes.
-                    let half = ed25519::ED25519_SIGNATURE_SIZE / 2;
-                    if r.value().len() < half {
-                        for _ in 0..half - r.value().len() {
-                            signature.push(0);
-                        }
-                    }
-                    signature.extend_from_slice(r.value());
-                    if s.value().len() < half {
-                        for _ in 0..half - s.value().len() {
-                            signature.push(0);
-                        }
-                    }
-                    signature.extend_from_slice(s.value());
-
-                    // Let's see if we got it right.
-                    if signature.len() != ed25519::ED25519_SIGNATURE_SIZE {
-                        return Err(Error::MalformedPacket(
-                            format!(
-                                "Invalid signature size: {}, r: {:?}, s: {:?}",
-                                signature.len(), r.value(), s.value())).into());
-                    }
-
-                    ed25519::verify(&q.value()[1..], digest, &signature)
-                },
-                _ =>
-                    Err(Error::UnsupportedEllipticCurve(curve.clone())
-                        .into()),
-            },
-
-            (ECDSA,
-             &PublicKey::ECDSA{ ref curve, ref q },
-             &mpis::Signature::ECDSA { ref s, ref r }) => {
-                let (x, y) = q.decode_point(curve)?;
-                let key = match curve {
-                    Curve::NistP256 =>
-                        ecc::Point::new::<ecc::Secp256r1>(x, y)?,
-                    Curve::NistP384 =>
-                        ecc::Point::new::<ecc::Secp384r1>(x, y)?,
-                    Curve::NistP521 =>
-                        ecc::Point::new::<ecc::Secp521r1>(x, y)?,
-                    _ =>
-                        return Err(
-                            Error::UnsupportedEllipticCurve(curve.clone())
-                                .into()),
-                };
-
-                let signature = dsa::Signature::new(r.value(), s.value());
-                Ok(ecdsa::verify(&key, digest, &signature))
-            },
-
-            _ => Err(Error::MalformedPacket(format!(
-                "unsupported combination of algorithm {:?}, key {:?} and signature {:?}.",
-                self.pk_algo(), key.mpis(), self.mpis)).into())
-        }
+        key.verify(self, digest.as_ref())
     }
 
     /// Verifies the signature over text or binary documents using
@@ -738,7 +632,7 @@ impl Signature4 {
     /// is not revoked, not expired, has a valid self-signature, has a
     /// subkey binding signature (if appropriate), has the signing
     /// capability, etc.
-    pub fn verify<P, R>(&self, key: &Key<P, R>) -> Result<bool>
+    pub fn verify<P, R>(&self, key: &Key<P, R>) -> Result<()>
         where P: key::KeyParts,
               R: key::KeyRole,
     {
@@ -767,7 +661,7 @@ impl Signature4 {
     /// is not revoked, not expired, has a valid self-signature, has a
     /// subkey binding signature (if appropriate), has the signing
     /// capability, etc.
-    pub fn verify_standalone<P, R>(&self, key: &Key<P, R>) -> Result<bool>
+    pub fn verify_standalone<P, R>(&self, key: &Key<P, R>) -> Result<()>
         where P: key::KeyParts,
               R: key::KeyRole,
     {
@@ -794,7 +688,7 @@ impl Signature4 {
     /// is not revoked, not expired, has a valid self-signature, has a
     /// subkey binding signature (if appropriate), has the signing
     /// capability, etc.
-    pub fn verify_timestamp<P, R>(&self, key: &Key<P, R>) -> Result<bool>
+    pub fn verify_timestamp<P, R>(&self, key: &Key<P, R>) -> Result<()>
         where P: key::KeyParts,
               R: key::KeyRole,
     {
@@ -830,7 +724,7 @@ impl Signature4 {
     pub fn verify_direct_key<P, Q, R>(&self,
                                       signer: &Key<P, R>,
                                       pk: &Key<Q, key::PrimaryRole>)
-        -> Result<bool>
+        -> Result<()>
         where P: key::KeyParts,
               Q: key::KeyParts,
               R: key::KeyRole,
@@ -865,7 +759,7 @@ impl Signature4 {
     pub fn verify_primary_key_revocation<P, Q, R>(&self,
                                                   signer: &Key<P, R>,
                                                   pk: &Key<Q, key::PrimaryRole>)
-        -> Result<bool>
+        -> Result<()>
         where P: key::KeyParts,
               Q: key::KeyParts,
               R: key::KeyRole,
@@ -907,7 +801,7 @@ impl Signature4 {
         signer: &Key<P, R>,
         pk: &Key<Q, key::PrimaryRole>,
         subkey: &Key<S, key::SubordinateRole>)
-        -> Result<bool>
+        -> Result<()>
         where P: key::KeyParts,
               Q: key::KeyParts,
               R: key::KeyRole,
@@ -918,25 +812,20 @@ impl Signature4 {
         }
 
         let hash = Signature::hash_subkey_binding(self, pk, subkey)?;
-        if self.verify_digest(signer, &hash[..])? {
-            // The signature is good, but we may still need to verify
-            // the back sig.
-        } else {
-            return Ok(false);
-        }
+        self.verify_digest(signer, &hash[..])?;
 
-        if ! self.key_flags().for_signing() {
+        // The signature is good, but we may still need to verify the
+        // back sig.
+        if self.key_flags().for_signing() {
+            if let Some(backsig) = self.embedded_signature() {
+                backsig.verify_primary_key_binding(pk, subkey)
+            } else {
+                Err(Error::BadSignature(
+                    "Primary key binding signature missing".into()).into())
+            }
+        } else {
             // No backsig required.
-            return Ok(true)
-        }
-
-        if let Some(super::Signature::V4(backsig)) =
-            self.embedded_signature()
-        {
-            backsig.verify_primary_key_binding(pk, subkey)
-        } else {
-            Err(Error::BadSignature(
-                "Primary key binding signature missing".into()).into())
+            Ok(())
         }
     }
 
@@ -960,7 +849,7 @@ impl Signature4 {
         &self,
         pk: &Key<P, key::PrimaryRole>,
         subkey: &Key<Q, key::SubordinateRole>)
-        -> Result<bool>
+        -> Result<()>
         where P: key::KeyParts,
               Q: key::KeyParts,
     {
@@ -996,7 +885,7 @@ impl Signature4 {
         signer: &Key<P, R>,
         pk: &Key<Q, key::PrimaryRole>,
         subkey: &Key<S, key::SubordinateRole>)
-        -> Result<bool>
+        -> Result<()>
         where P: key::KeyParts,
               Q: key::KeyParts,
               R: key::KeyRole,
@@ -1033,7 +922,7 @@ impl Signature4 {
                                           signer: &Key<P, R>,
                                           pk: &Key<Q, key::PrimaryRole>,
                                           userid: &UserID)
-        -> Result<bool>
+        -> Result<()>
         where P: key::KeyParts,
               Q: key::KeyParts,
               R: key::KeyRole,
@@ -1072,7 +961,7 @@ impl Signature4 {
                                              signer: &Key<P, R>,
                                              pk: &Key<Q, key::PrimaryRole>,
                                              userid: &UserID)
-        -> Result<bool>
+        -> Result<()>
         where P: key::KeyParts,
               Q: key::KeyParts,
               R: key::KeyRole,
@@ -1108,7 +997,7 @@ impl Signature4 {
                                                   signer: &Key<P, R>,
                                                   pk: &Key<Q, key::PrimaryRole>,
                                                   ua: &UserAttribute)
-        -> Result<bool>
+        -> Result<()>
         where P: key::KeyParts,
               Q: key::KeyParts,
               R: key::KeyRole,
@@ -1148,7 +1037,7 @@ impl Signature4 {
         signer: &Key<P, R>,
         pk: &Key<Q, key::PrimaryRole>,
         ua: &UserAttribute)
-        -> Result<bool>
+        -> Result<()>
         where P: key::KeyParts,
               Q: key::KeyParts,
               R: key::KeyRole,
@@ -1182,7 +1071,7 @@ impl Signature4 {
     /// signing capability, etc.
     pub fn verify_message<M, P, R>(&self, signer: &Key<P, R>,
                                    msg: M)
-        -> Result<bool>
+        -> Result<()>
         where M: AsRef<[u8]>,
               P: key::KeyParts,
               R: key::KeyRole,
@@ -1227,6 +1116,7 @@ mod test {
     use crate::parse::Parse;
     use crate::packet::Key;
     use crate::packet::key::Key4;
+    use crate::types::Curve;
 
     #[cfg(feature = "compression-deflate")]
     #[test]
@@ -1322,7 +1212,8 @@ mod test {
                 crate::tests::message(test.data)).unwrap();
             while let PacketParserResult::Some(pp) = ppr {
                 if let Packet::Signature(ref sig) = pp.packet {
-                    let result = sig.verify(cert.primary()).unwrap_or(false);
+                    let result = sig.verify(cert.primary())
+                        .map(|_| true).unwrap_or(false);
                     eprintln!("  Primary {:?}: {:?}",
                               cert.primary().fingerprint(), result);
                     if result {
@@ -1330,7 +1221,8 @@ mod test {
                     }
 
                     for sk in cert.subkeys() {
-                        let result = sig.verify(sk.key()).unwrap_or(false);
+                        let result = sig.verify(sk.key())
+                            .map(|_| true).unwrap_or(false);
                         eprintln!("   Subkey {:?}: {:?}",
                                   sk.key().fingerprint(), result);
                         if result {
@@ -1398,11 +1290,11 @@ mod test {
             sig.hash(&mut hash);
             let mut digest = vec![0u8; hash.digest_size()];
             hash.digest(&mut digest);
-            assert!(sig.verify_digest(pair.public(), &digest[..]).unwrap());
+            sig.verify_digest(pair.public(), &digest[..]).unwrap();
 
             // Bad signature.
             digest[0] ^= 0xff;
-            assert!(! sig.verify_digest(pair.public(), &digest[..]).unwrap());
+            sig.verify_digest(pair.public(), &digest[..]).unwrap_err();
         }
     }
 
@@ -1422,7 +1314,7 @@ mod test {
             .set_issuer(pair.public().keyid()).unwrap()
             .sign_message(&mut pair, msg).unwrap();
 
-        assert!(sig.verify_message(pair.public(), msg).unwrap());
+        sig.verify_message(pair.public(), msg).unwrap();
     }
 
     #[test]
@@ -1439,7 +1331,7 @@ mod test {
             panic!("Expected a Signature, got: {:?}", p);
         };
 
-        assert!(sig.verify_message(cert.primary(), &msg[..]).unwrap());
+        sig.verify_message(cert.primary(), &msg[..]).unwrap();
     }
 
     #[test]
@@ -1454,7 +1346,7 @@ mod test {
             0x1,0x2,0x2,0x2,0x2,0x2,0x2,0x2,0x2,0x2
         ];
         let mut pnt = [0x40u8; nettle::ed25519::ED25519_KEY_SIZE + 1];
-        ed25519::public_key(&mut pnt[1..], &sec[..]).unwrap();
+        nettle::ed25519::public_key(&mut pnt[1..], &sec[..]).unwrap();
 
         let public_mpis = mpis::PublicKey::EdDSA {
             curve: Curve::Ed25519,
@@ -1496,10 +1388,9 @@ mod test {
             .unwrap().1.unwrap().0;
         let cert = &uid_binding.certifications()[0];
 
-        assert_eq!(cert.verify_userid_binding(cert_key1,
-                                              test2.primary(),
-                                              uid_binding.userid()).ok(),
-                   Some(true));
+        cert.verify_userid_binding(cert_key1,
+                                   test2.primary(),
+                                   uid_binding.userid()).unwrap();
     }
 
     #[test]
@@ -1570,7 +1461,7 @@ mod test {
             .sign_standalone(&mut pair)
             .unwrap();
 
-        assert!(sig.verify_standalone(pair.public()).unwrap());
+        sig.verify_standalone(pair.public()).unwrap();
     }
 
     #[test]
@@ -1582,7 +1473,7 @@ mod test {
         if let Packet::Signature(sig) = p {
             let digest = Signature::hash_standalone(&sig).unwrap();
             eprintln!("{}", crate::fmt::hex::encode(&digest));
-            assert!(sig.verify_timestamp(alpha.primary()).unwrap());
+            sig.verify_timestamp(alpha.primary()).unwrap();
         } else {
             panic!("expected a signature packet");
         }
@@ -1602,6 +1493,6 @@ mod test {
             .sign_timestamp(&mut pair)
             .unwrap();
 
-        assert!(sig.verify_timestamp(pair.public()).unwrap());
+        sig.verify_timestamp(pair.public()).unwrap();
     }
 }
