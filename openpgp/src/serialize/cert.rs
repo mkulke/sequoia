@@ -25,7 +25,8 @@ impl Cert {
     fn serialize_common(&self, o: &mut dyn std::io::Write, export: bool)
                         -> Result<()>
     {
-        PacketRef::PublicKey(self.primary()).serialize(o)?;
+        let primary = self.keys().primary_key();
+        PacketRef::PublicKey(primary.key()).serialize(o)?;
 
         // Writes a signature if it is exportable or `! export`.
         let serialize_sig =
@@ -41,16 +42,16 @@ impl Cert {
             Ok(())
         };
 
-        for s in self.direct_signatures() {
+        for s in primary.self_signatures() {
             serialize_sig(o, s)?;
         }
-        for s in self.self_revocations() {
+        for s in primary.self_revocations() {
             serialize_sig(o, s)?;
         }
-        for s in self.other_revocations() {
+        for s in primary.other_revocations() {
             serialize_sig(o, s)?;
         }
-        for s in self.certifications() {
+        for s in primary.certifications() {
             serialize_sig(o, s)?;
         }
 
@@ -158,18 +159,19 @@ impl Cert {
 impl SerializeInto for Cert {
     fn serialized_len(&self) -> usize {
         let mut l = 0;
-        l += PacketRef::PublicKey(self.primary()).serialized_len();
+        let primary = self.keys().primary_key();
+        l += PacketRef::PublicKey(primary.key()).serialized_len();
 
-        for s in self.direct_signatures() {
+        for s in primary.self_signatures() {
             l += PacketRef::Signature(s).serialized_len();
         }
-        for s in self.self_revocations() {
+        for s in primary.self_revocations() {
             l += PacketRef::Signature(s).serialized_len();
         }
-        for s in self.other_revocations() {
+        for s in primary.other_revocations() {
             l += PacketRef::Signature(s).serialized_len();
         }
-        for s in self.certifications() {
+        for s in primary.certifications() {
             l += PacketRef::Signature(s).serialized_len();
         }
 
@@ -384,19 +386,21 @@ impl<'a> TSK<'a> {
                 _ => unreachable!(),
             }
         };
-        serialize_key(o, self.cert.primary().into(),
+
+        let primary = self.cert.keys().primary_key();
+        serialize_key(o, primary.key().into(),
                       Tag::PublicKey, Tag::SecretKey)?;
 
-        for s in self.cert.direct_signatures() {
+        for s in primary.self_signatures() {
             serialize_sig(o, s)?;
         }
-        for s in self.cert.self_revocations() {
+        for s in primary.self_revocations() {
             serialize_sig(o, s)?;
         }
-        for s in self.cert.certifications() {
+        for s in primary.certifications() {
             serialize_sig(o, s)?;
         }
-        for s in self.cert.other_revocations() {
+        for s in primary.other_revocations() {
             serialize_sig(o, s)?;
         }
 
@@ -537,19 +541,20 @@ impl<'a> SerializeInto for TSK<'a> {
 
             packet.serialized_len()
         };
-        l += serialized_len_key(self.cert.primary().into(),
+        let primary = self.cert.keys().primary_key();
+        l += serialized_len_key(primary.key().into(),
                                 Tag::PublicKey, Tag::SecretKey);
 
-        for s in self.cert.direct_signatures() {
+        for s in primary.self_signatures() {
             l += PacketRef::Signature(s).serialized_len();
         }
-        for s in self.cert.self_revocations() {
+        for s in primary.self_revocations() {
             l += PacketRef::Signature(s).serialized_len();
         }
-        for s in self.cert.other_revocations() {
+        for s in primary.other_revocations() {
             l += PacketRef::Signature(s).serialized_len();
         }
-        for s in self.cert.certifications() {
+        for s in primary.certifications() {
             l += PacketRef::Signature(s).serialized_len();
         }
 
