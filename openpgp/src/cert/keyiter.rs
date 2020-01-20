@@ -333,6 +333,12 @@ impl<'a, P: 'a + key::KeyParts, R: 'a + key::KeyRole> KeyIter<'a, P, R>
         }
     }
 
+    /// Returns the primary key component.
+    pub fn primary_key(&self)
+                       -> &'a KeyBinding<key::PublicParts, key::PrimaryRole> {
+        &self.cert.as_ref().unwrap().primary
+    }
+
     /// Changes the iterator to return subkey components.
     ///
     /// A key component is similar to a key amalgamation, but is not
