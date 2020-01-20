@@ -4,7 +4,6 @@ use std::io;
 use std::cmp;
 use std::cmp::Ordering;
 use std::path::Path;
-use std::slice;
 use std::mem;
 use std::fmt;
 use std::ops::{Deref, DerefMut};
@@ -33,11 +32,23 @@ use crate::{
 use crate::parse::{Parse, PacketParserResult, PacketParser};
 use crate::types::{
     ReasonForRevocation,
-    RevocationType,
 };
 
+mod amalgamation;
 mod builder;
 mod bindings;
+pub mod components;
+use components::{
+    ComponentBinding,
+    PrimaryKeyBinding,
+    KeyBindingIter,
+    UserIDBinding,
+    UnknownBindingIter,
+};
+mod component_iter;
+pub use component_iter::{
+    ComponentIter,
+};
 mod keyiter;
 mod key_amalgamation;
 mod parser;
@@ -88,459 +99,9 @@ fn sig_cmp(a: &Signature, b: &Signature) -> Ordering {
     }
 }
 
-/// A key (primary or subkey, public or private) and any associated
-/// signatures.
-pub type KeyBinding<KeyPart, KeyRole> = ComponentBinding<Key<KeyPart, KeyRole>>;
-
-impl<K: key::KeyParts, R: key::KeyRole> KeyBinding<K, R>
-{
-    /// Gets the key packet's `SecretKeyMaterial`.
-    ///
-    /// Note: The key module installs conversion functions on
-    /// KeyBinding.  They need to access the key's secret.
-    pub(crate) fn secret(&self)
-                         -> Option<&crate::packet::key::SecretKeyMaterial> {
-        self.key().secret()
-    }
-}
-
-/// A primary key and any associated signatures.
-type PrimaryKeyBinding<KeyPart> = KeyBinding<KeyPart, key::PrimaryRole>;
-
-/// A subkey and any associated signatures.
-pub type SubkeyBinding<KeyPart> = KeyBinding<KeyPart, key::SubordinateRole>;
-
-/// A key (primary or subkey, public or private) and any associated
-/// signatures.
-#[allow(dead_code)]
-type GenericKeyBinding
-    = ComponentBinding<Key<key::UnspecifiedParts, key::UnspecifiedRole>>;
-
-/// A User ID and any associated signatures.
-pub type UserIDBinding = ComponentBinding<UserID>;
-
-/// A User Attribute and any associated signatures.
-pub type UserAttributeBinding = ComponentBinding<UserAttribute>;
-
-/// An unknown component and any associated signatures.
-///
-/// Note: all signatures are stored as certifications.
-pub type UnknownBinding = ComponentBinding<Unknown>;
-
-/// A Cert component binding.
-///
-/// A Cert component is a primary key, a subkey, a user id, or a user
-/// attribute.  A binding is a Cert component and any related
-/// signatures.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ComponentBinding<C> {
-    component: C,
-
-    // Self signatures.
-    self_signatures: Vec<Signature>,
-
-    // Third-party certifications.  (In general, this will only be by
-    // designated revokers.)
-    certifications: Vec<Signature>,
-
-    // Self revocations.
-    self_revocations: Vec<Signature>,
-
-    // Third-party revocations (e.g., designated revokers).
-    other_revocations: Vec<Signature>,
-}
-
-impl<C> ComponentBinding<C> {
-    /// Returns a reference to the component.
-    pub fn component(&self) -> &C {
-        &self.component
-    }
-
-    /// Returns a mutable reference to the component.
-    fn component_mut(&mut self) -> &mut C {
-        &mut self.component
-    }
-
-    /// Returns the active binding signature at time `t`.
-    ///
-    /// An active binding signature is a non-revoked, self-signature
-    /// that is alive at time `t` (`creation time <= t`, `t <
-    /// expiry`).
-    ///
-    /// This function returns None if there are no active binding
-    /// signatures at time `t`.
-    pub fn binding_signature<T>(&self, t: T) -> Option<&Signature>
-        where T: Into<Option<time::SystemTime>>
-    {
-        let t = t.into().unwrap_or_else(|| time::SystemTime::now());
-
-        // Recall: the signatures are sorted by their creation time in
-        // descending order, i.e., newest first.
-        //
-        // We want the newest signature that is older than t.  So,
-        // search for `t`.
-
-        let i =
-            // Usually, the first signature is what we are looking for.
-            // Short circuit the binary search.
-            if Some(t) >= self.self_signatures.get(0)
-                              .and_then(|s| s.signature_creation_time())
-            {
-                0
-            } else {
-                match self.self_signatures.binary_search_by(
-                    |s| canonical_signature_order(
-                        s.signature_creation_time(), Some(t)))
-                {
-                    // If there are multiple matches, then we need to search
-                    // backwards to find the first one.  Consider:
-                    //
-                    //     t: 9 8 8 8 8 7
-                    //     i: 0 1 2 3 4 5
-                    //
-                    // If we are looking for t == 8, then binary_search could
-                    // return index 1, 2, 3 or 4.
-                    Ok(mut i) => {
-                        // XXX: we use PartialOrd to compare Tms due to
-                        // https://github.com/rust-lang-deprecated/time/issues/180
-                        while i > 0
-                            && self.self_signatures[i - 1].signature_creation_time()
-                            .cmp(&Some(t)) == Ordering::Equal
-                        {
-                            i -= 1;
-                        }
-                        i
-                    }
-
-                    // There was no match.  `i` is where a new element could
-                    // be inserted while maintaining the sorted order.
-                    // Consider:
-                    //
-                    //    t: 9 8 6 5
-                    //    i: 0 1 2 3
-                    //
-                    // If we are looing for t == 7, then binary_search will
-                    // return i == 2.  That's exactly where we should start
-                    // looking.
-                    Err(i) => i,
-                }
-            };
-
-        self.self_signatures[i..].iter().filter(|s| {
-            s.signature_alive(t, time::Duration::new(0, 0)).is_ok()
-        }).nth(0)
-    }
-
-    /// The self-signatures.
-    ///
-    /// The signatures are validated, and they are reverse sorted by
-    /// their creation time (newest first).
-    pub fn self_signatures(&self) -> &[Signature] {
-        &self.self_signatures
-    }
-
-    /// Any third-party certifications.
-    ///
-    /// The signatures are *not* validated.  They are reverse sorted by
-    /// their creation time (newest first).
-    pub fn certifications(&self) -> &[Signature] {
-        &self.certifications
-    }
-
-    /// Revocations issued by the key itself.
-    ///
-    /// The revocations are validated, and they are reverse sorted by
-    /// their creation time (newest first).
-    pub fn self_revocations(&self) -> &[Signature] {
-        &self.self_revocations
-    }
-
-    /// Revocations issued by other keys.
-    ///
-    /// The revocations are *not* validated.  They are reverse sorted
-    /// by their creation time (newest first).
-    pub fn other_revocations(&self) -> &[Signature] {
-        &self.other_revocations
-    }
-
-    /// Returns the component's revocation status at time `t`.
-    ///
-    /// A component is considered to be revoked at time `t` if:
-    ///
-    ///   - There is a live revocation at time `t` that is newer than
-    ///     all live self signatures at time `t`.
-    ///
-    ///   - `hard_revocations_are_final` is true, and there is a hard
-    ///     revocation (even if it is not live at time `t`, and even
-    ///     if there is a newer self-signature).
-    ///
-    /// selfsig must be the newest live self signature at time `t`.
-    fn _revoked<'a, T>(&'a self, hard_revocations_are_final: bool,
-                       selfsig: Option<&Signature>, t: T)
-        -> RevocationStatus<'a>
-        where T: Into<Option<time::SystemTime>>
-    {
-        // Fallback time.
-        let time_zero = || time::UNIX_EPOCH;
-        let t = t.into()
-            .unwrap_or_else(|| time::SystemTime::now());
-        let selfsig_creation_time
-            = selfsig.and_then(|s| s.signature_creation_time())
-                     .unwrap_or_else(time_zero);
-
-        tracer!(TRACE, "ComponentBinding::_revoked", 0);
-        t!("hard_revocations_are_final: {}, selfsig: {:?}, t: {:?}",
-           hard_revocations_are_final,
-           selfsig_creation_time,
-           t);
-        if let Some(selfsig) = selfsig {
-            assert!(
-                selfsig.signature_alive(t, time::Duration::new(0, 0)).is_ok());
-        }
-
-        macro_rules! check {
-            ($revs:expr) => ({
-                let revs = $revs.iter().filter_map(|rev| {
-                    if hard_revocations_are_final
-                        && rev.reason_for_revocation()
-                               .map(|(r, _)| {
-                                   r.revocation_type() == RevocationType::Hard
-                               })
-                               // If there is no Reason for Revocation
-                               // packet, assume that it is a hard
-                               // revocation.
-                               .unwrap_or(true)
-                    {
-                        t!("  got a hard revocation: {:?}, {:?}",
-                           rev.signature_creation_time()
-                               .unwrap_or_else(time_zero),
-                           rev.reason_for_revocation()
-                               .map(|r| (r.0, String::from_utf8_lossy(r.1))));
-                        Some(rev)
-                    } else if selfsig_creation_time
-                              > rev.signature_creation_time()
-                                    .unwrap_or_else(time_zero)
-                    {
-                        t!("  ignoring out of date revocation ({:?})",
-                           rev.signature_creation_time()
-                               .unwrap_or_else(time_zero));
-                        None
-                    } else if
-                        ! rev.signature_alive(t, time::Duration::new(0, 0))
-                          .is_ok()
-                    {
-                        t!("  ignoring revocation that is not alive ({:?} - {:?})",
-                           rev.signature_creation_time()
-                               .unwrap_or_else(time_zero),
-                           rev.signature_expiration_time()
-                               .unwrap_or_else(|| time::Duration::new(0, 0)));
-                        None
-                    } else {
-                        t!("  got a revocation: {:?} ({:?})",
-                           rev.signature_creation_time()
-                               .unwrap_or_else(time_zero),
-                           rev.reason_for_revocation()
-                               .map(|r| (r.0, String::from_utf8_lossy(r.1))));
-                        Some(rev)
-                    }
-                }).collect::<Vec<&Signature>>();
-
-                if revs.len() == 0 {
-                    None
-                } else {
-                    Some(revs)
-                }
-            })
-        }
-
-        if let Some(revs) = check!(&self.self_revocations) {
-            RevocationStatus::Revoked(revs)
-        } else if let Some(revs) = check!(&self.other_revocations) {
-            RevocationStatus::CouldBe(revs)
-        } else {
-            RevocationStatus::NotAsFarAsWeKnow
-        }
-    }
-
-    // Converts the component into an iterator over the contained
-    // packets.
-    fn into_packets<'a>(self) -> impl Iterator<Item=Packet>
-        where Packet: From<C>
-    {
-        let p : Packet = self.component.into();
-        std::iter::once(p)
-            .chain(self.self_signatures.into_iter().map(|s| s.into()))
-            .chain(self.certifications.into_iter().map(|s| s.into()))
-            .chain(self.self_revocations.into_iter().map(|s| s.into()))
-            .chain(self.other_revocations.into_iter().map(|s| s.into()))
-    }
-
-    // Sorts and dedups the binding's signatures.
-    //
-    // This function assumes that the signatures have already been
-    // cryptographically checked.
-    //
-    // Note: this uses Signature::eq to compare signatures.  That
-    // function ignores unhashed packets.  If there are two signatures
-    // that only differ in their unhashed subpackets, they will be
-    // deduped.  The unhashed areas are *not* merged; the one that is
-    // kept is undefined.
-    fn sort_and_dedup(&mut self)
-    {
-        self.self_signatures.sort_by(sig_cmp);
-        self.self_signatures.dedup();
-
-        // There is no need to sort the certifications, but we do
-        // want to remove dups and sorting is a prerequisite.
-        self.certifications.sort_by(sig_cmp);
-        self.certifications.dedup();
-
-        self.self_revocations.sort_by(sig_cmp);
-        self.self_revocations.dedup();
-
-        self.other_revocations.sort_by(sig_cmp);
-        self.other_revocations.dedup();
-    }
-}
-
-impl<P: key::KeyParts, R: key::KeyRole> ComponentBinding<Key<P, R>> {
-    /// Returns a reference to the key.
-    pub fn key(&self) -> &Key<P, R> {
-        self.component()
-    }
-
-    /// Returns a mut reference to the key.
-    fn key_mut(&mut self) -> &mut Key<P, R> {
-        self.component_mut()
-    }
-}
-
-impl<P: key::KeyParts> ComponentBinding<Key<P, key::SubordinateRole>> {
-    /// Returns the subkey's revocation status at time `t`.
-    ///
-    /// A subkey is revoked at time `t` if:
-    ///
-    ///   - There is a live revocation at time `t` that is newer than
-    ///     all live self signatures at time `t`, or
-    ///
-    ///   - There is a hard revocation (even if it is not live at
-    ///     time `t`, and even if there is a newer self-signature).
-    ///
-    /// Note: Certs and subkeys have different criteria from User IDs
-    /// and User Attributes.
-    ///
-    /// Note: this only returns whether this subkey is revoked; it
-    /// does not imply anything about the Cert or other components.
-    pub fn revoked<T>(&self, t: T)
-        -> RevocationStatus
-        where T: Into<Option<time::SystemTime>>
-    {
-        let t = t.into();
-        self._revoked(true, self.binding_signature(t), t)
-    }
-}
-
-impl ComponentBinding<UserID> {
-    /// Returns a reference to the User ID.
-    pub fn userid(&self) -> &UserID {
-        self.component()
-    }
-
-    /// Returns the User ID's revocation status at time `t`.
-    ///
-    /// A User ID is revoked at time `t` if:
-    ///
-    ///   - There is a live revocation at time `t` that is newer than
-    ///     all live self signatures at time `t`, or
-    ///
-    /// Note: Certs and subkeys have different criteria from User IDs
-    /// and User Attributes.
-    ///
-    /// Note: this only returns whether this User ID is revoked; it
-    /// does not imply anything about the Cert or other components.
-    pub fn revoked<T>(&self, t: T)
-        -> RevocationStatus
-        where T: Into<Option<time::SystemTime>>
-    {
-        let t = t.into();
-        self._revoked(false, self.binding_signature(t), t)
-    }
-}
-
-impl ComponentBinding<UserAttribute> {
-    /// Returns a reference to the User Attribute.
-    pub fn user_attribute(&self) -> &UserAttribute {
-        self.component()
-    }
-
-    /// Returns the User Attribute's revocation status at time `t`.
-    ///
-    /// A User Attribute is revoked at time `t` if:
-    ///
-    ///   - There is a live revocation at time `t` that is newer than
-    ///     all live self signatures at time `t`, or
-    ///
-    /// Note: Certs and subkeys have different criteria from User IDs
-    /// and User Attributes.
-    ///
-    /// Note: this only returns whether this User Attribute is revoked;
-    /// it does not imply anything about the Cert or other components.
-    pub fn revoked<T>(&self, t: T)
-        -> RevocationStatus
-        where T: Into<Option<time::SystemTime>>
-    {
-        let t = t.into();
-        self._revoked(false, self.binding_signature(t), t)
-    }
-}
-
-impl ComponentBinding<Unknown> {
-    /// Returns a reference to the unknown component.
-    pub fn unknown(&self) -> &Unknown {
-        self.component()
-    }
-}
-
-
 impl fmt::Display for Cert {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", self.primary().fingerprint())
-    }
-}
-
-/// An iterator over `ComponentBinding`s.
-pub struct ComponentBindingIter<'a, C> {
-    iter: Option<slice::Iter<'a, ComponentBinding<C>>>,
-}
-
-/// An iterator over `KeyBinding`s.
-pub type KeyBindingIter<'a, P, R> = ComponentBindingIter<'a, Key<P, R>>;
-/// An iterator over `UserIDBinding`s.
-pub type UserIDBindingIter<'a> = ComponentBindingIter<'a, UserID>;
-/// An iterator over `UserAttributeBinding`s.
-pub type UserAttributeBindingIter<'a> = ComponentBindingIter<'a, UserAttribute>;
-/// An iterator over `UnknownBinding`s.
-pub type UnknownBindingIter<'a> = ComponentBindingIter<'a, Unknown>;
-
-impl<'a, C> Iterator for ComponentBindingIter<'a, C>
-{
-    type Item = &'a ComponentBinding<C>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self.iter {
-            Some(ref mut iter) => iter.next(),
-            None => None,
-        }
-    }
-}
-
-impl<'a, C> ExactSizeIterator for ComponentBindingIter<'a, C>
-{
-    fn len(&self) -> usize {
-        match self.iter {
-            Some(ref iter) => iter.len(),
-            None => 0,
-        }
     }
 }
 
@@ -724,7 +285,7 @@ type UnknownBindings = ComponentBindings<Unknown>;
 ///     for s in cert.other_revocations()  { acc.push(s.clone().into()) }
 ///
 ///     // UserIDs and related signatures.
-///     for c in cert.userids() {
+///     for c in cert.userids().components() {
 ///         acc.push(c.userid().clone().into());
 ///         for s in c.self_signatures()   { acc.push(s.clone().into()) }
 ///         for s in c.certifications()    { acc.push(s.clone().into()) }
@@ -733,7 +294,7 @@ type UnknownBindings = ComponentBindings<Unknown>;
 ///     }
 ///
 ///     // UserAttributes and related signatures.
-///     for c in cert.user_attributes() {
+///     for c in cert.user_attributes().components() {
 ///         acc.push(c.user_attribute().clone().into());
 ///         for s in c.self_signatures()   { acc.push(s.clone().into()) }
 ///         for s in c.certifications()    { acc.push(s.clone().into()) }
@@ -788,7 +349,7 @@ type UnknownBindings = ComponentBindings<Unknown>;
 /// match Cert::from_packet_parser(ppr) {
 ///     Ok(cert) => {
 ///         println!("Key: {}", cert.primary());
-///         for binding in cert.userids() {
+///         for binding in cert.userids().components() {
 ///             println!("User ID: {}", binding.userid());
 ///         }
 ///     }
@@ -885,57 +446,12 @@ impl Cert {
         -> Option<(&UserIDBinding, &Signature, RevocationStatus)>
         where T: Into<Option<time::SystemTime>>
     {
-        let t = t.into()
-            .unwrap_or_else(|| time::SystemTime::now());
-        self.userids()
-            // Filter out User IDs that are not alive at time `t`.
-            //
-            // While we have the binding signature, extract a few
-            // properties to avoid recomputing the same thing multiple
-            // times.
-            .filter_map(|b| {
-                // No binding signature at time `t` => not alive.
-                let selfsig = b.binding_signature(t)?;
-
-                if !selfsig.signature_alive(t, time::Duration::new(0, 0)).is_ok() {
-                    return None;
-                }
-
-                let revoked = b.revoked(t);
-                let primary = selfsig.primary_userid().unwrap_or(false);
-                let signature_creation_time = selfsig.signature_creation_time()?;
-
-                Some(((b, selfsig, revoked), primary, signature_creation_time))
-            })
-            .max_by(|(a, a_primary, a_signature_creation_time),
-                    (b, b_primary, b_signature_creation_time)| {
-                match (destructures_to!(RevocationStatus::Revoked(_) = &a.2),
-                       destructures_to!(RevocationStatus::Revoked(_) = &b.2)) {
-                    (true, false) => return Ordering::Less,
-                    (false, true) => return Ordering::Greater,
-                    _ => (),
-                }
-                match (a_primary, b_primary) {
-                    (true, false) => return Ordering::Greater,
-                    (false, true) => return Ordering::Less,
-                    _ => (),
-                }
-                match a_signature_creation_time.cmp(&b_signature_creation_time) {
-                    Ordering::Less => return Ordering::Less,
-                    Ordering::Greater => return Ordering::Greater,
-                    Ordering::Equal => (),
-                }
-
-                // Fallback to a lexographical comparison.  Prefer
-                // the "smaller" one.
-                match a.0.userid().value().cmp(&b.0.userid().value()) {
-                    Ordering::Less => return Ordering::Greater,
-                    Ordering::Greater => return Ordering::Less,
-                    Ordering::Equal =>
-                        panic!("non-canonicalized Cert (duplicate User IDs)"),
-                }
-            })
-            .map(|b| b.0)
+        self.userids().primary(t).and_then(|ca| {
+            let binding = ca.component();
+            let sig = ca.binding_signature()?;
+            let revoked = ca.revoked();
+            Some((binding, sig, revoked))
+        })
     }
 
     /// Returns the primary key's current self-signature as of `t`.
@@ -1007,7 +523,7 @@ impl Cert {
     /// The signatures are validated, and they are reverse sorted by
     /// their creation time (newest first).
     pub fn direct_signatures(&self) -> &[Signature] {
-        &self.primary.self_signatures
+        &self.primary.self_signatures()
     }
 
     /// Third-party certifications.
@@ -1015,7 +531,7 @@ impl Cert {
     /// The signatures are *not* validated.  They are reverse sorted by
     /// their creation time (newest first).
     pub fn certifications(&self) -> &[Signature] {
-        &self.primary.certifications
+        &self.primary.certifications()
     }
 
     /// Revocations issued by the key itself.
@@ -1023,7 +539,7 @@ impl Cert {
     /// The revocations are validated, and they are reverse sorted by
     /// their creation time (newest first).
     pub fn self_revocations(&self) -> &[Signature] {
-        &self.primary.self_revocations
+        &self.primary.self_revocations()
     }
 
     /// Revocations issued by other keys.
@@ -1031,7 +547,7 @@ impl Cert {
     /// The revocations are *not* validated.  They are reverse sorted
     /// by their creation time (newest first).
     pub fn other_revocations(&self) -> &[Signature] {
-        &self.primary.other_revocations
+        &self.primary.other_revocations()
     }
 
     /// Returns the Cert's revocation status at time `t`.
@@ -1174,16 +690,24 @@ impl Cert {
     }
 
     /// Returns an iterator over the Cert's `UserIDBinding`s.
-    pub fn userids(&self) -> UserIDBindingIter {
-        UserIDBindingIter { iter: Some(self.userids.iter()) }
+    pub fn userids(&self) -> ComponentIter<UserID> {
+        fn make_iter(c: &Cert)
+                     -> std::slice::Iter<ComponentBinding<UserID>> {
+            c.userids.iter()
+        }
+        ComponentIter::new(self, make_iter)
     }
 
     /// Returns an iterator over the Cert's valid `UserAttributeBinding`s.
     ///
     /// A valid `UserIDAttributeBinding` has at least one good
     /// self-signature.
-    pub fn user_attributes(&self) -> UserAttributeBindingIter {
-        UserAttributeBindingIter { iter: Some(self.user_attributes.iter()) }
+    pub fn user_attributes(&self) -> ComponentIter<UserAttribute> {
+        fn make_iter(c: &Cert)
+                     -> std::slice::Iter<ComponentBinding<UserAttribute>> {
+            c.user_attributes.iter()
+        }
+        ComponentIter::new(self, make_iter)
     }
 
     /// Returns an iterator over the Cert's valid subkeys.
@@ -2174,7 +1698,7 @@ mod test {
             .unwrap();
 
         let mut userids = cert.userids()
-            .map(|u| String::from_utf8_lossy(u.userid().value()).into_owned())
+            .map(|u| String::from_utf8_lossy(u.value()).into_owned())
             .collect::<Vec<String>>();
         userids.sort();
 
@@ -2203,7 +1727,7 @@ mod test {
             Cert::from_bytes(crate::tests::key("dkg-sigs-out-of-order.pgp")).unwrap();
 
         let mut userids = cert.userids()
-            .map(|u| String::from_utf8_lossy(u.userid().value()).into_owned())
+            .map(|u| String::from_utf8_lossy(u.value()).into_owned())
             .collect::<Vec<String>>();
         userids.sort();
 
@@ -2496,12 +2020,12 @@ mod test {
                            "{:#?}", cert);
             }
 
-            for userid in cert.userids() {
-                let typ = userid.binding_signature(None).unwrap().typ();
+            for userid in cert.userids().policy(None) {
+                let typ = userid.binding_signature().unwrap().typ();
                 assert_eq!(typ, SignatureType::PositiveCertification,
                            "{:#?}", cert);
 
-                let revoked = userid.revoked(None);
+                let revoked = userid.revoked();
                 if userid_revoked {
                     assert_match!(RevocationStatus::Revoked(_) = revoked);
                 } else {
@@ -2616,13 +2140,10 @@ mod test {
 
     #[test]
     fn revoke_subkey() {
-        use std::{thread, time};
-
         let (cert, _) = CertBuilder::new()
             .add_transport_encryption_subkey()
             .generate().unwrap();
 
-        thread::sleep(time::Duration::from_secs(2));
         let sig = {
             let subkey = cert.subkeys().nth(0).unwrap();
             assert_eq!(RevocationStatus::NotAsFarAsWeKnow, subkey.revoked(None));
@@ -2647,17 +2168,14 @@ mod test {
 
     #[test]
     fn revoke_uid() {
-        use std::{thread, time};
-
         let (cert, _) = CertBuilder::new()
             .add_userid("Test1")
             .add_userid("Test2")
             .generate().unwrap();
 
-        thread::sleep(time::Duration::from_secs(2));
         let sig = {
-            let uid = cert.userids().skip(1).next().unwrap();
-            assert_eq!(RevocationStatus::NotAsFarAsWeKnow, uid.revoked(None));
+            let uid = cert.userids().policy(None).nth(1).unwrap();
+            assert_eq!(RevocationStatus::NotAsFarAsWeKnow, uid.revoked());
 
             let mut keypair = cert.primary().clone().mark_parts_secret()
                 .unwrap().into_keypair().unwrap();
@@ -2673,8 +2191,8 @@ mod test {
         assert_eq!(RevocationStatus::NotAsFarAsWeKnow,
                    cert.revoked(None));
 
-        let uid = cert.userids().skip(1).next().unwrap();
-        assert_match!(RevocationStatus::Revoked(_) = uid.revoked(None));
+        let uid = cert.userids().policy(None).nth(1).unwrap();
+        assert_match!(RevocationStatus::Revoked(_) = uid.revoked());
     }
 
     #[test]
@@ -2867,24 +2385,24 @@ mod test {
 
             let mut slim_shady = false;
             let mut eminem = false;
-            for b in cert.userids() {
+            for b in cert.userids().policy(t) {
                 if b.userid().value() == b"Slim Shady" {
                     assert!(!slim_shady);
                     slim_shady = true;
 
                     if revoked {
                         assert_match!(RevocationStatus::Revoked(_)
-                                      = b.revoked(t));
+                                      = b.revoked());
                     } else {
                         assert_match!(RevocationStatus::NotAsFarAsWeKnow
-                                      = b.revoked(t));
+                                      = b.revoked());
                     }
                 } else {
                     assert!(!eminem);
                     eminem = true;
 
                     assert_match!(RevocationStatus::NotAsFarAsWeKnow
-                                  = b.revoked(t));
+                                  = b.revoked());
                 }
             }
 
@@ -2899,7 +2417,7 @@ mod test {
                           = cert.revoked(None));
 
             assert_eq!(cert.user_attributes().count(), 1);
-            let ua = cert.user_attributes().nth(0).unwrap();
+            let ua = cert.user_attributes().components().nth(0).unwrap();
             if revoked {
                 assert_match!(RevocationStatus::Revoked(_)
                               = ua.revoked(t));
@@ -2927,8 +2445,8 @@ mod test {
 
             let now = time::SystemTime::now();
             let selfsig0
-                = cert.userids().map(|b| {
-                    b.binding_signature(now).unwrap()
+                = cert.userids().policy(now).map(|b| {
+                    b.binding_signature().unwrap()
                         .signature_creation_time().unwrap()
                 })
                 .max().unwrap();
@@ -2984,8 +2502,8 @@ mod test {
         let cert =
             Cert::from_bytes(crate::tests::key("un-revoked-userid.pgp")).unwrap();
 
-        for uid in cert.userids() {
-            assert_eq!(uid.revoked(None), RevocationStatus::NotAsFarAsWeKnow);
+        for uid in cert.userids().policy(None) {
+            assert_eq!(uid.revoked(), RevocationStatus::NotAsFarAsWeKnow);
         }
     }
 
@@ -3126,7 +2644,7 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
         // than one signature.
         let mut cmps = 0;
 
-        for uid in neal.userids() {
+        for uid in neal.userids().components() {
             for sigs in [
                 uid.self_signatures(),
                     uid.certifications(),
@@ -3177,8 +2695,8 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
 
         let now = time::SystemTime::now();
         let selfsig0
-            = cert.userids().map(|b| {
-                b.binding_signature(now).unwrap()
+            = cert.userids().policy(now).map(|b| {
+                b.binding_signature().unwrap()
                     .signature_creation_time().unwrap()
             })
             .max().unwrap();
@@ -3233,8 +2751,8 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
         let cert = Cert::from_bytes(
             crate::tests::key("primary-key-0-public.pgp")).unwrap();
         let selfsig0
-            = cert.userids().map(|b| {
-                b.binding_signature(now).unwrap()
+            = cert.userids().policy(now).map(|b| {
+                b.binding_signature().unwrap()
                     .signature_creation_time().unwrap()
             })
             .max().unwrap();
@@ -3391,7 +2909,7 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
                 .generate().unwrap();
 
             assert_eq!(bob.userids().len(), 1);
-            let bob_userid_binding = bob.userids().nth(0).unwrap();
+            let bob_userid_binding = bob.userids().components().nth(0).unwrap();
             assert_eq!(bob_userid_binding.userid().value(), b"bob@bar.com");
 
             let sig_template
@@ -3414,7 +2932,7 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
             // Make sure the certification is merged, and put in the right
             // place.
             assert_eq!(bob.userids().len(), 1);
-            let bob_userid_binding = bob.userids().nth(0).unwrap();
+            let bob_userid_binding = bob.userids().components().nth(0).unwrap();
             assert_eq!(bob_userid_binding.userid().value(), b"bob@bar.com");
 
             // Canonicalizing Bob's cert without having Alice's key

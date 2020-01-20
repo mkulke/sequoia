@@ -54,7 +54,7 @@ impl Cert {
             serialize_sig(o, s)?;
         }
 
-        for u in self.userids() {
+        for u in self.userids().components() {
             if export && ! u.self_signatures().iter().chain(u.self_revocations()).any(
                 |s| s.exportable_certification().unwrap_or(true))
             {
@@ -77,7 +77,7 @@ impl Cert {
             }
         }
 
-        for u in self.user_attributes() {
+        for u in self.user_attributes().components() {
             if export && ! u.self_signatures().iter().chain(u.self_revocations()).any(
                 |s| s.exportable_certification().unwrap_or(true))
             {
@@ -173,7 +173,7 @@ impl SerializeInto for Cert {
             l += PacketRef::Signature(s).serialized_len();
         }
 
-        for u in self.userids() {
+        for u in self.userids().components() {
             l += PacketRef::UserID(u.userid()).serialized_len();
 
             for s in u.self_revocations() {
@@ -190,7 +190,7 @@ impl SerializeInto for Cert {
             }
         }
 
-        for u in self.user_attributes() {
+        for u in self.user_attributes().components() {
             l += PacketRef::UserAttribute(u.user_attribute()).serialized_len();
 
             for s in u.self_revocations() {
@@ -400,7 +400,7 @@ impl<'a> TSK<'a> {
             serialize_sig(o, s)?;
         }
 
-        for u in self.cert.userids() {
+        for u in self.cert.userids().components() {
             if export && ! u.self_signatures().iter().chain(u.self_revocations()).any(
                 |s| s.exportable_certification().unwrap_or(true))
             {
@@ -423,7 +423,7 @@ impl<'a> TSK<'a> {
             }
         }
 
-        for u in self.cert.user_attributes() {
+        for u in self.cert.user_attributes().components() {
             if export && ! u.self_signatures().iter().chain(u.self_revocations()).any(
                 |s| s.exportable_certification().unwrap_or(true))
             {
@@ -553,7 +553,7 @@ impl<'a> SerializeInto for TSK<'a> {
             l += PacketRef::Signature(s).serialized_len();
         }
 
-        for u in self.cert.userids() {
+        for u in self.cert.userids().components() {
             l += PacketRef::UserID(u.userid()).serialized_len();
 
             for s in u.self_revocations() {
@@ -570,7 +570,7 @@ impl<'a> SerializeInto for TSK<'a> {
             }
         }
 
-        for u in self.cert.user_attributes() {
+        for u in self.cert.user_attributes().components() {
             l += PacketRef::UserAttribute(u.user_attribute()).serialized_len();
 
             for s in u.self_revocations() {
@@ -768,10 +768,9 @@ mod test {
         assert_eq!(cert.subkeys().count(), 1);
         assert!(cert.subkeys().nth(0).unwrap().binding_signature(None).is_some());
         assert_eq!(cert.userids().count(), 1);
-        assert!(cert.userids().nth(0).unwrap().binding_signature(None).is_some());
+        assert!(cert.userids().policy(None).nth(0).is_some());
         assert_eq!(cert.user_attributes().count(), 1);
-        assert!(cert.user_attributes().nth(0).unwrap().binding_signature(None)
-                .is_some());
+        assert!(cert.user_attributes().policy(None).nth(0).is_some());
 
         // The binding signature is not exportable, so when we export
         // and re-parse, we expect the userid to be gone.
