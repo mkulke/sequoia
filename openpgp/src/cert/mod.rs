@@ -411,7 +411,7 @@ impl Cert {
     /// primary User ID's self signature.  Since these signatures are
     /// associated with the UserID and not the primary key, that
     /// information is not contained in the key binding.  Instead, you
-    /// should use methods like `Cert::primary_key_signature()` to get
+    /// should use methods like `Cert::keys().primary(t)` to get
     /// information about the primary key.
     pub fn primary(&self) -> &key::PublicKey {
         &self.primary.key()
@@ -584,19 +584,24 @@ impl Cert {
         -> Result<Cert>
     {
         let sig = {
-            let (template, userid) = self
-                .primary_key_signature_full(Some(now))
-                .ok_or(Error::MalformedCert("No self-signature".into()))?;
+            let primary = self.keys().primary(now)?;
+            let template = primary.binding_signature();
 
             // Recompute the signature.
             let hash_algo = HashAlgorithm::SHA512;
             let mut hash = hash_algo.context()?;
 
             self.primary().hash(&mut hash);
-            if let Some((userid, _)) = userid {
-                userid.userid().hash(&mut hash);
-            } else {
-                assert_eq!(template.typ(), SignatureType::DirectKey);
+            match template.typ() {
+                SignatureType::DirectKey =>
+                    (), // Nothing to hash.
+                SignatureType::GenericCertification
+                    | SignatureType::PersonaCertification
+                    | SignatureType::CasualCertification
+                    | SignatureType::PositiveCertification =>
+                    self.userids().primary(now).unwrap()
+                    .userid().hash(&mut hash),
+                _ => unreachable!(),
             }
 
             // Generate the signature.
@@ -1784,15 +1789,13 @@ mod test {
     fn merge_with_incomplete_update() {
         let cert = Cert::from_bytes(crate::tests::key("about-to-expire.expired.pgp"))
             .unwrap();
-        assert!(! cert.primary_key_signature(None).unwrap()
-                .key_alive(cert.primary(), None).is_ok());
+        cert.keys().primary(None).unwrap().alive().unwrap_err();
 
         let update =
             Cert::from_bytes(crate::tests::key("about-to-expire.update-no-uid.pgp"))
             .unwrap();
         let cert = cert.merge(update).unwrap();
-        assert!(cert.primary_key_signature(None).unwrap()
-                .key_alive(cert.primary(), None).is_ok());
+        cert.keys().primary(None).unwrap().alive().unwrap();
     }
 
     #[test]

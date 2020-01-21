@@ -4,6 +4,7 @@ use clap;
 
 extern crate sequoia_openpgp as openpgp;
 use crate::openpgp::{Packet, Result};
+use openpgp::packet::key::PublicParts;
 use crate::openpgp::parse::{Parse, PacketParserResult};
 
 use super::dump::Convert;
@@ -133,18 +134,14 @@ fn inspect_cert(output: &mut dyn io::Write, cert: &openpgp::Cert,
     writeln!(output)?;
     writeln!(output, "    Fingerprint: {}", cert.fingerprint())?;
     inspect_revocation(output, "", cert.revoked(None))?;
-    let primary = cert.keys().primary_key();
-    inspect_key(output, "", primary.key(), cert.primary_key_signature(None),
-                primary.certifications(),
-                print_keygrips, print_certifications)?;
+    let primary = cert.keys().primary(None)?;
+    inspect_key(output, "", primary, print_keygrips, print_certifications)?;
     writeln!(output)?;
 
     for ka in cert.keys().policy(None).skip(1) {
         writeln!(output, "         Subkey: {}", ka.key().fingerprint())?;
         inspect_revocation(output, "", ka.revoked())?;
-        inspect_key(output, "", ka.key(), Some(ka.binding_signature()),
-                    ka.binding().certifications(),
-                    print_keygrips, print_certifications)?;
+        inspect_key(output, "", ka, print_keygrips, print_certifications)?;
         writeln!(output)?;
     }
 
@@ -167,21 +164,16 @@ fn inspect_cert(output: &mut dyn io::Write, cert: &openpgp::Cert,
     Ok(())
 }
 
-fn inspect_key<P, R>(output: &mut dyn io::Write,
-                     indent: &str,
-                     key: &openpgp::packet::Key<P, R>,
-                     binding_signature: Option<&openpgp::packet::Signature>,
-                     certs: &[openpgp::packet::Signature],
-                     print_keygrips: bool,
-                     print_certifications: bool)
+fn inspect_key(output: &mut dyn io::Write,
+               indent: &str,
+               ka: openpgp::cert::KeyAmalgamation<PublicParts>,
+               print_keygrips: bool,
+               print_certifications: bool)
         -> Result<()>
-        where P: openpgp::packet::key::KeyParts,
-              R: openpgp::packet::key::KeyRole
 {
-    if let Some(sig) = binding_signature {
-        if let Err(e) = sig.key_alive(key, None) {
-            writeln!(output, "{}                 Invalid: {}", indent, e)?;
-        }
+    let key = ka.key();
+    if let Err(e) = ka.alive() {
+        writeln!(output, "{}                 Invalid: {}", indent, e)?;
     }
 
     if print_keygrips {
@@ -194,20 +186,19 @@ fn inspect_key<P, R>(output: &mut dyn io::Write,
     }
     writeln!(output, "{}  Creation time: {}", indent,
              key.creation_time().convert())?;
-    if let Some(sig) = binding_signature {
-        if let Some(expires) = sig.key_expiration_time() {
-            let expiration_time = key.creation_time() + expires;
-            writeln!(output, "{}Expiration time: {} (creation time + {})",
-                     indent,
-                     expiration_time.convert(),
-                     expires.convert())?;
-        }
-
-        if let Some(flags) = sig.key_flags().and_then(inspect_key_flags) {
-            writeln!(output, "{}       Key flags: {}", indent, flags)?;
-        }
+    if let Some(expires) = ka.key_expiration_time() {
+        let expiration_time = key.creation_time() + expires;
+        writeln!(output, "{}Expiration time: {} (creation time + {})",
+                 indent,
+                 expiration_time.convert(),
+                 expires.convert())?;
     }
-    inspect_certifications(output, certs, print_certifications)?;
+
+    if let Some(flags) = sig.key_flags().and_then(inspect_key_flags) {
+        writeln!(output, "{}       Key flags: {}", indent, flags)?;
+    }
+    inspect_certifications(output, ka.binding().certifications(),
+                           print_certifications)?;
 
     Ok(())
 }
