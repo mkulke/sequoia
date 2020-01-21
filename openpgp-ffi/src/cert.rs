@@ -153,7 +153,7 @@ fn pgp_cert_as_tsk(cert: *const Cert) -> *mut TSK<'static> {
 /// The cert still owns the key.  The caller must not modify the key.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
 fn pgp_cert_primary_key(cert: *const Cert) -> *const Key {
-    let key = cert.ref_raw().primary()
+    let key = cert.ref_raw().primary_key()
         .mark_parts_unspecified_ref().mark_role_unspecified_ref();
     key.move_into_raw()
 }
@@ -433,8 +433,7 @@ pub extern "C" fn pgp_user_id_binding_iter_next<'a>(
 /// Wraps a KeyIter for export via the FFI.
 pub struct KeyIterWrapper<'a> {
     pub(crate) // For serialize.rs.
-    iter: KeyIter<'a, openpgp::packet::key::PublicParts,
-                  openpgp::packet::key::UnspecifiedRole>,
+    iter: KeyIter<'a, openpgp::packet::key::PublicParts>,
     // Whether next has been called.
     next_called: bool,
 }
@@ -539,8 +538,8 @@ pub extern "C" fn pgp_cert_key_iter_next<'a>(
     let iter_wrapper = ffi_param_ref_mut!(iter_wrapper);
     iter_wrapper.next_called = true;
 
-    if let Some(key) = iter_wrapper.iter.next() {
-        Some(key.mark_parts_unspecified_ref().mark_role_unspecified_ref())
+    if let Some(ka) = iter_wrapper.iter.next() {
+        Some(ka.key().mark_parts_unspecified_ref().mark_role_unspecified_ref())
             .move_into_raw()
     } else {
         None
@@ -550,8 +549,7 @@ pub extern "C" fn pgp_cert_key_iter_next<'a>(
 /// Wraps a ValidKeyIter for export via the FFI.
 pub struct ValidKeyIterWrapper<'a> {
     pub(crate) // For serialize.rs.
-    iter: ValidKeyIter<'a, openpgp::packet::key::PublicParts,
-                  openpgp::packet::key::UnspecifiedRole>,
+    iter: ValidKeyIter<'a, openpgp::packet::key::PublicParts>,
     // Whether next has been called.
     next_called: bool,
 }

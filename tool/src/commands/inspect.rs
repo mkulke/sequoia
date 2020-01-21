@@ -133,17 +133,23 @@ fn inspect_cert(output: &mut dyn io::Write, cert: &openpgp::Cert,
     writeln!(output)?;
     writeln!(output, "    Fingerprint: {}", cert.fingerprint())?;
     inspect_revocation(output, "", cert.revoked(None))?;
-    inspect_key(output, "", cert.primary(), cert.primary_key_signature(None),
+    inspect_key(output, "", cert.primary_key(), cert.primary_key_signature(None),
                 cert.certifications(),
                 print_keygrips, print_certifications)?;
     writeln!(output)?;
 
-    for ka in cert.keys().policy(None).skip(1) {
+    for ka in cert.keys().skip(1) {
         writeln!(output, "         Subkey: {}", ka.key().fingerprint())?;
-        inspect_revocation(output, "", ka.revoked())?;
-        inspect_key(output, "", ka.key(), Some(ka.binding_signature()),
-                    ka.binding().certifications(),
-                    print_keygrips, print_certifications)?;
+        match ka.policy(None) {
+            Ok(ka) => {
+                inspect_revocation(output, "", ka.revoked())?;
+                inspect_key(output, "", ka.key(), Some(ka.binding_signature()),
+                            ka.binding().certifications(),
+                            print_keygrips, print_certifications)?;
+            }
+            Err(err) =>
+                writeln!(output, "             Not valid: {}", err)?,
+        }
         writeln!(output)?;
     }
 
