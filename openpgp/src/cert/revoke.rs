@@ -54,7 +54,7 @@ use crate::cert::Cert;
 /// assert_eq!(RevocationStatus::NotAsFarAsWeKnow,
 ///            cert.revoked(None));
 ///
-/// let mut signer = cert.primary().key().clone()
+/// let mut signer = cert.primary_key().key().clone()
 ///     .mark_parts_secret()?.into_keypair()?;
 /// let sig = CertRevocationBuilder::new()
 ///     .set_reason_for_revocation(ReasonForRevocation::KeyCompromised,
@@ -108,7 +108,7 @@ impl CertRevocationBuilder {
         let hash_algo = hash_algo.into().unwrap_or(HashAlgorithm::SHA512);
         let mut hash = hash_algo.context()?;
 
-        cert.primary().hash(&mut hash);
+        cert.primary_key().hash(&mut hash);
 
         let creation_time
             = self.signature_creation_time()
@@ -161,7 +161,7 @@ impl Deref for CertRevocationBuilder {
 /// let (cert, _) = CertBuilder::new()
 ///     .add_transport_encryption_subkey()
 ///     .generate()?;
-/// let mut keypair = cert.primary().key().clone()
+/// let mut keypair = cert.primary_key().key().clone()
 ///     .mark_parts_secret()?.into_keypair()?;
 /// let subkey = cert.keys().subkeys().nth(0).unwrap();
 ///
@@ -274,9 +274,9 @@ impl Deref for SubkeyRevocationBuilder {
 /// let (cert, _) = CertBuilder::new()
 ///     .add_userid("some@example.org")
 ///     .generate()?;
-/// let mut keypair = cert.primary().key().clone()
+/// let mut keypair = cert.primary_key().key().clone()
 ///     .mark_parts_secret()?.into_keypair()?;
-/// let userid = cert.userids().nth(0).unwrap();
+/// let ca = cert.userids().nth(0).unwrap();
 ///
 /// // Generate the revocation for the first and only UserID.
 /// let revocation =
@@ -284,7 +284,7 @@ impl Deref for SubkeyRevocationBuilder {
 ///         .set_reason_for_revocation(
 ///             ReasonForRevocation::KeyRetired,
 ///             b"Left example.org.").unwrap()
-///         .build(&mut keypair, &cert, userid, None)?;
+///         .build(&mut keypair, &cert, ca.userid(), None)?;
 /// assert_eq!(revocation.typ(), SignatureType::CertificationRevocation);
 ///
 /// // Now merge the revocation signature into the Cert.
@@ -389,9 +389,9 @@ impl Deref for UserIDRevocationBuilder {
 /// let (cert, _) = CertBuilder::new()
 ///     .add_user_attribute(some_user_attribute)
 ///     .generate()?;
-/// let mut keypair = cert.primary().key().clone()
+/// let mut keypair = cert.primary_key().key().clone()
 ///     .mark_parts_secret()?.into_keypair()?;
-/// let ua = cert.user_attributes().nth(0).unwrap();
+/// let ca = cert.user_attributes().nth(0).unwrap();
 ///
 /// // Generate the revocation for the first and only UserAttribute.
 /// let revocation =
@@ -399,7 +399,7 @@ impl Deref for UserIDRevocationBuilder {
 ///         .set_reason_for_revocation(
 ///             ReasonForRevocation::KeyRetired,
 ///             b"Left example.org.").unwrap()
-///         .build(&mut keypair, &cert, ua, None)?;
+///         .build(&mut keypair, &cert, ca.user_attribute(), None)?;
 /// assert_eq!(revocation.typ(), SignatureType::CertificationRevocation);
 ///
 /// // Now merge the revocation signature into the Cert.

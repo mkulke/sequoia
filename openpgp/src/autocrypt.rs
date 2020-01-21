@@ -106,7 +106,7 @@ impl AutocryptHeader {
         let mut acc = Vec::new();
 
         // The primary key and the most recent selfsig.
-        let primary = cert.primary().binding();
+        let primary = cert.primary_key().binding();
         acc.push(primary.key().clone().mark_role_primary().into());
         primary.self_signatures().iter().take(1)
             .for_each(|s| acc.push(s.clone().into()));
@@ -132,8 +132,7 @@ impl AutocryptHeader {
             if let Ok(Some(a)) = uidb.userid().email() {
                 if &a == addr {
                     acc.push(uidb.userid().clone().into());
-                    uidb.binding_signature().iter()
-                        .for_each(|&s| acc.push(s.clone().into()));
+                    acc.push(uidb.binding_signature().clone().into());
                 } else {
                     // Address is not matching.
                     continue;
