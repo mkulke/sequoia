@@ -501,7 +501,7 @@ impl Cert {
         where T: Into<Option<time::SystemTime>>
     {
         let t = t.into();
-        self.primary._revoked(true, self.primary_key_signature(t), t)
+        self.keys().primary(t).expect("XXX primary(t) must not fail").revoked()
     }
 
     /// Revokes the Cert in place.
@@ -564,11 +564,7 @@ impl Cert {
         where T: Into<Option<time::SystemTime>>
     {
         let t = t.into();
-        if let Some(sig) = self.primary_key_signature(t) {
-            sig.key_alive(self.primary(), t)
-        } else {
-            Err(Error::MalformedCert("No primary key signature".into()).into())
-        }
+        self.keys().primary(t).expect("XXX must not fail").alive()
     }
 
     /// Sets the key to expire in delta seconds.
@@ -1858,7 +1854,7 @@ mod test {
         let now = cert.primary().creation_time();
         let a_sec = time::Duration::new(1, 0);
 
-        let expiry_orig = cert.primary_key_signature(None).unwrap()
+        let expiry_orig = cert.keys().primary(None).unwrap()
             .key_expiration_time()
             .expect("Keys expire by default.");
 
@@ -1873,14 +1869,14 @@ mod test {
             as_of1).unwrap();
         {
             // If t < as_of1, we should get the original expiry.
-            assert_eq!(cert.primary_key_signature(now).unwrap()
+            assert_eq!(cert.keys().primary(now).unwrap()
                            .key_expiration_time(),
                        Some(expiry_orig));
-            assert_eq!(cert.primary_key_signature(as_of1 - a_sec).unwrap()
+            assert_eq!(cert.keys().primary(as_of1 - a_sec).unwrap()
                            .key_expiration_time(),
                        Some(expiry_orig));
             // If t >= as_of1, we should get the new expiry.
-            assert_eq!(cert.primary_key_signature(as_of1).unwrap()
+            assert_eq!(cert.keys().primary(as_of1).unwrap()
                            .key_expiration_time(),
                        None);
         }
@@ -1898,22 +1894,22 @@ mod test {
             as_of2).unwrap();
         {
             // If t < as_of1, we should get the original expiry.
-            assert_eq!(cert.primary_key_signature(now).unwrap()
+            assert_eq!(cert.keys().primary(now).unwrap()
                            .key_expiration_time(),
                        Some(expiry_orig));
-            assert_eq!(cert.primary_key_signature(as_of1 - a_sec).unwrap()
+            assert_eq!(cert.keys().primary(as_of1 - a_sec).unwrap()
                            .key_expiration_time(),
                        Some(expiry_orig));
             // If as_of1 <= t < as_of2, we should get the second
             // expiry (None).
-            assert_eq!(cert.primary_key_signature(as_of1).unwrap()
+            assert_eq!(cert.keys().primary(as_of1).unwrap()
                            .key_expiration_time(),
                        None);
-            assert_eq!(cert.primary_key_signature(as_of2 - a_sec).unwrap()
+            assert_eq!(cert.keys().primary(as_of2 - a_sec).unwrap()
                            .key_expiration_time(),
                        None);
             // If t <= as_of2, we should get the new expiry.
-            assert_eq!(cert.primary_key_signature(as_of2).unwrap()
+            assert_eq!(cert.keys().primary(as_of2).unwrap()
                            .key_expiration_time(),
                        Some(expiry_new));
         }
@@ -1931,7 +1927,7 @@ mod test {
         cert1.serialize(&mut buf).unwrap();
         let cert2 = Cert::from_bytes(&buf).unwrap();
 
-        assert_eq!(cert2.primary_key_signature(None).unwrap().typ(),
+        assert_eq!(cert2.keys().primary_key().self_signatures()[0].typ(),
                    SignatureType::DirectKey);
         assert_eq!(cert2.userids().count(), 0);
     }
