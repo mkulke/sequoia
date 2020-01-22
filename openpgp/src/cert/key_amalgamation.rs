@@ -31,83 +31,114 @@ enum KeyAmalgamationBinding<'a, P: key::KeyParts> {
 
 /// A `Key` and its associated data.
 #[derive(Debug, Clone)]
-pub struct KeyAmalgamation<'a, P: key::KeyParts> {
+pub struct KeyAmalgamation<'a, P: key::KeyParts, R: key::KeyRole> {
     cert: &'a Cert,
     binding: KeyAmalgamationBinding<'a, P>,
+    _r: std::marker::PhantomData<R>,
 }
 
-impl<'a, P: key::KeyParts> Deref for KeyAmalgamation<'a, P>
-    where &'a Key<P, key::UnspecifiedRole>: From<&'a key::PublicKey>
+impl<'a, P: key::KeyParts> Deref
+    for KeyAmalgamation<'a, P, key::PrimaryRole>
+    where &'a Key<P, key::PrimaryRole>:
+              From<&'a Key<key::PublicParts, key::PrimaryRole>>
 {
-    type Target = Key<P, key::UnspecifiedRole>;
-
+    type Target = Key<P, key::PrimaryRole>;
     fn deref(&self) -> &Self::Target {
         self.key()
     }
 }
 
+impl<'a, P: key::KeyParts> Deref
+    for KeyAmalgamation<'a, P, key::SubordinateRole>
+{
+    type Target = Key<P, key::SubordinateRole>;
+    fn deref(&self) -> &Self::Target {
+        self.key().into()
+    }
+}
+
+impl<'a, P: key::KeyParts> Deref
+    for KeyAmalgamation<'a, P, key::UnspecifiedRole>
+    where &'a Key<P, key::UnspecifiedRole>:
+              From<&'a Key<key::PublicParts, key::PrimaryRole>>
+{
+    type Target = Key<P, key::UnspecifiedRole>;
+    fn deref(&self) -> &Self::Target {
+        self.key().into()
+    }
+}
+
 // We can't make the key parts generic, because then the impl would
 // conflict with 'impl<T> std::convert::From<T> for T'.
-impl<'a> From<KeyAmalgamation<'a, key::PublicParts>>
-    for KeyAmalgamation<'a, key::UnspecifiedParts>
+impl<'a, R: key::KeyRole> From<KeyAmalgamation<'a, key::PublicParts, R>>
+    for KeyAmalgamation<'a, key::UnspecifiedParts, R>
 {
-    fn from(ka: KeyAmalgamation<'a, key::PublicParts>) -> Self {
+    fn from(ka: KeyAmalgamation<'a, key::PublicParts, R>) -> Self {
         match ka {
             KeyAmalgamation {
                 cert,
                 binding: KeyAmalgamationBinding::Primary(),
+                ..
             } =>
                 KeyAmalgamation {
                     cert,
                     binding: KeyAmalgamationBinding::Primary(),
+                    _r: std::marker::PhantomData,
                 },
             KeyAmalgamation {
                 cert,
                 binding: KeyAmalgamationBinding::Subordinate(binding),
+                ..
             } =>
                 KeyAmalgamation {
                     cert,
                     binding: KeyAmalgamationBinding::Subordinate(binding.into()),
+                    _r: std::marker::PhantomData,
                 },
         }
     }
 }
 
-impl<'a> From<KeyAmalgamation<'a, key::SecretParts>>
-    for KeyAmalgamation<'a, key::PublicParts>
+impl<'a, R: key::KeyRole> From<KeyAmalgamation<'a, key::SecretParts, R>>
+    for KeyAmalgamation<'a, key::PublicParts, R>
 {
-    fn from(ka: KeyAmalgamation<'a, key::SecretParts>) -> Self {
+    fn from(ka: KeyAmalgamation<'a, key::SecretParts, R>) -> Self {
         match ka {
             KeyAmalgamation {
                 cert,
                 binding: KeyAmalgamationBinding::Primary(),
+                ..
             } =>
                 KeyAmalgamation {
                     cert,
                     binding: KeyAmalgamationBinding::Primary(),
+                    _r: std::marker::PhantomData,
                 },
             KeyAmalgamation {
                 cert,
                 binding: KeyAmalgamationBinding::Subordinate(binding),
+                ..
             } =>
                 KeyAmalgamation {
                     cert,
                     binding: KeyAmalgamationBinding::Subordinate(binding.into()),
+                    _r: std::marker::PhantomData,
                 },
         }
     }
 }
 
-impl<'a> TryFrom<KeyAmalgamation<'a, key::PublicParts>>
-    for KeyAmalgamation<'a, key::SecretParts>
+impl<'a, R: key::KeyRole> TryFrom<KeyAmalgamation<'a, key::PublicParts, R>>
+    for KeyAmalgamation<'a, key::SecretParts, R>
 {
     type Error = failure::Error;
 
-    fn try_from(ka: KeyAmalgamation<'a, key::PublicParts>) -> Result<Self> {
+    fn try_from(ka: KeyAmalgamation<'a, key::PublicParts, R>) -> Result<Self> {
         Ok(match ka {
             KeyAmalgamation {
                 cert,
                 binding: KeyAmalgamationBinding::Primary(),
+                ..
             } => {
                 // Error out if the primary key does not have secret
                 // key material.
@@ -116,25 +147,65 @@ impl<'a> TryFrom<KeyAmalgamation<'a, key::PublicParts>>
                 KeyAmalgamation {
                     cert,
                     binding: KeyAmalgamationBinding::Primary(),
+                    _r: std::marker::PhantomData,
                 }
             }
             KeyAmalgamation {
                 cert,
                 binding: KeyAmalgamationBinding::Subordinate(binding),
+                ..
             } =>
                 KeyAmalgamation {
                     cert,
                     binding: KeyAmalgamationBinding::Subordinate(binding.try_into()?),
+                    _r: std::marker::PhantomData,
                 },
         })
     }
 }
 
-impl<'a, P: 'a + key::KeyParts> KeyAmalgamation<'a, P> {
+impl<'a, P: 'a + key::KeyParts> KeyAmalgamation<'a, P, key::PrimaryRole>
+    where &'a Key<P, key::PrimaryRole>:
+              From<&'a Key<key::PublicParts, key::PrimaryRole>>
+{
+    /// Returns the key.
+    pub fn key(&self) -> &'a Key<P, key::PrimaryRole> {
+        match self.binding {
+            KeyAmalgamationBinding::Primary() => self.cert.primary.key().into(),
+            KeyAmalgamationBinding::Subordinate(_) => unreachable!(),
+        }
+    }
+}
+
+impl<'a, P: 'a + key::KeyParts> KeyAmalgamation<'a, P, key::SubordinateRole> {
+    /// Returns the key.
+    pub fn key(&self) -> &'a Key<P, key::PrimaryRole> {
+        match self.binding {
+            KeyAmalgamationBinding::Primary() => unreachable!(),
+            KeyAmalgamationBinding::Subordinate(binding) => binding.key().into(),
+        }
+    }
+}
+
+impl<'a, P: 'a + key::KeyParts> KeyAmalgamation<'a, P, key::UnspecifiedRole>
+    where &'a Key<P, key::UnspecifiedRole>:
+              From<&'a Key<key::PublicParts, key::PrimaryRole>>
+{
+    /// Returns the key.
+    pub fn key(&self) -> &'a Key<P, key::UnspecifiedRole> {
+        match self.binding {
+            KeyAmalgamationBinding::Primary() => self.cert.primary_key().key().into(),
+            KeyAmalgamationBinding::Subordinate(binding) => binding.key().into(),
+        }
+    }
+}
+
+impl<'a, P: 'a + key::KeyParts, R: 'a + key::KeyRole> KeyAmalgamation<'a, P, R> {
     pub(crate) fn new_primary(cert: &'a Cert) -> Self {
         KeyAmalgamation {
             cert: cert,
             binding: KeyAmalgamationBinding::Primary(),
+            _r: std::marker::PhantomData,
         }
     }
 
@@ -145,22 +216,11 @@ impl<'a, P: 'a + key::KeyParts> KeyAmalgamation<'a, P> {
         KeyAmalgamation {
             cert: cert,
             binding: KeyAmalgamationBinding::Subordinate(binding),
+            _r: std::marker::PhantomData,
         }
     }
 
-    /// Returns the key.
-    pub fn key(&self) -> &'a Key<P, key::UnspecifiedRole>
-        where &'a Key<P, key::UnspecifiedRole>: From<&'a key::PublicKey>
-    {
-        match self {
-            KeyAmalgamation { binding: KeyAmalgamationBinding::Primary(), .. } =>
-                self.cert.primary.key().into(),
-            KeyAmalgamation { binding: KeyAmalgamationBinding::Subordinate(ref binding), .. } =>
-                binding.key().into(),
-        }
-    }
-
-    /// Returns the key, but without conversion to P.
+    /// Returns the key, but without conversion to P, R.
     fn generic_key(&self)
                    -> &'a Key<key::UnspecifiedParts, key::UnspecifiedRole> {
         match self {
@@ -241,7 +301,7 @@ impl<'a, P: 'a + key::KeyParts> KeyAmalgamation<'a, P> {
     /// This transforms the `KeyAmalgamation` into a
     /// `ValidKeyAmalgamation`.
     pub fn policy<T>(self, time: T)
-        -> Result<ValidKeyAmalgamation<'a, P>>
+        -> Result<ValidKeyAmalgamation<'a, P, R>>
         where T: Into<Option<time::SystemTime>>
     {
         let time = time.into().unwrap_or_else(SystemTime::now);
@@ -262,8 +322,8 @@ impl<'a, P: 'a + key::KeyParts> KeyAmalgamation<'a, P> {
 /// A `ValidKeyAmalgamation` includes a reference time, and is
 /// guaranteed to have a live binding signature at that time.
 #[derive(Debug, Clone)]
-pub struct ValidKeyAmalgamation<'a, P: key::KeyParts> {
-    a: KeyAmalgamation<'a, P>,
+pub struct ValidKeyAmalgamation<'a, P: key::KeyParts, R: key::KeyRole> {
+    a: KeyAmalgamation<'a, P, R>,
 
     // The reference time.
     time: SystemTime,
@@ -271,8 +331,8 @@ pub struct ValidKeyAmalgamation<'a, P: key::KeyParts> {
     binding_signature: &'a Signature,
 }
 
-impl<'a, P: key::KeyParts> Deref for ValidKeyAmalgamation<'a, P> {
-    type Target = KeyAmalgamation<'a, P>;
+impl<'a, P: key::KeyParts, R: key::KeyRole> Deref for ValidKeyAmalgamation<'a, P, R> {
+    type Target = KeyAmalgamation<'a, P, R>;
 
     fn deref(&self) -> &Self::Target {
         &self.a
@@ -281,10 +341,10 @@ impl<'a, P: key::KeyParts> Deref for ValidKeyAmalgamation<'a, P> {
 
 // We can't make the key parts generic, because then the impl would
 // conflict with 'impl<T> std::convert::From<T> for T'.
-impl<'a> From<ValidKeyAmalgamation<'a, key::PublicParts>>
-    for ValidKeyAmalgamation<'a, key::UnspecifiedParts>
+impl<'a, R: key::KeyRole> From<ValidKeyAmalgamation<'a, key::PublicParts, R>>
+    for ValidKeyAmalgamation<'a, key::UnspecifiedParts, R>
 {
-    fn from(ka: ValidKeyAmalgamation<'a, key::PublicParts>) -> Self {
+    fn from(ka: ValidKeyAmalgamation<'a, key::PublicParts, R>) -> Self {
         ValidKeyAmalgamation {
             a: ka.a.into(),
             time: ka.time,
@@ -293,10 +353,10 @@ impl<'a> From<ValidKeyAmalgamation<'a, key::PublicParts>>
     }
 }
 
-impl<'a> From<ValidKeyAmalgamation<'a, key::SecretParts>>
-    for ValidKeyAmalgamation<'a, key::PublicParts>
+impl<'a, R: key::KeyRole> From<ValidKeyAmalgamation<'a, key::SecretParts, R>>
+    for ValidKeyAmalgamation<'a, key::PublicParts, R>
 {
-    fn from(ka: ValidKeyAmalgamation<'a, key::SecretParts>) -> Self {
+    fn from(ka: ValidKeyAmalgamation<'a, key::SecretParts, R>) -> Self {
         ValidKeyAmalgamation {
             a: ka.a.into(),
             time: ka.time,
@@ -305,12 +365,13 @@ impl<'a> From<ValidKeyAmalgamation<'a, key::SecretParts>>
     }
 }
 
-impl<'a> TryFrom<ValidKeyAmalgamation<'a, key::PublicParts>>
-    for ValidKeyAmalgamation<'a, key::SecretParts>
+impl<'a, R: key::KeyRole> TryFrom<ValidKeyAmalgamation<'a, key::PublicParts, R>>
+    for ValidKeyAmalgamation<'a, key::SecretParts, R>
 {
     type Error = failure::Error;
 
-    fn try_from(ka: ValidKeyAmalgamation<'a, key::PublicParts>) -> Result<Self> {
+    fn try_from(ka: ValidKeyAmalgamation<'a, key::PublicParts, R>)
+                -> Result<Self> {
         Ok(ValidKeyAmalgamation {
             a: ka.a.try_into()?,
             time: ka.time,
@@ -319,7 +380,9 @@ impl<'a> TryFrom<ValidKeyAmalgamation<'a, key::PublicParts>>
     }
 }
 
-impl<'a, P: 'a + key::KeyParts> ValidKeyAmalgamation<'a, P> {
+impl<'a, P: 'a + key::KeyParts, R: 'a + key::KeyRole>
+    ValidKeyAmalgamation<'a, P, R>
+{
     /// Returns the amalgamation's reference time.
     ///
     /// For queries that are with respect to a point in time, this

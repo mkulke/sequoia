@@ -75,7 +75,7 @@ macro_rules! impl_iterator {
     ($parts:path) => {
         impl<'a> Iterator for KeyIter<'a, $parts>
         {
-            type Item = KeyAmalgamation<'a, $parts>;
+            type Item = KeyAmalgamation<'a, $parts, key::UnspecifiedRole>;
 
             fn next(&mut self) -> Option<Self::Item> {
                 self.next_common().map(|k| k.into())
@@ -87,7 +87,7 @@ impl_iterator!(key::PublicParts);
 impl_iterator!(key::UnspecifiedParts);
 
 impl<'a> Iterator for KeyIter<'a, key::SecretParts> {
-    type Item = KeyAmalgamation<'a, key::SecretParts>;
+    type Item = KeyAmalgamation<'a, key::SecretParts, key::UnspecifiedRole>;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.next_common().map(|k| k.try_into().expect("has secret parts"))
@@ -95,7 +95,8 @@ impl<'a> Iterator for KeyIter<'a, key::SecretParts> {
 }
 
 impl<'a, P: 'a + key::KeyParts> KeyIter<'a, P> {
-    fn next_common(&mut self) -> Option<KeyAmalgamation<'a, key::PublicParts>>
+    fn next_common(&mut self)
+        -> Option<KeyAmalgamation<'a, key::PublicParts, key::UnspecifiedRole>>
     {
         tracer!(false, "KeyIter::next", 0);
         t!("KeyIter: {:?}", self);
@@ -106,7 +107,7 @@ impl<'a, P: 'a + key::KeyParts> KeyIter<'a, P> {
         let cert = self.cert.unwrap();
 
         loop {
-            let ka : KeyAmalgamation<key::PublicParts>
+            let ka : KeyAmalgamation<key::PublicParts, key::UnspecifiedRole>
                 = if ! self.primary {
                     self.primary = true;
                     KeyAmalgamation::new_primary(cert)
@@ -393,7 +394,7 @@ macro_rules! impl_valid_key_iterator {
     ($parts:path) => {
         impl<'a> Iterator for ValidKeyIter<'a, $parts>
         {
-            type Item = ValidKeyAmalgamation<'a, $parts>;
+            type Item = ValidKeyAmalgamation<'a, $parts, key::UnspecifiedRole>;
 
             fn next(&mut self) -> Option<Self::Item> {
                 self.next_common().map(|ka| ka.into())
@@ -406,7 +407,8 @@ impl_valid_key_iterator!(key::UnspecifiedParts);
 
 impl<'a> Iterator for ValidKeyIter<'a, key::SecretParts>
 {
-    type Item = ValidKeyAmalgamation<'a, key::SecretParts>;
+    type Item =
+        ValidKeyAmalgamation<'a, key::SecretParts, key::UnspecifiedRole>;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.next_common().map(|ka| ka.try_into().expect("has secret parts"))
@@ -414,7 +416,8 @@ impl<'a> Iterator for ValidKeyIter<'a, key::SecretParts>
 }
 
 impl<'a, P: 'a + key::KeyParts> ValidKeyIter<'a, P> {
-    fn next_common(&mut self) -> Option<ValidKeyAmalgamation<'a, key::PublicParts>>
+    fn next_common(&mut self)
+        -> Option<ValidKeyAmalgamation<'a, key::PublicParts, key::UnspecifiedRole>>
     {
         tracer!(false, "ValidKeyIter::next", 0);
         t!("ValidKeyIter: {:?}", self);
@@ -433,10 +436,11 @@ impl<'a, P: 'a + key::KeyParts> ValidKeyIter<'a, P> {
         }
 
         loop {
-            let ka : ValidKeyAmalgamation<'a, key::PublicParts>
+            let ka : ValidKeyAmalgamation<'a, key::PublicParts, key::UnspecifiedRole>
                 = if ! self.primary {
                     self.primary = true;
-                    let ka = KeyAmalgamation::new_primary(cert);
+                    let ka: KeyAmalgamation<'a, key::PublicParts, key::UnspecifiedRole> =
+                        KeyAmalgamation::new_primary(cert);
                     match ka.policy(self.time) {
                         Ok(ka) => ka,
                         Err(err) => {
@@ -446,7 +450,8 @@ impl<'a, P: 'a + key::KeyParts> ValidKeyIter<'a, P> {
                         }
                     }
                 } else {
-                    let ka = KeyAmalgamation::new_subordinate(
+                    let ka: KeyAmalgamation<'a, key::PublicParts, key::UnspecifiedRole> =
+                        KeyAmalgamation::new_subordinate(
                         cert.into(), self.subkey_iter.next()?);
                     match ka.policy(self.time) {
                         Ok(ka) => ka,
