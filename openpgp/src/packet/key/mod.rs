@@ -43,10 +43,10 @@
 //! // Get a handle to the Cert's primary key that allows using the
 //! // secret key material.
 //! use std::convert::TryInto;
-//! let sk: &Key<key::SecretParts, key::PrimaryRole> = cert.primary_key().key().try_into()?;
+//! let sk: &Key<key::SecretParts, _> = cert.primary_key().key().try_into()?;
 //!
 //! // Make the conversion explicit.
-//! let sk = cert.primary_key().key().mark_parts_secret_ref()?.mark_role_primary_ref();
+//! let sk = cert.primary_key().key().mark_parts_secret_ref()?;
 //! #     Ok(())
 //! # }
 //! ```

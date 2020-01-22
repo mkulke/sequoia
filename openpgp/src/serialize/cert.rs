@@ -26,8 +26,7 @@ impl Cert {
                         -> Result<()>
     {
         let primary = self.primary_key().binding();
-        PacketRef::PublicKey(primary.key().mark_role_primary_ref())
-            .serialize(o)?;
+        PacketRef::PublicKey(self.primary_key().key()).serialize(o)?;
 
         // Writes a signature if it is exportable or `! export`.
         let serialize_sig =
@@ -161,8 +160,7 @@ impl SerializeInto for Cert {
     fn serialized_len(&self) -> usize {
         let mut l = 0;
         let primary = self.primary_key().binding();
-        l += PacketRef::PublicKey(primary.key().mark_role_primary_ref())
-            .serialized_len();
+        l += PacketRef::PublicKey(self.primary_key().key()).serialized_len();
 
         for s in primary.self_signatures() {
             l += PacketRef::Signature(s).serialized_len();
@@ -387,7 +385,7 @@ impl<'a> TSK<'a> {
         };
 
         let primary = self.cert.primary_key().binding();
-        serialize_key(o, primary.key().mark_role_primary_ref().into(),
+        serialize_key(o, self.cert.primary_key().key().into(),
                       Tag::PublicKey, Tag::SecretKey)?;
 
         for s in primary.self_signatures() {
@@ -542,7 +540,7 @@ impl<'a> SerializeInto for TSK<'a> {
         };
 
         let primary = self.cert.primary_key().binding();
-        l += serialized_len_key(primary.key().mark_role_primary_ref().into(),
+        l += serialized_len_key(self.cert.primary_key().key().into(),
                                 Tag::PublicKey, Tag::SecretKey);
 
         for s in primary.self_signatures() {
