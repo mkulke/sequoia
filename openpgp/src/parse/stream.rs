@@ -198,7 +198,7 @@ pub enum VerificationResult<'a> {
         cert: &'a Cert,
 
         /// The signing key that made the signature.
-        ka: ValidKeyAmalgamation<'a, key::PublicParts>,
+        ka: ValidKeyAmalgamation<'a, key::PublicParts, key::UnspecifiedRole>,
     },
 
     /// The signature is good, but it is not alive at the specified
