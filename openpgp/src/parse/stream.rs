@@ -2078,6 +2078,9 @@ mod test {
     // This test is relatively long running in debug mode.  Split it
     // up.
     fn detached_verifier_read_size(l: usize) {
+        lazy_static! {
+            static ref ZEROS: Vec<u8> = vec![0; 100 * 1024 * 1024];
+        }
         struct Test<'a> {
             sig: &'a [u8],
             content: &'a [u8],
@@ -2093,7 +2096,7 @@ mod test {
             Test {
                 sig: crate::tests::message(
                     "emmelie-dorothea-dina-samantha-awina-detached-signature-of-100MB-of-zeros.sig"),
-                content: &vec![ 0; 100 * 1024 * 1024 ][..],
+                content: &ZEROS[..],
                 reference:
                 crate::types::Timestamp::try_from(1572602018).unwrap().into(),
             },
@@ -2104,9 +2107,6 @@ mod test {
         ].iter()
             .map(|f| Cert::from_bytes(crate::tests::key(f)).unwrap())
             .collect::<Vec<_>>();
-
-        let mut buffer = Vec::with_capacity(104 * 1024 * 1024);
-        buffer.resize(buffer.capacity(), 0);
 
         let read_to_end = |v: &mut Verifier<_>, l, buffer: &mut Vec<_>| {
             let mut offset = 0;
@@ -2130,6 +2130,7 @@ mod test {
             offset
         };
 
+        let mut buffer = vec![0; 104 * 1024 * 1024];
         for test in tests.iter() {
             let sig = test.sig;
             let content = test.content;
@@ -2148,20 +2149,8 @@ mod test {
             let h = v.into_helper();
             assert_eq!(h.good, 1);
             assert_eq!(h.bad, 0);
-
-            // Same, but with readers.
-            use std::io::Cursor;
-            let h = VHelper::new(0, 0, 0, 0, keys.clone());
-            let mut v = DetachedVerifier::from_reader(
-                Cursor::new(sig), Cursor::new(content),
-                h, reference).unwrap();
-
-            let got = read_to_end(&mut v, l, &mut buffer);
-            let got = &buffer[..got];
-            assert!(v.message_processed());
-            assert_eq!(got.len(), content.len());
-            assert_eq!(got, &content[..]);
         }
+        crate::vec_truncate(&mut buffer, 0);
     }
 
     #[test]
