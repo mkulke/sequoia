@@ -331,12 +331,15 @@ pub struct SubpacketArea {
     parsed: Mutex<RefCell<Option<HashMap<SubpacketTag, usize>>>>,
 }
 
+impl Default for SubpacketArea {
+    fn default() -> Self {
+        Self::new(Default::default())
+    }
+}
+
 impl Clone for SubpacketArea {
     fn clone(&self) -> Self {
-        Self {
-            packets: self.packets.clone(),
-            parsed: Mutex::new(RefCell::new(None)),
-        }
+        Self::new(self.packets.clone())
     }
 }
 
@@ -379,11 +382,6 @@ impl SubpacketArea {
             packets,
             parsed: Mutex::new(RefCell::new(None)),
         }
-    }
-
-    /// Returns a empty subpacket area.
-    pub fn empty() -> SubpacketArea {
-        SubpacketArea::new(Vec::new())
     }
 
     // Initialize `Signature::hashed_area_parsed` from
@@ -1579,7 +1577,7 @@ impl SubpacketArea {
 /// hash area are preferred.  To return packets from a specific area,
 /// use the `hashed_area` and `unhashed_area` methods to get the
 /// specific methods and then use their accessors.
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, Default, PartialEq, Eq, Hash)]
 pub struct SubpacketAreas {
     /// Subpackets that are part of the signature.
     hashed_area: SubpacketArea,
@@ -1608,15 +1606,6 @@ impl SubpacketAreas {
         Self {
             hashed_area: hashed_area,
             unhashed_area: unhashed_area,
-        }
-    }
-
-    /// Returns a new `SubpacketAreas` object with empty hashed and
-    /// unhashed subpacket areas.
-    pub fn empty() -> Self {
-        Self {
-            hashed_area: SubpacketArea::empty(),
-            unhashed_area: SubpacketArea::empty(),
         }
     }
 
