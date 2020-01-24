@@ -40,6 +40,7 @@ mod builder;
 mod bindings;
 pub mod components;
 use components::{
+    Amalgamation,
     ComponentBinding,
     PrimaryKeyBinding,
     KeyBindingIter,
@@ -1286,6 +1287,7 @@ impl Cert {
 #[cfg(test)]
 mod test {
     use crate::serialize::Serialize;
+    use super::components::Amalgamation;
     use super::*;
 
     use crate::{
