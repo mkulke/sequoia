@@ -224,8 +224,11 @@ impl<'a, P: 'a + key::KeyParts> KeyAmalgamation<'a, P> {
             KeyAmalgamation {
                 binding: KeyAmalgamationBinding::Primary(),
                 ..
-            } =>
-                self.cert.primary_key_signature(time),
+            } => {
+                self.cert.primary_userid(time).map(|u| u.binding_signature())
+                    .or_else(|| self.cert.primary_key().binding()
+                             .binding_signature(time))
+            },
             KeyAmalgamation {
                 binding: KeyAmalgamationBinding::Subordinate(ref binding),
                 ..
@@ -318,8 +321,8 @@ impl<'a, P: key::KeyParts> PrimaryKeyAmalgamation<'a, P> {
     ///
     /// If `time` is `None`, the current time is used.
     ///
-    /// This transforms the `KeyAmalgamation` into a
-    /// `ValidKeyAmalgamation`.
+    /// This transforms the `PrimaryKeyAmalgamation` into a
+    /// `ValidPrimaryKeyAmalgamation`.
     pub fn policy<T>(self, time: T)
         -> Result<ValidPrimaryKeyAmalgamation<'a, P>>
         where T: Into<Option<time::SystemTime>>
@@ -348,6 +351,14 @@ impl<'a, P: key::KeyParts> Deref for ValidKeyAmalgamation<'a, P> {
 
     fn deref(&self) -> &Self::Target {
         &self.a
+    }
+}
+
+impl<'a, P: key::KeyParts> From<ValidKeyAmalgamation<'a, P>>
+    for KeyAmalgamation<'a, P>
+{
+    fn from(vka: ValidKeyAmalgamation<'a, P>) -> Self {
+        vka.a
     }
 }
 
@@ -420,6 +431,15 @@ impl<'a, P: 'a + key::KeyParts> ValidKeyAmalgamation<'a, P> {
         self.binding_signature
     }
 
+    /// Returns the Certificate's direct key signature as of the
+    /// reference time, if any.
+    ///
+    /// Subkeys on direct key signatures apply to all components of
+    /// the certificate.
+    pub fn direct_key_signature(&self) -> Option<&'a Signature> {
+        self.cert.primary.binding_signature(self.time())
+    }
+
     /// Returns the key's revocation status as of the amalgamation's
     /// reference time.
     ///
@@ -428,22 +448,10 @@ impl<'a, P: 'a + key::KeyParts> ValidKeyAmalgamation<'a, P> {
     /// revoked.
     pub fn revoked(&self) -> RevocationStatus<'a>
     {
-        match self {
-            ValidKeyAmalgamation {
-                a: KeyAmalgamation {
-                    binding: KeyAmalgamationBinding::Primary(),
-                    ..
-                },
-                ..
-            } =>
+        match self.a.binding {
+            KeyAmalgamationBinding::Primary() =>
                 self.cert.revoked(self.time()),
-            ValidKeyAmalgamation {
-                a: KeyAmalgamation {
-                    binding: KeyAmalgamationBinding::Subordinate(ref binding),
-                    ..
-                },
-                ..
-            } =>
+            KeyAmalgamationBinding::Subordinate(ref binding) =>
                 binding.revoked(self.time()),
         }
     }
@@ -457,12 +465,24 @@ impl<'a, P: 'a + key::KeyParts> ValidKeyAmalgamation<'a, P> {
 
     /// Returns the key's key flags as of the amalgamtion's
     /// reference time.
+    ///
+    /// Considers both the binding signature and the direct key
+    /// signature.  Information in the binding signature takes
+    /// precedence over the direct key signature.  See also [Section
+    /// 5.2.3.3 of RFC 4880].
+    ///
+    ///   [Section 5.2.3.3 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.3
     pub fn key_flags(&self) -> Option<KeyFlags> {
-        self.binding_signature.key_flags()
+        self.binding_signature().key_flags()
+            .or_else(|| self.direct_key_signature()
+                     .and_then(|sig| sig.key_flags()))
     }
 
     /// Returns whether the key has at least one of the specified key
     /// flags as of the amalgamtion's reference time.
+    ///
+    /// Key flags are computed as described in
+    /// [`key_flags()`](#method.key_flags).
     pub fn has_any_key_flag<F>(&self, flags: F) -> bool
         where F: Borrow<KeyFlags>
     {
@@ -472,18 +492,27 @@ impl<'a, P: 'a + key::KeyParts> ValidKeyAmalgamation<'a, P> {
 
     /// Returns whether key is certification capable as of the
     /// amalgamtion's reference time.
+    ///
+    /// Key flags are computed as described in
+    /// [`key_flags()`](#method.key_flags).
     pub fn for_certification(&self) -> bool {
         self.has_any_key_flag(KeyFlags::empty().set_certification(true))
     }
 
     /// Returns whether key is signing capable as of the amalgamtion's
     /// reference time.
+    ///
+    /// Key flags are computed as described in
+    /// [`key_flags()`](#method.key_flags).
     pub fn for_signing(&self) -> bool {
         self.has_any_key_flag(KeyFlags::empty().set_signing(true))
     }
 
     /// Returns whether key is authentication capable as of the
     /// amalgamtion's reference time.
+    ///
+    /// Key flags are computed as described in
+    /// [`key_flags()`](#method.key_flags).
     pub fn for_authentication(&self) -> bool
     {
         self.has_any_key_flag(KeyFlags::empty().set_authentication(true))
@@ -491,6 +520,9 @@ impl<'a, P: 'a + key::KeyParts> ValidKeyAmalgamation<'a, P> {
 
     /// Returns whether key is intended for storage encryption as of
     /// the amalgamtion's reference time.
+    ///
+    /// Key flags are computed as described in
+    /// [`key_flags()`](#method.key_flags).
     pub fn for_storage_encryption(&self) -> bool
     {
         self.has_any_key_flag(KeyFlags::empty().set_storage_encryption(true))
@@ -498,6 +530,9 @@ impl<'a, P: 'a + key::KeyParts> ValidKeyAmalgamation<'a, P> {
 
     /// Returns whether key is intended for transport encryption as of the
     /// amalgamtion's reference time.
+    ///
+    /// Key flags are computed as described in
+    /// [`key_flags()`](#method.key_flags).
     pub fn for_transport_encryption(&self) -> bool
     {
         self.has_any_key_flag(KeyFlags::empty().set_transport_encryption(true))
@@ -505,6 +540,9 @@ impl<'a, P: 'a + key::KeyParts> ValidKeyAmalgamation<'a, P> {
 
     /// Returns whether the certificateis alive as of the
     /// amalgamtion's reference time.
+    ///
+    /// Key flags are computed as described in
+    /// [`key_flags()`](#method.key_flags).
     pub fn cert_alive(&self) -> Result<()>
     {
         self.cert().alive(self.time())
@@ -514,9 +552,45 @@ impl<'a, P: 'a + key::KeyParts> ValidKeyAmalgamation<'a, P> {
     /// reference time.
     ///
     /// Note: this does not return whether the certificate is valid.
+    ///
+    /// Considers both the binding signature and the direct key
+    /// signature.  Information in the binding signature takes
+    /// precedence over the direct key signature.  See also [Section
+    /// 5.2.3.3 of RFC 4880].
+    ///
+    ///   [Section 5.2.3.3 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.3
     pub fn alive(&self) -> Result<()>
     {
-        self.binding_signature.key_alive(self.generic_key(), self.time())
+        let sig = {
+            let binding = self.binding_signature();
+            if binding.key_expiration_time().is_some() {
+                Some(binding)
+            } else {
+                self.direct_key_signature()
+            }
+        };
+        if let Some(sig) = sig {
+            sig.key_alive(self.generic_key(), self.time())
+        } else {
+            // There is no key expiration time on the binding
+            // signature.  This key does not expire.
+            Ok(())
+        }
+    }
+
+    /// Returns the key's expiration time as of the amalgamtion's
+    /// reference time.
+    ///
+    /// Considers both the binding signature and the direct key
+    /// signature.  Information in the binding signature takes
+    /// precedence over the direct key signature.  See also [Section
+    /// 5.2.3.3 of RFC 4880].
+    ///
+    ///   [Section 5.2.3.3 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.3
+    pub fn key_expiration_time(&self) -> Option<std::time::Duration> {
+        self.binding_signature().key_expiration_time()
+            .or_else(|| self.direct_key_signature()
+                     .and_then(|sig| sig.key_expiration_time()))
     }
 
     /// Returns whether the key contains secret key material.
