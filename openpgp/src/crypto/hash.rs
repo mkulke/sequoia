@@ -14,9 +14,6 @@ use crate::Error;
 use crate::Result;
 use crate::types::Timestamp;
 
-use nettle;
-use nettle::Hash as NettleHash;
-
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 
@@ -96,7 +93,7 @@ impl HashAlgorithm {
     ///
     ///   [`HashAlgorithm::is_supported`]: #method.is_supported
     pub fn context(self) -> Result<Context> {
-        use nettle::hash::*;
+        use nettle::hash::{Sha224, Sha256, Sha384, Sha512};
         use nettle::hash::insecure_do_not_use::Sha1;
 
         let c: Result<Box<dyn nettle::Hash>> = match self {
