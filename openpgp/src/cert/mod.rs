@@ -898,8 +898,22 @@ impl Cert {
 
         // See if the signatures that didn't validate are just out of
         // place.
+        let mut bad_sigs: Vec<(Option<usize>, Signature)> =
+            mem::replace(&mut self.bad, Vec::new()).into_iter()
+            .map(|sig| (None, sig)).collect();
 
-        'outer: for sig in mem::replace(&mut self.bad, Vec::new()) {
+        // Do the same for signatures on unknown components, but
+        // remember where we took them from.
+        for (i, c) in self.unknowns.iter_mut().enumerate() {
+            for sig in mem::replace(&mut c.certifications, Vec::new()) {
+                bad_sigs.push((Some(i), sig));
+            }
+        }
+
+        'outer: for (unknown_idx, sig) in bad_sigs {
+            // Did we find a new place for sig?
+            let mut found_component = false;
+
             macro_rules! check_one {
                 ($desc:expr, $sigs:expr, $sig:expr,
                  $verify_method:ident, $($verify_args:expr),*) => ({
@@ -968,8 +982,16 @@ impl Cert {
                                    $sig.digest_prefix()[1],
                                    $sig.typ(), $desc);
 
-                                $sigs.push($sig);
-                                continue 'outer;
+                                $sigs.push($sig.clone());
+                                // The cost of missing a revocation
+                                // certificate merely because we put
+                                // it into the wrong place seem to
+                                // outweigh the cost of duplicating
+                                // it.
+                                t!("Will keep trying to match this sig to \
+                                    other components (found before? {:?})...",
+                                   found_component);
+                                found_component = true;
                             }
                         }
                     }
@@ -1095,36 +1117,27 @@ impl Cert {
                 },
             }
 
+            if found_component {
+                continue;
+            }
+
             // Keep them for later.
             t!("Self-sig {:02X}{:02X}, {:?} doesn't belong \
                 to any known component or is bad.",
                sig.digest_prefix()[0], sig.digest_prefix()[1],
                sig.typ());
-            self.bad.push(sig);
+
+            if let Some(i) = unknown_idx {
+                self.unknowns[i].certifications.push(sig);
+            } else {
+                self.bad.push(sig);
+            }
         }
 
         if self.bad.len() > 0 {
             t!("{}: ignoring {} bad self-signatures",
                self.keyid(), self.bad.len());
         }
-
-        // Only keep user ids / user attributes / subkeys with at
-        // least one valid self-signature or self-revocation.
-        self.userids.retain(|userid| {
-            userid.self_signatures.len() > 0 || userid.self_revocations.len() > 0
-        });
-        t!("Retained {} userids", self.userids.len());
-
-        self.user_attributes.retain(|ua| {
-            ua.self_signatures.len() > 0 || ua.self_revocations.len() > 0
-        });
-        t!("Retained {} user_attributes", self.user_attributes.len());
-
-        self.subkeys.retain(|subkey| {
-            subkey.self_signatures.len() > 0 || subkey.self_revocations.len() > 0
-        });
-        t!("Retained {} subkeys", self.subkeys.len());
-
 
         self.primary.sort_and_dedup();
 
@@ -1148,6 +1161,12 @@ impl Cert {
                     b.set_secret(a.set_secret(None));
                 }
             });
+
+        let primary_fp: KeyHandle = self.key_handle();
+        let primary_keyid = KeyHandle::KeyID(primary_fp.clone().into());
+        for c in self.unknowns.iter_mut() {
+            parser::split_sigs(&primary_fp, &primary_keyid, c);
+        }
         self.unknowns.sort_and_dedup(Unknown::best_effort_cmp, |_, _| {});
 
         // XXX: Check if the sigs in other_sigs issuer are actually
@@ -1195,6 +1214,8 @@ impl Cert {
             .chain(self.userids.into_iter().flat_map(|b| b.into_packets()))
             .chain(self.user_attributes.into_iter().flat_map(|b| b.into_packets()))
             .chain(self.subkeys.into_iter().flat_map(|b| b.into_packets()))
+            .chain(self.unknowns.into_iter().flat_map(|b| b.into_packets()))
+            .chain(self.bad.into_iter().map(|s| s.into()))
     }
 
     /// Converts the Cert into a `PacketPile`.
@@ -1349,7 +1370,7 @@ mod test {
             assert_eq!(cert.userids[0].self_signatures[0].digest_prefix(),
                        &[ 0xc6, 0x8f ]);
             assert_eq!(cert.user_attributes.len(), 0);
-            assert_eq!(cert.subkeys.len(), 0);
+            assert_eq!(cert.subkeys.len(), 1);
         }
     }
 
@@ -2998,5 +3019,93 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
 
         assert_eq!(cert.keys().secret().count(), 2);
         assert_eq!(cert.keys().unencrypted_secret().count(), 1);
+    }
+
+    /// Tests that Cert::into_packets() and Cert::serialize(..) agree.
+    #[test]
+    fn test_into_packets() -> Result<()> {
+        use crate::serialize::SerializeInto;
+
+        let dkg = Cert::from_bytes(crate::tests::key("dkg.gpg"))?;
+        let mut buf = Vec::new();
+        for p in dkg.clone().into_packets() {
+            p.serialize(&mut buf)?;
+        }
+        let dkg = dkg.to_vec()?;
+        if false && buf != dkg {
+            std::fs::write("/tmp/buf", &buf)?;
+            std::fs::write("/tmp/dkg", &dkg)?;
+        }
+        assert_eq!(buf, dkg);
+        Ok(())
+    }
+
+    #[test]
+    fn test_canonicalization() -> Result<()> {
+        use crate::types::Curve;
+
+        let p = crate::policy::StandardPolicy::new();
+
+        let primary: Key<_, key::PrimaryRole> =
+            key::Key4::generate_ecc(true, Curve::Ed25519)?.into();
+        let mut primary_pair = primary.clone().into_keypair()?;
+        let cert = Cert::from_packet_pile(vec![primary.into()].into())?;
+
+        // We now add components without binding signatures.  They
+        // should be kept, be enumerable, but ignored if a policy is
+        // applied.
+
+        // Add a bare userid.
+        let uid = UserID::from("foo@example.org");
+        let cert = cert.merge_packets(vec![uid.into()])?;
+        assert_eq!(cert.userids().count(), 1);
+        assert_eq!(cert.userids().set_policy(&p, None).count(), 0);
+
+        // Add a bare user attribute.
+        use packet::user_attribute::{Subpacket, Image};
+        let ua = UserAttribute::new(&[
+            Subpacket::Image(
+                Image::Private(100, vec![0, 1, 2].into_boxed_slice())),
+        ])?;
+        let cert = cert.merge_packets(vec![ua.into()])?;
+        assert_eq!(cert.user_attributes().count(), 1);
+        assert_eq!(cert.user_attributes().set_policy(&p, None).count(), 0);
+
+        // Add a bare signing subkey.
+        let signing_subkey: Key<_, key::SubordinateRole> =
+            key::Key4::generate_ecc(true, Curve::Ed25519)?.into();
+        let _signing_subkey_pair = signing_subkey.clone().into_keypair()?;
+        let cert = cert.merge_packets(vec![signing_subkey.into()])?;
+        assert_eq!(cert.keys().skip_primary().count(), 1);
+        assert_eq!(cert.keys().skip_primary().set_policy(&p, None).count(), 0);
+
+        // Add a component that Sequoia doesn't understand.
+        let mut fake_key = packet::Unknown::new(
+            packet::Tag::PublicSubkey, failure::err_msg("fake key"));
+        fake_key.set_body("fake key".into());
+        let fake_binding = signature::Builder::new(SignatureType::SubkeyBinding)
+            .set_issuer(primary_pair.public().keyid())?
+            .set_issuer_fingerprint(primary_pair.public().fingerprint())?
+            .sign_standalone(&mut primary_pair)?;
+        let cert = cert.merge_packets(vec![fake_key.into(),
+                                           fake_binding.clone().into()])?;
+        assert_eq!(cert.unknowns().count(), 1);
+        assert_eq!(cert.unknowns().nth(0).unwrap().unknown().tag(),
+                   packet::Tag::PublicSubkey);
+        assert_eq!(cert.unknowns().nth(0).unwrap().self_signatures(),
+                   &[fake_binding]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn canonicalize_with_v3_sig() -> Result<()> {
+        let cert = Cert::from_bytes(
+            crate::tests::key("eike-v3-v4.pgp"))?;
+        dbg!(&cert);
+        assert_eq!(cert.userids()
+                   .set_policy(&crate::policy::StandardPolicy::new(), None)
+                   .count(), 1);
+        Ok(())
     }
 }
