@@ -39,7 +39,7 @@ impl<P: key::KeyParts> Key<P, key::SubordinateRole> {
     ///
     /// // Let's add an encryption subkey.
     /// let flags = KeyFlags::default().set_storage_encryption(true);
-    /// assert_eq!(cert.keys().set_policy(p, None).alive().revoked(false)
+    /// assert_eq!(cert.keys().with_policy(p, None).alive().revoked(false)
     ///                .key_flags(&flags).count(),
     ///            0);
     ///
@@ -56,7 +56,7 @@ impl<P: key::KeyParts> Key<P, key::SubordinateRole> {
     ///                                  binding.into()])?;
     ///
     /// // Check that we have an encryption subkey.
-    /// assert_eq!(cert.keys().set_policy(p, None).alive().revoked(false)
+    /// assert_eq!(cert.keys().with_policy(p, None).alive().revoked(false)
     ///                .key_flags(flags).count(),
     ///            1);
     /// # Ok(()) }
@@ -173,7 +173,7 @@ impl UserID {
     /// let bob = bob.merge_packets(vec![certificate.into()])?;
     ///
     /// // Check that we have a certification on the userid.
-    /// assert_eq!(bob.userids().bindings().nth(0).unwrap()
+    /// assert_eq!(bob.userids().bundles().nth(0).unwrap()
     ///            .certifications().len(), 1);
     /// # Ok(()) }
     pub fn certify<S, H, T>(&self, signer: &mut dyn Signer, cert: &Cert,
@@ -315,7 +315,7 @@ impl UserAttribute {
     /// let bob = bob.merge_packets(vec![certificate.into()])?;
     ///
     /// // Check that we have a certification on the userid.
-    /// assert_eq!(bob.user_attributes().bindings().nth(0).unwrap()
+    /// assert_eq!(bob.user_attributes().bundles().nth(0).unwrap()
     ///            .certifications().len(),
     ///            1);
     /// # Ok(()) }

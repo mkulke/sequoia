@@ -6,8 +6,8 @@ use crate::{
     cert::{
         Cert,
         components::{
-            ComponentBinding,
-            ComponentBindingIter,
+            ComponentBundle,
+            ComponentBundleIter,
             Amalgamation,
             ComponentAmalgamation,
             ValidComponentAmalgamation,
@@ -25,7 +25,7 @@ use crate::{
 /// By default, `ComponentIter` returns all components without context.
 pub struct ComponentIter<'a, C> {
     cert: &'a Cert,
-    iter: ComponentBindingIter<'a, C>,
+    iter: ComponentBundleIter<'a, C>,
 }
 
 impl<'a, C> fmt::Debug for ComponentIter<'a, C> {
@@ -46,11 +46,11 @@ impl<'a, C> Iterator for ComponentIter<'a, C> {
 impl<'a, C> ComponentIter<'a, C> {
     /// Returns a new `ComponentIter` instance.
     pub(crate) fn new(cert: &'a Cert,
-                      iter: std::slice::Iter<'a, ComponentBinding<C>>) -> Self
+                      iter: std::slice::Iter<'a, ComponentBundle<C>>) -> Self
         where Self: 'a
     {
         ComponentIter {
-            cert, iter: ComponentBindingIter { iter: Some(iter), },
+            cert, iter: ComponentBundleIter { iter: Some(iter), },
         }
     }
 
@@ -60,7 +60,7 @@ impl<'a, C> ComponentIter<'a, C> {
     /// If `time` is None, then the current time is used.
     ///
     /// See `ValidComponentIter` for the definition of a valid component.
-    pub fn set_policy<T>(self, policy: &'a dyn Policy, time: T)
+    pub fn with_policy<T>(self, policy: &'a dyn Policy, time: T)
         -> ValidComponentIter<'a, C>
         where T: Into<Option<SystemTime>>
     {
@@ -78,7 +78,7 @@ impl<'a, C> ComponentIter<'a, C> {
     /// A component binding is similar to a component amalgamation,
     /// but is not bound to a specific time.  It contains the
     /// component and all relevant signatures.
-    pub fn bindings(self) -> ComponentBindingIter<'a, C> {
+    pub fn bundles(self) -> ComponentBundleIter<'a, C> {
         self.iter
     }
 }
@@ -94,7 +94,7 @@ impl<'a, C> ComponentIter<'a, C> {
 pub struct ValidComponentIter<'a, C> {
     // This is an option to make it easier to create an empty ValidComponentIter.
     cert: &'a Cert,
-    iter: ComponentBindingIter<'a, C>,
+    iter: ComponentBundleIter<'a, C>,
 
     policy: &'a dyn Policy,
     // The time.
@@ -125,10 +125,10 @@ impl<'a, C> Iterator for ValidComponentIter<'a, C>
 
         loop {
             let ca = ComponentAmalgamation::new(self.cert, self.iter.next()?);
-            t!("Considering component: {:?}", ca.binding());
+            t!("Considering component: {:?}", ca.bundle());
 
             let vca
-                = if let Ok(vca) = ca.set_policy(self.policy, self.time) {
+                = if let Ok(vca) = ca.with_policy(self.policy, self.time) {
                     vca
                 } else {
                     t!("No self-signature at time {:?}", self.time);
@@ -195,7 +195,7 @@ impl<'a, C> ValidComponentIter<'a, C> {
     /// # let timestamp = None;
     /// let non_revoked_uas = cert
     ///     .user_attributes()
-    ///     .set_policy(p, timestamp)
+    ///     .with_policy(p, timestamp)
     ///     .filter(|ca| {
     ///         match ca.revoked() {
     ///             RevocationStatus::Revoked(_) =>
@@ -214,7 +214,7 @@ impl<'a, C> ValidComponentIter<'a, C> {
     ///                 true,
     ///         }
     ///     })
-    ///     .map(|ca| ca.binding())
+    ///     .map(|ca| ca.bundle())
     ///     .collect::<Vec<_>>();
     /// #     Ok(())
     /// # }

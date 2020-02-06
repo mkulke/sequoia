@@ -13,8 +13,8 @@ use crate::{
         Cert,
         components::{
             Amalgamation,
-            KeyBinding,
-            KeyBindingIter,
+            KeyBundle,
+            UnfilteredKeyBundleIter,
         },
         KeyAmalgamation,
         ValidKeyAmalgamation,
@@ -41,7 +41,7 @@ pub struct KeyIter<'a, P: key::KeyParts> {
     // This is an option to make it easier to create an empty KeyIter.
     cert: Option<&'a Cert>,
     primary: bool,
-    subkey_iter: KeyBindingIter<'a,
+    subkey_iter: UnfilteredKeyBundleIter<'a,
                                 key::PublicParts,
                                 key::SubordinateRole>,
 
@@ -287,7 +287,7 @@ impl<'a, P: 'a + key::KeyParts> KeyIter<'a, P>
     /// } else if let Err(_) = cert.alive(p, None) {
     ///     // The certificate is not alive, don't use any keys from it.
     /// } else {
-    ///     for key in cert.keys().set_policy(p, None).alive().revoked(false).for_signing() {
+    ///     for key in cert.keys().with_policy(p, None).alive().revoked(false).for_signing() {
     ///         // We can sign the message with this key.
     ///     }
     /// }
@@ -326,7 +326,7 @@ impl<'a, P: 'a + key::KeyParts> KeyIter<'a, P>
     /// } else if let Err(_) = cert.alive(p, None) {
     ///     // The certificate is not alive, don't use any keys from it.
     /// } else {
-    ///     for key in cert.keys().set_policy(p, timestamp).alive().revoked(false).for_signing() {
+    ///     for key in cert.keys().with_policy(p, timestamp).alive().revoked(false).for_signing() {
     ///         // Verify the message with this keys.
     ///     }
     /// }
@@ -372,7 +372,7 @@ impl<'a, P: 'a + key::KeyParts> KeyIter<'a, P>
     /// #     let (cert, _) =
     /// #         CertBuilder::general_purpose(None, Some("alice@example.org"))
     /// #         .generate()?;
-    /// let decryption_keys = cert.keys().set_policy(p, None)
+    /// let decryption_keys = cert.keys().with_policy(p, None)
     ///     .for_storage_encryption().for_transport_encryption()
     ///     .collect::<Vec<_>>();
     /// #     Ok(())
@@ -381,7 +381,7 @@ impl<'a, P: 'a + key::KeyParts> KeyIter<'a, P>
     ///
     /// [signature expirations]: https://tools.ietf.org/html/rfc4880#section-5.2.3.10
     /// [this discussion]: https://crypto.stackexchange.com/a/12138 .
-    pub fn set_policy<T>(self, policy: &'a dyn Policy, time: T)
+    pub fn with_policy<T>(self, policy: &'a dyn Policy, time: T)
         -> ValidKeyIter<'a, P>
         where T: Into<Option<SystemTime>>
     {
@@ -405,16 +405,16 @@ impl<'a, P: 'a + key::KeyParts> KeyIter<'a, P>
         }
     }
 
-    /// Changes the iterator to return key components.
+    /// Changes the iterator to return key bundles.
     ///
-    /// A key component is similar to a key amalgamation, but is not
+    /// A key bundle is similar to a key amalgamation, but is not
     /// bound to a specific time.  It contains the key and all
     /// relevant signatures.
     ///
     /// If the primary key satisfies the current filter on this
     /// iterator, it is returned first.
-    pub fn components(self) -> KeyComponentIter<'a, P, key::UnspecifiedRole> {
-        KeyComponentIter {
+    pub fn bundles(self) -> KeyBundleIter<'a, P, key::UnspecifiedRole> {
+        KeyBundleIter {
             cert: self.cert,
             primary: self.primary,
             subkey_iter: self.subkey_iter,
@@ -429,15 +429,15 @@ impl<'a, P: 'a + key::KeyParts> KeyIter<'a, P>
         }
     }
 
-    /// Changes the iterator to return subkey components.
+    /// Changes the iterator to return subkey bundles.
     ///
-    /// A key component is similar to a key amalgamation, but is not
+    /// A key bundle is similar to a key amalgamation, but is not
     /// bound to a specific time.  It contains the key and all
     /// relevant signatures.
     ///
     /// The primary key is never returned from this iterator.
-    pub fn subkeys(self) -> KeyComponentIter<'a, P, key::SubordinateRole> {
-        KeyComponentIter {
+    pub fn subkeys(self) -> KeyBundleIter<'a, P, key::SubordinateRole> {
+        KeyBundleIter {
             cert: self.cert,
             primary: true,
             subkey_iter: self.subkey_iter,
@@ -468,7 +468,7 @@ pub struct ValidKeyIter<'a, P: key::KeyParts> {
     // This is an option to make it easier to create an empty ValidKeyIter.
     cert: Option<&'a Cert>,
     primary: bool,
-    subkey_iter: KeyBindingIter<'a,
+    subkey_iter: UnfilteredKeyBundleIter<'a,
                                 key::PublicParts,
                                 key::SubordinateRole>,
 
@@ -569,7 +569,7 @@ impl<'a, P: 'a + key::KeyParts> ValidKeyIter<'a, P> {
                 = if ! self.primary {
                     self.primary = true;
                     let ka = KeyAmalgamation::new_primary(cert);
-                    match ka.set_policy(self.policy, self.time) {
+                    match ka.with_policy(self.policy, self.time) {
                         Ok(ka) => ka,
                         Err(err) => {
                             // The primary key is bad.  Abort.
@@ -580,7 +580,7 @@ impl<'a, P: 'a + key::KeyParts> ValidKeyIter<'a, P> {
                 } else {
                     let ka = KeyAmalgamation::new_subordinate(
                         cert.into(), self.subkey_iter.next()?);
-                    match ka.set_policy(self.policy, self.time) {
+                    match ka.with_policy(self.policy, self.time) {
                         Ok(ka) => ka,
                         Err(err) => {
                             // The subkey is bad, abort.
@@ -780,7 +780,7 @@ impl<'a, P: 'a + key::KeyParts> ValidKeyIter<'a, P>
     /// # let timestamp = None;
     /// let non_revoked_keys = cert
     ///     .keys()
-    ///     .set_policy(p, timestamp)
+    ///     .with_policy(p, timestamp)
     ///     .filter(|ka| {
     ///         match ka.revoked() {
     ///             RevocationStatus::Revoked(_) =>
@@ -887,11 +887,11 @@ impl<'a, P: 'a + key::KeyParts> ValidKeyIter<'a, P>
     }
 }
 
-pub struct KeyComponentIter<'a, P: key::KeyParts, R: key::KeyRole> {
+pub struct KeyBundleIter<'a, P: key::KeyParts, R: key::KeyRole> {
     // This is an option to make it easier to create an empty KeyIter.
     cert: Option<&'a Cert>,
     primary: bool,
-    subkey_iter: KeyBindingIter<'a,
+    subkey_iter: UnfilteredKeyBundleIter<'a,
                                 key::PublicParts,
                                 key::SubordinateRole>,
     // If not None, filters by whether a key has a secret.
@@ -909,10 +909,10 @@ pub struct KeyComponentIter<'a, P: key::KeyParts, R: key::KeyRole> {
 }
 
 impl<'a, P: key::KeyParts, R: key::KeyRole> fmt::Debug
-    for KeyComponentIter<'a, P, R>
+    for KeyBundleIter<'a, P, R>
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("KeyComponentIter")
+        f.debug_struct("KeyBundleIter")
             .field("primary", &self.primary)
             .field("secret", &self.secret)
             .field("unencrypted_secret", &self.unencrypted_secret)
@@ -927,11 +927,11 @@ impl<'a, P: key::KeyParts, R: key::KeyRole> fmt::Debug
 // implementation for Key<SecretParts, _> below.
 macro_rules! impl_key_component_iterator {
     ($parts:path) => {
-        impl<'a, R: 'a + key::KeyRole> Iterator for KeyComponentIter<'a, $parts, R>
-            where &'a KeyBinding<$parts, R>:
-                      From<&'a KeyBinding<key::PublicParts, key::UnspecifiedRole>>
+        impl<'a, R: 'a + key::KeyRole> Iterator for KeyBundleIter<'a, $parts, R>
+            where &'a KeyBundle<$parts, R>:
+                      From<&'a KeyBundle<key::PublicParts, key::UnspecifiedRole>>
         {
-            type Item = &'a KeyBinding<$parts, R>;
+            type Item = &'a KeyBundle<$parts, R>;
 
             fn next(&mut self) -> Option<Self::Item> {
                 self.next_common().map(|b| b.into())
@@ -942,25 +942,25 @@ macro_rules! impl_key_component_iterator {
 impl_key_component_iterator!(key::PublicParts);
 impl_key_component_iterator!(key::UnspecifiedParts);
 
-impl<'a, R: 'a + key::KeyRole, E> Iterator for KeyComponentIter<'a, key::SecretParts, R>
-    where &'a KeyBinding<key::SecretParts, R>:
-              TryFrom<&'a KeyBinding<key::PublicParts, key::UnspecifiedRole>,
+impl<'a, R: 'a + key::KeyRole, E> Iterator for KeyBundleIter<'a, key::SecretParts, R>
+    where &'a KeyBundle<key::SecretParts, R>:
+              TryFrom<&'a KeyBundle<key::PublicParts, key::UnspecifiedRole>,
                       Error = E>,
           E: std::fmt::Debug,
 {
-    type Item = &'a KeyBinding<key::SecretParts, R>;
+    type Item = &'a KeyBundle<key::SecretParts, R>;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.next_common().map(|ka| ka.try_into().expect("has secret parts"))
     }
 }
 
-impl<'a, P: 'a + key::KeyParts, R: 'a + key::KeyRole> KeyComponentIter<'a, P, R>
+impl<'a, P: 'a + key::KeyParts, R: 'a + key::KeyRole> KeyBundleIter<'a, P, R>
 {
-    fn next_common(&mut self) -> Option<&'a KeyBinding<key::PublicParts, key::UnspecifiedRole>>
+    fn next_common(&mut self) -> Option<&'a KeyBundle<key::PublicParts, key::UnspecifiedRole>>
     {
-        tracer!(false, "KeyComponentIter::next", 0);
-        t!("KeyComponentIter: {:?}", self);
+        tracer!(false, "KeyBundleIter::next", 0);
+        t!("KeyBundleIter: {:?}", self);
 
         if self.cert.is_none() {
             return None;
@@ -1054,7 +1054,7 @@ mod test {
             .generate().unwrap();
         let flags = KeyFlags::default().set_transport_encryption(true);
 
-        assert_eq!(cert.keys().set_policy(p, None).key_flags(flags).count(), 0);
+        assert_eq!(cert.keys().with_policy(p, None).key_flags(flags).count(), 0);
     }
 
     #[test]
@@ -1065,7 +1065,7 @@ mod test {
             .generate().unwrap();
         let flags = KeyFlags::default().set_transport_encryption(true);
 
-        assert_eq!(cert.keys().set_policy(p, None).key_flags(flags).count(), 1);
+        assert_eq!(cert.keys().with_policy(p, None).key_flags(flags).count(), 1);
     }
 
     #[test]
@@ -1077,7 +1077,7 @@ mod test {
             .generate().unwrap();
         let flags = KeyFlags::default().set_transport_encryption(true);
 
-        assert_eq!(cert.keys().set_policy(p, None).key_flags(flags).count(), 1);
+        assert_eq!(cert.keys().with_policy(p, None).key_flags(flags).count(), 1);
     }
 
     #[test]
@@ -1090,7 +1090,7 @@ mod test {
 
         let now = SystemTime::now()
             - std::time::Duration::new(52 * 7 * 24 * 60 * 60, 0);
-        assert_eq!(cert.keys().set_policy(p, now).key_flags(flags).alive().count(),
+        assert_eq!(cert.keys().with_policy(p, now).key_flags(flags).alive().count(),
                    0);
     }
 
@@ -1102,7 +1102,7 @@ mod test {
             .generate().unwrap();
         let flags = KeyFlags::default().set_certification(true);
 
-        assert_eq!(cert.keys().set_policy(p, None).key_flags(flags).count(),
+        assert_eq!(cert.keys().with_policy(p, None).key_flags(flags).count(),
                    2);
     }
 
@@ -1116,20 +1116,20 @@ mod test {
             .add_storage_encryption_subkey()
             .add_authentication_subkey()
             .generate().unwrap();
-        assert_eq!(cert.keys().set_policy(p, None).alive().revoked(false)
+        assert_eq!(cert.keys().with_policy(p, None).alive().revoked(false)
                        .for_certification().count(),
                    2);
-        assert_eq!(cert.keys().set_policy(p, None).alive().revoked(false)
+        assert_eq!(cert.keys().with_policy(p, None).alive().revoked(false)
                        .for_transport_encryption().count(),
                    1);
-        assert_eq!(cert.keys().set_policy(p, None).alive().revoked(false)
+        assert_eq!(cert.keys().with_policy(p, None).alive().revoked(false)
                        .for_storage_encryption().count(),
                    1);
 
-        assert_eq!(cert.keys().set_policy(p, None).alive().revoked(false)
+        assert_eq!(cert.keys().with_policy(p, None).alive().revoked(false)
                        .for_signing().count(),
                    1);
-        assert_eq!(cert.keys().set_policy(p, None).alive().revoked(false)
+        assert_eq!(cert.keys().with_policy(p, None).alive().revoked(false)
                        .key_flags(KeyFlags::default().set_authentication(true))
                        .count(),
                    1);
@@ -1178,12 +1178,12 @@ mod test {
                         .collect::<Vec<KeyHandle>>(),
                     &keyids);
                 check(
-                    &cert.keys().set_policy(p, None).key_handles(keyids.iter())
+                    &cert.keys().with_policy(p, None).key_handles(keyids.iter())
                         .map(|ka| ka.key().key_handle())
                         .collect::<Vec<KeyHandle>>(),
                     &keyids);
                 check(
-                    &cert.keys().key_handles(keyids.iter()).set_policy(p, None)
+                    &cert.keys().key_handles(keyids.iter()).with_policy(p, None)
                         .map(|ka| ka.key().key_handle())
                         .collect::<Vec<KeyHandle>>(),
                     &keyids);

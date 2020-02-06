@@ -45,8 +45,8 @@ use crate::{
     Cert,
     cert::components::{
         Amalgamation,
+        ValidKeyAmalgamation,
     },
-    cert::ValidKeyAmalgamation,
     crypto::SessionKey,
     serialize::Serialize,
     policy::Policy,
@@ -543,7 +543,7 @@ impl<'a, H: VerificationHelper> Verifier<'a, H> {
     ///
     /// Signature verifications are done relative to time `t`, or the
     /// current time, if `t` is `None`.
-    pub fn from_reader<R, T>(policy: &'a Policy, reader: R, helper: H, t: T)
+    pub fn from_reader<R, T>(policy: &'a dyn Policy, reader: R, helper: H, t: T)
         -> Result<Verifier<'a, H>>
         where R: io::Read + 'a, T: Into<Option<time::SystemTime>>
     {
@@ -560,7 +560,7 @@ impl<'a, H: VerificationHelper> Verifier<'a, H> {
     ///
     /// Signature verifications are done relative to time `t`, or the
     /// current time, if `t` is `None`.
-    pub fn from_file<P, T>(policy: &'a Policy, path: P, helper: H, t: T)
+    pub fn from_file<P, T>(policy: &'a dyn Policy, path: P, helper: H, t: T)
         -> Result<Verifier<'a, H>>
         where P: AsRef<Path>,
               T: Into<Option<time::SystemTime>>
@@ -764,7 +764,7 @@ impl<'a, H: VerificationHelper> Verifier<'a, H> {
                         let issuers = sig.get_issuers();
                         for ka in self.certs.iter()
                             .flat_map(|cert| {
-                                cert.keys().set_policy(self.policy, sig_time)
+                                cert.keys().with_policy(self.policy, sig_time)
                                     .key_handles(issuers.iter())
                             })
                         {
@@ -1759,7 +1759,7 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                         let issuers = sig.get_issuers();
                         for ka in self.certs.iter()
                             .flat_map(|cert| {
-                                cert.keys().set_policy(self.policy, sig_time)
+                                cert.keys().with_policy(self.policy, sig_time)
                                     .key_handles(issuers.iter())
                             })
                         {
@@ -2276,7 +2276,7 @@ mod test {
         // sign 30MiB message
         let mut buf = vec![];
         {
-            let key = cert.keys().set_policy(p, None).for_signing().nth(0).unwrap().key();
+            let key = cert.keys().with_policy(p, None).for_signing().nth(0).unwrap().key();
             let keypair =
                 key.clone().mark_parts_secret().unwrap()
                 .into_keypair().unwrap();

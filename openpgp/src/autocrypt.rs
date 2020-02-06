@@ -109,7 +109,7 @@ impl AutocryptHeader {
         let mut acc = Vec::new();
 
         // The primary key and the most recent selfsig.
-        let primary = cert.primary_key().binding();
+        let primary = cert.primary_key().bundle();
         acc.push(primary.key().clone().mark_role_primary().into());
         primary.self_signatures().iter().take(1)
             .for_each(|s| acc.push(s.clone().into()));
@@ -130,7 +130,7 @@ impl AutocryptHeader {
         }
 
         // The UserIDs matching ADDR.
-        for uidb in cert.userids().set_policy(policy, None) {
+        for uidb in cert.userids().with_policy(policy, None) {
             // XXX: Fix match once we have the rfc2822-name-addr.
             if let Ok(Some(a)) = uidb.userid().email() {
                 if &a == addr {

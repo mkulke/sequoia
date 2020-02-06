@@ -142,7 +142,7 @@ fn inspect_cert(policy: &dyn Policy,
                 print_keygrips, print_certifications)?;
     writeln!(output)?;
 
-    for vka in cert.keys().skip_primary().set_policy(policy, None) {
+    for vka in cert.keys().skip_primary().with_policy(policy, None) {
         writeln!(output, "         Subkey: {}", vka.key().fingerprint())?;
         inspect_revocation(output, "", vka.revoked())?;
         inspect_key(policy, output, "", vka.into(),
@@ -150,7 +150,7 @@ fn inspect_cert(policy: &dyn Policy,
         writeln!(output)?;
     }
 
-    for uidb in cert.userids().bindings() {
+    for uidb in cert.userids().bundles() {
         writeln!(output, "         UserID: {}", uidb.userid())?;
         inspect_revocation(output, "", uidb.revoked(policy, None))?;
         if let Some(sig) = uidb.binding_signature(policy, None) {
@@ -166,7 +166,7 @@ fn inspect_cert(policy: &dyn Policy,
         writeln!(output)?;
     }
 
-    for uab in cert.user_attributes().bindings() {
+    for uab in cert.user_attributes().bundles() {
         writeln!(output, "         UserID: {:?}", uab.user_attribute())?;
         inspect_revocation(output, "", uab.revoked(policy, None))?;
         if let Some(sig) = uab.binding_signature(policy, None) {
@@ -207,14 +207,14 @@ fn inspect_cert(policy: &dyn Policy,
 fn inspect_key(policy: &dyn Policy,
                output: &mut dyn io::Write,
                indent: &str,
-               ka: openpgp::cert::KeyAmalgamation<PublicParts>,
+               ka: openpgp::cert::components::KeyAmalgamation<PublicParts>,
                print_keygrips: bool,
                print_certifications: bool)
         -> Result<()>
 {
     let key = ka.key();
-    let binding = ka.binding();
-    let vka = match ka.set_policy(policy, None) {
+    let binding = ka.bundle();
+    let vka = match ka.with_policy(policy, None) {
         Ok(vka) => {
             if let Err(e) = vka.alive() {
                 writeln!(output, "{}                 Invalid: {}", indent, e)?;

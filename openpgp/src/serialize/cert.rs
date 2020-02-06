@@ -38,7 +38,7 @@ impl Cert {
     fn serialize_common(&self, o: &mut dyn std::io::Write, export: bool)
                         -> Result<()>
     {
-        let primary = self.primary_key().binding();
+        let primary = self.primary_key().bundle();
         PacketRef::PublicKey(primary.key().mark_role_primary_ref())
             .serialize(o)?;
 
@@ -69,7 +69,7 @@ impl Cert {
             serialize_sig(o, s)?;
         }
 
-        for u in self.userids().bindings() {
+        for u in self.userids().bundles() {
             if export && ! u.self_signatures().iter().chain(u.self_revocations()).any(
                 |s| s.exportable_certification().unwrap_or(true))
             {
@@ -92,7 +92,7 @@ impl Cert {
             }
         }
 
-        for u in self.user_attributes().bindings() {
+        for u in self.user_attributes().bundles() {
             if export && ! u.self_signatures().iter().chain(u.self_revocations()).any(
                 |s| s.exportable_certification().unwrap_or(true))
             {
@@ -173,7 +173,7 @@ impl Cert {
 impl SerializeInto for Cert {
     fn serialized_len(&self) -> usize {
         let mut l = 0;
-        let primary = self.primary_key().binding();
+        let primary = self.primary_key().bundle();
         l += PacketRef::PublicKey(primary.key().mark_role_primary_ref())
             .serialized_len();
 
@@ -190,7 +190,7 @@ impl SerializeInto for Cert {
             l += PacketRef::Signature(s).serialized_len();
         }
 
-        for u in self.userids().bindings() {
+        for u in self.userids().bundles() {
             l += PacketRef::UserID(u.userid()).serialized_len();
 
             for s in u.self_revocations() {
@@ -207,7 +207,7 @@ impl SerializeInto for Cert {
             }
         }
 
-        for u in self.user_attributes().bindings() {
+        for u in self.user_attributes().bundles() {
             l += PacketRef::UserAttribute(u.user_attribute()).serialized_len();
 
             for s in u.self_revocations() {
@@ -337,7 +337,7 @@ impl<'a> TSK<'a> {
     /// let p = &StandardPolicy::new();
     ///
     /// let (cert, _) = CertBuilder::new().add_signing_subkey().generate()?;
-    /// assert_eq!(cert.keys().set_policy(p, None).alive().revoked(false).secret().count(), 2);
+    /// assert_eq!(cert.keys().with_policy(p, None).alive().revoked(false).secret().count(), 2);
     ///
     /// // Only write out the primary key's secret.
     /// let mut buf = Vec::new();
@@ -346,7 +346,7 @@ impl<'a> TSK<'a> {
     ///     .serialize(&mut buf)?;
     ///
     /// let cert_ = Cert::from_bytes(&buf)?;
-    /// assert_eq!(cert_.keys().set_policy(p, None).alive().revoked(false).secret().count(), 1);
+    /// assert_eq!(cert_.keys().with_policy(p, None).alive().revoked(false).secret().count(), 1);
     /// assert!(cert_.primary_key().secret().is_some());
     /// # Ok(()) }
     pub fn set_filter<P>(mut self, predicate: P) -> Self
@@ -403,7 +403,7 @@ impl<'a> TSK<'a> {
             }
         };
 
-        let primary = self.cert.primary_key().binding();
+        let primary = self.cert.primary_key().bundle();
         serialize_key(o, primary.key().mark_role_primary_ref().into(),
                       Tag::PublicKey, Tag::SecretKey)?;
 
@@ -420,7 +420,7 @@ impl<'a> TSK<'a> {
             serialize_sig(o, s)?;
         }
 
-        for u in self.cert.userids().bindings() {
+        for u in self.cert.userids().bundles() {
             if export && ! u.self_signatures().iter().chain(u.self_revocations()).any(
                 |s| s.exportable_certification().unwrap_or(true))
             {
@@ -443,7 +443,7 @@ impl<'a> TSK<'a> {
             }
         }
 
-        for u in self.cert.user_attributes().bindings() {
+        for u in self.cert.user_attributes().bundles() {
             if export && ! u.self_signatures().iter().chain(u.self_revocations()).any(
                 |s| s.exportable_certification().unwrap_or(true))
             {
@@ -558,7 +558,7 @@ impl<'a> SerializeInto for TSK<'a> {
             packet.serialized_len()
         };
 
-        let primary = self.cert.primary_key().binding();
+        let primary = self.cert.primary_key().bundle();
         l += serialized_len_key(primary.key().mark_role_primary_ref().into(),
                                 Tag::PublicKey, Tag::SecretKey);
 
@@ -575,7 +575,7 @@ impl<'a> SerializeInto for TSK<'a> {
             l += PacketRef::Signature(s).serialized_len();
         }
 
-        for u in self.cert.userids().bindings() {
+        for u in self.cert.userids().bundles() {
             l += PacketRef::UserID(u.userid()).serialized_len();
 
             for s in u.self_revocations() {
@@ -592,7 +592,7 @@ impl<'a> SerializeInto for TSK<'a> {
             }
         }
 
-        for u in self.cert.user_attributes().bindings() {
+        for u in self.cert.user_attributes().bundles() {
             l += PacketRef::UserAttribute(u.user_attribute()).serialized_len();
 
             for s in u.self_revocations() {
@@ -771,7 +771,7 @@ mod test {
         let uid_binding = uid.bind(
             &mut keypair, &cert,
             signature::Builder::from(
-                cert.primary_key().set_policy(p, None).unwrap()
+                cert.primary_key().with_policy(p, None).unwrap()
                     .direct_key_signature().unwrap().clone())
                     .set_type(SignatureType::PositiveCertification)
                     .set_exportable_certification(false).unwrap()).unwrap();
@@ -782,7 +782,7 @@ mod test {
         let ua_binding = ua.bind(
             &mut keypair, &cert,
             signature::Builder::from(
-                cert.primary_key().set_policy(p, None).unwrap()
+                cert.primary_key().with_policy(p, None).unwrap()
                     .direct_key_signature().unwrap().clone())
                 .set_type(SignatureType::PositiveCertification)
                 .set_exportable_certification(false).unwrap()).unwrap();
@@ -797,9 +797,9 @@ mod test {
         assert!(cert.subkeys().nth(0).unwrap().binding_signature(p, None)
                 .is_some());
         assert_eq!(cert.userids().count(), 1);
-        assert!(cert.userids().set_policy(p, None).nth(0).is_some());
+        assert!(cert.userids().with_policy(p, None).nth(0).is_some());
         assert_eq!(cert.user_attributes().count(), 1);
-        assert!(cert.user_attributes().set_policy(p, None).nth(0).is_some());
+        assert!(cert.user_attributes().with_policy(p, None).nth(0).is_some());
 
         // The binding signature is not exportable, so when we export
         // and re-parse, we expect the userid to be gone.
