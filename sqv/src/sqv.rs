@@ -154,12 +154,12 @@ impl<'a> VerificationHelper for VHelper<'a> {
                                             eprintln!(
                                                 "Signature by {} was created before \
                                                  the --not-before date.",
-                                                ka.key().fingerprint());
+                                                ka.key().fingerprint().to_hex());
                                         } else if t > not_after {
                                             eprintln!(
                                                 "Signature by {} was created after \
                                                  the --not-after date.",
-                                                ka.key().fingerprint());
+                                                ka.key().fingerprint().to_hex());
                                         } else {
                                             signers.push(ka.cert().fingerprint());
                                         }
@@ -169,7 +169,7 @@ impl<'a> VerificationHelper for VHelper<'a> {
                                             eprintln!(
                                                 "Signature by {} was created after \
                                                  the --not-after date.",
-                                                ka.key().fingerprint());
+                                                ka.key().fingerprint().to_hex());
                                         } else {
                                             signers.push(ka.cert().fingerprint());
                                         }
@@ -183,7 +183,7 @@ impl<'a> VerificationHelper for VHelper<'a> {
                                 if let Some(issuer) = sig.get_issuers().first() {
                                     eprintln!("Missing {}, which is needed to \
                                                verify signature.",
-                                              issuer);
+                                              issuer.to_hex());
                                 } else {
                                     eprintln!("Signature has no Issuer or \
                                                Issuer Fingerprint subpacket. \
@@ -212,7 +212,7 @@ impl<'a> VerificationHelper for VHelper<'a> {
 
         self.good = signers.len();
         for signer in signers {
-            println!("{}", signer);
+            println!("{}", signer.to_hex());
         }
 
         Ok(())
@@ -225,7 +225,7 @@ fn real_main() -> Result<()> {
 
     let matches = sqv_cli::build().get_matches();
 
-    let trace = matches.is_present("trace");
+    let verbose = matches.is_present("verbose");
 
     let good_threshold
         = if let Some(good_threshold) = matches.value_of("signatures") {
@@ -280,7 +280,7 @@ fn real_main() -> Result<()> {
 
     let h = v.into_helper();
 
-    if trace {
+    if verbose {
         eprintln!("{} of {} signatures are valid (threshold is: {}).",
                   h.good, h.total, good_threshold);
     }
