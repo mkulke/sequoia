@@ -17,7 +17,6 @@ use crate::{
     Result,
     RevocationStatus,
     SignatureType,
-    HashAlgorithm,
     packet,
     packet::Signature,
     packet::signature,
@@ -35,7 +34,13 @@ use crate::{
 };
 use crate::parse::{Parse, PacketParserResult, PacketParser};
 use crate::types::{
+    AEADAlgorithm,
+    CompressionAlgorithm,
+    Features,
+    HashAlgorithm,
+    KeyServerPreferences,
     ReasonForRevocation,
+    SymmetricAlgorithm,
 };
 
 mod amalgamation;
@@ -236,6 +241,62 @@ type UserAttributeBindings = ComponentBundles<UserAttribute>;
 /// Note: all signatures are stored as certifications.
 type UnknownBindings = ComponentBundles<Unknown>;
 
+/// Queries certificate holder's preferences.
+///
+/// A certificate's key holder controls the primary key.  Subpackets
+/// on self signatures can be used to express preferences for
+/// algorithms and key management.  Furthermore, the key holder's
+/// OpenPGP implementation can express its feature set.
+pub trait Preferences<'a>: components::Amalgamation<'a> {
+    /// Returns symmetric algorithms that the key holder prefers.
+    ///
+    /// The algorithms are ordered according by the key holder's
+    /// preference.
+    fn preferred_symmetric_algorithms(&self)
+                                      -> Option<&'a [SymmetricAlgorithm]> {
+        self.map(|s| s.preferred_symmetric_algorithms())
+    }
+
+    /// Returns hash algorithms that the key holder prefers.
+    ///
+    /// The algorithms are ordered according by the key holder's
+    /// preference.
+    fn preferred_hash_algorithms(&self) -> Option<&'a [HashAlgorithm]> {
+        self.map(|s| s.preferred_hash_algorithms())
+    }
+
+    /// Returns compression algorithms that the key holder prefers.
+    ///
+    /// The algorithms are ordered according by the key holder's
+    /// preference.
+    fn preferred_compression_algorithms(&self)
+                                        -> Option<&'a [CompressionAlgorithm]> {
+        self.map(|s| s.preferred_compression_algorithms())
+    }
+
+    /// Returns AEAD algorithms that the key holder prefers.
+    ///
+    /// The algorithms are ordered according by the key holder's
+    /// preference.
+    fn preferred_aead_algorithms(&self) -> Option<&'a [AEADAlgorithm]> {
+        self.map(|s| s.preferred_aead_algorithms())
+    }
+
+    /// Returns the key holder's keyserver preferences.
+    fn key_server_preferences(&self) -> Option<KeyServerPreferences> {
+        self.map(|s| s.key_server_preferences())
+    }
+
+    /// Returns the key holder's preferred keyserver for updates.
+    fn preferred_key_server(&self) -> Option<&'a [u8]> {
+        self.map(|s| s.preferred_key_server())
+    }
+
+    /// Returns the key holder's feature set.
+    fn features(&self) -> Option<Features> {
+        self.map(|s| s.features())
+    }
+}
 
 // DOC-HACK: To avoid having a top-level re-export of `Cert`, we move
 // it in a submodule `def`.
@@ -250,8 +311,10 @@ use super::*;
 ///
 /// Certs are always canonicalized in the sense that only elements
 /// (user id, user attribute, subkey) with at least one valid
-/// self-signature are preserved.  Also, invalid self-signatures are
-/// dropped.  The self-signatures are sorted so that the newest
+/// self-signature at a given time under a given policy are used.
+/// However, we keep all packets around for re-serialization.  It
+/// could be an component that we simply do not understand.
+/// The self-signatures are sorted so that the newest
 /// self-signature comes first.  Components are sorted, but in an
 /// undefined manner (i.e., when parsing the same Cert multiple times,
 /// the components will be in the same order, but we reserve the right
@@ -275,7 +338,7 @@ use super::*;
 ///
 /// To filter certificates, iterate over all components, clone what
 /// you want to keep, and reassemble the certificate.  The following
-/// example simply copies all the packets, and can be adopted to
+/// example simply copies all the packets, and can be adapted to
 /// suit your policy:
 ///
 /// ```rust
@@ -545,7 +608,7 @@ impl Cert {
     ///
     /// This function exists to facilitate testing, which is why it is
     /// not exported.
-    fn set_expiry_as_of(self, policy: &dyn Policy,
+    fn set_expiration_time_as_of(self, policy: &dyn Policy,
                         primary_signer: &mut dyn Signer,
                         expiration: Option<time::Duration>,
                         now: time::SystemTime)
@@ -602,13 +665,13 @@ impl Cert {
     /// not the current time!
     ///
     /// A policy is needed, because the expiration is updated by adding
-    /// a self-signature to the primary user id,
-    pub fn set_expiry(self, policy: &dyn Policy,
+    /// a self-signature to the primary user id.
+    pub fn set_expiration_time(self, policy: &dyn Policy,
                       primary_signer: &mut dyn Signer,
                       expiration: Option<time::Duration>)
         -> Result<Cert>
     {
-        self.set_expiry_as_of(policy, primary_signer, expiration,
+        self.set_expiration_time_as_of(policy, primary_signer, expiration,
                               time::SystemTime::now())
     }
 
@@ -637,26 +700,19 @@ impl Cert {
                                             policy, t)
     }
 
-    /// Returns an iterator over the Cert's valid `UserAttributeBundle`s.
-    ///
-    /// A valid `UserIDAttributeBinding` has at least one good
-    /// self-signature.
+    /// Returns an iterator over the Cert's `UserAttributeBundle`s.
     pub fn user_attributes(&self) -> ComponentIter<UserAttribute> {
         ComponentIter::new(self, self.user_attributes.iter())
     }
 
-    /// Returns an iterator over the Cert's valid subkeys.
-    ///
-    /// A valid `KeyBundle` has at least one good self-signature.
+    /// Returns an iterator over the Cert's subkeys.
     pub(crate) fn subkeys(&self) -> UnfilteredKeyBundleIter<key::PublicParts,
                                             key::SubordinateRole>
     {
         UnfilteredKeyBundleIter { iter: Some(self.subkeys.iter()) }
     }
 
-    /// Returns an iterator over the Cert's valid unknown components.
-    ///
-    /// A valid `UnknownBundle` has at least one good self-signature.
+    /// Returns an iterator over the Cert's unknown components.
     pub fn unknowns(&self) -> UnknownBundleIter {
         UnknownBundleIter { iter: Some(self.unknowns.iter()) }
     }
@@ -1878,7 +1934,7 @@ mod test {
     }
 
     #[test]
-    fn set_expiry() {
+    fn set_expiration_time() {
         let p = &P::new();
 
         let (cert, _) = CertBuilder::general_purpose(None, Some("Test"))
@@ -1891,7 +1947,7 @@ mod test {
                    + 1 // subkey
                    + 1 // binding signature
         );
-        let cert = check_set_expiry(p, cert);
+        let cert = check_set_expiration_time(p, cert);
         assert_eq!(cert.clone().into_packet_pile().children().count(),
                    1 // primary key
                    + 1 // direct key signature
@@ -1904,26 +1960,26 @@ mod test {
         );
     }
     #[test]
-    fn set_expiry_uidless() {
+    fn set_expiration_time_uidless() {
         let p = &P::new();
 
         let (cert, _) = CertBuilder::new()
-            .set_expiration(None) // Just to assert this works.
-            .set_expiration(
+            .set_expiration_time(None) // Just to assert this works.
+            .set_expiration_time(
                 Some(crate::types::Duration::weeks(52).unwrap().into()))
             .generate().unwrap();
         assert_eq!(cert.clone().into_packet_pile().children().count(),
                    1 // primary key
                    + 1 // direct key signature
         );
-        let cert = check_set_expiry(p, cert);
+        let cert = check_set_expiration_time(p, cert);
         assert_eq!(cert.clone().into_packet_pile().children().count(),
                    1 // primary key
                    + 1 // direct key signature
                    + 2 // two new direct key signatures
         );
     }
-    fn check_set_expiry(policy: &dyn Policy, cert: Cert) -> Cert {
+    fn check_set_expiration_time(policy: &dyn Policy, cert: Cert) -> Cert {
         let now = cert.primary_key().creation_time();
         let a_sec = time::Duration::new(1, 0);
 
@@ -1936,7 +1992,7 @@ mod test {
 
         // Clear the expiration.
         let as_of1 = now + time::Duration::new(10, 0);
-        let cert = cert.set_expiry_as_of(
+        let cert = cert.set_expiration_time_as_of(
             policy, &mut keypair, None, as_of1).unwrap();
         {
             // If t < as_of1, we should get the original expiry.
@@ -1959,7 +2015,7 @@ mod test {
         assert!(expiry_new > time::Duration::new(0, 0));
 
         let as_of2 = as_of1 + time::Duration::new(10, 0);
-        let cert = cert.set_expiry_as_of(
+        let cert = cert.set_expiration_time_as_of(
             policy, &mut keypair, Some(expiry_new), as_of2).unwrap();
         {
             // If t < as_of1, we should get the original expiry.
@@ -3119,5 +3175,21 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
                    .with_policy(&crate::policy::StandardPolicy::new(), None)
                    .count(), 1);
         Ok(())
+    }
+
+    /// Asserts that key expiration times on direct key signatures are
+    /// honored.
+    #[test]
+    fn issue_215() {
+        let p = crate::policy::StandardPolicy::new();
+        let cert = Cert::from_bytes(crate::tests::key(
+            "issue-215-expiration-on-direct-key-sig.pgp")).unwrap();
+        assert_match!(
+            Error::Expired(_)
+                = cert.alive(&p, None).unwrap_err().downcast().unwrap());
+        assert_match!(
+            Error::Expired(_)
+                = cert.primary_key().with_policy(&p, None).unwrap()
+                    .alive().unwrap_err().downcast().unwrap());
     }
 }

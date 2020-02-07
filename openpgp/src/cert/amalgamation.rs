@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::time;
 use std::time::SystemTime;
 
@@ -5,10 +6,15 @@ use crate::{
     Cert,
     cert::components::ComponentBundle,
     Error,
+    Fingerprint,
     packet::Signature,
     Result,
     RevocationStatus,
     policy::Policy,
+    types::{
+        KeyFlags,
+        PublicKeyAlgorithm,
+    },
 };
 
 /// A certificate's component and its associated data.
@@ -243,6 +249,120 @@ pub trait Amalgamation<'a> {
     fn cert_alive(&self) -> Result<()> {
         self.cert().alive(self.policy(), self.time())
     }
+
+    /// Maps the given function over binding and direct key signature.
+    ///
+    /// Makes `f` consider both the binding signature and the direct
+    /// key signature.  Information in the binding signature takes
+    /// precedence over the direct key signature.  See also [Section
+    /// 5.2.3.3 of RFC 4880].
+    ///
+    ///   [Section 5.2.3.3 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.3
+    fn map<F: Fn(&'a Signature) -> Option<T>, T>(&self, f: F) -> Option<T> {
+        f(self.binding_signature())
+            .or_else(|| self.direct_key_signature().and_then(f))
+    }
+
+    /// Returns the key's key flags as of the amalgamtion's
+    /// reference time.
+    ///
+    /// Considers both the binding signature and the direct key
+    /// signature.  Information in the binding signature takes
+    /// precedence over the direct key signature.  See also [Section
+    /// 5.2.3.3 of RFC 4880].
+    ///
+    ///   [Section 5.2.3.3 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.3
+    fn key_flags(&self) -> Option<KeyFlags> {
+        self.map(|s| s.key_flags())
+    }
+
+    /// Returns whether the key has at least one of the specified key
+    /// flags as of the amalgamtion's reference time.
+    ///
+    /// Key flags are computed as described in
+    /// [`key_flags()`](#method.key_flags).
+    fn has_any_key_flag<F>(&self, flags: F) -> bool
+        where F: Borrow<KeyFlags>
+    {
+        let our_flags = self.key_flags().unwrap_or_default();
+        !(&our_flags & flags.borrow()).is_empty()
+    }
+
+    /// Returns whether key is certification capable as of the
+    /// amalgamtion's reference time.
+    ///
+    /// Key flags are computed as described in
+    /// [`key_flags()`](#method.key_flags).
+    fn for_certification(&self) -> bool {
+        self.has_any_key_flag(KeyFlags::default().set_certification(true))
+    }
+
+    /// Returns whether key is signing capable as of the amalgamtion's
+    /// reference time.
+    ///
+    /// Key flags are computed as described in
+    /// [`key_flags()`](#method.key_flags).
+    fn for_signing(&self) -> bool {
+        self.has_any_key_flag(KeyFlags::default().set_signing(true))
+    }
+
+    /// Returns whether key is authentication capable as of the
+    /// amalgamtion's reference time.
+    ///
+    /// Key flags are computed as described in
+    /// [`key_flags()`](#method.key_flags).
+    fn for_authentication(&self) -> bool
+    {
+        self.has_any_key_flag(KeyFlags::default().set_authentication(true))
+    }
+
+    /// Returns whether key is intended for storage encryption as of
+    /// the amalgamtion's reference time.
+    ///
+    /// Key flags are computed as described in
+    /// [`key_flags()`](#method.key_flags).
+    fn for_storage_encryption(&self) -> bool
+    {
+        self.has_any_key_flag(KeyFlags::default().set_storage_encryption(true))
+    }
+
+    /// Returns whether key is intended for transport encryption as of the
+    /// amalgamtion's reference time.
+    ///
+    /// Key flags are computed as described in
+    /// [`key_flags()`](#method.key_flags).
+    fn for_transport_encryption(&self) -> bool
+    {
+        self.has_any_key_flag(KeyFlags::default().set_transport_encryption(true))
+    }
+
+    /// Returns the key's expiration time as of the amalgamtion's
+    /// reference time.
+    ///
+    /// Considers both the binding signature and the direct key
+    /// signature.  Information in the binding signature takes
+    /// precedence over the direct key signature.  See also [Section
+    /// 5.2.3.3 of RFC 4880].
+    ///
+    ///   [Section 5.2.3.3 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.3
+    fn key_expiration_time(&self) -> Option<std::time::Duration> {
+        self.map(|s| s.key_expiration_time())
+    }
+
+    /// Returns the value of the Revocation Key subpacket, which
+    /// contains a designated revoker.
+    ///
+    /// Considers both the binding signature and the direct key
+    /// signature.  Information in the binding signature takes
+    /// precedence over the direct key signature.  See also [Section
+    /// 5.2.3.3 of RFC 4880].
+    ///
+    ///   [Section 5.2.3.3 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.3
+    fn revocation_key(&self) -> Option<(u8,
+                                        PublicKeyAlgorithm,
+                                        Fingerprint)> {
+        self.map(|s| s.revocation_key())
+    }
 }
 
 impl<'a, C> Amalgamation<'a> for ValidComponentAmalgamation<'a, C> {
@@ -303,3 +423,5 @@ impl<'a, C> Amalgamation<'a> for ValidComponentAmalgamation<'a, C> {
     }
 }
 
+impl<'a, C> crate::cert::Preferences<'a>
+    for ValidComponentAmalgamation<'a, C> {}

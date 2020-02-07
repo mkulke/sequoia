@@ -2,7 +2,6 @@ use std::time;
 use std::time::SystemTime;
 use std::convert::TryInto;
 use std::convert::TryFrom;
-use std::borrow::Borrow;
 use std::ops::Deref;
 
 use crate::{
@@ -19,7 +18,6 @@ use crate::{
     policy::Policy,
     Result,
     RevocationStatus,
-    types::KeyFlags,
 };
 
 /// The underlying `KeyAmalgamation` type.
@@ -506,81 +504,6 @@ impl<'a, P: 'a + key::KeyParts> ValidKeyAmalgamation<'a, P> {
         }
     }
 
-    /// Returns the key's key flags as of the amalgamtion's
-    /// reference time.
-    ///
-    /// Considers both the binding signature and the direct key
-    /// signature.  Information in the binding signature takes
-    /// precedence over the direct key signature.  See also [Section
-    /// 5.2.3.3 of RFC 4880].
-    ///
-    ///   [Section 5.2.3.3 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.3
-    pub fn key_flags(&self) -> Option<KeyFlags> {
-        self.binding_signature().key_flags()
-            .or_else(|| self.direct_key_signature()
-                     .and_then(|sig| sig.key_flags()))
-    }
-
-    /// Returns whether the key has at least one of the specified key
-    /// flags as of the amalgamtion's reference time.
-    ///
-    /// Key flags are computed as described in
-    /// [`key_flags()`](#method.key_flags).
-    pub fn has_any_key_flag<F>(&self, flags: F) -> bool
-        where F: Borrow<KeyFlags>
-    {
-        let our_flags = self.key_flags().unwrap_or_default();
-        !(&our_flags & flags.borrow()).is_empty()
-    }
-
-    /// Returns whether key is certification capable as of the
-    /// amalgamtion's reference time.
-    ///
-    /// Key flags are computed as described in
-    /// [`key_flags()`](#method.key_flags).
-    pub fn for_certification(&self) -> bool {
-        self.has_any_key_flag(KeyFlags::empty().set_certification(true))
-    }
-
-    /// Returns whether key is signing capable as of the amalgamtion's
-    /// reference time.
-    ///
-    /// Key flags are computed as described in
-    /// [`key_flags()`](#method.key_flags).
-    pub fn for_signing(&self) -> bool {
-        self.has_any_key_flag(KeyFlags::empty().set_signing(true))
-    }
-
-    /// Returns whether key is authentication capable as of the
-    /// amalgamtion's reference time.
-    ///
-    /// Key flags are computed as described in
-    /// [`key_flags()`](#method.key_flags).
-    pub fn for_authentication(&self) -> bool
-    {
-        self.has_any_key_flag(KeyFlags::empty().set_authentication(true))
-    }
-
-    /// Returns whether key is intended for storage encryption as of
-    /// the amalgamtion's reference time.
-    ///
-    /// Key flags are computed as described in
-    /// [`key_flags()`](#method.key_flags).
-    pub fn for_storage_encryption(&self) -> bool
-    {
-        self.has_any_key_flag(KeyFlags::empty().set_storage_encryption(true))
-    }
-
-    /// Returns whether key is intended for transport encryption as of the
-    /// amalgamtion's reference time.
-    ///
-    /// Key flags are computed as described in
-    /// [`key_flags()`](#method.key_flags).
-    pub fn for_transport_encryption(&self) -> bool
-    {
-        self.has_any_key_flag(KeyFlags::empty().set_transport_encryption(true))
-    }
-
     /// Returns whether the key is alive as of the amalgamtion's
     /// reference time.
     ///
@@ -609,21 +532,6 @@ impl<'a, P: 'a + key::KeyParts> ValidKeyAmalgamation<'a, P> {
             // signature.  This key does not expire.
             Ok(())
         }
-    }
-
-    /// Returns the key's expiration time as of the amalgamtion's
-    /// reference time.
-    ///
-    /// Considers both the binding signature and the direct key
-    /// signature.  Information in the binding signature takes
-    /// precedence over the direct key signature.  See also [Section
-    /// 5.2.3.3 of RFC 4880].
-    ///
-    ///   [Section 5.2.3.3 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.3
-    pub fn key_expiration_time(&self) -> Option<std::time::Duration> {
-        self.binding_signature().key_expiration_time()
-            .or_else(|| self.direct_key_signature()
-                     .and_then(|sig| sig.key_expiration_time()))
     }
 
     /// Returns whether the key contains secret key material.
@@ -718,3 +626,69 @@ impl<'a, P: key::KeyParts> ValidPrimaryKeyAmalgamation<'a, P> {
         Ok(Self::new(self.a.with_policy(policy, time)?))
     }
 }
+
+impl<'a, P: 'a + key::KeyParts> Amalgamation<'a>
+    for ValidPrimaryKeyAmalgamation<'a, P>
+{
+    // NOTE: No docstring, because KeyAmalgamation has the same method.
+    // Returns the certificate that the component came from.
+    fn cert(&self) -> &'a Cert {
+        self.a.cert()
+    }
+
+    /// Returns the amalgamation's reference time.
+    ///
+    /// For queries that are with respect to a point in time, this
+    /// determines that point in time.  For instance, if a key is
+    /// created at `t_c` and expires at `t_e`, then
+    /// `ValidKeyAmalgamation::alive` will return true if the reference
+    /// time is greater than or equal to `t_c` and less than `t_e`.
+    fn time(&self) -> SystemTime {
+        self.a.time()
+    }
+
+    /// Returns the amalgamation's policy.
+    fn policy(&self) -> &'a dyn Policy {
+        self.a.policy()
+    }
+
+    /// Changes the amalgamation's policy.
+    ///
+    /// If `time` is `None`, the current time is used.
+    fn with_policy<T>(self, policy: &'a dyn Policy, time: T) -> Result<Self>
+        where T: Into<Option<time::SystemTime>>
+    {
+        let time = time.into().unwrap_or_else(SystemTime::now);
+        Ok(ValidPrimaryKeyAmalgamation {
+            a: self.a.with_policy(policy, time)?,
+        })
+    }
+
+    /// Returns the key's binding signature as of the reference time,
+    /// if any.
+    fn binding_signature(&self) -> &'a Signature {
+        self.a.binding_signature()
+    }
+
+    /// Returns the Certificate's direct key signature as of the
+    /// reference time, if any.
+    ///
+    /// Subpackets on direct key signatures apply to all components of
+    /// the certificate.
+    fn direct_key_signature(&self) -> Option<&'a Signature> {
+        self.a.direct_key_signature()
+    }
+
+    /// Returns the key's revocation status as of the amalgamation's
+    /// reference time.
+    ///
+    /// Note: this function only returns whether the key has been
+    /// revoked, it does not return whether the certificate has been
+    /// revoked.
+    fn revoked(&self) -> RevocationStatus<'a> {
+        self.a.revoked()
+    }
+}
+
+impl<'a, P: key::KeyParts> crate::cert::Preferences<'a>
+    for ValidPrimaryKeyAmalgamation<'a, P> {}
