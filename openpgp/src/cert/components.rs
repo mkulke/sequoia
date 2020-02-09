@@ -258,7 +258,10 @@ impl<C> ComponentBundle<C> {
 
         let check = |revs: &'a [Signature]| -> Option<Vec<&'a Signature>> {
             let revs = revs.iter().filter_map(|rev| {
-                if hard_revocations_are_final
+                if let Err(err) = policy.signature(rev) {
+                    t!("  revocation rejected by caller policy: {}", err);
+                    None
+                } else if hard_revocations_are_final
                     && rev.reason_for_revocation()
                     .map(|(r, _)| {
                         r.revocation_type() == RevocationType::Hard
@@ -275,31 +278,30 @@ impl<C> ComponentBundle<C> {
                        .map(|r| (r.0, String::from_utf8_lossy(r.1))));
                     Some(rev)
                 } else if selfsig_creation_time
-                    > rev.signature_creation_time()
-                    .unwrap_or_else(time_zero)
+                    > rev.signature_creation_time().unwrap_or_else(time_zero)
                 {
-                    t!("  ignoring out of date revocation ({:?})",
-                       rev.signature_creation_time()
-                       .unwrap_or_else(time_zero));
+                    // This comes after the hard revocation check,
+                    // because a hard revocation is always valid.
+                    t!("  newer binding signature trumps soft revocation ({:?} > {:?})",
+                       selfsig_creation_time,
+                       rev.signature_creation_time().unwrap_or_else(time_zero));
                     None
-                } else if
-                    ! rev.signature_alive(t, time::Duration::new(0, 0)).is_ok()
+                } else if let Err(err)
+                    = rev.signature_alive(t, time::Duration::new(0, 0))
                 {
-                    t!("  ignoring revocation that is not alive ({:?} - {:?})",
-                       rev.signature_creation_time()
-                       .unwrap_or_else(time_zero),
+                    // This comes after the hard revocation check,
+                    // because a hard revocation is always valid.
+                    t!("  revocation not alive ({:?} - {:?}): {}",
+                       rev.signature_creation_time().unwrap_or_else(time_zero),
                        rev.signature_expiration_time()
-                       .unwrap_or_else(|| time::Duration::new(0, 0)));
-                    None
-                } else if let Err(err) = policy.signature(rev) {
-                    t!("  revocation rejected by caller policy: {}", err);
+                           .unwrap_or_else(|| time::Duration::new(0, 0)),
+                       err);
                     None
                 } else {
                     t!("  got a revocation: {:?} ({:?})",
-                       rev.signature_creation_time()
-                       .unwrap_or_else(time_zero),
+                       rev.signature_creation_time().unwrap_or_else(time_zero),
                        rev.reason_for_revocation()
-                       .map(|r| (r.0, String::from_utf8_lossy(r.1))));
+                           .map(|r| (r.0, String::from_utf8_lossy(r.1))));
                     Some(rev)
                 }
             }).collect::<Vec<&Signature>>();
