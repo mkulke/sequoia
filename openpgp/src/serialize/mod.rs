@@ -41,6 +41,7 @@ use crate::packet::signature::subpacket::{
 };
 use crate::packet::prelude::*;
 use crate::types::{
+    RevocationKey,
     Timestamp,
 };
 
@@ -1016,10 +1017,7 @@ impl Serialize for SubpacketValue {
                 for a in p {
                     o.write_all(&[(*a).into()])?;
                 },
-            RevocationKey { ref class, ref pk_algo, ref fp } => {
-                o.write_all(&[*class, (*pk_algo).into()])?;
-                o.write_all(fp.as_slice())?;
-            },
+            RevocationKey(rk) => rk.serialize(o)?,
             Issuer(ref id) =>
                 o.write_all(id.as_slice())?,
             NotationData(nd) => {
@@ -1100,7 +1098,7 @@ impl SerializeInto for SubpacketValue {
             Revocable(_) => 1,
             KeyExpirationTime(_) => 4,
             PreferredSymmetricAlgorithms(ref p) => p.len(),
-            RevocationKey { ref fp, .. } => 2 + fp.serialized_len(),
+            RevocationKey(rk) => rk.serialized_len(),
             Issuer(ref id) => id.serialized_len(),
             NotationData(nd) => 4 + 2 + 2 + nd.name().len() + nd.value().len(),
             PreferredHashAlgorithms(ref p) => p.len(),
@@ -1117,16 +1115,37 @@ impl SerializeInto for SubpacketValue {
             EmbeddedSignature(sig) => sig.serialized_len(),
             IssuerFingerprint(ref fp) => match fp {
                 Fingerprint::V4(_) => 1 + fp.serialized_len(),
-                _ => 0,
+                // Educated guess for unknown versions.
+                Fingerprint::Invalid(_) => 1 + fp.as_slice().len(),
             },
             PreferredAEADAlgorithms(ref p) => p.len(),
             IntendedRecipient(ref fp) => match fp {
                 Fingerprint::V4(_) => 1 + fp.serialized_len(),
-                _ => 0,
+                // Educated guess for unknown versions.
+                Fingerprint::Invalid(_) => 1 + fp.as_slice().len(),
             },
             Unknown { body, .. } => body.len(),
             __Nonexhaustive => unreachable!(),
         }
+    }
+
+    fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
+        generic_serialize_into(self, buf)
+    }
+}
+
+impl Serialize for RevocationKey {
+    fn serialize(&self, o: &mut dyn std::io::Write) -> Result<()> {
+        let (pk_algo, fp) = self.revoker();
+        o.write_all(&[self.class(), (pk_algo).into()])?;
+        o.write_all(fp.as_slice())?;
+        Ok(())
+    }
+}
+
+impl SerializeInto for RevocationKey {
+    fn serialized_len(&self) -> usize {
+        1 + 1 + self.revoker().1.as_slice().len()
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
@@ -1222,11 +1241,7 @@ impl Serialize for Signature4 {
     }
 
     fn export(&self, o: &mut dyn std::io::Write) -> Result<()> {
-        if ! self.exportable_certification().unwrap_or(true) {
-            return Err(Error::InvalidOperation(
-                "Cannot export non-exportable certification".into()).into());
-        }
-
+        self.exportable()?;
         self.serialize(o)
     }
 }
