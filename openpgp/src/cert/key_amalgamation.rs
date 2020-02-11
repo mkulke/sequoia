@@ -38,9 +38,7 @@ pub struct KeyAmalgamation<'a, P: key::KeyParts> {
     bundle: KeyAmalgamationBundle<'a, P>,
 }
 
-impl<'a, P: key::KeyParts> Deref for KeyAmalgamation<'a, P>
-    where &'a Key<P, key::UnspecifiedRole>: From<&'a key::PublicKey>
-{
+impl<'a, P: key::KeyParts> Deref for KeyAmalgamation<'a, P> {
     type Target = Key<P, key::UnspecifiedRole>;
 
     fn deref(&self) -> &Self::Target {
@@ -151,25 +149,16 @@ impl<'a, P: 'a + key::KeyParts> KeyAmalgamation<'a, P> {
     }
 
     /// Returns the key.
-    pub fn key(&self) -> &'a Key<P, key::UnspecifiedRole>
-        where &'a Key<P, key::UnspecifiedRole>: From<&'a key::PublicKey>
-    {
+    pub fn key(&self) -> &'a Key<P, key::UnspecifiedRole> {
         match self {
             KeyAmalgamation { bundle: KeyAmalgamationBundle::Primary(), .. } =>
-                self.cert.primary.key().into(),
+                P::convert_key_ref(self.cert.primary.key().into())
+                .expect("secret key amalgamations contain secret keys"),
             KeyAmalgamation { bundle: KeyAmalgamationBundle::Subordinate(bundle), .. } =>
-                bundle.key().into(),
-        }
-    }
-
-    /// Returns the key, but without conversion to P.
-    fn generic_key(&self)
-                   -> &'a Key<key::UnspecifiedParts, key::UnspecifiedRole> {
-        match self {
-            KeyAmalgamation { bundle: KeyAmalgamationBundle::Primary(), .. } =>
-                self.cert.primary.key().into(),
-            KeyAmalgamation { bundle: KeyAmalgamationBundle::Subordinate(bundle), .. } =>
-                bundle.key().mark_parts_unspecified_ref().into(),
+                P::convert_key_ref(bundle.key()
+                                   .mark_parts_unspecified_ref()
+                                   .mark_role_unspecified_ref())
+                .expect("secret key amalgamations contain secret keys"),
         }
     }
 
@@ -182,14 +171,14 @@ impl<'a, P: 'a + key::KeyParts> KeyAmalgamation<'a, P> {
     /// Returns whether the key contains secret key material.
     pub fn has_secret(&self) -> bool
     {
-        self.generic_key().secret().is_some()
+        self.key().secret().is_some()
     }
 
     /// Returns whether the key contains unencrypted secret key
     /// material.
     pub fn has_unencrypted_secret(&self) -> bool
     {
-        if let Some(secret) = self.generic_key().secret() {
+        if let Some(secret) = self.key().secret() {
             if let SecretKeyMaterial::Unencrypted { .. } = secret {
                 true
             } else {
@@ -201,15 +190,16 @@ impl<'a, P: 'a + key::KeyParts> KeyAmalgamation<'a, P> {
     }
 
     /// Returns this key's bundle.
-    pub fn bundle(&self) -> &'a KeyBundle<P, key::UnspecifiedRole>
-        where &'a KeyBundle<P, key::UnspecifiedRole>:
-            From<&'a KeyBundle<key::PublicParts, key::PrimaryRole>>
-    {
+    pub fn bundle(&self) -> &'a KeyBundle<P, key::UnspecifiedRole> {
         match self {
             KeyAmalgamation { bundle: KeyAmalgamationBundle::Primary(), .. } =>
-                (&self.cert.primary).into(),
+                P::convert_bundle_ref((&self.cert.primary).into())
+                .expect("secret key amalgamations contain secret keys"),
             KeyAmalgamation { bundle: KeyAmalgamationBundle::Subordinate(bundle), .. } =>
-                (*bundle).into(),
+                P::convert_bundle_ref((*bundle)
+                                      .mark_parts_unspecified_ref()
+                                      .mark_role_unspecified_ref())
+                .expect("secret key amalgamations contain secret keys"),
         }
     }
 
@@ -287,9 +277,7 @@ impl<'a, P> From<PrimaryKeyAmalgamation<'a, P>>
     }
 }
 
-impl<'a, P: key::KeyParts> Deref for PrimaryKeyAmalgamation<'a, P>
-    where &'a Key<P, key::PrimaryRole>: From<&'a key::PublicKey>
-{
+impl<'a, P: key::KeyParts> Deref for PrimaryKeyAmalgamation<'a, P> {
     type Target = KeyAmalgamation<'a, P>;
 
     fn deref(&self) -> &Self::Target {
@@ -315,10 +303,7 @@ impl<'a, P: key::KeyParts> PrimaryKeyAmalgamation<'a, P> {
     }
 
     /// Returns the key.
-    pub fn key(&self) -> &'a Key<P, key::PrimaryRole>
-        where &'a Key<P, key::UnspecifiedRole>:
-            From<&'a Key<key::PublicParts, key::PrimaryRole>>
-    {
+    pub fn key(&self) -> &'a Key<P, key::PrimaryRole> {
         self.a.key().into()
     }
 
@@ -481,27 +466,8 @@ impl<'a, P: 'a + key::KeyParts> Amalgamation<'a> for ValidKeyAmalgamation<'a, P>
 
 impl<'a, P: 'a + key::KeyParts> ValidKeyAmalgamation<'a, P> {
     /// Returns this key's bundle.
-    pub fn bundle(&self) -> &'a KeyBundle<P, key::UnspecifiedRole>
-        where &'a KeyBundle<P, key::UnspecifiedRole>:
-            From<&'a KeyBundle<key::PublicParts, key::PrimaryRole>>
-    {
-        match self {
-            ValidKeyAmalgamation {
-                a: KeyAmalgamation {
-                    bundle: KeyAmalgamationBundle::Primary(), ..
-                },
-                ..
-            } =>
-                (&self.cert.primary).into(),
-            ValidKeyAmalgamation {
-                a: KeyAmalgamation {
-                    bundle: KeyAmalgamationBundle::Subordinate(bundle),
-                    ..
-                },
-                ..
-            } =>
-                (*bundle).into(),
-        }
+    pub fn bundle(&self) -> &'a KeyBundle<P, key::UnspecifiedRole> {
+        self.a.bundle()
     }
 
     /// Returns whether the key is alive as of the amalgamtion's
@@ -526,7 +492,7 @@ impl<'a, P: 'a + key::KeyParts> ValidKeyAmalgamation<'a, P> {
             }
         };
         if let Some(sig) = sig {
-            sig.key_alive(self.generic_key(), self.time())
+            sig.key_alive(self.key(), self.time())
         } else {
             // There is no key expiration time on the binding
             // signature.  This key does not expire.
@@ -537,14 +503,14 @@ impl<'a, P: 'a + key::KeyParts> ValidKeyAmalgamation<'a, P> {
     /// Returns whether the key contains secret key material.
     pub fn has_secret(&self) -> bool
     {
-        self.generic_key().secret().is_some()
+        self.key().secret().is_some()
     }
 
     /// Returns whether the key contains unencrypted secret key
     /// material.
     pub fn has_unencrypted_secret(&self) -> bool
     {
-        if let Some(secret) = self.generic_key().secret() {
+        if let Some(secret) = self.key().secret() {
             if let SecretKeyMaterial::Unencrypted { .. } = secret {
                 true
             } else {
@@ -578,9 +544,7 @@ impl<'a, P> From<ValidPrimaryKeyAmalgamation<'a, P>>
     }
 }
 
-impl<'a, P: key::KeyParts> Deref for ValidPrimaryKeyAmalgamation<'a, P>
-    where &'a Key<P, key::PrimaryRole>: From<&'a key::PublicKey>
-{
+impl<'a, P: key::KeyParts> Deref for ValidPrimaryKeyAmalgamation<'a, P> {
     type Target = ValidKeyAmalgamation<'a, P>;
 
     fn deref(&self) -> &Self::Target {
@@ -610,10 +574,7 @@ impl<'a, P: key::KeyParts> ValidPrimaryKeyAmalgamation<'a, P> {
     }
 
     /// Returns the key.
-    pub fn key(&self) -> &'a Key<P, key::PrimaryRole>
-        where &'a Key<P, key::UnspecifiedRole>:
-            From<&'a Key<key::PublicParts, key::PrimaryRole>>
-    {
+    pub fn key(&self) -> &'a Key<P, key::PrimaryRole> {
         self.a.key().into()
     }
 
