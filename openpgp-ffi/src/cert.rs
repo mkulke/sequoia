@@ -339,10 +339,7 @@ fn pgp_cert_alive(errp: Option<&mut *mut crate::error::Error>,
     ffi_try_status!(cert.ref_raw().alive(policy, maybe_time(when)))
 }
 
-/// Changes the Cert's expiration.
-///
-/// Expiry is when the key should expire in seconds relative to the
-/// key's creation (not the current time).
+/// Sets the key to expire at the given time.
 ///
 /// This function consumes `cert` and returns a new `Cert`.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
@@ -350,7 +347,7 @@ fn pgp_cert_set_expiration_time(errp: Option<&mut *mut crate::error::Error>,
                        cert: *mut Cert,
                        policy: *const Policy,
                        primary_signer: *mut Box<dyn crypto::Signer>,
-                       expiry: u32)
+                       expiry: time_t)
     -> Maybe<Cert>
 {
     let policy = &**policy.ref_raw();
@@ -358,7 +355,7 @@ fn pgp_cert_set_expiration_time(errp: Option<&mut *mut crate::error::Error>,
     let signer = ffi_param_ref_mut!(primary_signer);
 
     cert.set_expiration_time(policy, signer.as_mut(),
-                    Some(std::time::Duration::new(expiry as u64, 0)))
+                             maybe_time(expiry))
         .move_into_raw(errp)
 }
 
