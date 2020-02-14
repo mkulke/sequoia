@@ -1,0 +1,2 @@
+((makefile-mode
+  (outline-regexp . "#")))
