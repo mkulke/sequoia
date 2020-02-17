@@ -383,7 +383,7 @@ impl<'a> TSK<'a> {
             |o: &mut dyn std::io::Write, key: &'a key::UnspecifiedSecret,
              tag_public, tag_secret|
         {
-            let tag = if key.secret().is_some()
+            let tag = if key.has_secret()
                 && self.filter.as_ref().map(|f| f(key)).unwrap_or(true) {
                 tag_secret
             } else {
@@ -540,7 +540,7 @@ impl<'a> SerializeInto for TSK<'a> {
         let serialized_len_key
             = |key: &'a key::UnspecifiedSecret, tag_public, tag_secret|
         {
-            let tag = if key.secret().is_some()
+            let tag = if key.has_secret()
                 && self.filter.as_ref().map(|f| f(key)).unwrap_or(true) {
                 tag_secret
             } else {
@@ -759,7 +759,7 @@ mod test {
 
         let key: key::SecretSubkey =
             Key4::generate_ecc(false, Curve::Cv25519).unwrap().into();
-        let key_binding = key.mark_parts_public_ref().bind(
+        let key_binding = key.bind(
             &mut keypair, &cert,
             signature::Builder::new(SignatureType::SubkeyBinding)
                 .set_key_flags(
