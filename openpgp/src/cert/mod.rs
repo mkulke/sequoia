@@ -1239,7 +1239,7 @@ impl Cert {
         self.subkeys.sort_and_dedup(Key::public_cmp,
             |a, b| {
                 // Recall: if a and b are equal, a will be dropped.
-                if b.secret().is_none() && a.secret().is_some() {
+                if ! b.has_secret() && a.has_secret() {
                     std::mem::swap(a, b);
                 }
             });
@@ -1319,8 +1319,8 @@ impl Cert {
                 "Primary key mismatch".into()).into());
         }
 
-        if self.primary.key().secret().is_none()
-            && other.primary.key().secret().is_some()
+        if ! self.primary.key().has_secret()
+            && other.primary.key().has_secret()
         {
             std::mem::swap(self.primary.key_mut(), other.primary.key_mut());
         }
@@ -1395,11 +1395,11 @@ impl Cert {
     /// Returns whether at least one of the keys includes a secret
     /// part.
     pub fn is_tsk(&self) -> bool {
-        if self.primary_key().secret().is_some() {
+        if self.primary_key().has_secret() {
             return true;
         }
         self.subkeys().any(|sk| {
-            sk.key().secret().is_some()
+            sk.key().has_secret()
         })
     }
 }
@@ -2632,11 +2632,11 @@ mod test {
         let (tsk, _) = CertBuilder::general_purpose(None, Some("foo@example.com"))
             .generate().unwrap();
         // tsk is now a cert, but it still has its private bits.
-        assert!(tsk.primary.key().secret().is_some());
+        assert!(tsk.primary.key().has_secret());
         assert!(tsk.is_tsk());
         let subkey_count = tsk.subkeys().len();
         assert!(subkey_count > 0);
-        assert!(tsk.subkeys().all(|k| k.key().secret().is_some()));
+        assert!(tsk.subkeys().all(|k| k.key().has_secret()));
 
         // This will write out the tsk as a cert, i.e., without any
         // private bits.
@@ -2645,21 +2645,21 @@ mod test {
 
         // Reading it back in, the private bits have been stripped.
         let cert = Cert::from_bytes(&cert_bytes[..]).unwrap();
-        assert!(cert.primary.key().secret().is_none());
+        assert!(! cert.primary.key().has_secret());
         assert!(!cert.is_tsk());
-        assert!(cert.subkeys().all(|k| k.key().secret().is_none()));
+        assert!(cert.subkeys().all(|k| ! k.key().has_secret()));
 
         let merge1 = cert.clone().merge(tsk.clone()).unwrap();
         assert!(merge1.is_tsk());
-        assert!(merge1.primary.key().secret().is_some());
+        assert!(merge1.primary.key().has_secret());
         assert_eq!(merge1.subkeys().len(), subkey_count);
-        assert!(merge1.subkeys().all(|k| k.key().secret().is_some()));
+        assert!(merge1.subkeys().all(|k| k.key().has_secret()));
 
         let merge2 = tsk.clone().merge(cert.clone()).unwrap();
         assert!(merge2.is_tsk());
-        assert!(merge2.primary.key().secret().is_some());
+        assert!(merge2.primary.key().has_secret());
         assert_eq!(merge2.subkeys().len(), subkey_count);
-        assert!(merge2.subkeys().all(|k| k.key().secret().is_some()));
+        assert!(merge2.subkeys().all(|k| k.key().has_secret()));
     }
 
     #[test]
@@ -3094,9 +3094,10 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
         assert_eq!(cert.keys().secret().count(), 2);
         assert_eq!(cert.keys().unencrypted_secret().count(), 0);
 
-        let mut primary = cert.primary_key().key().clone();
+        let mut primary = cert.primary_key().key().clone()
+            .mark_parts_secret().unwrap();
         let algo = primary.pk_algo();
-        primary.secret_mut().unwrap()
+        primary.secret_mut()
             .decrypt_in_place(algo, &"streng geheim".into()).unwrap();
         let cert = cert.merge_packets(vec![
             primary.mark_parts_secret().unwrap().mark_role_primary().into()
@@ -3220,25 +3221,21 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
     fn merge_keeps_secrets() -> Result<()> {
         let primary_sec: Key<_, key::PrimaryRole> =
             key::Key4::generate_ecc(true, Curve::Ed25519)?.into();
-        let primary_pub: Key<key::PublicParts, key::PrimaryRole> = {
-            let mut k = primary_sec.clone();
-            k.set_secret(None);
-            k.into()
-        };
+        let primary_pub = primary_sec.clone().take_secret().0;
 
         let cert_p =
             Cert::from_packet_pile(vec![primary_pub.clone().into()].into())?;
         let cert_s =
             Cert::from_packet_pile(vec![primary_sec.clone().into()].into())?;
         let cert = cert_p.merge(cert_s)?;
-        assert!(cert.primary_key().secret().is_some());
+        assert!(cert.primary_key().has_secret());
 
         let cert_p =
             Cert::from_packet_pile(vec![primary_pub.clone().into()].into())?;
         let cert_s =
             Cert::from_packet_pile(vec![primary_sec.clone().into()].into())?;
         let cert = cert_s.merge(cert_p)?;
-        assert!(cert.primary_key().secret().is_some());
+        assert!(cert.primary_key().has_secret());
         Ok(())
     }
 
@@ -3252,11 +3249,7 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
 
         let subkey_sec: Key<_, key::SubordinateRole> =
             key::Key4::generate_ecc(false, Curve::Cv25519)?.into();
-        let subkey_pub: Key<key::PublicParts, key::SubordinateRole> = {
-            let mut k = subkey_sec.clone();
-            k.set_secret(None);
-            k.into()
-        };
+        let subkey_pub = subkey_sec.clone().take_secret().0;
         let builder = signature::Builder::new(SignatureType::SubkeyBinding)
             .set_key_flags(&KeyFlags::default()
                            .set_transport_encryption(true))?;
