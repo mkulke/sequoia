@@ -9,6 +9,7 @@ use crate::{
     cert::components::{
         Amalgamation,
         KeyBundle,
+        ValidAmalgamation,
     },
     Error,
     packet::key,
@@ -43,6 +44,12 @@ impl<'a, P: key::KeyParts> Deref for KeyAmalgamation<'a, P> {
 
     fn deref(&self) -> &Self::Target {
         self.bundle()
+    }
+}
+
+impl<'a, P: 'a + key::KeyParts> Amalgamation<'a> for KeyAmalgamation<'a, P> {
+    fn cert(&self) -> &'a Cert {
+        self.cert
     }
 }
 
@@ -85,12 +92,6 @@ impl<'a, P: 'a + key::KeyParts> KeyAmalgamation<'a, P> {
                                    .mark_role_unspecified_ref())
                 .expect("secret key amalgamations contain secret keys"),
         }
-    }
-
-    /// Returns the certificate that the key came from.
-    pub fn cert(&self) -> &'a Cert
-    {
-        self.cert
     }
 
     /// Returns this key's bundle.
@@ -273,14 +274,19 @@ impl<'a, P: key::KeyParts> From<ValidKeyAmalgamation<'a, P>>
     }
 }
 
-impl<'a, P: 'a + key::KeyParts> Amalgamation<'a> for ValidKeyAmalgamation<'a, P>
+impl<'a, P: 'a + key::KeyParts> Amalgamation<'a>
+    for ValidKeyAmalgamation<'a, P>
 {
     // NOTE: No docstring, because KeyAmalgamation has the same method.
     // Returns the certificate that the component came from.
     fn cert(&self) -> &'a Cert {
         self.cert
     }
+}
 
+impl<'a, P: 'a + key::KeyParts> ValidAmalgamation<'a>
+    for ValidKeyAmalgamation<'a, P>
+{
     /// Returns the amalgamation's reference time.
     ///
     /// For queries that are with respect to a point in time, this
@@ -459,7 +465,11 @@ impl<'a, P: 'a + key::KeyParts> Amalgamation<'a>
     fn cert(&self) -> &'a Cert {
         self.a.cert()
     }
+}
 
+impl<'a, P: 'a + key::KeyParts> ValidAmalgamation<'a>
+    for ValidPrimaryKeyAmalgamation<'a, P>
+{
     /// Returns the amalgamation's reference time.
     ///
     /// For queries that are with respect to a point in time, this

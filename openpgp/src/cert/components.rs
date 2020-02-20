@@ -27,6 +27,7 @@ use super::{
 pub use super::amalgamation::{
     Amalgamation,
     ComponentAmalgamation,
+    ValidAmalgamation,
     ValidComponentAmalgamation,
 };
 pub use super::key_amalgamation::{

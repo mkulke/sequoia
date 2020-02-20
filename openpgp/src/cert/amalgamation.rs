@@ -31,6 +31,13 @@ impl<'a, C> std::ops::Deref for ComponentAmalgamation<'a, C> {
     }
 }
 
+impl<'a, C> Amalgamation<'a> for ComponentAmalgamation<'a, C> {
+    /// Returns the certificate that the component came from.
+    fn cert(&self) -> &'a Cert {
+        self.cert
+    }
+}
+
 impl<'a, C> ComponentAmalgamation<'a, C> {
     /// Creates a new amalgamation.
     pub(crate) fn new(cert: &'a Cert, bundle: &'a ComponentBundle<C>) -> Self
@@ -39,11 +46,6 @@ impl<'a, C> ComponentAmalgamation<'a, C> {
             cert,
             bundle,
         }
-    }
-
-    /// Returns the certificate that the component came from.
-    pub fn cert(&self) -> &'a Cert {
-        self.cert
     }
 
     /// Returns this component's bundle.
@@ -199,11 +201,14 @@ impl<'a, C> ValidComponentAmalgamation<'a, C>
     }
 }
 
-/// Represents a component under a given policy.
+/// Represents a component.
 pub trait Amalgamation<'a> {
     /// Returns the certificate that the component came from.
     fn cert(&self) -> &'a Cert;
+}
 
+/// Represents a component under a given policy.
+pub trait ValidAmalgamation<'a> : Amalgamation<'a>{
     /// Returns the amalgamation's reference time.
     ///
     /// For queries that are with respect to a point in time, this
@@ -383,7 +388,9 @@ impl<'a, C> Amalgamation<'a> for ValidComponentAmalgamation<'a, C> {
     fn cert(&self) -> &'a Cert {
         self.cert
     }
+}
 
+impl<'a, C> ValidAmalgamation<'a> for ValidComponentAmalgamation<'a, C> {
     /// Returns the amalgamation's reference time.
     ///
     /// For queries that are with respect to a point in time, this

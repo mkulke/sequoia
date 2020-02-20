@@ -45,6 +45,7 @@ use crate::{
     Cert,
     cert::components::{
         Amalgamation,
+        ValidAmalgamation,
         ValidKeyAmalgamation,
     },
     crypto::SessionKey,
