@@ -350,6 +350,7 @@ impl PacketDumper {
 
                         pd.dump_mpis(output, &ii, &[&rest[..]], &["rest"])?;
                     },
+                    mpis::PublicKey::__Nonexhaustive => unreachable!(),
                 }
 
                 if let Some(secrets) = k.optional_secret() {
@@ -402,6 +403,8 @@ impl PacketDumper {
                                         pd.dump_mpis(output, &ii, &[rest],
                                                        &["rest"])?;
                                     },
+                                    mpis::SecretKeyMaterial::__Nonexhaustive =>
+                                        unreachable!(),
                                 } Ok(()) })?,
                         SecretKeyMaterial::Encrypted(ref e) => {
                             writeln!(output, "{}", i)?;
@@ -498,6 +501,8 @@ impl PacketDumper {
 
                             self.dump_mpis(output, &ii, &[&rest[..]], &["rest"])?;
                         },
+                        mpis::Signature::__Nonexhaustive => unreachable!(),
+
                     }
                 }
             },
@@ -606,6 +611,7 @@ impl PacketDumper {
 
                             self.dump_mpis(output, &ii, &[rest], &["rest"])?;
                         },
+                        mpis::Ciphertext::__Nonexhaustive => unreachable!(),
                     }
                 }
             },

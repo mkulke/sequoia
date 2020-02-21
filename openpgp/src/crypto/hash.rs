@@ -80,6 +80,7 @@ impl HashAlgorithm {
             HashAlgorithm::MD5 => true,
             HashAlgorithm::Private(_) => false,
             HashAlgorithm::Unknown(_) => false,
+            HashAlgorithm::__Nonexhaustive => unreachable!(),
         }
     }
 
@@ -110,6 +111,7 @@ impl HashAlgorithm {
             HashAlgorithm::RipeMD => Ok(Box::new(Ripemd160::default())),
             HashAlgorithm::Private(_) | HashAlgorithm::Unknown(_) =>
                 Err(Error::UnsupportedHashAlgorithm(self).into()),
+            HashAlgorithm::__Nonexhaustive => unreachable!(),
         };
 
         if let Some(prefix) = DUMP_HASHED_VALUES {
@@ -138,6 +140,7 @@ impl HashAlgorithm {
             HashAlgorithm::RipeMD => Ok(rsa::ASN1_OID_RIPEMD160),
             HashAlgorithm::Private(_) | HashAlgorithm::Unknown(_) =>
                 Err(Error::UnsupportedHashAlgorithm(self).into()),
+            HashAlgorithm::__Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -242,6 +245,8 @@ impl<P, R> Hash for Key4<P, R>
 {
     /// Update the Hash with a hash of the key.
     fn hash(&self, hash: &mut Context) {
+        use crate::serialize::SerializeInto;
+
         // We hash 8 bytes plus the MPIs.  But, the len doesn't
         // include the tag (1 byte) or the length (2 bytes).
         let len = (9 - 3) + self.mpis().serialized_len();

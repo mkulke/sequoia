@@ -354,51 +354,13 @@ pub enum PublicKey {
         /// Any data that failed to parse.
         rest: Box<[u8]>,
     },
+
+    /// This marks this enum as non-exhaustive.  Do not use this
+    /// variant.
+    #[doc(hidden)] __Nonexhaustive,
 }
 
 impl PublicKey {
-    /// Number of octets all MPIs of this instance occupy when serialized.
-    pub fn serialized_len(&self) -> usize {
-        use self::PublicKey::*;
-
-        // Fields are mostly MPIs that consist of two octets length
-        // plus the big endian value itself. All other field types are
-        // commented.
-        match self {
-            &RSA { ref e, ref n } =>
-                2 + e.value.len() + 2 + n.value.len(),
-
-            &DSA { ref p, ref q, ref g, ref y } =>
-                2 + p.value.len() + 2 + q.value.len() +
-                2 + g.value.len() + 2 + y.value.len(),
-
-            &ElGamal { ref p, ref g, ref y } =>
-                2 + p.value.len() +
-                2 + g.value.len() + 2 + y.value.len(),
-
-            &EdDSA { ref curve, ref q } =>
-                2 + q.value.len() +
-                // one length octet plus the ASN.1 OID
-                1 + curve.oid().len(),
-
-            &ECDSA { ref curve, ref q } =>
-                2 + q.value.len() +
-                // one length octet plus the ASN.1 OID
-                1 + curve.oid().len(),
-
-            &ECDH { ref curve, ref q, .. } =>
-                // one length octet plus the ASN.1 OID
-                1 + curve.oid().len() +
-                2 + q.value.len() +
-                // one octet length, one reserved and two algorithm identifier.
-                4,
-
-            &Unknown { ref mpis, ref rest } =>
-                mpis.iter().map(|m| 2 + m.value.len()).sum::<usize>()
-                + rest.len(),
-        }
-    }
-
     /// Returns the length of the public key in bits.
     ///
     /// For finite field crypto this returns the size of the field we
@@ -419,6 +381,7 @@ impl PublicKey {
             &ECDSA { ref curve,.. } => curve.bits(),
             &ECDH { ref curve,.. } => curve.bits(),
             &Unknown { .. } => None,
+            __Nonexhaustive => unreachable!(),
         }
     }
 
@@ -434,6 +397,7 @@ impl PublicKey {
             ECDSA { .. } => Some(PublicKeyAlgorithm::ECDSA),
             ECDH { .. } => Some(PublicKeyAlgorithm::ECDH),
             Unknown { .. } => None,
+            __Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -546,6 +510,10 @@ pub enum SecretKeyMaterial {
         /// Any data that failed to parse.
         rest: Protected,
     },
+
+    /// This marks this enum as non-exhaustive.  Do not use this
+    /// variant.
+    #[doc(hidden)] __Nonexhaustive,
 }
 
 impl fmt::Debug for SecretKeyMaterial {
@@ -566,6 +534,7 @@ impl fmt::Debug for SecretKeyMaterial {
                     write!(f, "ECDH {{ scalar: {:?} }}", scalar),
                 &SecretKeyMaterial::Unknown{ ref mpis, ref rest } =>
                     write!(f, "Unknown {{ mips: {:?}, rest: {:?} }}", mpis, rest),
+                SecretKeyMaterial::__Nonexhaustive => unreachable!(),
             }
         } else {
             match self {
@@ -583,6 +552,7 @@ impl fmt::Debug for SecretKeyMaterial {
                     f.write_str("ECDH { <Redacted> }"),
                 &SecretKeyMaterial::Unknown{ .. } =>
                     f.write_str("Unknown { <Redacted> }"),
+                SecretKeyMaterial::__Nonexhaustive => unreachable!(),
             }
         }
     }
@@ -608,6 +578,7 @@ impl PartialOrd for SecretKeyMaterial {
                 &SecretKeyMaterial::ECDSA{ .. } => 4,
                 &SecretKeyMaterial::ECDH{ .. } => 5,
                 &SecretKeyMaterial::Unknown{ .. } => 6,
+                SecretKeyMaterial::__Nonexhaustive => unreachable!(),
             }
         }
 
@@ -683,34 +654,6 @@ impl PartialEq for SecretKeyMaterial {
 impl Eq for SecretKeyMaterial {}
 
 impl SecretKeyMaterial {
-    /// Number of octets all MPIs of this instance occupy when serialized.
-    pub fn serialized_len(&self) -> usize {
-        use self::SecretKeyMaterial::*;
-
-        // Fields are mostly MPIs that consist of two octets length
-        // plus the big endian value itself. All other field types are
-        // commented.
-        match self {
-            &RSA { ref d, ref p, ref q, ref u } =>
-                2 + d.value.len() + 2 + q.value.len() +
-                2 + p.value.len() + 2 + u.value.len(),
-
-            &DSA { ref x } => 2 + x.value.len(),
-
-            &ElGamal { ref x } => 2 + x.value.len(),
-
-            &EdDSA { ref scalar } => 2 + scalar.value.len(),
-
-            &ECDSA { ref scalar } => 2 + scalar.value.len(),
-
-            &ECDH { ref scalar } => 2 + scalar.value.len(),
-
-            &Unknown { ref mpis, ref rest } =>
-                mpis.iter().map(|m| 2 + m.value.len()).sum::<usize>()
-                + rest.len(),
-        }
-    }
-
     /// Returns, if known, the public-key algorithm for this secret
     /// key.
     pub fn algo(&self) -> Option<PublicKeyAlgorithm> {
@@ -723,6 +666,7 @@ impl SecretKeyMaterial {
             ECDSA { .. } => Some(PublicKeyAlgorithm::ECDSA),
             ECDH { .. } => Some(PublicKeyAlgorithm::ECDH),
             Unknown { .. } => None,
+            __Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -804,34 +748,13 @@ pub enum Ciphertext {
         /// Any data that failed to parse.
         rest: Box<[u8]>,
     },
+
+    /// This marks this enum as non-exhaustive.  Do not use this
+    /// variant.
+    #[doc(hidden)] __Nonexhaustive,
 }
 
 impl Ciphertext {
-    /// Number of octets all MPIs of this instance occupy when serialized.
-    pub fn serialized_len(&self) -> usize {
-        use self::Ciphertext::*;
-
-        // Fields are mostly MPIs that consist of two octets length
-        // plus the big endian value itself. All other field types are
-        // commented.
-        match self {
-            &RSA { ref c } =>
-                2 + c.value.len(),
-
-            &ElGamal { ref e, ref c } =>
-                2 + e.value.len() + 2 + c.value.len(),
-
-            &ECDH { ref e, ref key } =>
-                2 + e.value.len() +
-                // one length octet plus ephemeral key
-                1 + key.len(),
-
-            &Unknown { ref mpis, ref rest } =>
-                mpis.iter().map(|m| 2 + m.value.len()).sum::<usize>()
-                + rest.len(),
-        }
-    }
-
     /// Returns, if known, the public-key algorithm for this
     /// ciphertext.
     pub fn pk_algo(&self) -> Option<PublicKeyAlgorithm> {
@@ -845,6 +768,7 @@ impl Ciphertext {
             &ElGamal { .. } => Some(PublicKeyAlgorithm::ElGamalEncrypt),
             &ECDH { .. } => Some(PublicKeyAlgorithm::ECDH),
             &Unknown { .. } => None,
+            __Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -928,37 +852,10 @@ pub enum Signature {
         /// Any data that failed to parse.
         rest: Box<[u8]>,
     },
-}
 
-impl Signature {
-    /// Number of octets all MPIs of this instance occupy when serialized.
-    pub fn serialized_len(&self) -> usize {
-        use self::Signature::*;
-
-        // Fields are mostly MPIs that consist of two octets length
-        // plus the big endian value itself. All other field types are
-        // commented.
-        match self {
-            &RSA { ref s } =>
-                2 + s.value.len(),
-
-            &DSA { ref r, ref s } =>
-                2 + r.value.len() + 2 + s.value.len(),
-
-            &ElGamal { ref r, ref s } =>
-                2 + r.value.len() + 2 + s.value.len(),
-
-            &EdDSA { ref r, ref s } =>
-                2 + r.value.len() + 2 + s.value.len(),
-
-            &ECDSA { ref r, ref s } =>
-                2 + r.value.len() + 2 + s.value.len(),
-
-            &Unknown { ref mpis, ref rest } =>
-                mpis.iter().map(|m| 2 + m.value.len()).sum::<usize>()
-                + rest.len(),
-        }
-    }
+    /// This marks this enum as non-exhaustive.  Do not use this
+    /// variant.
+    #[doc(hidden)] __Nonexhaustive,
 }
 
 impl Hash for Signature {
@@ -1042,6 +939,7 @@ mod tests {
                         ECDH, cur.into_inner()).unwrap(),
 
                 PublicKey::Unknown { .. } => unreachable!(),
+                PublicKey::__Nonexhaustive => unreachable!(),
             };
 
             pk == pk_
@@ -1100,6 +998,7 @@ mod tests {
                         ElGamalEncrypt, cur.into_inner()).unwrap(),
 
                 SecretKeyMaterial::Unknown { .. } => unreachable!(),
+                SecretKeyMaterial::__Nonexhaustive => unreachable!(),
             };
 
             sk == sk_
@@ -1130,6 +1029,7 @@ mod tests {
                         ECDH, cur.into_inner()).unwrap(),
 
                 Ciphertext::Unknown { .. } => unreachable!(),
+                Ciphertext::__Nonexhaustive => unreachable!(),
             };
 
             ct == ct_
@@ -1166,6 +1066,7 @@ mod tests {
                         ECDSA, cur.into_inner()).unwrap(),
 
                 Signature::Unknown { .. } => unreachable!(),
+                Signature::__Nonexhaustive => unreachable!(),
             };
 
             sig == sig_
