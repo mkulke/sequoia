@@ -133,7 +133,6 @@ lazy_static!{
 #[derive(Debug)]
 #[derive(PartialEq, Eq, Hash)]
 #[derive(Clone, Copy)]
-#[allow(missing_docs)]
 pub enum SubpacketTag {
     /// The time the signature was made.
     SignatureCreationTime,
@@ -206,9 +205,18 @@ pub enum SubpacketTag {
     PreferredAEADAlgorithms,
     /// Intended Recipient Fingerprint [proposed].
     IntendedRecipient,
+    /// Reserved subpacket tag.
     Reserved(u8),
+    /// Private subpacket tag.
     Private(u8),
+    /// Unknown subpacket tag.
     Unknown(u8),
+}
+
+impl fmt::Display for SubpacketTag {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
 }
 
 impl From<u8> for SubpacketTag {
