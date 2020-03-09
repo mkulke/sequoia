@@ -111,7 +111,7 @@ impl Context {
         for argument in arguments {
             gpgconf.arg(argument);
         }
-        let output = gpgconf.output().map_err(|e| -> failure::Error {
+        let output = gpgconf.output().map_err(|e| -> anyhow::Error {
             Error::GPGConf(e.to_string()).into()
         })?;
 
@@ -242,7 +242,7 @@ impl DerefMut for Agent {
 
 impl Stream for Agent {
     type Item = assuan::Response;
-    type Error = failure::Error;
+    type Error = anyhow::Error;
 
     /// Attempt to pull out the next value of this stream, returning
     /// None if the stream is finished.
@@ -263,7 +263,7 @@ impl Agent {
     /// server is running for the given context, this operation will
     /// fail.
     pub fn connect<'c>(ctx: &'c Context)
-                   -> impl Future<Item = Self, Error = failure::Error> + 'c
+                   -> impl Future<Item = Self, Error = anyhow::Error> + 'c
     {
         futures::lazy(move || ctx.socket("agent"))
             .and_then(Self::connect_to)
@@ -275,7 +275,7 @@ impl Agent {
     /// server is running for the given context, this operation will
     /// fail.
     pub fn connect_to<P>(path: P)
-                         -> impl Future<Item = Self, Error = failure::Error>
+                         -> impl Future<Item = Self, Error = anyhow::Error>
         where P: AsRef<Path>
     {
         assuan::Client::connect(path)
@@ -288,7 +288,7 @@ impl Agent {
                        key: &'a Key<key::PublicParts, R>,
                        algo: HashAlgorithm, digest: &'a [u8])
         -> impl Future<Item = crypto::mpis::Signature,
-                       Error = failure::Error> + 'a
+                       Error = anyhow::Error> + 'a
         where R: key::KeyRole
     {
         SigningRequest::new(&mut self.c, key, algo, digest)
@@ -300,7 +300,7 @@ impl Agent {
                           key: &'a Key<key::PublicParts, R>,
                           ciphertext: &'a crypto::mpis::Ciphertext)
         -> impl Future<Item = crypto::SessionKey,
-                       Error = failure::Error> + 'a
+                       Error = anyhow::Error> + 'a
         where R: key::KeyRole
     {
         DecryptionRequest::new(&mut self.c, key, ciphertext)
@@ -407,7 +407,7 @@ impl<'a, 'b, 'c, R> Future for SigningRequest<'a, 'b, 'c, R>
     where R: key::KeyRole
 {
     type Item = crypto::mpis::Signature;
-    type Error = failure::Error;
+    type Error = anyhow::Error;
 
     fn poll(&mut self) -> std::result::Result<Async<Self::Item>, Self::Error> {
         use self::SigningRequestState::*;
@@ -555,7 +555,7 @@ impl<'a, 'b, 'c, R> Future for DecryptionRequest<'a, 'b, 'c, R>
     where R: key::KeyRole
 {
     type Item = crypto::SessionKey;
-    type Error = failure::Error;
+    type Error = anyhow::Error;
 
     fn poll(&mut self) -> std::result::Result<Async<Self::Item>, Self::Error> {
         use self::DecryptionRequestState::*;
@@ -713,7 +713,7 @@ impl<'a> crypto::Signer for KeyPair<'a> {
     }
 
     fn sign(&mut self, hash_algo: HashAlgorithm, digest: &[u8])
-            -> Result<openpgp::crypto::mpis::Signature>
+            -> openpgp::Result<openpgp::crypto::mpis::Signature>
     {
         use crate::openpgp::types::PublicKeyAlgorithm::*;
         use crate::openpgp::crypto::mpis::PublicKey;
@@ -745,7 +745,7 @@ impl<'a> crypto::Decryptor for KeyPair<'a> {
 
     fn decrypt(&mut self, ciphertext: &crypto::mpis::Ciphertext,
                _plaintext_len: Option<usize>)
-               -> Result<crypto::SessionKey>
+               -> openpgp::Result<crypto::SessionKey>
     {
         use crate::openpgp::crypto::mpis::{PublicKey, Ciphertext};
 
@@ -768,17 +768,17 @@ impl<'a> crypto::Decryptor for KeyPair<'a> {
 }
 
 
-#[derive(Fail, Debug)]
+#[derive(thiserror::Error, Debug)]
 /// Errors used in this module.
 pub enum Error {
     /// Errors related to `gpgconf`.
-    #[fail(display = "gpgconf: {}", _0)]
+    #[error("gpgconf: {0}")]
     GPGConf(String),
     /// The remote operation failed.
-    #[fail(display = "Operation failed: {}", _0)]
+    #[error("Operation failed: {0}")]
     OperationFailed(String),
     /// The remote party violated the protocol.
-    #[fail(display = "Protocol violation: {}", _0)]
+    #[error("Protocol violation: {0}")]
     ProtocolError(String),
 
 }

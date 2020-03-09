@@ -53,8 +53,6 @@
 extern crate capnp;
 #[macro_use]
 extern crate capnp_rpc;
-#[macro_use]
-extern crate failure;
 extern crate futures;
 extern crate rand;
 extern crate rusqlite;
@@ -1154,11 +1152,11 @@ impl Iterator for LogIter {
 /* Error handling.  */
 
 /// Results for sequoia-store.
-pub type Result<T> = ::std::result::Result<T, failure::Error>;
+pub type Result<T> = ::std::result::Result<T, anyhow::Error>;
 
 
 // Converts from backend errors.
-impl From<node::Error> for failure::Error {
+impl From<node::Error> for anyhow::Error {
     fn from(error: node::Error) -> Self {
         match error {
             node::Error::Unspecified => Error::StoreError.into(),
@@ -1180,37 +1178,31 @@ impl From<node::Error> for failure::Error {
     }
 }
 
-#[derive(Fail, Debug)]
+#[derive(thiserror::Error, Debug)]
 /// Errors returned from the store.
 pub enum Error {
     /// A requested key was not found.
-    #[fail(display = "Key not found")]
+    #[error("Key not found")]
     NotFound,
     /// The new key is in conflict with the current key.
-    #[fail(display = "New key conflicts with the current key")]
+    #[error("New key conflicts with the current key")]
     Conflict,
     /// This is a catch-all for unspecified backend errors, and should
     /// go away soon.
-    #[fail(display = "Unspecified store error")]
+    #[error("Unspecified store error")]
     StoreError,
     /// A protocol error occurred.
-    #[fail(display = "Unspecified protocol error")]
+    #[error("Unspecified protocol error")]
     ProtocolError,
     /// A Cert is malformed.
-    #[fail(display = "Malformed Cert")]
+    #[error("Malformed Cert")]
     MalformedCert,
     /// A fingerprint is malformed.
-    #[fail(display = "Malformed fingerprint")]
+    #[error("Malformed fingerprint")]
     MalformedFingerprint,
     /// A `capnp::Error` occurred.
-    #[fail(display = "Internal RPC error")]
-    RpcError(capnp::Error),
-}
-
-impl From<capnp::Error> for Error {
-    fn from(error: capnp::Error) -> Self {
-        Error::RpcError(error)
-    }
+    #[error("Internal RPC error")]
+    RpcError(#[from] capnp::Error),
 }
 
 impl From<capnp::NotInSchema> for Error {

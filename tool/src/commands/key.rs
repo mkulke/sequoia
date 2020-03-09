@@ -1,9 +1,9 @@
-use failure;
-use failure::Fail;
+use anyhow::Context as _;
 use clap::ArgMatches;
 use itertools::Itertools;
 use std::time::{SystemTime, Duration};
 
+use crate::openpgp::Result;
 use crate::openpgp::Packet;
 use crate::openpgp::cert::prelude::*;
 use crate::openpgp::types::KeyFlags;
@@ -17,7 +17,7 @@ const SECONDS_IN_YEAR : u64 =
     // Average number of days in a year.
     (365.2422222 * SECONDS_IN_DAY as f64) as u64;
 
-pub fn generate(m: &ArgMatches, force: bool) -> failure::Fallible<()> {
+pub fn generate(m: &ArgMatches, force: bool) -> Result<()> {
     let mut builder = CertBuilder::new();
 
     // User ID
@@ -65,7 +65,7 @@ pub fn generate(m: &ArgMatches, force: bool) -> failure::Fallible<()> {
             builder = builder.set_cipher_suite(CipherSuite::Cv25519);
         }
         Some(ref cs) => {
-            return Err(format_err!("Unknown cipher suite '{}'", cs));
+            return Err(anyhow::anyhow!("Unknown cipher suite '{}'", cs));
         }
         None => panic!("argument has a default value"),
     }
@@ -78,7 +78,7 @@ pub fn generate(m: &ArgMatches, force: bool) -> failure::Fallible<()> {
         (false, true) => { /* no signing subkey */ }
         (true, true) => {
             return Err(
-                format_err!("Conflicting arguments --can-sign and --cannot-sign"));
+                anyhow::anyhow!("Conflicting arguments --can-sign and --cannot-sign"));
         }
     }
 
@@ -100,12 +100,12 @@ pub fn generate(m: &ArgMatches, force: bool) -> failure::Fallible<()> {
         (None, true) => { /* no encryption subkey */ }
         (Some(_), true) => {
             return Err(
-                format_err!("Conflicting arguments --can-encrypt and \
+                anyhow::anyhow!("Conflicting arguments --can-encrypt and \
                              --cannot-encrypt"));
         }
         (Some(ref cap), false) => {
             return Err(
-                format_err!("Unknown encryption capability '{}'", cap));
+                anyhow::anyhow!("Unknown encryption capability '{}'", cap));
         }
     }
 
@@ -118,7 +118,7 @@ pub fn generate(m: &ArgMatches, force: bool) -> failure::Fallible<()> {
         if p0 == p1 {
             builder = builder.set_password(Some(p0));
         } else {
-            return Err(failure::err_msg("Passwords do not match."));
+            return Err(anyhow::anyhow!("Passwords do not match."));
         }
     }
 
@@ -135,7 +135,7 @@ pub fn generate(m: &ArgMatches, force: bool) -> failure::Fallible<()> {
                     ("-".to_string(), rp.to_string()),
                 (Some("-"), None) =>
                     return Err(
-                        format_err!("Missing arguments: --rev-cert is mandatory \
+                        anyhow::anyhow!("Missing arguments: --rev-cert is mandatory \
                                      if --export is '-'.")),
                 (Some(ref kp), None) =>
                     (kp.to_string(), format!("{}.rev", kp)),
@@ -145,7 +145,7 @@ pub fn generate(m: &ArgMatches, force: bool) -> failure::Fallible<()> {
                     (kp.to_string(), rp.to_string()),
                 _ =>
                     return Err(
-                        format_err!("Conflicting arguments --rev-cert and \
+                        anyhow::anyhow!("Conflicting arguments --rev-cert and \
                                      --export")),
             };
 
@@ -177,14 +177,14 @@ pub fn generate(m: &ArgMatches, force: bool) -> failure::Fallible<()> {
         }
     } else {
         return Err(
-            format_err!("Saving generated key to the store isn't implemented \
+            anyhow::anyhow!("Saving generated key to the store isn't implemented \
                          yet."));
     }
 
     Ok(())
 }
 
-fn parse_duration(expiry: &str) -> failure::Fallible<Duration> {
+fn parse_duration(expiry: &str) -> Result<Duration> {
     let mut expiry = expiry.chars().peekable();
 
     let _ = expiry.by_ref()
@@ -204,19 +204,18 @@ fn parse_duration(expiry: &str) -> failure::Fallible<Duration> {
     let junk = expiry.collect::<String>();
 
     if digits == "" {
-        return Err(format_err!(
+        return Err(anyhow::anyhow!(
             "--expiry: missing count \
              (try: '2y' for 2 years)"));
     }
 
     let count = match digits.parse::<i32>() {
         Ok(count) if count < 0 =>
-            return Err(format_err!(
+            return Err(anyhow::anyhow!(
                 "--expiry: Expiration can't be in the past")),
         Ok(count) => count as u64,
         Err(err) =>
-            return Err(err.context(
-                "--expiry: count is out of range").into()),
+            return Err(err).context("--expiry: count is out of range"),
     };
 
     let factor = match suffix {
@@ -225,19 +224,19 @@ fn parse_duration(expiry: &str) -> failure::Fallible<Duration> {
         Some('w') | Some('W') => 7 * SECONDS_IN_DAY,
         Some('d') | Some('D') => SECONDS_IN_DAY,
         None =>
-            return Err(format_err!(
+            return Err(anyhow::anyhow!(
                 "--expiry: missing suffix \
                  (try: '{}y', '{}m', '{}w' or '{}d' instead)",
                 digits, digits, digits, digits)),
         Some(suffix) =>
-            return Err(format_err!(
+            return Err(anyhow::anyhow!(
                 "--expiry: invalid suffix '{}' \
                  (try: '{}y', '{}m', '{}w' or '{}d' instead)",
                 suffix, digits, digits, digits, digits)),
     };
 
     if junk != "" {
-        return Err(format_err!(
+        return Err(anyhow::anyhow!(
             "--expiry: contains trailing junk ('{:?}') \
              (try: '{}{}')",
             junk, count, factor));

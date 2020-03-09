@@ -486,7 +486,7 @@ macro_rules! create_part_conversions {
                 impl<$($l, )* $($g, )* > TryFrom<$Key<$($l, )* $from_parts, $($g, )* >> for $Key<$($l, )* $to_parts, $($g, )* >
                     where $($w: $c ),*
                 {
-                    type Error = failure::Error;
+                    type Error = anyhow::Error;
                     fn try_from(p: $Key<$($l, )* $from_parts, $($g, )* >) -> Result<Self> {
                         p.mark_parts_secret()
                     }
@@ -495,7 +495,7 @@ macro_rules! create_part_conversions {
                 impl<$($l, )* $($g, )* > TryFrom<&$($l)* $Key<$($l, )* $from_parts, $($g, )* >> for &$($l)* $Key<$($l, )* $to_parts, $($g, )* >
                     where $($w: $c ),*
                 {
-                    type Error = failure::Error;
+                    type Error = anyhow::Error;
                     fn try_from(p: &$($l)* $Key<$($l, )* $from_parts, $($g, )* >) -> Result<Self> {
                         if p.has_secret() {
                             Ok(convert_ref!(p))
@@ -1100,7 +1100,7 @@ impl<R> Key4<SecretParts, R>
 
     /// Generates a new RSA key with a public modulos of size `bits`.
     pub fn generate_rsa(bits: usize) -> Result<Self> {
-        use nettle::{rsa, Yarrow};
+        use nettle::{rsa, random::Yarrow};
         use crate::crypto::mpis::{MPI, PublicKey};
 
         let mut rng = Yarrow::default();
@@ -1133,7 +1133,7 @@ impl<R> Key4<SecretParts, R>
     /// signing/encryption
     pub fn generate_ecc(for_signing: bool, curve: Curve) -> Result<Self> {
         use nettle::{
-            Yarrow,
+            random::Yarrow,
             ed25519, ed25519::ED25519_KEY_SIZE,
             curve25519, curve25519::CURVE25519_SIZE,
             ecc, ecdh, ecdsa,

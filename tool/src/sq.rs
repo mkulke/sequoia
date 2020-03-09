@@ -2,8 +2,6 @@
 
 extern crate clap;
 #[macro_use]
-extern crate failure;
-#[macro_use]
 extern crate prettytable;
 extern crate rpassword;
 extern crate tempfile;
@@ -12,7 +10,7 @@ extern crate itertools;
 extern crate tokio_core;
 
 use crossterm::terminal;
-use failure::ResultExt;
+use anyhow::Context as _;
 use prettytable::{Table, Cell, Row};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
@@ -25,6 +23,7 @@ extern crate sequoia_core;
 extern crate sequoia_net;
 extern crate sequoia_store as store;
 
+use crate::openpgp::Result;
 use crate::openpgp::{armor, Fingerprint, Cert};
 use sequoia_autocrypt as autocrypt;
 use crate::openpgp::fmt::hex;
@@ -41,7 +40,7 @@ mod sq_cli;
 mod commands;
 use commands::dump::Convert;
 
-fn open_or_stdin(f: Option<&str>) -> Result<Box<dyn io::Read>, failure::Error> {
+fn open_or_stdin(f: Option<&str>) -> Result<Box<dyn io::Read>> {
     match f {
         Some(f) => Ok(Box::new(File::open(f)
                                .context("Failed to open input file")?)),
@@ -50,7 +49,7 @@ fn open_or_stdin(f: Option<&str>) -> Result<Box<dyn io::Read>, failure::Error> {
 }
 
 fn create_or_stdout(f: Option<&str>, force: bool)
-    -> Result<Box<dyn io::Write>, failure::Error> {
+    -> Result<Box<dyn io::Write>> {
     match f {
         None => Ok(Box::new(io::stdout())),
         Some(p) if p == "-" => Ok(Box::new(io::stdout())),
@@ -64,7 +63,7 @@ fn create_or_stdout(f: Option<&str>, force: bool)
                             .open(f)
                             .context("Failed to create output file")?))
             } else {
-                Err(failure::err_msg(
+                Err(anyhow::anyhow!(
                     format!("File {:?} exists, use --force to overwrite", p)))
             }
         }
@@ -132,7 +131,7 @@ impl<T: Write> Write for Writer<T> {
 
 fn create_or_stdout_pgp(f: Option<&str>, force: bool,
                         binary: bool, kind: armor::Kind)
-    -> Result<Writer<Box<dyn Write>>, failure::Error>
+    -> Result<Writer<Box<dyn Write>>>
 {
     let sink = create_or_stdout(f, force)?;
     let mut sink = Writer::from(sink);
@@ -212,7 +211,7 @@ fn help_warning(arg: &str) {
     }
 }
 
-fn real_main() -> Result<(), failure::Error> {
+fn main() -> Result<()> {
     let policy = &P::new();
 
     let matches = sq_cli::build().get_matches();
@@ -391,7 +390,7 @@ fn real_main() -> Result<(), failure::Error> {
                     let ac = autocrypt::AutocryptHeader::new_sender(
                         policy,
                         &cert,
-                        &addr.ok_or(failure::err_msg(
+                        &addr.ok_or(anyhow::anyhow!(
                             "No well-formed primary userid found, use \
                              --address to specify one"))?,
                         m.value_of("prefer-encrypt").expect("has default"))?;
@@ -681,7 +680,7 @@ fn real_main() -> Result<(), failure::Error> {
 }
 
 fn list_bindings(mapping: &Mapping, realm: &str, name: &str)
-                 -> Result<(), failure::Error> {
+                 -> Result<()> {
     if mapping.iter()?.count() == 0 {
         println!("No label-key bindings in the \"{}/{}\" mapping.",
                  realm, name);
@@ -725,7 +724,7 @@ fn print_log(iter: LogIter, with_slug: bool) {
 
 /// Parses the given string depicting a ISO 8601 timestamp.
 fn parse_iso8601(s: &str, pad_date_with: chrono::NaiveTime)
-                 -> failure::Fallible<DateTime<Utc>>
+                 -> Result<DateTime<Utc>>
 {
     // If you modify this function this function, synchronize the
     // changes with the copy in sqv.rs!
@@ -766,7 +765,7 @@ fn parse_iso8601(s: &str, pad_date_with: chrono::NaiveTime)
             return Ok(DateTime::from_utc(d.and_time(pad_date_with), Utc));
         }
     }
-    Err(failure::format_err!("Malformed ISO8601 timestamp: {}", s))
+    Err(anyhow::anyhow!("Malformed ISO8601 timestamp: {}", s))
 }
 
 #[test]
@@ -793,17 +792,4 @@ fn test_parse_iso8601() {
     // parse_iso8601("201703", z).unwrap(); // ditto
     parse_iso8601("2017031", z).unwrap();
     // parse_iso8601("2017", z).unwrap(); // ditto
-}
-
-fn main() {
-    if let Err(e) = real_main() {
-        let mut cause = e.as_fail();
-        eprint!("{}", cause);
-        while let Some(c) = cause.cause() {
-            eprint!(":\n  {}", c);
-            cause = c;
-        }
-        eprintln!();
-        exit(2);
-    }
 }
