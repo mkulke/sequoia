@@ -948,7 +948,8 @@ pgp_cert_valid_key_iter_t pgp_cert_valid_key_iter
 /*/
 /// Returns the Cert's primary user id (if any).
 /*/
-char *pgp_cert_primary_user_id(pgp_cert_t cert, pgp_policy_t policy);
+char *pgp_cert_primary_user_id(pgp_cert_t cert, pgp_policy_t policy,
+                               time_t when);
 
 /*/
 /// Returns a CertParser.
@@ -1800,6 +1801,27 @@ void pgp_standard_policy_free (pgp_standard_policy_t);
 /// debugging.
 /*/
 char *pgp_standard_policy_debug (const pgp_standard_policy_t);
+
+/*/
+/// Returns a new null policy.
+/*/
+pgp_policy_t pgp_null_policy ();
+
+/*/
+/// Clones the object.
+/*/
+pgp_policy_t pgp_null_policy_clone (pgp_null_policy_t);
+
+/*/
+/// Frees this object.
+/*/
+void pgp_null_policy_free (pgp_null_policy_t);
+
+/*/
+/// Returns a human readable description of this object suitable for
+/// debugging.
+/*/
+char *pgp_null_policy_debug (const pgp_null_policy_t);
 
 /*/
 /// Clones the object.
