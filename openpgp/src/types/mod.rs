@@ -16,10 +16,25 @@ mod features;
 pub use self::features::Features;
 mod key_flags;
 pub use self::key_flags::KeyFlags;
+mod revocation_key;
+pub use revocation_key::RevocationKey;
 mod server_preferences;
 pub use self::server_preferences::KeyServerPreferences;
 mod timestamp;
 pub use timestamp::{Timestamp, Duration};
+pub(crate) use timestamp::normalize_systemtime;
+
+/// Removes padding bytes from bitfields.
+///
+/// Returns the size of the original bitfield, i.e. the number of
+/// bytes the output has to be padded to when serialized.
+pub(crate) fn bitfield_remove_padding(b: &mut Vec<u8>) -> usize {
+    let pad_to = b.len();
+    while b.last() == Some(&0) {
+        b.pop();
+    }
+    pad_to
+}
 
 /// The OpenPGP public key algorithms as defined in [Section 9.1 of
 /// RFC 4880], and [Section 5 of RFC 6637].
@@ -38,25 +53,29 @@ pub enum PublicKeyAlgorithm {
     #[deprecated(since = "rfc4880",
                  note = "Use `PublicKeyAlgorithm::RSAEncryptSign`.")]
     RSASign,
-    /// Elgamal (Encrypt-Only)
-    ElgamalEncrypt,
+    /// ElGamal (Encrypt-Only)
+    ElGamalEncrypt,
     /// DSA (Digital Signature Algorithm)
     DSA,
     /// Elliptic curve DH
     ECDH,
     /// Elliptic curve DSA
     ECDSA,
-    /// Elgamal (Encrypt or Sign)
+    /// ElGamal (Encrypt or Sign)
     #[deprecated(since = "rfc4880",
                  note = "If you really must, use \
-                         `PublicKeyAlgorithm::ElgamalEncrypt`.")]
-    ElgamalEncryptSign,
+                         `PublicKeyAlgorithm::ElGamalEncrypt`.")]
+    ElGamalEncryptSign,
     /// "Twisted" Edwards curve DSA
     EdDSA,
     /// Private algorithm identifier.
     Private(u8),
     /// Unknown algorithm identifier.
     Unknown(u8),
+
+    /// This marks this enum as non-exhaustive.  Do not use this
+    /// variant.
+    #[doc(hidden)] __Nonexhaustive,
 }
 
 impl PublicKeyAlgorithm {
@@ -65,8 +84,9 @@ impl PublicKeyAlgorithm {
         use self::PublicKeyAlgorithm::*;
         #[allow(deprecated)]
         match &self {
-            RSAEncryptSign | RSASign | DSA | ECDSA | ElgamalEncryptSign
+            RSAEncryptSign | RSASign | DSA | ECDSA | ElGamalEncryptSign
                 | EdDSA => true,
+            __Nonexhaustive => unreachable!(),
             _ => false,
         }
     }
@@ -76,8 +96,9 @@ impl PublicKeyAlgorithm {
         use self::PublicKeyAlgorithm::*;
         #[allow(deprecated)]
         match &self {
-            RSAEncryptSign | RSAEncrypt | ElgamalEncrypt | ECDH
-                | ElgamalEncryptSign => true,
+            RSAEncryptSign | RSAEncrypt | ElGamalEncrypt | ECDH
+                | ElGamalEncryptSign => true,
+            __Nonexhaustive => unreachable!(),
             _ => false,
         }
     }
@@ -89,8 +110,9 @@ impl PublicKeyAlgorithm {
         match &self {
             RSAEncryptSign | RSAEncrypt | RSASign | DSA | ECDH | ECDSA | EdDSA
                 => true,
-            ElgamalEncrypt | ElgamalEncryptSign | Private(_) | Unknown(_)
+            ElGamalEncrypt | ElGamalEncryptSign | Private(_) | Unknown(_)
                 => false,
+            __Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -103,11 +125,11 @@ impl From<u8> for PublicKeyAlgorithm {
             1 => RSAEncryptSign,
             2 => RSAEncrypt,
             3 => RSASign,
-            16 => ElgamalEncrypt,
+            16 => ElGamalEncrypt,
             17 => DSA,
             18 => ECDH,
             19 => ECDSA,
-            20 => ElgamalEncryptSign,
+            20 => ElGamalEncryptSign,
             22 => EdDSA,
             100..=110 => Private(u),
             u => Unknown(u),
@@ -123,14 +145,15 @@ impl From<PublicKeyAlgorithm> for u8 {
             RSAEncryptSign => 1,
             RSAEncrypt => 2,
             RSASign => 3,
-            ElgamalEncrypt => 16,
+            ElGamalEncrypt => 16,
             DSA => 17,
             ECDH => 18,
             ECDSA => 19,
-            ElgamalEncryptSign => 20,
+            ElGamalEncryptSign => 20,
             EdDSA => 22,
             Private(u) => u,
             Unknown(u) => u,
+            __Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -143,16 +166,17 @@ impl fmt::Display for PublicKeyAlgorithm {
             RSAEncryptSign => f.write_str("RSA (Encrypt or Sign)"),
             RSAEncrypt => f.write_str("RSA Encrypt-Only"),
             RSASign => f.write_str("RSA Sign-Only"),
-            ElgamalEncrypt => f.write_str("Elgamal (Encrypt-Only)"),
+            ElGamalEncrypt => f.write_str("ElGamal (Encrypt-Only)"),
             DSA => f.write_str("DSA (Digital Signature Algorithm)"),
             ECDSA => f.write_str("ECDSA public key algorithm"),
-            ElgamalEncryptSign => f.write_str("Elgamal (Encrypt or Sign)"),
+            ElGamalEncryptSign => f.write_str("ElGamal (Encrypt or Sign)"),
             ECDH => f.write_str("ECDH public key algorithm"),
             EdDSA => f.write_str("EdDSA Edwards-curve Digital Signature Algorithm"),
             Private(u) =>
                 f.write_fmt(format_args!("Private/Experimental public key algorithm {}", u)),
             Unknown(u) =>
                 f.write_fmt(format_args!("Unknown public key algorithm {}", u)),
+            __Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -187,6 +211,10 @@ pub enum Curve {
     Cv25519,
     /// Unknown curve.
     Unknown(Box<[u8]>),
+
+    /// This marks this enum as non-exhaustive.  Do not use this
+    /// variant.
+    #[doc(hidden)] __Nonexhaustive,
 }
 
 impl Curve {
@@ -212,6 +240,7 @@ impl Curve {
             Ed25519 => Some(256),
             Cv25519 => Some(256),
             Unknown(_) => None,
+            __Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -231,6 +260,7 @@ impl fmt::Display for Curve {
                 => f.write_str("Elliptic curve Diffie-Hellman using D.J. Bernstein's Curve25519"),
             Unknown(ref oid)
              => write!(f, "Unknown curve (OID: {:?})", oid),
+            __Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -274,6 +304,7 @@ impl Curve {
             &Curve::Ed25519 => ED25519_OID,
             &Curve::Cv25519 => CV25519_OID,
             &Curve::Unknown(ref oid) => oid,
+            Curve::__Nonexhaustive => unreachable!(),
         }
     }
 
@@ -295,6 +326,7 @@ impl Curve {
             &Curve::Unknown(_) =>
                 Err(Error::UnsupportedEllipticCurve(self.clone())
                     .into()),
+            Curve::__Nonexhaustive => unreachable!(),
         }
     }
 
@@ -306,6 +338,7 @@ impl Curve {
                 => true,
             BrainpoolP256 | BrainpoolP512 | Unknown(_)
                 => false,
+            __Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -366,6 +399,10 @@ pub enum SymmetricAlgorithm {
     Private(u8),
     /// Unknown algorithm identifier.
     Unknown(u8),
+
+    /// This marks this enum as non-exhaustive.  Do not use this
+    /// variant.
+    #[doc(hidden)] __Nonexhaustive,
 }
 
 impl Default for SymmetricAlgorithm {
@@ -384,6 +421,7 @@ impl SymmetricAlgorithm {
                 => true,
             Unencrypted | IDEA | Private(_) | Unknown(_)
                 => false,
+            __Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -426,6 +464,7 @@ impl From<SymmetricAlgorithm> for u8 {
             SymmetricAlgorithm::Camellia256 => 13,
             SymmetricAlgorithm::Private(u) => u,
             SymmetricAlgorithm::Unknown(u) => u,
+            SymmetricAlgorithm::__Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -461,6 +500,7 @@ impl fmt::Display for SymmetricAlgorithm {
                 f.write_fmt(format_args!("Private/Experimental symmetric key algorithm {}", u)),
             SymmetricAlgorithm::Unknown(u) =>
                 f.write_fmt(format_args!("Unknown symmetric key algorithm {}", u)),
+            SymmetricAlgorithm::__Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -481,6 +521,8 @@ impl Arbitrary for SymmetricAlgorithm {
 /// symbolic one.
 ///
 ///   [`AEADAlgorithm::from`]: https://doc.rust-lang.org/std/convert/trait.From.html
+///
+/// This feature is [experimental](../index.html#experimental-features).
 #[derive(Clone, Copy, Hash, PartialEq, Eq, Debug, PartialOrd, Ord)]
 pub enum AEADAlgorithm {
     /// EAX mode.
@@ -491,6 +533,10 @@ pub enum AEADAlgorithm {
     Private(u8),
     /// Unknown algorithm identifier.
     Unknown(u8),
+
+    /// This marks this enum as non-exhaustive.  Do not use this
+    /// variant.
+    #[doc(hidden)] __Nonexhaustive,
 }
 
 impl AEADAlgorithm {
@@ -502,6 +548,7 @@ impl AEADAlgorithm {
                 => true,
             OCB | Private(_) | Unknown(_)
                 => false,
+            __Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -524,6 +571,7 @@ impl From<AEADAlgorithm> for u8 {
             AEADAlgorithm::OCB => 2,
             AEADAlgorithm::Private(u) => u,
             AEADAlgorithm::Unknown(u) => u,
+            AEADAlgorithm::__Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -539,6 +587,7 @@ impl fmt::Display for AEADAlgorithm {
                 f.write_fmt(format_args!("Private/Experimental AEAD algorithm {}", u)),
             AEADAlgorithm::Unknown(u) =>
                 f.write_fmt(format_args!("Unknown AEAD algorithm {}", u)),
+            AEADAlgorithm::__Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -576,6 +625,10 @@ pub enum CompressionAlgorithm {
     Private(u8),
     /// Unknown compression algorithm identifier.
     Unknown(u8),
+
+    /// This marks this enum as non-exhaustive.  Do not use this
+    /// variant.
+    #[doc(hidden)] __Nonexhaustive,
 }
 
 impl Default for CompressionAlgorithm {
@@ -602,6 +655,7 @@ impl CompressionAlgorithm {
             Zip | Zlib => true,
             #[cfg(feature = "compression-bzip2")]
             BZip2 => true,
+            __Nonexhaustive => unreachable!(),
             _ => false,
         }
     }
@@ -629,6 +683,7 @@ impl From<CompressionAlgorithm> for u8 {
             CompressionAlgorithm::BZip2 => 3,
             CompressionAlgorithm::Private(u) => u,
             CompressionAlgorithm::Unknown(u) => u,
+            CompressionAlgorithm::__Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -644,6 +699,7 @@ impl fmt::Display for CompressionAlgorithm {
                 f.write_fmt(format_args!("Private/Experimental compression algorithm {}", u)),
             CompressionAlgorithm::Unknown(u) =>
                 f.write_fmt(format_args!("Unknown comppression algorithm {}", u)),
+            CompressionAlgorithm::__Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -677,11 +733,17 @@ pub enum HashAlgorithm {
     Private(u8),
     /// Unknown hash algorithm identifier.
     Unknown(u8),
+
+    /// This marks this enum as non-exhaustive.  Do not use this
+    /// variant.
+    #[doc(hidden)] __Nonexhaustive,
 }
 
 impl Default for HashAlgorithm {
     fn default() -> Self {
-        HashAlgorithm::SHA256
+        // SHA512 is almost twice as fast as SHA256 on 64-bit
+        // architectures because it operates on 64-bit words.
+        HashAlgorithm::SHA512
     }
 }
 
@@ -713,6 +775,7 @@ impl From<HashAlgorithm> for u8 {
             HashAlgorithm::SHA224 => 11,
             HashAlgorithm::Private(u) => u,
             HashAlgorithm::Unknown(u) => u,
+            HashAlgorithm::__Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -755,6 +818,7 @@ impl fmt::Display for HashAlgorithm {
                 f.write_fmt(format_args!("Private/Experimental hash algorithm {}", u)),
             HashAlgorithm::Unknown(u) =>
                 f.write_fmt(format_args!("Unknown hash algorithm {}", u)),
+            HashAlgorithm::__Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -778,13 +842,13 @@ pub enum SignatureType {
     Standalone,
 
     /// Generic certification of a User ID and Public-Key packet.
-    GenericCertificate,
+    GenericCertification,
     /// Persona certification of a User ID and Public-Key packet.
-    PersonaCertificate,
+    PersonaCertification,
     /// Casual certification of a User ID and Public-Key packet.
-    CasualCertificate,
+    CasualCertification,
     /// Positive certification of a User ID and Public-Key packet.
-    PositiveCertificate,
+    PositiveCertification,
 
     /// Subkey Binding Signature
     SubkeyBinding,
@@ -798,7 +862,7 @@ pub enum SignatureType {
     /// Subkey revocation signature
     SubkeyRevocation,
     /// Certification revocation signature
-    CertificateRevocation,
+    CertificationRevocation,
 
     /// Timestamp signature.
     Timestamp,
@@ -807,6 +871,10 @@ pub enum SignatureType {
 
     /// Catchall.
     Unknown(u8),
+
+    /// This marks this enum as non-exhaustive.  Do not use this
+    /// variant.
+    #[doc(hidden)] __Nonexhaustive,
 }
 
 impl From<u8> for SignatureType {
@@ -815,16 +883,16 @@ impl From<u8> for SignatureType {
             0x00 => SignatureType::Binary,
             0x01 => SignatureType::Text,
             0x02 => SignatureType::Standalone,
-            0x10 => SignatureType::GenericCertificate,
-            0x11 => SignatureType::PersonaCertificate,
-            0x12 => SignatureType::CasualCertificate,
-            0x13 => SignatureType::PositiveCertificate,
+            0x10 => SignatureType::GenericCertification,
+            0x11 => SignatureType::PersonaCertification,
+            0x12 => SignatureType::CasualCertification,
+            0x13 => SignatureType::PositiveCertification,
             0x18 => SignatureType::SubkeyBinding,
             0x19 => SignatureType::PrimaryKeyBinding,
             0x1f => SignatureType::DirectKey,
             0x20 => SignatureType::KeyRevocation,
             0x28 => SignatureType::SubkeyRevocation,
-            0x30 => SignatureType::CertificateRevocation,
+            0x30 => SignatureType::CertificationRevocation,
             0x40 => SignatureType::Timestamp,
             0x50 => SignatureType::Confirmation,
             _ => SignatureType::Unknown(u),
@@ -838,19 +906,20 @@ impl From<SignatureType> for u8 {
             SignatureType::Binary => 0x00,
             SignatureType::Text => 0x01,
             SignatureType::Standalone => 0x02,
-            SignatureType::GenericCertificate => 0x10,
-            SignatureType::PersonaCertificate => 0x11,
-            SignatureType::CasualCertificate => 0x12,
-            SignatureType::PositiveCertificate => 0x13,
+            SignatureType::GenericCertification => 0x10,
+            SignatureType::PersonaCertification => 0x11,
+            SignatureType::CasualCertification => 0x12,
+            SignatureType::PositiveCertification => 0x13,
             SignatureType::SubkeyBinding => 0x18,
             SignatureType::PrimaryKeyBinding => 0x19,
             SignatureType::DirectKey => 0x1f,
             SignatureType::KeyRevocation => 0x20,
             SignatureType::SubkeyRevocation => 0x28,
-            SignatureType::CertificateRevocation => 0x30,
+            SignatureType::CertificationRevocation => 0x30,
             SignatureType::Timestamp => 0x40,
             SignatureType::Confirmation => 0x50,
             SignatureType::Unknown(u) => u,
+            SignatureType::__Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -864,14 +933,14 @@ impl fmt::Display for SignatureType {
                 f.write_str("Text"),
             SignatureType::Standalone =>
                 f.write_str("Standalone"),
-            SignatureType::GenericCertificate =>
-                f.write_str("GenericCertificate"),
-            SignatureType::PersonaCertificate =>
-                f.write_str("PersonaCertificate"),
-            SignatureType::CasualCertificate =>
-                f.write_str("CasualCertificate"),
-            SignatureType::PositiveCertificate =>
-                f.write_str("PositiveCertificate"),
+            SignatureType::GenericCertification =>
+                f.write_str("GenericCertification"),
+            SignatureType::PersonaCertification =>
+                f.write_str("PersonaCertification"),
+            SignatureType::CasualCertification =>
+                f.write_str("CasualCertification"),
+            SignatureType::PositiveCertification =>
+                f.write_str("PositiveCertification"),
             SignatureType::SubkeyBinding =>
                 f.write_str("SubkeyBinding"),
             SignatureType::PrimaryKeyBinding =>
@@ -882,14 +951,15 @@ impl fmt::Display for SignatureType {
                 f.write_str("KeyRevocation"),
             SignatureType::SubkeyRevocation =>
                 f.write_str("SubkeyRevocation"),
-            SignatureType::CertificateRevocation =>
-                f.write_str("CertificateRevocation"),
+            SignatureType::CertificationRevocation =>
+                f.write_str("CertificationRevocation"),
             SignatureType::Timestamp =>
                 f.write_str("Timestamp"),
             SignatureType::Confirmation =>
                 f.write_str("Confirmation"),
             SignatureType::Unknown(u) =>
                 f.write_fmt(format_args!("Unknown signature type 0x{:x}", u)),
+            SignatureType::__Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -927,6 +997,10 @@ pub enum ReasonForRevocation {
 
     /// Unknown reason identifier.
     Unknown(u8),
+
+    /// This marks this enum as non-exhaustive.  Do not use this
+    /// variant.
+    #[doc(hidden)] __Nonexhaustive,
 }
 
 impl From<u8> for ReasonForRevocation {
@@ -955,6 +1029,7 @@ impl From<ReasonForRevocation> for u8 {
             UIDRetired => 32,
             Private(u) => u,
             Unknown(u) => u,
+            __Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -979,6 +1054,7 @@ impl fmt::Display for ReasonForRevocation {
             Unknown(u) =>
                 f.write_fmt(format_args!(
                     "Unknown revocation reason {}", u)),
+            __Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -1031,6 +1107,7 @@ impl ReasonForRevocation {
             ReasonForRevocation::UIDRetired => RevocationType::Soft,
             ReasonForRevocation::Private(_) => RevocationType::Hard,
             ReasonForRevocation::Unknown(_) => RevocationType::Hard,
+            ReasonForRevocation::__Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -1067,6 +1144,10 @@ pub enum DataFormat {
 
     /// Unknown format specifier.
     Unknown(char),
+
+    /// This marks this enum as non-exhaustive.  Do not use this
+    /// variant.
+    #[doc(hidden)] __Nonexhaustive,
 }
 
 impl Default for DataFormat {
@@ -1109,6 +1190,7 @@ impl From<DataFormat> for char {
             Unicode => 'u',
             MIME => 'm',
             Unknown(c) => c,
+            __Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -1128,6 +1210,7 @@ impl fmt::Display for DataFormat {
             Unknown(c) =>
                 f.write_fmt(format_args!(
                     "Unknown data format identifier {:?}", c)),
+            __Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -1136,6 +1219,23 @@ impl Arbitrary for DataFormat {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         u8::arbitrary(g).into()
     }
+}
+
+/// The revocation status.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RevocationStatus<'a> {
+    /// The key is definitely revoked.
+    ///
+    /// The relevant self-revocations are returned.
+    Revoked(Vec<&'a crate::packet::Signature>),
+    /// There is a revocation certificate from a possible designated
+    /// revoker.
+    CouldBe(Vec<&'a crate::packet::Signature>),
+    /// The key does not appear to be revoked.
+    ///
+    /// An attacker could still have performed a DoS, which prevents
+    /// us from seeing the revocation certificate.
+    NotAsFarAsWeKnow,
 }
 
 #[cfg(test)]

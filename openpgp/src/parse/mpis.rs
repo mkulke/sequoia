@@ -1,6 +1,7 @@
 //! Functions for parsing MPIs.
 
 use std::io::Read;
+use buffered_reader::BufferedReader;
 use crate::{
     Result,
     Error,
@@ -30,7 +31,7 @@ impl mpis::PublicKey {
         let cur = Cursor::new(buf);
         let bio = buffered_reader::Generic::with_cookie(
             cur, None, Cookie::default());
-        let mut php = PacketHeaderParser::new_naked(Box::new(bio));
+        let mut php = PacketHeaderParser::new_naked(bio);
         Self::_parse(algo, &mut php)
     }
 
@@ -39,8 +40,9 @@ impl mpis::PublicKey {
     /// See [Section 3.2 of RFC 4880] for details.
     ///
     ///   [Section 3.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-3.2
-    pub(crate) fn _parse<'a>(algo: PublicKeyAlgorithm,
-                            php: &mut PacketHeaderParser<'a>)
+    pub(crate) fn _parse<'a, T: 'a + BufferedReader<Cookie>>(
+        algo: PublicKeyAlgorithm,
+        php: &mut PacketHeaderParser<T>)
         -> Result<Self>
     {
         use crate::PublicKeyAlgorithm::*;
@@ -68,7 +70,7 @@ impl mpis::PublicKey {
                 })
             }
 
-            ElgamalEncrypt | ElgamalEncryptSign => {
+            ElGamalEncrypt | ElGamalEncryptSign => {
                 let p = MPI::parse("elgamal_public_p_len", "elgamal_public_p",
                                    php)?;
                 let g = MPI::parse("elgamal_public_g_len", "elgamal_public_g",
@@ -76,7 +78,7 @@ impl mpis::PublicKey {
                 let y = MPI::parse("elgamal_public_y_len", "elgamal_public_y",
                                    php)?;
 
-                Ok(mpis::PublicKey::Elgamal {
+                Ok(mpis::PublicKey::ElGamal {
                     p: p,
                     g: g,
                     y: y,
@@ -130,8 +132,8 @@ impl mpis::PublicKey {
 
             Unknown(_) | Private(_) => {
                 let mut mpis = Vec::new();
-                while let Ok(mpi) = MPI::parse("unknown_parameter_len",
-                                               "unknown_parameter", php) {
+                while let Ok(mpi) = MPI::parse("unknown_len",
+                                               "unknown", php) {
                     mpis.push(mpi);
                 }
                 let rest = php.parse_bytes_eof("rest")?;
@@ -141,6 +143,8 @@ impl mpis::PublicKey {
                     rest: rest.into_boxed_slice(),
                 })
             }
+
+            __Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -151,12 +155,12 @@ impl mpis::SecretKeyMaterial {
     pub fn parse_chksumd<T: Read>(algo: PublicKeyAlgorithm, cur: T)
                                   -> Result<Self> {
         use std::io::Cursor;
-        use crate::serialize::Serialize;
+        use crate::serialize::Marshal;
 
         // read mpis
         let bio = buffered_reader::Generic::with_cookie(
             cur, None, Cookie::default());
-        let mut php = PacketHeaderParser::new_naked(Box::new(bio));
+        let mut php = PacketHeaderParser::new_naked(bio);
         let mpis = Self::_parse(algo, &mut php)?;
 
         // read expected sha1 hash of the mpis
@@ -192,7 +196,7 @@ impl mpis::SecretKeyMaterial {
         let cur = Cursor::new(buf);
         let bio = buffered_reader::Generic::with_cookie(
             cur, None, Cookie::default());
-        let mut php = PacketHeaderParser::new_naked(Box::new(bio));
+        let mut php = PacketHeaderParser::new_naked(bio);
         Self::_parse(algo, &mut php)
     }
 
@@ -201,9 +205,10 @@ impl mpis::SecretKeyMaterial {
     /// See [Section 3.2 of RFC 4880] for details.
     ///
     ///   [Section 3.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-3.2
-    pub(crate) fn _parse<'a>(algo: PublicKeyAlgorithm,
-                             php: &mut PacketHeaderParser<'a>)
-                             -> Result<Self>
+    pub(crate) fn _parse<'a, T: 'a + BufferedReader<Cookie>>(
+        algo: PublicKeyAlgorithm,
+        php: &mut PacketHeaderParser<T>)
+        -> Result<Self>
     {
         use crate::PublicKeyAlgorithm::*;
 
@@ -231,11 +236,11 @@ impl mpis::SecretKeyMaterial {
                 })
             }
 
-            ElgamalEncrypt | ElgamalEncryptSign => {
+            ElGamalEncrypt | ElGamalEncryptSign => {
                 let x = MPI::parse("elgamal_secret_len", "elgamal_secret",
                                    php)?;
 
-                Ok(mpis::SecretKeyMaterial::Elgamal {
+                Ok(mpis::SecretKeyMaterial::ElGamal {
                     x: x.into(),
                 })
             }
@@ -263,8 +268,8 @@ impl mpis::SecretKeyMaterial {
 
             Unknown(_) | Private(_) => {
                 let mut mpis = Vec::new();
-                while let Ok(mpi) = MPI::parse("unknown_parameter_len",
-                                               "unknown_parameter", php) {
+                while let Ok(mpi) = MPI::parse("unknown_len",
+                                               "unknown", php) {
                     mpis.push(mpi.into());
                 }
                 let rest = php.parse_bytes_eof("rest")?;
@@ -274,6 +279,8 @@ impl mpis::SecretKeyMaterial {
                     rest: rest.into(),
                 })
             }
+
+            __Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -292,7 +299,7 @@ impl mpis::Ciphertext {
         let cur = Cursor::new(buf);
         let bio = buffered_reader::Generic::with_cookie(
             cur, None, Cookie::default());
-        let mut php = PacketHeaderParser::new_naked(Box::new(bio));
+        let mut php = PacketHeaderParser::new_naked(bio);
         Self::_parse(algo, &mut php)
     }
 
@@ -302,15 +309,16 @@ impl mpis::Ciphertext {
     /// See [Section 3.2 of RFC 4880] for details.
     ///
     ///   [Section 3.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-3.2
-    pub(crate) fn _parse<'a>(algo: PublicKeyAlgorithm,
-                             php: &mut PacketHeaderParser<'a>)
-                             -> Result<Self> {
+    pub(crate) fn _parse<'a, T: 'a + BufferedReader<Cookie>>(
+        algo: PublicKeyAlgorithm,
+        php: &mut PacketHeaderParser<T>)
+        -> Result<Self> {
         use crate::PublicKeyAlgorithm::*;
 
         #[allow(deprecated)]
         match algo {
             RSAEncryptSign | RSAEncrypt => {
-                let c = MPI::parse("rsa_ciphertext_len", "rsa_ciphertext",
+                let c = MPI::parse("rsa_ciphertxt_len", "rsa_ciphertxt",
                                    php)?;
 
                 Ok(mpis::Ciphertext::RSA {
@@ -318,11 +326,11 @@ impl mpis::Ciphertext {
                 })
             }
 
-            ElgamalEncrypt | ElgamalEncryptSign => {
+            ElGamalEncrypt | ElGamalEncryptSign => {
                 let e = MPI::parse("elgamal_e_len", "elgamal_e", php)?;
                 let c = MPI::parse("elgamal_c_len", "elgamal_c", php)?;
 
-                Ok(mpis::Ciphertext::Elgamal {
+                Ok(mpis::Ciphertext::ElGamal {
                     e: e,
                     c: c,
                 })
@@ -341,8 +349,8 @@ impl mpis::Ciphertext {
 
             Unknown(_) | Private(_) => {
                 let mut mpis = Vec::new();
-                while let Ok(mpi) = MPI::parse("unknown_parameter_len",
-                                               "unknown_parameter", php) {
+                while let Ok(mpi) = MPI::parse("unknown_len",
+                                               "unknown", php) {
                     mpis.push(mpi);
                 }
                 let rest = php.parse_bytes_eof("rest")?;
@@ -355,6 +363,8 @@ impl mpis::Ciphertext {
 
             RSASign | DSA | EdDSA | ECDSA => Err(Error::InvalidArgument(
                 format!("not an encryption algorithm: {:?}", algo)).into()),
+
+            __Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -373,7 +383,7 @@ impl mpis::Signature {
         let cur = Cursor::new(buf);
         let bio = buffered_reader::Generic::with_cookie(
             cur, None, Cookie::default());
-        let mut php = PacketHeaderParser::new_naked(Box::new(bio));
+        let mut php = PacketHeaderParser::new_naked(bio);
         Self::_parse(algo, &mut php)
     }
 
@@ -383,9 +393,10 @@ impl mpis::Signature {
     /// See [Section 3.2 of RFC 4880] for details.
     ///
     ///   [Section 3.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-3.2
-    pub(crate) fn _parse<'a>(algo: PublicKeyAlgorithm,
-                             php: &mut PacketHeaderParser<'a>)
-                             -> Result<Self> {
+    pub(crate) fn _parse<'a, T: 'a + BufferedReader<Cookie>>(
+        algo: PublicKeyAlgorithm,
+        php: &mut PacketHeaderParser<T>)
+        -> Result<Self> {
         use crate::PublicKeyAlgorithm::*;
 
         #[allow(deprecated)]
@@ -399,9 +410,9 @@ impl mpis::Signature {
             }
 
             DSA => {
-                let r = MPI::parse("dsa_signature_r_len", "dsa_signature_r",
+                let r = MPI::parse("dsa_sig_r_len", "dsa_sig_r",
                                    php)?;
-                let s = MPI::parse("dsa_signature_s_len", "dsa_signature_s",
+                let s = MPI::parse("dsa_sig_s_len", "dsa_sig_s",
                                    php)?;
 
                 Ok(mpis::Signature::DSA {
@@ -410,22 +421,22 @@ impl mpis::Signature {
                 })
             }
 
-            ElgamalEncryptSign => {
-                let r = MPI::parse("elgamal_signature_r_len",
-                                   "elgamal_signature_r", php)?;
-                let s = MPI::parse("elgamal_signature_s_len",
-                                   "elgamal_signature_s", php)?;
+            ElGamalEncryptSign => {
+                let r = MPI::parse("elgamal_sig_r_len",
+                                   "elgamal_sig_r", php)?;
+                let s = MPI::parse("elgamal_sig_s_len",
+                                   "elgamal_sig_s", php)?;
 
-                Ok(mpis::Signature::Elgamal {
+                Ok(mpis::Signature::ElGamal {
                     r: r,
                     s: s,
                 })
             }
 
             EdDSA => {
-                let r = MPI::parse("eddsa_signature_r_len", "eddsa_signature_r",
+                let r = MPI::parse("eddsa_sig_r_len", "eddsa_sig_r",
                                    php)?;
-                let s = MPI::parse("eddsa_signature_s_len", "eddsa_signature_s",
+                let s = MPI::parse("eddsa_sig_s_len", "eddsa_sig_s",
                                    php)?;
 
                 Ok(mpis::Signature::EdDSA {
@@ -435,9 +446,9 @@ impl mpis::Signature {
             }
 
             ECDSA => {
-                let r = MPI::parse("ecdsa_signature_r_len", "ecdsa_signature_r",
+                let r = MPI::parse("ecdsa_sig_r_len", "ecdsa_sig_r",
                                    php)?;
-                let s = MPI::parse("ecdsa_signature_s_len", "ecdsa_signature_s",
+                let s = MPI::parse("ecdsa_sig_s_len", "ecdsa_sig_s",
                                    php)?;
 
                 Ok(mpis::Signature::ECDSA {
@@ -448,8 +459,8 @@ impl mpis::Signature {
 
             Unknown(_) | Private(_) => {
                 let mut mpis = Vec::new();
-                while let Ok(mpi) = MPI::parse("unknown_parameter_len",
-                                               "unknown_parameter", php) {
+                while let Ok(mpi) = MPI::parse("unknown_len",
+                                               "unknown", php) {
                     mpis.push(mpi);
                 }
                 let rest = php.parse_bytes_eof("rest")?;
@@ -460,8 +471,10 @@ impl mpis::Signature {
                 })
             }
 
-            RSAEncrypt | ElgamalEncrypt | ECDH => Err(Error::InvalidArgument(
+            RSAEncrypt | ElGamalEncrypt | ECDH => Err(Error::InvalidArgument(
                 format!("not a signature algorithm: {:?}", algo)).into()),
+
+            __Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -470,6 +483,7 @@ impl mpis::Signature {
 fn mpis_parse_test() {
     use super::Parse;
     use crate::PublicKeyAlgorithm::*;
+    use crate::serialize::MarshalInto;
 
     // Dummy RSA public key.
     {

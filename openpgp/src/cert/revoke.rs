@@ -12,13 +12,14 @@ use crate::types::{
 use crate::crypto::hash::Hash;
 use crate::crypto::Signer;
 use crate::packet::{
+    Key,
     key,
     signature,
     Signature,
     UserAttribute,
     UserID,
 };
-use crate::cert::Cert;
+use crate::cert::prelude::*;
 
 /// A `Cert` revocation builder.
 ///
@@ -38,22 +39,24 @@ use crate::cert::Cert;
 /// ```rust
 /// # extern crate sequoia_openpgp as openpgp;
 /// # use openpgp::Result;
-/// use openpgp::RevocationStatus;
-/// use openpgp::types::{ReasonForRevocation, SignatureType};
-/// use openpgp::cert::{CipherSuite, CertBuilder, CertRevocationBuilder};
+/// use openpgp::types::{ReasonForRevocation, RevocationStatus, SignatureType};
+/// use openpgp::cert::prelude::*;
 /// use openpgp::crypto::KeyPair;
 /// use openpgp::parse::Parse;
+/// use sequoia_openpgp::policy::StandardPolicy;
 ///
 /// # fn main() { f().unwrap(); }
 /// # fn f() -> Result<()>
 /// # {
+/// let p = &StandardPolicy::new();
+///
 /// let (cert, _) = CertBuilder::new()
 ///     .set_cipher_suite(CipherSuite::Cv25519)
 ///     .generate()?;
 /// assert_eq!(RevocationStatus::NotAsFarAsWeKnow,
-///            cert.revoked(None));
+///            cert.revoked(p, None));
 ///
-/// let mut signer = cert.primary().clone()
+/// let mut signer = cert.primary_key().key().clone()
 ///     .mark_parts_secret()?.into_keypair()?;
 /// let sig = CertRevocationBuilder::new()
 ///     .set_reason_for_revocation(ReasonForRevocation::KeyCompromised,
@@ -63,7 +66,7 @@ use crate::cert::Cert;
 ///
 /// let cert = cert.merge_packets(vec![sig.clone().into()])?;
 /// assert_eq!(RevocationStatus::Revoked(vec![&sig]),
-///            cert.revoked(None));
+///            cert.revoked(p, None));
 /// # Ok(())
 /// # }
 pub struct CertRevocationBuilder {
@@ -100,15 +103,14 @@ impl CertRevocationBuilder {
 
     /// Returns a revocation certificate for the cert `Cert` signed by
     /// `signer`.
-    pub fn build<H, R>(self, signer: &mut dyn Signer<R>, cert: &Cert, hash_algo: H)
+    pub fn build<H>(self, signer: &mut dyn Signer, cert: &Cert, hash_algo: H)
         -> Result<Signature>
-        where H: Into<Option<HashAlgorithm>>,
-              R: key::KeyRole
+        where H: Into<Option<HashAlgorithm>>
     {
         let hash_algo = hash_algo.into().unwrap_or(HashAlgorithm::SHA512);
         let mut hash = hash_algo.context()?;
 
-        cert.primary().hash(&mut hash);
+        cert.primary_key().hash(&mut hash);
 
         let creation_time
             = self.signature_creation_time()
@@ -155,15 +157,19 @@ impl Deref for CertRevocationBuilder {
 ///
 /// ```
 /// # use sequoia_openpgp::{*, packet::*, types::*, cert::*};
+/// use sequoia_openpgp::policy::StandardPolicy;
+///
 /// # f().unwrap();
 /// # fn f() -> Result<()> {
+/// let p = &StandardPolicy::new();
+///
 /// // Generate a Cert, and create a keypair from the primary key.
 /// let (cert, _) = CertBuilder::new()
 ///     .add_transport_encryption_subkey()
 ///     .generate()?;
-/// let mut keypair = cert.primary().clone()
+/// let mut keypair = cert.primary_key().key().clone()
 ///     .mark_parts_secret()?.into_keypair()?;
-/// let subkey = cert.subkeys().nth(0).unwrap();
+/// let subkey = cert.keys().subkeys().nth(0).unwrap();
 ///
 /// // Generate the revocation for the first and only Subkey.
 /// let revocation =
@@ -178,8 +184,8 @@ impl Deref for CertRevocationBuilder {
 /// let cert = cert.merge_packets(vec![revocation.clone().into()])?;
 ///
 /// // Check that it is revoked.
-/// let subkey = cert.subkeys().nth(0).unwrap();
-/// if let RevocationStatus::Revoked(revocations) = subkey.revoked(None) {
+/// let subkey = cert.keys().subkeys().nth(0).unwrap();
+/// if let RevocationStatus::Revoked(revocations) = subkey.revoked(p, None) {
 ///     assert_eq!(revocations.len(), 1);
 ///     assert_eq!(*revocations[0], revocation);
 /// } else {
@@ -221,22 +227,19 @@ impl SubkeyRevocationBuilder {
 
     /// Returns a revocation certificate for the cert `Cert` signed by
     /// `signer`.
-    pub fn build<H, R>(mut self, signer: &mut dyn Signer<R>,
-                       cert: &Cert, key: &key::PublicSubkey,
+    pub fn build<H, P>(mut self, signer: &mut dyn Signer,
+                       cert: &Cert, key: &Key<P, key::SubordinateRole>,
                        hash_algo: H)
         -> Result<Signature>
         where H: Into<Option<HashAlgorithm>>,
-              R: key::KeyRole
+              P: key::KeyParts,
     {
         let hash_algo = hash_algo.into().unwrap_or(HashAlgorithm::SHA512);
-        let creation_time
-            = self.signature_creation_time()
-            .unwrap_or_else(|| time::SystemTime::now());
 
         if let Some(algo) = hash_algo.into() {
             self.builder = self.builder.set_hash_algo(algo);
         }
-        key.bind(signer, cert, self.builder, creation_time)
+        key.bind(signer, cert, self.builder)
     }
 }
 
@@ -270,16 +273,21 @@ impl Deref for SubkeyRevocationBuilder {
 /// # Example
 ///
 /// ```
-/// # use sequoia_openpgp::{*, packet::*, types::*, cert::*};
+/// # use sequoia_openpgp::{*, packet::*, types::*};
+/// use sequoia_openpgp::cert::prelude::*;
+/// use sequoia_openpgp::policy::StandardPolicy;
+///
 /// # f().unwrap();
 /// # fn f() -> Result<()> {
+/// let p = &StandardPolicy::new();
+///
 /// // Generate a Cert, and create a keypair from the primary key.
 /// let (cert, _) = CertBuilder::new()
 ///     .add_userid("some@example.org")
 ///     .generate()?;
-/// let mut keypair = cert.primary().clone()
+/// let mut keypair = cert.primary_key().key().clone()
 ///     .mark_parts_secret()?.into_keypair()?;
-/// let userid = cert.userids().nth(0).unwrap();
+/// let ca = cert.userids().nth(0).unwrap();
 ///
 /// // Generate the revocation for the first and only UserID.
 /// let revocation =
@@ -287,15 +295,15 @@ impl Deref for SubkeyRevocationBuilder {
 ///         .set_reason_for_revocation(
 ///             ReasonForRevocation::KeyRetired,
 ///             b"Left example.org.").unwrap()
-///         .build(&mut keypair, &cert, userid.userid(), None)?;
-/// assert_eq!(revocation.typ(), SignatureType::CertificateRevocation);
+///         .build(&mut keypair, &cert, ca.userid(), None)?;
+/// assert_eq!(revocation.typ(), SignatureType::CertificationRevocation);
 ///
 /// // Now merge the revocation signature into the Cert.
 /// let cert = cert.merge_packets(vec![revocation.clone().into()])?;
 ///
 /// // Check that it is revoked.
-/// let userid = cert.userids().nth(0).unwrap();
-/// if let RevocationStatus::Revoked(revocations) = userid.revoked(None) {
+/// let userid = cert.userids().with_policy(p, None).nth(0).unwrap();
+/// if let RevocationStatus::Revoked(revocations) = userid.revoked() {
 ///     assert_eq!(revocations.len(), 1);
 ///     assert_eq!(*revocations[0], revocation);
 /// } else {
@@ -312,7 +320,7 @@ impl UserIDRevocationBuilder {
     pub fn new() -> Self {
         Self {
             builder:
-                signature::Builder::new(SignatureType::CertificateRevocation)
+                signature::Builder::new(SignatureType::CertificationRevocation)
         }
     }
 
@@ -337,22 +345,18 @@ impl UserIDRevocationBuilder {
 
     /// Returns a revocation certificate for the cert `Cert` signed by
     /// `signer`.
-    pub fn build<H, R>(mut self, signer: &mut dyn Signer<R>,
-                       cert: &Cert, userid: &UserID,
-                       hash_algo: H)
+    pub fn build<H>(mut self, signer: &mut dyn Signer,
+                    cert: &Cert, userid: &UserID,
+                    hash_algo: H)
         -> Result<Signature>
-        where H: Into<Option<HashAlgorithm>>,
-              R: key::KeyRole
+        where H: Into<Option<HashAlgorithm>>
     {
         let hash_algo = hash_algo.into().unwrap_or(HashAlgorithm::SHA512);
-        let creation_time
-            = self.signature_creation_time()
-            .unwrap_or_else(|| time::SystemTime::now());
 
         if let Some(algo) = hash_algo.into() {
             self.builder = self.builder.set_hash_algo(algo);
         }
-        userid.bind(signer, cert, self.builder, creation_time)
+        userid.bind(signer, cert, self.builder)
     }
 }
 
@@ -386,9 +390,14 @@ impl Deref for UserIDRevocationBuilder {
 /// # Example
 ///
 /// ```
-/// # use sequoia_openpgp::{*, packet::*, types::*, cert::*};
+/// # use sequoia_openpgp::{*, packet::*, types::*};
+/// use sequoia_openpgp::cert::prelude::*;
+/// use sequoia_openpgp::policy::StandardPolicy;
+///
 /// # f().unwrap();
 /// # fn f() -> Result<()> {
+/// let p = &StandardPolicy::new();
+///
 /// # let subpacket
 /// #     = user_attribute::Subpacket::Unknown(1, [ 1 ].to_vec().into_boxed_slice());
 /// # let some_user_attribute = UserAttribute::new(&[ subpacket ])?;
@@ -396,9 +405,9 @@ impl Deref for UserIDRevocationBuilder {
 /// let (cert, _) = CertBuilder::new()
 ///     .add_user_attribute(some_user_attribute)
 ///     .generate()?;
-/// let mut keypair = cert.primary().clone()
+/// let mut keypair = cert.primary_key().key().clone()
 ///     .mark_parts_secret()?.into_keypair()?;
-/// let ua = cert.user_attributes().nth(0).unwrap();
+/// let ca = cert.user_attributes().nth(0).unwrap();
 ///
 /// // Generate the revocation for the first and only UserAttribute.
 /// let revocation =
@@ -406,15 +415,15 @@ impl Deref for UserIDRevocationBuilder {
 ///         .set_reason_for_revocation(
 ///             ReasonForRevocation::KeyRetired,
 ///             b"Left example.org.").unwrap()
-///         .build(&mut keypair, &cert, ua.user_attribute(), None)?;
-/// assert_eq!(revocation.typ(), SignatureType::CertificateRevocation);
+///         .build(&mut keypair, &cert, ca.user_attribute(), None)?;
+/// assert_eq!(revocation.typ(), SignatureType::CertificationRevocation);
 ///
 /// // Now merge the revocation signature into the Cert.
 /// let cert = cert.merge_packets(vec![revocation.clone().into()])?;
 ///
 /// // Check that it is revoked.
-/// let ua = cert.user_attributes().nth(0).unwrap();
-/// if let RevocationStatus::Revoked(revocations) = ua.revoked(None) {
+/// let ua = cert.user_attributes().with_policy(p, None).nth(0).unwrap();
+/// if let RevocationStatus::Revoked(revocations) = ua.revoked() {
 ///     assert_eq!(revocations.len(), 1);
 ///     assert_eq!(*revocations[0], revocation);
 /// } else {
@@ -431,7 +440,7 @@ impl UserAttributeRevocationBuilder {
     pub fn new() -> Self {
         Self {
             builder:
-                signature::Builder::new(SignatureType::CertificateRevocation)
+                signature::Builder::new(SignatureType::CertificationRevocation)
         }
     }
 
@@ -456,22 +465,18 @@ impl UserAttributeRevocationBuilder {
 
     /// Returns a revocation certificate for the cert `Cert` signed by
     /// `signer`.
-    pub fn build<H, R>(mut self, signer: &mut dyn Signer<R>,
-                       cert: &Cert, ua: &UserAttribute,
-                       hash_algo: H)
+    pub fn build<H>(mut self, signer: &mut dyn Signer,
+                    cert: &Cert, ua: &UserAttribute,
+                    hash_algo: H)
         -> Result<Signature>
-        where H: Into<Option<HashAlgorithm>>,
-              R: key::KeyRole
+        where H: Into<Option<HashAlgorithm>>
     {
         let hash_algo = hash_algo.into().unwrap_or(HashAlgorithm::SHA512);
-        let creation_time
-            = self.signature_creation_time()
-            .unwrap_or_else(|| time::SystemTime::now());
 
         if let Some(algo) = hash_algo.into() {
             self.builder = self.builder.set_hash_algo(algo);
         }
-        ua.bind(signer, cert, self.builder, creation_time)
+        ua.bind(signer, cert, self.builder)
     }
 }
 

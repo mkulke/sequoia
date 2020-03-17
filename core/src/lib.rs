@@ -20,8 +20,6 @@
 
 extern crate dirs;
 extern crate tempfile;
-#[macro_use]
-extern crate failure;
 
 use std::fmt;
 use std::io;
@@ -199,7 +197,7 @@ impl Config {
             if home_not_set {
                 c.home =
                     dirs::home_dir().ok_or(
-                        format_err!("Failed to get users home directory"))?
+                        anyhow::anyhow!("Failed to get users home directory"))?
                 .join(".sequoia");
             }
         }
@@ -266,18 +264,18 @@ impl Config {
 /* Error handling.  */
 
 /// Result type for Sequoia.
-pub type Result<T> = ::std::result::Result<T, failure::Error>;
+pub type Result<T> = ::std::result::Result<T, anyhow::Error>;
 
-#[derive(Fail, Debug)]
+#[derive(thiserror::Error, Debug)]
 /// Errors for Sequoia.
 pub enum Error {
     /// The network policy was violated by the given action.
-    #[fail(display = "Unmet network policy requirement: {}", _0)]
+    #[error("Unmet network policy requirement: {0}")]
     NetworkPolicyViolation(NetworkPolicy),
 
     /// An `io::Error` occurred.
-    #[fail(display = "{}", _0)]
-    IoError(#[cause] io::Error),
+    #[error("{0}")]
+    IoError(#[from] io::Error),
 }
 
 /* Network policy.  */

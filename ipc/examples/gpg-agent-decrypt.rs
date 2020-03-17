@@ -7,22 +7,29 @@ extern crate clap;
 extern crate sequoia_openpgp as openpgp;
 extern crate sequoia_ipc as ipc;
 
+use crate::openpgp::cert::prelude::*;
 use crate::openpgp::crypto::SessionKey;
 use crate::openpgp::types::SymmetricAlgorithm;
+use crate::openpgp::packet::key;
 use crate::openpgp::parse::{
     Parse,
     stream::{
         DecryptionHelper,
         Decryptor,
         VerificationHelper,
-        VerificationResult,
+        GoodChecksum,
+        VerificationError,
         MessageStructure,
         MessageLayer,
     },
 };
+use crate::openpgp::policy::Policy;
+use crate::openpgp::policy::StandardPolicy as P;
 use crate::ipc::gnupg::{Context, KeyPair};
 
 fn main() {
+    let p = &P::new();
+
     let matches = clap::App::new("gpg-agent-decrypt")
         .version(env!("CARGO_PKG_VERSION"))
         .about("Connects to gpg-agent and decrypts a message.")
@@ -50,7 +57,7 @@ fn main() {
 
     // Now, create a decryptor with a helper using the given Certs.
     let mut decryptor =
-        Decryptor::from_reader(io::stdin(), Helper::new(&ctx, certs), None)
+        Decryptor::from_reader(p, io::stdin(), Helper::new(&ctx, p, certs), None)
         .unwrap();
 
     // Finally, stream the decrypted data to stdout.
@@ -63,22 +70,23 @@ fn main() {
 /// verification policy.
 struct Helper<'a> {
     ctx: &'a Context,
-    keys: HashMap<openpgp::KeyID, openpgp::packet::key::UnspecifiedPublic>,
+    keys: HashMap<openpgp::KeyID,
+                  openpgp::packet::Key<key::PublicParts, key::UnspecifiedRole>>,
 }
 
 impl<'a> Helper<'a> {
     /// Creates a Helper for the given Certs with appropriate secrets.
-    fn new(ctx: &'a Context, certs: Vec<openpgp::Cert>) -> Self {
+    fn new(ctx: &'a Context, policy: &'a dyn Policy, certs: Vec<openpgp::Cert>)
+        -> Self
+    {
         // Map (sub)KeyIDs to secrets.
         let mut keys = HashMap::new();
         for cert in certs {
-            for (sig, _, key) in cert.keys_all() {
-                if sig.map(|s| (s.key_flags().for_storage_encryption()
-                                || s.key_flags().for_transport_encryption()))
-                    .unwrap_or(false)
-                {
-                    keys.insert(key.keyid(), key.clone().into());
-                }
+            for ka in cert.keys().with_policy(policy, None)
+                .for_storage_encryption().for_transport_encryption()
+            {
+                let key = ka.key();
+                keys.insert(key.keyid(), key.clone().into());
             }
         }
 
@@ -90,6 +98,7 @@ impl<'a> DecryptionHelper for Helper<'a> {
     fn decrypt<D>(&mut self,
                   pkesks: &[openpgp::packet::PKESK],
                   _skesks: &[openpgp::packet::SKESK],
+                  sym_algo: Option<SymmetricAlgorithm>,
                   mut decrypt: D)
                   -> openpgp::Result<Option<openpgp::Fingerprint>>
         where D: FnMut(SymmetricAlgorithm, &SessionKey) -> openpgp::Result<()>
@@ -98,7 +107,7 @@ impl<'a> DecryptionHelper for Helper<'a> {
         for pkesk in pkesks {
             if let Some(key) = self.keys.get(pkesk.recipient()) {
                 let mut pair = KeyPair::new(self.ctx, key)?;
-                if let Ok(_) = pkesk.decrypt(&mut pair)
+                if let Ok(_) = pkesk.decrypt(&mut pair, sym_algo)
                     .and_then(|(algo, session_key)| decrypt(algo, &session_key))
                 {
                     break;
@@ -113,12 +122,12 @@ impl<'a> DecryptionHelper for Helper<'a> {
 
 impl<'a> VerificationHelper for Helper<'a> {
     fn get_public_keys(&mut self, _ids: &[openpgp::KeyHandle])
-                       -> failure::Fallible<Vec<openpgp::Cert>> {
+                       -> openpgp::Result<Vec<openpgp::Cert>> {
         Ok(Vec::new()) // Feed the Certs to the verifier here.
     }
-    fn check(&mut self, structure: &MessageStructure)
-             -> failure::Fallible<()> {
-        use self::VerificationResult::*;
+    fn check(&mut self, structure: MessageStructure)
+             -> openpgp::Result<()> {
+        use self::VerificationError::*;
         for layer in structure.iter() {
             match layer {
                 MessageLayer::Compression { algo } =>
@@ -133,18 +142,29 @@ impl<'a> VerificationHelper for Helper<'a> {
                 MessageLayer::SignatureGroup { ref results } =>
                     for result in results {
                         match result {
-                            GoodChecksum { cert, .. } => {
-                                eprintln!("Good signature from {}", cert);
+                            Ok(GoodChecksum { ka, .. }) => {
+                                eprintln!("Good signature from {}", ka.cert());
                             },
-                            NotAlive { cert, .. } => {
-                                eprintln!("Good, but not alive signature from {}",
-                                          cert);
+                            Err(MalformedSignature { error, .. }) => {
+                                eprintln!("Signature is malformed: {}", error);
                             },
-                            MissingKey { .. } => {
-                                eprintln!("No key to check signature");
+                            Err(MissingKey { sig, .. }) => {
+                                let issuers = sig.get_issuers();
+                                eprintln!("Missing key {}, which is needed to \
+                                           verify signature.",
+                                          issuers.first().unwrap().to_hex());
                             },
-                            BadChecksum { cert, .. } => {
-                                eprintln!("Bad signature from {}", cert);
+                            Err(UnboundKey { cert, error, .. }) => {
+                                eprintln!("Signing key on {} is not bound: {}",
+                                          cert.fingerprint().to_hex(), error);
+                            },
+                            Err(BadKey { ka, error, .. }) => {
+                                eprintln!("Signing key on {} is bad: {}",
+                                          ka.cert().fingerprint().to_hex(),
+                                          error);
+                            },
+                            Err(BadSignature { error, .. }) => {
+                                eprintln!("Verifying signature: {}.", error);
                             },
                         }
                     }

@@ -76,6 +76,8 @@ check_cb (void *cookie_opaque, pgp_message_structure_t structure)
         pgp_key_t key = NULL;
         pgp_keyid_t keyid;
         char *keyid_str = NULL;
+        pgp_error_t err = NULL;
+        char *err_str = NULL;
 
         switch (pgp_verification_result_variant (result)) {
         case PGP_VERIFICATION_RESULT_GOOD_CHECKSUM:
@@ -86,13 +88,10 @@ check_cb (void *cookie_opaque, pgp_message_structure_t structure)
           fprintf (stderr, "Good signature from %s\n", keyid_str);
           break;
 
-        case PGP_VERIFICATION_RESULT_NOT_ALIVE:
-          pgp_verification_result_not_alive (result, NULL, NULL,
-                                             &key, NULL, NULL);
-          keyid = pgp_key_keyid (key);
-          keyid_str = pgp_keyid_to_string (keyid);
-          fprintf (stderr, "Good checksum, but not alive signature from %s\n",
-                   keyid_str);
+        case PGP_VERIFICATION_RESULT_MALFORMED_SIGNATURE:
+          pgp_verification_result_malformed_signature (result, NULL, &err);
+          err_str = pgp_error_to_string (err);
+          fprintf (stderr, "Malformed signature: %s\n", err_str);
           break;
 
         case PGP_VERIFICATION_RESULT_MISSING_KEY:
@@ -102,18 +101,32 @@ check_cb (void *cookie_opaque, pgp_message_structure_t structure)
           fprintf (stderr, "No key to check signature from %s\n", keyid_str);
           break;
 
-        case PGP_VERIFICATION_RESULT_BAD_CHECKSUM:
-          pgp_verification_result_bad_checksum (result, NULL, NULL,
-                                                &key, NULL, NULL);
-          keyid = pgp_key_keyid (key);
-          keyid_str = pgp_keyid_to_string (keyid);
-          fprintf (stderr, "Bad signature from %s\n", keyid_str);
+        case PGP_VERIFICATION_RESULT_UNBOUND_KEY:
+          pgp_verification_result_unbound_key (result, NULL, NULL, &err);
+          err_str = pgp_error_to_string (err);
+          fprintf (stderr, "Signing key not bound: %s\n", err_str);
+          break;
+
+        case PGP_VERIFICATION_RESULT_BAD_KEY:
+          pgp_verification_result_bad_key (result, NULL, NULL, NULL,
+                                           NULL, NULL, &err);
+          err_str = pgp_error_to_string (err);
+          fprintf (stderr, "Bad signing key: %s\n", err_str);
+          break;
+
+        case PGP_VERIFICATION_RESULT_BAD_SIGNATURE:
+          pgp_verification_result_bad_signature (result, NULL, NULL, NULL,
+                                                 NULL, NULL, &err);
+          err_str = pgp_error_to_string (err);
+          fprintf (stderr, "Bad signature: %s\n", err_str);
           break;
 
         default:
           assert (! "reachable");
         }
         free (keyid_str);
+        free (err_str);
+        pgp_error_free (err);
         pgp_signature_free (sig);
         pgp_key_free (key);
         pgp_verification_result_free (result);
@@ -139,6 +152,7 @@ static pgp_status_t
 decrypt_cb (void *cookie_opaque,
             pgp_pkesk_t *pkesks, size_t pkesk_count,
             pgp_skesk_t *skesks, size_t skesk_count,
+            uint8_t sym_algo_hint,
             pgp_decryptor_do_decrypt_cb_t *decrypt,
             void *decrypt_cookie,
             pgp_fingerprint_t *identity_out)
@@ -155,9 +169,9 @@ decrypt_cb (void *cookie_opaque,
     pgp_pkesk_t pkesk = pkesks[i];
     pgp_keyid_t keyid = pgp_pkesk_recipient (pkesk);
 
-    pgp_cert_key_iter_t key_iter = pgp_cert_key_iter_all (cookie->key);
+    pgp_cert_key_iter_t key_iter = pgp_cert_key_iter (cookie->key);
     pgp_key_t key;
-    while ((key = pgp_cert_key_iter_next (key_iter, NULL, NULL))) {
+    while ((key = pgp_cert_key_iter_next (key_iter))) {
       pgp_keyid_t this_keyid = pgp_key_keyid (key);
       int match = pgp_keyid_equal (this_keyid, keyid);
       pgp_keyid_free (this_keyid);
@@ -201,6 +215,7 @@ main (int argc, char **argv)
   pgp_reader_t plaintext;
   uint8_t buf[1024];
   ssize_t nread;
+  pgp_policy_t policy = pgp_standard_policy ();
 
   if (argc != 2)
     error (1, 0, "Usage: %s <keyfile> <cipher >plain", argv[0]);
@@ -216,7 +231,7 @@ main (int argc, char **argv)
     .key = cert,
     .decrypt_called = 0,
   };
-  plaintext = pgp_decryptor_new (&err, source,
+  plaintext = pgp_decryptor_new (&err, policy, source,
                                  get_public_keys_cb, decrypt_cb,
                                  check_cb, NULL, &cookie, 0);
   if (! plaintext)
@@ -231,5 +246,6 @@ main (int argc, char **argv)
   pgp_reader_free (plaintext);
   pgp_reader_free (source);
   pgp_cert_free (cert);
+  pgp_policy_free (policy);
   return 0;
 }

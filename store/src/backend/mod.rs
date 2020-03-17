@@ -1,6 +1,5 @@
 //! Storage backend.
 
-use failure;
 use std::cmp;
 use std::fmt;
 use std::io;
@@ -414,7 +413,7 @@ impl node::mapping::Server for MappingServer {
             mut results: node::mapping::IterResults)
             -> Promise<(), capnp::Error> {
         bind_results!(results);
-        let iter = BindingIterServer::new(self.c.clone(), self.id);
+        let iter = BundleIterServer::new(self.c.clone(), self.id);
         pry!(pry!(results.get().get_result()).set_ok(
             node::binding_iter::ToClient::new(iter).into_client::<capnp_rpc::Server>()));
         Promise::ok(())
@@ -806,8 +805,8 @@ impl KeyServer {
 
     /// Keeps the mapping of (sub)KeyIDs to keys up-to-date.
     fn reindex_subkeys(c: &Connection, key_id: ID, cert: &Cert) -> Result<()> {
-        for (_, _, key) in cert.keys_all() {
-            let keyid = key.keyid().as_u64()
+        for ka in cert.keys() {
+            let keyid = ka.key().keyid().as_u64()
                 .expect("computed keyid is valid");
 
             let r = c.execute(
@@ -920,7 +919,7 @@ impl KeyServer {
     /// Updates the key that was least recently updated.
     fn update(c: &Rc<Connection>,
               network_policy: core::NetworkPolicy)
-              -> Box<dyn Future<Item=Duration, Error=failure::Error> + 'static> {
+              -> Box<dyn Future<Item=Duration, Error=anyhow::Error> + 'static> {
         let (key, id, mut keyserver)
             = match Self::update_helper(c, network_policy) {
             Ok((key, id, keyserver)) => (key, id, keyserver),
@@ -1167,19 +1166,19 @@ impl node::mapping_iter::Server for MappingIterServer {
     }
 }
 
-struct BindingIterServer {
+struct BundleIterServer {
     c: Rc<Connection>,
     mapping_id: ID,
     n: ID,
 }
 
-impl BindingIterServer {
+impl BundleIterServer {
     fn new(c: Rc<Connection>, mapping_id: ID) -> Self {
-        BindingIterServer{c: c, mapping_id: mapping_id, n: ID::null()}
+        BundleIterServer{c: c, mapping_id: mapping_id, n: ID::null()}
     }
 }
 
-impl node::binding_iter::Server for BindingIterServer {
+impl node::binding_iter::Server for BundleIterServer {
     fn next(&mut self,
             _: node::binding_iter::NextParams,
             mut results: node::binding_iter::NextResults)
@@ -1277,8 +1276,8 @@ impl From<rusqlite::Error> for node::Error {
     }
 }
 
-impl From<failure::Error> for node::Error {
-    fn from(e: failure::Error) -> Self {
+impl From<anyhow::Error> for node::Error {
+    fn from(e: anyhow::Error) -> Self {
         if let Some(e) = e.downcast_ref::<openpgp::Error>() {
             return match e {
                 &openpgp::Error::MalformedCert(_) =>

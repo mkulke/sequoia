@@ -7,11 +7,14 @@
 use std::fmt;
 use std::ops::{Deref, DerefMut};
 use std::slice;
-use std::vec;
 
 use crate::Error;
 use crate::Result;
 use crate::Packet;
+
+#[macro_use]
+mod container;
+pub(crate) use container::Container;
 
 pub mod prelude;
 
@@ -53,7 +56,7 @@ impl<'a> Deref for Packet {
     fn deref(&self) -> &Self::Target {
         match self {
             &Packet::Unknown(ref packet) => &packet.common,
-            &Packet::Signature(Signature::V4(ref packet)) => &packet.common,
+            &Packet::Signature(ref packet) => &packet.common,
             &Packet::OnePassSig(ref packet) => &packet.common,
             &Packet::PublicKey(ref packet) => &packet.common,
             &Packet::PublicSubkey(ref packet) => &packet.common,
@@ -68,9 +71,11 @@ impl<'a> Deref for Packet {
             &Packet::PKESK(ref packet) => &packet.common,
             &Packet::SKESK(SKESK::V4(ref packet)) => &packet.common,
             &Packet::SKESK(SKESK::V5(ref packet)) => &packet.skesk4.common,
+            Packet::SKESK(SKESK::__Nonexhaustive) => unreachable!(),
             &Packet::SEIP(ref packet) => &packet.common,
             &Packet::MDC(ref packet) => &packet.common,
-            &Packet::AED(AED::V1(ref packet)) => &packet.common,
+            &Packet::AED(ref packet) => &packet.common,
+            Packet::__Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -79,8 +84,7 @@ impl<'a> DerefMut for Packet {
     fn deref_mut(&mut self) -> &mut Common {
         match self {
             &mut Packet::Unknown(ref mut packet) => &mut packet.common,
-            &mut Packet::Signature(Signature::V4(ref mut packet)) =>
-                &mut packet.common,
+            &mut Packet::Signature(ref mut packet) => &mut packet.common,
             &mut Packet::OnePassSig(ref mut packet) => &mut packet.common,
             &mut Packet::PublicKey(ref mut packet) => &mut packet.common,
             &mut Packet::PublicSubkey(ref mut packet) => &mut packet.common,
@@ -95,240 +99,27 @@ impl<'a> DerefMut for Packet {
             &mut Packet::PKESK(ref mut packet) => &mut packet.common,
             &mut Packet::SKESK(SKESK::V4(ref mut packet)) => &mut packet.common,
             &mut Packet::SKESK(SKESK::V5(ref mut packet)) => &mut packet.skesk4.common,
+            Packet::SKESK(SKESK::__Nonexhaustive) => unreachable!(),
             &mut Packet::SEIP(ref mut packet) => &mut packet.common,
             &mut Packet::MDC(ref mut packet) => &mut packet.common,
-            &mut Packet::AED(AED::V1(ref mut packet)) => &mut packet.common,
+            &mut Packet::AED(ref mut packet) => &mut packet.common,
+            Packet::__Nonexhaustive => unreachable!(),
         }
     }
 }
 
 /// Fields used by multiple packet types.
-#[derive(PartialEq, Eq, Hash, Clone)]
+#[derive(Debug, Clone)]
 pub struct Common {
-    /// Used by container packets (such as the encryption and
-    /// compression packets) to reference their immediate children.
-    /// This results in a tree structure.
-    ///
-    /// This is automatically populated when using the `PacketPile`
-    /// deserialization routines, e.g., [`PacketPile::from_file`].  By
-    /// default, it is *not* automatically filled in by the
-    /// [`PacketParser`] deserialization routines; this needs to be
-    /// done manually.
-    ///
-    ///   [`PacketPile`]: ../struct.PacketPile.html
-    ///   [`PacketPile::from_file`]: ../struct.PacketPile.html#method.from_file
-    ///   [`PacketParser`]: ../parse/struct.PacketParser.html
-    children: Option<Container>,
-
-    /// Holds a packet's body.
-    ///
-    /// We conceptually divide packets into two parts: the header and
-    /// the body.  Whereas the header is read eagerly when the packet
-    /// is deserialized, the body is only read on demand.
-    ///
-    /// A packet's body is stored here either when configured via
-    /// [`PacketParserBuilder::buffer_unread_content`], when one of
-    /// the [`PacketPile`] deserialization routines is used, or on demand
-    /// for a particular packet using the
-    /// [`PacketParser::buffer_unread_content`] method.
-    ///
-    ///   [`PacketParserBuilder::buffer_unread_content`]: ../parse/struct.PacketParserBuilder.html#method.buffer_unread_content
-    ///   [`PacketPile`]: ../struct.PacketPile.html
-    ///   [`PacketParser::buffer_unread_content`]: ../parse/struct.PacketParser.html#method.buffer_unread_content
-    ///
-    /// There are three different types of packets:
-    ///
-    ///   - Packets like the [`UserID`] and [`Signature`] packets,
-    ///     don't actually have a body.  These packets don't use this
-    ///     field.
-    ///
-    ///   [`UserID`]: ../packet/struct.UserID.html
-    ///   [`Signature`]: ../packet/signature/struct.Signature.html
-    ///
-    ///   - One packet, the literal data packet, includes unstructured
-    ///     data.  That data can be stored here.
-    ///
-    ///   - Some packets are containers.  If the parser does not parse
-    ///     the packet's child, either because the caller used
-    ///     [`PacketParser::next`] to get the next packet, or the
-    ///     maximum recursion depth was reached, then the packets can
-    ///     be stored here as a byte stream.  (If the caller so
-    ///     chooses, the content can be parsed later using the regular
-    ///     deserialization routines, since the content is just an
-    ///     OpenPGP message.)
-    ///
-    ///   [`PacketParser::next`]: ../parse/struct.PacketParser.html#method.next
-    ///
-    /// Note: if some of a packet's data is processed, and the
-    /// `PacketParser` is configured to buffer unread content, then
-    /// this is not the packet's entire content; it is just the unread
-    /// content.
-    body: Option<Vec<u8>>,
-}
-
-impl fmt::Debug for Common {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("Common")
-            .field("children", &self.children)
-            .field("body (bytes)",
-                   &self.body.as_ref().map(|body| body.len()))
-            .finish()
-    }
+    /// XXX: Prevents trivial matching on this structure.  Remove once
+    /// this structure actually gains some fields.
+    dummy: std::marker::PhantomData<()>,
 }
 
 impl Default for Common {
     fn default() -> Common {
         Common {
-            children: None,
-            body: None,
-        }
-    }
-}
-
-impl Common {
-    pub(crate) // for packet_pile.rs
-    fn children_ref(&self) -> Option<&Container> {
-        self.children.as_ref()
-    }
-
-    pub(crate) // for packet_pile.rs
-    fn children_mut(&mut self) -> Option<&mut Container> {
-        self.children.as_mut()
-    }
-
-    pub(crate) // for packet_pile.rs
-    fn set_children(&mut self, v: Option<Container>) -> Option<Container> {
-        std::mem::replace(&mut self.children, v)
-    }
-
-    fn children_iter<'a>(&'a self) -> slice::Iter<'a, Packet> {
-        if let Some(ref container) = self.children {
-            container.packets.iter()
-        } else {
-            let empty_packet_slice : &[Packet] = &[];
-            empty_packet_slice.iter()
-        }
-    }
-
-    /// Returns an iterator over the packet's immediate children.
-    pub fn children<'a>(&'a self) -> impl Iterator<Item = &'a Packet> {
-        self.children_iter()
-    }
-
-    /// Returns an iterator over all of the packet's descendants, in
-    /// depth-first order.
-    pub fn descendants(&self) -> Iter {
-        return Iter {
-            children: self.children_iter(),
-            child: None,
-            grandchildren: None,
-            depth: 0,
-        }
-    }
-
-    /// Retrieves the packet's body.
-    ///
-    /// Packets can store a sequence of bytes as body, e.g. if the
-    /// maximum recursion level is reached while parsing a sequence of
-    /// packets, the container's body is stored as is.
-    pub fn body(&self) -> Option<&[u8]> {
-        self.body.as_ref().map(|b| b.as_slice())
-    }
-
-    /// Sets the packet's body.
-    ///
-    /// Setting the body clears the old body, or any of the packet's
-    /// descendants.
-    pub fn set_body(&mut self, data: Vec<u8>) -> Vec<u8> {
-        self.children = None;
-        ::std::mem::replace(&mut self.body,
-                            if data.len() == 0 { None } else { Some(data) })
-            .unwrap_or(Vec::new())
-    }
-
-    pub(crate) // For parse.rs
-    fn body_mut(&mut self) -> Option<&mut Vec<u8>> {
-        self.body.as_mut()
-    }
-}
-
-/// Holds zero or more OpenPGP packets.
-///
-/// This is used by OpenPGP container packets, like the compressed
-/// data packet, to store the containing packets.
-#[derive(PartialEq, Eq, Hash, Clone)]
-pub(crate) struct Container {
-    pub(crate) packets: Vec<Packet>,
-}
-
-impl fmt::Debug for Container {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("Container")
-            .field("packets", &self.packets)
-            .finish()
-    }
-}
-
-impl Container {
-    pub(crate) fn new() -> Container {
-        Container { packets: Vec::with_capacity(8) }
-    }
-
-    // Adds a new packet to the container.
-    pub(crate) fn push(&mut self, packet: Packet) {
-        self.packets.push(packet);
-    }
-
-    // Inserts a new packet to the container at a particular index.
-    // If `i` is 0, the new packet is insert at the front of the
-    // container.  If `i` is one, it is inserted after the first
-    // packet, etc.
-    pub(crate) fn insert(&mut self, i: usize, packet: Packet) {
-        self.packets.insert(i, packet);
-    }
-
-    /// Returns an iterator over the packet's descendants.  The
-    /// descendants are visited in depth-first order.
-    pub fn descendants(&self) -> Iter {
-        return Iter {
-            // Iterate over each packet in the message.
-            children: self.children(),
-            child: None,
-            grandchildren: None,
-            depth: 0,
-        };
-    }
-
-    /// Returns an iterator over the packet's immediate children.
-    pub fn children<'a>(&'a self) -> slice::Iter<'a, Packet> {
-        self.packets.iter()
-    }
-
-    /// Returns an `IntoIter` over the packet's immediate children.
-    pub fn into_children(self) -> vec::IntoIter<Packet> {
-        self.packets.into_iter()
-    }
-
-    // Converts an indentation level to whitespace.
-    fn indent(depth: usize) -> &'static str {
-        use std::cmp;
-
-        let s = "                                                  ";
-        return &s[0..cmp::min(depth, s.len())];
-    }
-
-    // Pretty prints the container to stderr.
-    //
-    // This function is primarily intended for debugging purposes.
-    //
-    // `indent` is the number of spaces to indent the output.
-    pub(crate) fn pretty_print(&self, indent: usize) {
-        for (i, p) in self.packets.iter().enumerate() {
-            eprintln!("{}{}: {:?}",
-                      Self::indent(indent), i + 1, p);
-            if let Some(ref children) = self.packets[i].children {
-                children.pretty_print(indent + 1);
-            }
+            dummy: Default::default(),
         }
     }
 }
@@ -347,6 +138,17 @@ pub struct Iter<'a> {
     // The depth of the last returned packet.  This is used by the
     // `paths` iter.
     depth: usize,
+}
+
+impl<'a> Default for Iter<'a> {
+    fn default() -> Self {
+        Iter {
+            children: [].iter(),
+            child: None,
+            grandchildren: None,
+            depth: 0,
+        }
+    }
 }
 
 impl<'a> Iterator for Iter<'a> {
@@ -452,8 +254,8 @@ fn packet_path_iter() {
             v.push(i);
             lpaths.push(v);
 
-            if let Some(ref children) = packet.children {
-                for mut path in paths(children.packets.iter()).into_iter() {
+            if let Some(ref container) = packet.container_ref() {
+                for mut path in paths(container.children()).into_iter() {
                     path.insert(0, i);
                     lpaths.push(path);
                 }
@@ -504,10 +306,17 @@ fn packet_path_iter() {
 /// See [Section 5.2 of RFC 4880] for details.
 ///
 ///   [Section 5.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2
+///
+/// Note: This enum cannot be exhaustively matched to allow future
+/// extensions.
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
 pub enum Signature {
     /// Signature packet version 4.
     V4(self::signature::Signature4),
+
+    /// This marks this enum as non-exhaustive.  Do not use this
+    /// variant.
+    #[doc(hidden)] __Nonexhaustive,
 }
 
 impl Signature {
@@ -515,6 +324,7 @@ impl Signature {
     pub fn version(&self) -> u8 {
         match self {
             &Signature::V4(_) => 4,
+            Signature::__Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -532,6 +342,7 @@ impl Deref for Signature {
     fn deref(&self) -> &Self::Target {
         match self {
             Signature::V4(sig) => sig,
+            Signature::__Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -541,6 +352,7 @@ impl DerefMut for Signature {
     fn deref_mut(&mut self) -> &mut Self::Target {
         match self {
             Signature::V4(ref mut sig) => sig,
+            Signature::__Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -550,10 +362,17 @@ impl DerefMut for Signature {
 /// See [Section 5.4 of RFC 4880] for details.
 ///
 ///   [Section 5.4 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.4
+///
+/// Note: This enum cannot be exhaustively matched to allow future
+/// extensions.
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
 pub enum OnePassSig {
     /// OnePassSig packet version 3.
     V3(self::one_pass_sig::OnePassSig3),
+
+    /// This marks this enum as non-exhaustive.  Do not use this
+    /// variant.
+    #[doc(hidden)] __Nonexhaustive,
 }
 
 impl OnePassSig {
@@ -561,6 +380,7 @@ impl OnePassSig {
     pub fn version(&self) -> u8 {
         match self {
             &OnePassSig::V3(_) => 3,
+            OnePassSig::__Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -578,6 +398,7 @@ impl Deref for OnePassSig {
     fn deref(&self) -> &Self::Target {
         match self {
             OnePassSig::V3(ops) => ops,
+            OnePassSig::__Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -587,6 +408,7 @@ impl DerefMut for OnePassSig {
     fn deref_mut(&mut self) -> &mut Self::Target {
         match self {
             OnePassSig::V3(ref mut ops) => ops,
+            OnePassSig::__Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -597,10 +419,17 @@ impl DerefMut for OnePassSig {
 /// [Section 5.1 of RFC 4880] for details.
 ///
 ///   [Section 5.1 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.1
+///
+/// Note: This enum cannot be exhaustively matched to allow future
+/// extensions.
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
 pub enum PKESK {
     /// PKESK packet version 3.
     V3(self::pkesk::PKESK3),
+
+    /// This marks this enum as non-exhaustive.  Do not use this
+    /// variant.
+    #[doc(hidden)] __Nonexhaustive,
 }
 
 impl PKESK {
@@ -608,6 +437,7 @@ impl PKESK {
     pub fn version(&self) -> u8 {
         match self {
             PKESK::V3(_) => 3,
+            PKESK::__Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -625,6 +455,7 @@ impl Deref for PKESK {
     fn deref(&self) -> &Self::Target {
         match self {
             PKESK::V3(ref p) => p,
+            PKESK::__Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -634,6 +465,7 @@ impl DerefMut for PKESK {
     fn deref_mut(&mut self) -> &mut Self::Target {
         match self {
             PKESK::V3(ref mut p) => p,
+            PKESK::__Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -645,12 +477,21 @@ impl DerefMut for PKESK {
 /// 4880] for details.
 ///
 /// [Section 5.3 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.3
+///
+/// Note: This enum cannot be exhaustively matched to allow future
+/// extensions.
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
 pub enum SKESK {
     /// SKESK packet version 4.
     V4(self::skesk::SKESK4),
     /// SKESK packet version 5.
+    ///
+    /// This feature is [experimental](../index.html#experimental-features).
     V5(self::skesk::SKESK5),
+
+    /// This marks this enum as non-exhaustive.  Do not use this
+    /// variant.
+    #[doc(hidden)] __Nonexhaustive,
 }
 
 impl SKESK {
@@ -659,6 +500,7 @@ impl SKESK {
         match self {
             &SKESK::V4(_) => 4,
             &SKESK::V5(_) => 5,
+            SKESK::__Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -674,16 +516,24 @@ impl From<SKESK> for Packet {
 /// See [Section 5.5 of RFC 4880] for details.
 ///
 ///   [Section 5.5 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.5
+///
+/// Note: This enum cannot be exhaustively matched to allow future
+/// extensions.
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
 pub enum Key<P: key::KeyParts, R: key::KeyRole> {
     /// Key packet version 4.
     V4(self::key::Key4<P, R>),
+
+    /// This marks this enum as non-exhaustive.  Do not use this
+    /// variant.
+    #[doc(hidden)] __Nonexhaustive,
 }
 
 impl<P: key::KeyParts, R: key::KeyRole> fmt::Display for Key<P, R> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Key::V4(k) => k.fmt(f),
+            Key::__Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -693,6 +543,7 @@ impl<P: key::KeyParts, R: key::KeyRole> Key<P, R> {
     pub fn version(&self) -> u8 {
         match self {
             Key::V4(_) => 4,
+            Key::__Nonexhaustive => unreachable!(),
         }
     }
 
@@ -702,9 +553,14 @@ impl<P: key::KeyParts, R: key::KeyRole> Key<P, R> {
     /// creation time and algorithm of the two `Key`s match.  This
     /// does not consider the packet's encoding, packet's tag or the
     /// secret key material.
-    pub fn public_cmp(a: &Self, b: &Self) -> ::std::cmp::Ordering {
-        match (a, b) {
-            (Key::V4(a), Key::V4(b)) => self::key::Key4::public_cmp(a, b),
+    pub fn public_cmp<PB, RB>(&self, b: &Key<PB, RB>) -> std::cmp::Ordering
+        where PB: key::KeyParts,
+              RB: key::KeyRole,
+    {
+        match (self, b) {
+            (Key::V4(a), Key::V4(b)) => a.public_cmp(b),
+            (Key::__Nonexhaustive, _) => unreachable!(),
+            (_, Key::__Nonexhaustive) => unreachable!(),
         }
     }
 }
@@ -744,19 +600,17 @@ impl<R: key::KeyRole> Key<key::SecretParts, R> {
     /// # Errors
     ///
     /// Fails if the secret key is missing, or encrypted.
-    pub fn into_keypair(mut self) -> Result<KeyPair<R>> {
+    pub fn into_keypair(self) -> Result<KeyPair> {
         use crate::packet::key::SecretKeyMaterial;
-        let secret = match self.set_secret(None) {
-            Some(SecretKeyMaterial::Unencrypted(secret)) => secret,
-            Some(SecretKeyMaterial::Encrypted(_)) =>
+        let (key, secret) = self.take_secret();
+        let secret = match secret {
+            SecretKeyMaterial::Unencrypted(secret) => secret,
+            SecretKeyMaterial::Encrypted(_) =>
                 return Err(Error::InvalidArgument(
                     "secret key is encrypted".into()).into()),
-            None =>
-                return Err(Error::InvalidArgument(
-                    "no secret key".into()).into()),
         };
 
-        KeyPair::new(self.into(), secret)
+        KeyPair::new(key.mark_role_unspecified(), secret)
     }
 }
 
@@ -767,21 +621,87 @@ impl<R: key::KeyRole> key::Key4<key::SecretParts, R> {
     /// # Errors
     ///
     /// Fails if the secret key is missing, or encrypted.
-    pub fn into_keypair(mut self) -> Result<KeyPair<R>> {
+    pub fn into_keypair(self) -> Result<KeyPair> {
         use crate::packet::key::SecretKeyMaterial;
-        let secret = match self.set_secret(None) {
-            Some(SecretKeyMaterial::Unencrypted(secret)) => secret,
-            Some(SecretKeyMaterial::Encrypted(_)) =>
+        let (key, secret) = self.take_secret();
+        let secret = match secret {
+            SecretKeyMaterial::Unencrypted(secret) => secret,
+            SecretKeyMaterial::Encrypted(_) =>
                 return Err(Error::InvalidArgument(
                     "secret key is encrypted".into()).into()),
-            None =>
-                return Err(Error::InvalidArgument(
-                    "no secret key".into()).into()),
         };
 
-        KeyPair::new(self.mark_parts_public().into(), secret)
+        KeyPair::new(key.mark_role_unspecified().into(), secret)
     }
 }
+
+macro_rules! impl_common_secret_functions {
+    ($t: path) => {
+        /// Secret key handling.
+        impl<R: key::KeyRole> Key<$t, R> {
+            /// Takes the key packet's `SecretKeyMaterial`, if any.
+            pub fn take_secret(self)
+                               -> (Key<key::PublicParts, R>,
+                                   Option<key::SecretKeyMaterial>)
+            {
+                match self {
+                    Key::V4(k) => {
+                        let (k, s) = k.take_secret();
+                        (k.into(), s)
+                    },
+                    Key::__Nonexhaustive => unreachable!(),
+                }
+            }
+
+            /// Adds `SecretKeyMaterial` to the packet, returning the old if
+            /// any.
+            pub fn add_secret(self, secret: key::SecretKeyMaterial)
+                              -> (Key<key::SecretParts, R>,
+                                  Option<key::SecretKeyMaterial>)
+            {
+                match self {
+                    Key::V4(k) => {
+                        let (k, s) = k.add_secret(secret);
+                        (k.into(), s)
+                    },
+                    Key::__Nonexhaustive => unreachable!(),
+                }
+            }
+        }
+    }
+}
+impl_common_secret_functions!(key::PublicParts);
+impl_common_secret_functions!(key::UnspecifiedParts);
+
+/// Secret key handling.
+impl<R: key::KeyRole> Key<key::SecretParts, R> {
+    /// Takes the key packet's `SecretKeyMaterial`.
+    pub fn take_secret(self)
+                       -> (Key<key::PublicParts, R>, key::SecretKeyMaterial)
+    {
+        match self {
+            Key::V4(k) => {
+                let (k, s) = k.take_secret();
+                (k.into(), s)
+            },
+            Key::__Nonexhaustive => unreachable!(),
+        }
+    }
+
+    /// Adds `SecretKeyMaterial` to the packet, returning the old.
+    pub fn add_secret(self, secret: key::SecretKeyMaterial)
+                      -> (Key<key::SecretParts, R>, key::SecretKeyMaterial)
+    {
+        match self {
+            Key::V4(k) => {
+                let (k, s) = k.add_secret(secret);
+                (k.into(), s)
+            },
+            Key::__Nonexhaustive => unreachable!(),
+        }
+    }
+}
+
 
 // Trivial forwarder for singleton enum.
 impl<P: key::KeyParts, R: key::KeyRole> Deref for Key<P, R> {
@@ -790,6 +710,7 @@ impl<P: key::KeyParts, R: key::KeyRole> Deref for Key<P, R> {
     fn deref(&self) -> &Self::Target {
         match self {
             Key::V4(ref p) => p,
+            Key::__Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -799,6 +720,7 @@ impl<P: key::KeyParts, R: key::KeyRole> DerefMut for Key<P, R> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         match self {
             Key::V4(ref mut p) => p,
+            Key::__Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -856,10 +778,19 @@ impl DerefMut for SEIP {
 /// of RFC 4880bis] for details.
 ///
 /// [Section 5.16 of RFC 4880bis]: https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-05#section-5.16
+///
+/// Note: This enum cannot be exhaustively matched to allow future
+/// extensions.
+///
+/// This feature is [experimental](../index.html#experimental-features).
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
 pub enum AED {
     /// AED packet version 1.
     V1(self::aed::AED1),
+
+    /// This marks this enum as non-exhaustive.  Do not use this
+    /// variant.
+    #[doc(hidden)] __Nonexhaustive,
 }
 
 impl AED {
@@ -867,6 +798,7 @@ impl AED {
     pub fn version(&self) -> u8 {
         match self {
             AED::V1(_) => 1,
+            AED::__Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -884,6 +816,7 @@ impl Deref for AED {
     fn deref(&self) -> &Self::Target {
         match self {
             AED::V1(ref p) => p,
+            AED::__Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -893,6 +826,7 @@ impl DerefMut for AED {
     fn deref_mut(&mut self) -> &mut Self::Target {
         match self {
             AED::V1(ref mut p) => p,
+            AED::__Nonexhaustive => unreachable!(),
         }
     }
 }

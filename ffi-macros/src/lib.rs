@@ -291,7 +291,7 @@ pub fn ffi_wrapper_type(args: TokenStream, input: TokenStream) -> TokenStream {
     let default_derives = [
         (derive_free as DeriveFn, None),
     ];
-    for (dfn, arg) in derive.iter().chain(default_derives.into_iter()) {
+    for (dfn, arg) in derive.iter().chain(default_derives.iter()) {
         impls.extend(dfn(proc_macro2::Span::call_site(), &prefix, &name,
                          &st, &wrapped_type, arg));
     }
@@ -648,7 +648,7 @@ fn derive_conversion_functions(mut st: syn::ItemStruct,
         }
 
         impl #generics crate::MoveResultIntoRaw<Option<::std::ptr::NonNull<#wrapper #generics>>>
-            for ::failure::Fallible<#wrapped>
+            for ::anyhow::Result<#wrapped>
         {
             fn move_into_raw(self, errp: Option<&mut *mut crate::error::Error>)
                              -> Option<::std::ptr::NonNull<#wrapper #generics>>
@@ -670,7 +670,7 @@ fn derive_conversion_functions(mut st: syn::ItemStruct,
         }
 
         impl #generics crate::MoveResultIntoRaw<Option<::std::ptr::NonNull<#wrapper #generics>>>
-            for ::failure::Fallible<&#wrapped>
+            for ::anyhow::Result<&#wrapped>
         {
             fn move_into_raw(self, errp: Option<&mut *mut crate::error::Error>)
                              -> Option<::std::ptr::NonNull<#wrapper #generics>>
@@ -692,7 +692,7 @@ fn derive_conversion_functions(mut st: syn::ItemStruct,
         }
 
         impl #generics crate::MoveResultIntoRaw<Option<::std::ptr::NonNull<#wrapper #generics>>>
-            for ::failure::Fallible<&mut #wrapped>
+            for ::anyhow::Result<&mut #wrapped>
         {
             fn move_into_raw(self, errp: Option<&mut *mut crate::error::Error>)
                              -> Option<::std::ptr::NonNull<#wrapper #generics>>

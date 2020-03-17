@@ -75,11 +75,11 @@ impl Default for S2K {
 
 impl S2K {
     /// Convert the string to a key using the S2K's parameters.
-    pub fn derive_key(&self, string: &Password, key_size: usize)
+    pub fn derive_key(&self, password: &Password, key_size: usize)
     -> Result<SessionKey> {
         match self {
             &S2K::Simple { hash } | &S2K::Salted { hash, .. }
-            | &S2K::Iterated { hash, .. } => {
+            | &S2K::Iterated { hash, .. } => password.map(|string| {
                 let mut hash = hash.context()?;
 
                 // If the digest length is shorter than the key length,
@@ -143,7 +143,7 @@ impl S2K {
                 }
 
                 Ok(ret.into())
-            }
+            }),
             &S2K::Unknown(u) | &S2K::Private(u) =>
                 Err(Error::MalformedPacket(
                         format!("Unknown S2K type {:#x}", u)).into()),
@@ -290,7 +290,6 @@ mod tests {
     use crate::SymmetricAlgorithm;
     use crate::Packet;
     use crate::parse::{Parse, PacketParser};
-    use crate::serialize::Serialize;
 
     #[test]
     fn s2k_parser_test() {
@@ -423,7 +422,8 @@ mod tests {
 
     quickcheck! {
         fn s2k_roundtrip(s2k: S2K) -> bool {
-            use crate::serialize::SerializeInto;
+            use crate::serialize::Marshal;
+            use crate::serialize::MarshalInto;
 
             eprintln!("in {:?}", s2k);
             use std::io::Cursor;

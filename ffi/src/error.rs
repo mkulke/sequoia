@@ -1,6 +1,5 @@
 //! Maps various errors to status codes.
 
-use failure;
 use std::io;
 
 extern crate sequoia_openpgp as openpgp;
@@ -10,11 +9,11 @@ pub use crate::openpgp::error::Status;
 pub(crate) use crate::openpgp::error::Error;
 
 trait FromSequoiaError<'a> {
-    fn from_sequoia_error(_: &'a failure::Error) -> Status;
+    fn from_sequoia_error(_: &'a anyhow::Error) -> Status;
 }
 
 impl<'a> FromSequoiaError<'a> for Status {
-    fn from_sequoia_error(e: &'a failure::Error) -> Self {
+    fn from_sequoia_error(e: &'a anyhow::Error) -> Self {
         if let Some(e) = e.downcast_ref::<core::Error>() {
             return match e {
                 &core::Error::NetworkPolicyViolation(_) =>
@@ -70,6 +69,17 @@ impl<'a> FromSequoiaError<'a> for Status {
                     Status::IndexOutOfRange,
                 &openpgp::Error::UnsupportedCert(_) =>
                     Status::UnsupportedCert,
+                &openpgp::Error::Expired(_) =>
+                    Status::Expired,
+                &openpgp::Error::NotYetLive(_) =>
+                    Status::NotYetLive,
+                &openpgp::Error::NoBindingSignature(_) =>
+                    Status::NoBindingSignature,
+                &openpgp::Error::InvalidKey(_) =>
+                    Status::InvalidKey,
+                &openpgp::Error::PolicyViolation(_, _) =>
+                    Status::PolicyViolation,
+                openpgp::Error::__Nonexhaustive => unreachable!(),
             }
         }
 

@@ -6,7 +6,7 @@ use std::cmp::Ordering;
 use std::sync::Mutex;
 
 use quickcheck::{Arbitrary, Gen};
-use failure::ResultExt;
+use anyhow::Context;
 use regex::Regex;
 
 use crate::Result;
@@ -528,7 +528,6 @@ impl Ord for UserID {
 impl Hash for UserID {
     fn hash<H: Hasher>(&self, state: &mut H) {
         // We hash only the data; the cache does not implement hash.
-        self.common.hash(state);
         self.value.hash(state);
     }
 }
@@ -718,7 +717,7 @@ impl UserID {
                 Ok(puid) => puid,
                 Err(err) => {
                     // Return the error from the NameAddrOrOther parser.
-                    let err : failure::Error = err.into();
+                    let err : anyhow::Error = err.into();
                     return Err(err).context(format!(
                         "Failed to parse User ID: {:?}", s))?;
                 }
@@ -797,7 +796,7 @@ impl UserID {
 
                 // Normalize Unicode in domains.
                 let domain = idna::domain_to_ascii(domain)
-                    .map_err(|e| failure::format_err!(
+                    .map_err(|e| anyhow::anyhow!(
                         "punycode conversion failed: {:?}", e))?;
 
                 // Join.
@@ -833,7 +832,7 @@ impl Arbitrary for UserID {
 mod tests {
     use super::*;
     use crate::parse::Parse;
-    use crate::serialize::SerializeInto;
+    use crate::serialize::MarshalInto;
 
     quickcheck! {
         fn roundtrip(p: UserID) -> bool {

@@ -1,20 +1,12 @@
 use crate::Result;
-use crate::Cert;
+use crate::cert::prelude::*;
 use crate::packet::{key, Signature, Tag};
 use crate::serialize::{
-    PacketRef, Serialize, SerializeInto,
+    PacketRef,
+    Marshal, MarshalInto,
     generic_serialize_into, generic_export_into,
 };
 
-impl Serialize for Cert {
-    fn serialize(&self, o: &mut dyn std::io::Write) -> Result<()> {
-        self.serialize_common(o, false)
-    }
-
-    fn export(&self, o: &mut dyn std::io::Write) -> Result<()> {
-        self.serialize_common(o, true)
-    }
-}
 
 impl Cert {
     /// Serializes or exports the Cert.
@@ -22,17 +14,32 @@ impl Cert {
     /// If `export` is true, then non-exportable signatures are not
     /// written, and components without any exportable binding
     /// signature or revocation are not exported.
+    ///
+    /// The signatures are ordered from authenticated and most
+    /// important to not authenticated and most likely to be abused.
+    /// The order is:
+    ///
+    ///   - Self revocations first.  They are authenticated and the
+    ///     most important information.
+    ///   - Self signatures.  They are authenticated.
+    ///   - Other signatures.  They are not authenticated at this point.
+    ///   - Other revocations.  They are not authenticated, and likely
+    ///     not well supported in other implementations, hence the
+    ///     least reliable way of revoking keys and therefore least
+    ///     useful and most likely to be abused.
     fn serialize_common(&self, o: &mut dyn std::io::Write, export: bool)
                         -> Result<()>
     {
-        PacketRef::PublicKey(self.primary()).serialize(o)?;
+        let primary = self.primary_key();
+        PacketRef::PublicKey(primary.key())
+            .serialize(o)?;
 
         // Writes a signature if it is exportable or `! export`.
         let serialize_sig =
             |o: &mut dyn std::io::Write, sig: &Signature| -> Result<()>
         {
             if export {
-                if sig.exportable_certification().unwrap_or(true) {
+                if sig.exportable().is_ok() {
                     PacketRef::Signature(sig).export(o)?;
                 }
             } else {
@@ -41,22 +48,22 @@ impl Cert {
             Ok(())
         };
 
-        for s in self.direct_signatures() {
+        for s in primary.self_revocations() {
             serialize_sig(o, s)?;
         }
-        for s in self.self_revocations() {
+        for s in primary.self_signatures() {
             serialize_sig(o, s)?;
         }
-        for s in self.other_revocations() {
+        for s in primary.certifications() {
             serialize_sig(o, s)?;
         }
-        for s in self.certifications() {
+        for s in primary.other_revocations() {
             serialize_sig(o, s)?;
         }
 
         for u in self.userids() {
             if export && ! u.self_signatures().iter().chain(u.self_revocations()).any(
-                |s| s.exportable_certification().unwrap_or(true))
+                |s| s.exportable().is_ok())
             {
                 // No exportable selfsig on this component, skip it.
                 continue;
@@ -69,17 +76,17 @@ impl Cert {
             for s in u.self_signatures() {
                 serialize_sig(o, s)?;
             }
-            for s in u.other_revocations() {
+            for s in u.certifications() {
                 serialize_sig(o, s)?;
             }
-            for s in u.certifications() {
+            for s in u.other_revocations() {
                 serialize_sig(o, s)?;
             }
         }
 
         for u in self.user_attributes() {
             if export && ! u.self_signatures().iter().chain(u.self_revocations()).any(
-                |s| s.exportable_certification().unwrap_or(true))
+                |s| s.exportable().is_ok())
             {
                 // No exportable selfsig on this component, skip it.
                 continue;
@@ -92,17 +99,17 @@ impl Cert {
             for s in u.self_signatures() {
                 serialize_sig(o, s)?;
             }
-            for s in u.other_revocations() {
+            for s in u.certifications() {
                 serialize_sig(o, s)?;
             }
-            for s in u.certifications() {
+            for s in u.other_revocations() {
                 serialize_sig(o, s)?;
             }
         }
 
         for k in self.subkeys() {
             if export && ! k.self_signatures().iter().chain(k.self_revocations()).any(
-                |s| s.exportable_certification().unwrap_or(true))
+                |s| s.exportable().is_ok())
             {
                 // No exportable selfsig on this component, skip it.
                 continue;
@@ -115,17 +122,17 @@ impl Cert {
             for s in k.self_signatures() {
                 serialize_sig(o, s)?;
             }
-            for s in k.other_revocations() {
+            for s in k.certifications() {
                 serialize_sig(o, s)?;
             }
-            for s in k.certifications() {
+            for s in k.other_revocations() {
                 serialize_sig(o, s)?;
             }
         }
 
         for u in self.unknowns() {
             if export && ! u.certifications().iter().any(
-                |s| s.exportable_certification().unwrap_or(true))
+                |s| s.exportable().is_ok())
             {
                 // No exportable selfsig on this component, skip it.
                 continue;
@@ -139,10 +146,10 @@ impl Cert {
             for s in u.self_signatures() {
                 serialize_sig(o, s)?;
             }
-            for s in u.other_revocations() {
+            for s in u.certifications() {
                 serialize_sig(o, s)?;
             }
-            for s in u.certifications() {
+            for s in u.other_revocations() {
                 serialize_sig(o, s)?;
             }
         }
@@ -155,21 +162,36 @@ impl Cert {
     }
 }
 
-impl SerializeInto for Cert {
+impl crate::serialize::Serialize for Cert {}
+
+impl Marshal for Cert {
+    fn serialize(&self, o: &mut dyn std::io::Write) -> Result<()> {
+        self.serialize_common(o, false)
+    }
+
+    fn export(&self, o: &mut dyn std::io::Write) -> Result<()> {
+        self.serialize_common(o, true)
+    }
+}
+
+impl crate::serialize::SerializeInto for Cert {}
+
+impl MarshalInto for Cert {
     fn serialized_len(&self) -> usize {
         let mut l = 0;
-        l += PacketRef::PublicKey(self.primary()).serialized_len();
+        let primary = self.primary_key();
+        l += PacketRef::PublicKey(primary.key()).serialized_len();
 
-        for s in self.direct_signatures() {
+        for s in primary.self_revocations() {
             l += PacketRef::Signature(s).serialized_len();
         }
-        for s in self.self_revocations() {
+        for s in primary.self_signatures() {
             l += PacketRef::Signature(s).serialized_len();
         }
-        for s in self.other_revocations() {
+        for s in primary.certifications() {
             l += PacketRef::Signature(s).serialized_len();
         }
-        for s in self.certifications() {
+        for s in primary.other_revocations() {
             l += PacketRef::Signature(s).serialized_len();
         }
 
@@ -182,10 +204,10 @@ impl SerializeInto for Cert {
             for s in u.self_signatures() {
                 l += PacketRef::Signature(s).serialized_len();
             }
-            for s in u.other_revocations() {
+            for s in u.certifications() {
                 l += PacketRef::Signature(s).serialized_len();
             }
-            for s in u.certifications() {
+            for s in u.other_revocations() {
                 l += PacketRef::Signature(s).serialized_len();
             }
         }
@@ -199,10 +221,10 @@ impl SerializeInto for Cert {
             for s in u.self_signatures() {
                 l += PacketRef::Signature(s).serialized_len();
             }
-            for s in u.other_revocations() {
+            for s in u.certifications() {
                 l += PacketRef::Signature(s).serialized_len();
             }
-            for s in u.certifications() {
+            for s in u.other_revocations() {
                 l += PacketRef::Signature(s).serialized_len();
             }
         }
@@ -216,10 +238,10 @@ impl SerializeInto for Cert {
             for s in k.self_signatures() {
                 l += PacketRef::Signature(s).serialized_len();
             }
-            for s in k.other_revocations() {
+            for s in k.certifications() {
                 l += PacketRef::Signature(s).serialized_len();
             }
-            for s in k.certifications() {
+            for s in k.other_revocations() {
                 l += PacketRef::Signature(s).serialized_len();
             }
         }
@@ -233,10 +255,10 @@ impl SerializeInto for Cert {
             for s in u.self_signatures() {
                 l += PacketRef::Signature(s).serialized_len();
             }
-            for s in u.other_revocations() {
+            for s in u.certifications() {
                 l += PacketRef::Signature(s).serialized_len();
             }
-            for s in u.certifications() {
+            for s in u.other_revocations() {
                 l += PacketRef::Signature(s).serialized_len();
             }
         }
@@ -262,7 +284,7 @@ impl Cert {
     ///
     /// This object writes out secret keys during serialization.
     ///
-    /// [`TSK`]: serialize/struct.TSK.html
+    /// [`TSK`]: ../serialize/struct.TSK.html
     pub fn as_tsk<'a>(&'a self) -> TSK<'a> {
         TSK::new(self)
     }
@@ -275,7 +297,7 @@ impl Cert {
 /// create a `TSK`, which is a shim on top of the `Cert`, and serialize
 /// this.
 ///
-/// [`Cert::as_tsk()`]: ../struct.Cert.html#method.as_tsk
+/// [`Cert::as_tsk()`]: ../cert/struct.Cert.html#method.as_tsk
 ///
 /// # Example
 /// ```
@@ -313,23 +335,24 @@ impl<'a> TSK<'a> {
     /// # Example
     /// ```
     /// # use sequoia_openpgp::{*, cert::*, parse::Parse, serialize::Serialize};
+    /// use sequoia_openpgp::policy::StandardPolicy;
+    ///
     /// # f().unwrap();
     /// # fn f() -> Result<()> {
+    /// let p = &StandardPolicy::new();
+    ///
     /// let (cert, _) = CertBuilder::new().add_signing_subkey().generate()?;
-    /// assert_eq!(cert.keys_valid().secret().count(), 2);
+    /// assert_eq!(cert.keys().with_policy(p, None).alive().revoked(false).secret().count(), 2);
     ///
     /// // Only write out the primary key's secret.
     /// let mut buf = Vec::new();
     /// cert.as_tsk()
-    ///     .set_filter(
-    ///         |k| k == cert.primary()
-    ///                  .mark_parts_secret_ref().unwrap()
-    ///                  .mark_role_unspecified_ref())
+    ///     .set_filter(|k| k.fingerprint() == cert.fingerprint())
     ///     .serialize(&mut buf)?;
     ///
     /// let cert_ = Cert::from_bytes(&buf)?;
-    /// assert_eq!(cert_.keys_valid().secret().count(), 1);
-    /// assert!(cert_.primary().secret().is_some());
+    /// assert_eq!(cert_.keys().with_policy(p, None).alive().revoked(false).secret().count(), 1);
+    /// assert!(cert_.primary_key().has_secret());
     /// # Ok(()) }
     pub fn set_filter<P>(mut self, predicate: P) -> Self
         where P: 'a + Fn(&'a key::UnspecifiedSecret) -> bool
@@ -351,7 +374,7 @@ impl<'a> TSK<'a> {
             |o: &mut dyn std::io::Write, sig: &Signature| -> Result<()>
         {
             if export {
-                if sig.exportable_certification().unwrap_or(true) {
+                if sig.exportable().is_ok() {
                     PacketRef::Signature(sig).export(o)?;
                 }
             } else {
@@ -365,7 +388,7 @@ impl<'a> TSK<'a> {
             |o: &mut dyn std::io::Write, key: &'a key::UnspecifiedSecret,
              tag_public, tag_secret|
         {
-            let tag = if key.secret().is_some()
+            let tag = if key.has_secret()
                 && self.filter.as_ref().map(|f| f(key)).unwrap_or(true) {
                 tag_secret
             } else {
@@ -384,25 +407,27 @@ impl<'a> TSK<'a> {
                 _ => unreachable!(),
             }
         };
-        serialize_key(o, self.cert.primary().into(),
+
+        let primary = self.cert.primary_key();
+        serialize_key(o, primary.key().into(),
                       Tag::PublicKey, Tag::SecretKey)?;
 
-        for s in self.cert.direct_signatures() {
+        for s in primary.self_signatures() {
             serialize_sig(o, s)?;
         }
-        for s in self.cert.self_revocations() {
+        for s in primary.self_revocations() {
             serialize_sig(o, s)?;
         }
-        for s in self.cert.certifications() {
+        for s in primary.certifications() {
             serialize_sig(o, s)?;
         }
-        for s in self.cert.other_revocations() {
+        for s in primary.other_revocations() {
             serialize_sig(o, s)?;
         }
 
         for u in self.cert.userids() {
             if export && ! u.self_signatures().iter().chain(u.self_revocations()).any(
-                |s| s.exportable_certification().unwrap_or(true))
+                |s| s.exportable().is_ok())
             {
                 // No exportable selfsig on this component, skip it.
                 continue;
@@ -425,7 +450,7 @@ impl<'a> TSK<'a> {
 
         for u in self.cert.user_attributes() {
             if export && ! u.self_signatures().iter().chain(u.self_revocations()).any(
-                |s| s.exportable_certification().unwrap_or(true))
+                |s| s.exportable().is_ok())
             {
                 // No exportable selfsig on this component, skip it.
                 continue;
@@ -448,7 +473,7 @@ impl<'a> TSK<'a> {
 
         for k in self.cert.subkeys() {
             if export && ! k.self_signatures().iter().chain(k.self_revocations()).any(
-                |s| s.exportable_certification().unwrap_or(true))
+                |s| s.exportable().is_ok())
             {
                 // No exportable selfsig on this component, skip it.
                 continue;
@@ -472,7 +497,7 @@ impl<'a> TSK<'a> {
 
         for u in self.cert.unknowns() {
             if export && ! u.certifications().iter().any(
-                |s| s.exportable_certification().unwrap_or(true))
+                |s| s.exportable().is_ok())
             {
                 // No exportable selfsig on this component, skip it.
                 continue;
@@ -502,7 +527,9 @@ impl<'a> TSK<'a> {
     }
 }
 
-impl<'a> Serialize for TSK<'a> {
+impl<'a> crate::serialize::Serialize for TSK<'a> {}
+
+impl<'a> Marshal for TSK<'a> {
     fn serialize(&self, o: &mut dyn std::io::Write) -> Result<()> {
         self.serialize_common(o, false)
     }
@@ -512,7 +539,9 @@ impl<'a> Serialize for TSK<'a> {
     }
 }
 
-impl<'a> SerializeInto for TSK<'a> {
+impl<'a> crate::serialize::SerializeInto for TSK<'a> {}
+
+impl<'a> MarshalInto for TSK<'a> {
     fn serialized_len(&self) -> usize {
         let mut l = 0;
 
@@ -520,7 +549,7 @@ impl<'a> SerializeInto for TSK<'a> {
         let serialized_len_key
             = |key: &'a key::UnspecifiedSecret, tag_public, tag_secret|
         {
-            let tag = if key.secret().is_some()
+            let tag = if key.has_secret()
                 && self.filter.as_ref().map(|f| f(key)).unwrap_or(true) {
                 tag_secret
             } else {
@@ -537,19 +566,21 @@ impl<'a> SerializeInto for TSK<'a> {
 
             packet.serialized_len()
         };
-        l += serialized_len_key(self.cert.primary().into(),
+
+        let primary = self.cert.primary_key();
+        l += serialized_len_key(primary.key().into(),
                                 Tag::PublicKey, Tag::SecretKey);
 
-        for s in self.cert.direct_signatures() {
+        for s in primary.self_signatures() {
             l += PacketRef::Signature(s).serialized_len();
         }
-        for s in self.cert.self_revocations() {
+        for s in primary.self_revocations() {
             l += PacketRef::Signature(s).serialized_len();
         }
-        for s in self.cert.other_revocations() {
+        for s in primary.other_revocations() {
             l += PacketRef::Signature(s).serialized_len();
         }
-        for s in self.cert.certifications() {
+        for s in primary.certifications() {
             l += PacketRef::Signature(s).serialized_len();
         }
 
@@ -643,8 +674,8 @@ mod test {
     use super::*;
     use crate::vec_truncate;
     use crate::parse::Parse;
-    use crate::serialize::Serialize;
     use crate::packet::key;
+    use crate::policy::StandardPolicy as P;
 
     /// Demonstrates that public keys and all components are
     /// serialized.
@@ -720,36 +751,37 @@ mod test {
     #[test]
     fn export() {
         use crate::Packet;
-        use crate::cert::CertBuilder;
+        use crate::cert::prelude::*;
         use crate::types::{Curve, KeyFlags, SignatureType};
         use crate::packet::{
             signature, UserID, user_attribute::{UserAttribute, Subpacket},
             key::Key4,
         };
 
+        let p = &P::new();
+
         let (cert, _) = CertBuilder::new().generate().unwrap();
-        let mut keypair = cert.primary().clone().mark_parts_secret()
+        let mut keypair = cert.primary_key().key().clone().mark_parts_secret()
             .unwrap().into_keypair().unwrap();
 
         let key: key::SecretSubkey =
             Key4::generate_ecc(false, Curve::Cv25519).unwrap().into();
-        let key_binding = key.mark_parts_public_ref().bind(
+        let key_binding = key.bind(
             &mut keypair, &cert,
             signature::Builder::new(SignatureType::SubkeyBinding)
                 .set_key_flags(
                     &KeyFlags::default().set_transport_encryption(true))
                 .unwrap()
-                .set_exportable_certification(false).unwrap(),
-            None).unwrap();
+                .set_exportable_certification(false).unwrap()).unwrap();
 
         let uid = UserID::from("foo");
         let uid_binding = uid.bind(
             &mut keypair, &cert,
             signature::Builder::from(
-                cert.primary_key_signature(None).unwrap().clone())
-                .set_type(SignatureType::PositiveCertificate)
-                .set_exportable_certification(false).unwrap(),
-            None).unwrap();
+                cert.primary_key().with_policy(p, None).unwrap()
+                    .direct_key_signature().unwrap().clone())
+                    .set_type(SignatureType::PositiveCertification)
+                    .set_exportable_certification(false).unwrap()).unwrap();
 
         let ua = UserAttribute::new(&[
             Subpacket::Unknown(2, b"foo".to_vec().into_boxed_slice()),
@@ -757,10 +789,10 @@ mod test {
         let ua_binding = ua.bind(
             &mut keypair, &cert,
             signature::Builder::from(
-                cert.primary_key_signature(None).unwrap().clone())
-                .set_type(SignatureType::PositiveCertificate)
-                .set_exportable_certification(false).unwrap(),
-            None).unwrap();
+                cert.primary_key().with_policy(p, None).unwrap()
+                    .direct_key_signature().unwrap().clone())
+                .set_type(SignatureType::PositiveCertification)
+                .set_exportable_certification(false).unwrap()).unwrap();
 
         let cert = cert.merge_packets(vec![
             Packet::SecretSubkey(key), key_binding.into(),
@@ -769,12 +801,12 @@ mod test {
         ]).unwrap();
 
         assert_eq!(cert.subkeys().count(), 1);
-        assert!(cert.subkeys().nth(0).unwrap().binding_signature(None).is_some());
-        assert_eq!(cert.userids().count(), 1);
-        assert!(cert.userids().nth(0).unwrap().binding_signature(None).is_some());
-        assert_eq!(cert.user_attributes().count(), 1);
-        assert!(cert.user_attributes().nth(0).unwrap().binding_signature(None)
+        assert!(cert.subkeys().nth(0).unwrap().binding_signature(p, None)
                 .is_some());
+        assert_eq!(cert.userids().count(), 1);
+        assert!(cert.userids().with_policy(p, None).nth(0).is_some());
+        assert_eq!(cert.user_attributes().count(), 1);
+        assert!(cert.user_attributes().with_policy(p, None).nth(0).is_some());
 
         // The binding signature is not exportable, so when we export
         // and re-parse, we expect the userid to be gone.

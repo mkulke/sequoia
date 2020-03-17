@@ -28,7 +28,10 @@
 //! transparent for the recipient (for example, no weird packets are
 //! inserted).
 //!
-//! Cursory testing (OpenKeychain, GnuPG) revealed no problems.
+//! Cursory [testing] (RNP, DKGPG, PGPy, OpenKeychain, GnuPG classic
+//! and modern) revealed no problems.
+//!
+//!   [testing]: https://tests.sequoia-pgp.org/#Encrypt-Decrypt_roundtrip_with_key__Bob___AES256
 //!
 //! To be effective, the padding layer must be placed inside the
 //! encryption container.  To increase compatibility, the padding
@@ -45,7 +48,7 @@ use crate::{
 use crate::packet::header::CTB;
 use super::{
     PartialBodyFilter,
-    Serialize,
+    Marshal,
     writer,
     stream::Cookie,
 };
@@ -347,7 +350,7 @@ mod test {
         }
 
         let m = crate::Message::from_bytes(&padded).unwrap();
-        assert_eq!(m.body().unwrap().body().unwrap(), &msg[..]);
+        assert_eq!(m.body().unwrap().body(), &msg[..]);
     }
 
     /// Asserts that no actual compression is done.

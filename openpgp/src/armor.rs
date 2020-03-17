@@ -37,9 +37,8 @@ use quickcheck::{Arbitrary, Gen};
 
 use crate::vec_truncate;
 use crate::packet::prelude::*;
-use crate::packet::header::BodyLength;
-use crate::packet::header::ctb::{CTBNew, CTBOld};
-use crate::serialize::SerializeInto;
+use crate::packet::header::{BodyLength, CTBNew, CTBOld};
+use crate::serialize::MarshalInto;
 
 /// The encoded output stream must be represented in lines of no more
 /// than 76 characters each (see (see [RFC 4880, section
@@ -153,24 +152,27 @@ pub struct Writer<W: Write> {
 impl<W: Write> Writer<W> {
     /// Constructs a new filter for the given type of data.
     ///
+    /// Note: To ensure that we can handle errors during writing of
+    /// the armor footer, this object must be consumed by calling
+    /// [`Writer::finalize()`].  If the object is dropped without
+    /// being finalized, we will panic in debug builds.
+    ///
+    ///   [`Writer::finalize()`]: #method.finalize
+    ///
     /// # Example
     ///
     /// ```
-    /// # use std::io::Write;
-    /// # extern crate sequoia_openpgp as openpgp;
-    /// # use openpgp::armor::{Writer, Kind};
-    /// # use std::io::{self, Result};
+    /// use std::io::{Read, Write, Cursor};
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::armor::{Writer, Kind};
     /// # fn main() { f().unwrap(); }
-    /// # fn f() -> Result<()> {
-    /// let mut buffer = io::Cursor::new(vec![]);
-    /// {
-    ///     let mut writer = Writer::new(&mut buffer, Kind::File,
-    ///         &[ ("Key", "Value") ][..])?;
-    ///     writer.write_all(b"Hello world!")?;
-    ///     // writer is drop()ed here.
-    /// }
+    /// # fn f() -> std::io::Result<()> {
+    /// let mut writer = Writer::new(Vec::new(), Kind::File,
+    ///     &[ ("Key", "Value") ][..])?;
+    /// writer.write_all(b"Hello world!")?;
+    /// let buffer = writer.finalize()?;
     /// assert_eq!(
-    ///     String::from_utf8_lossy(buffer.get_ref()),
+    ///     String::from_utf8_lossy(&buffer),
     ///     "-----BEGIN PGP ARMORED FILE-----
     /// Key: Value
     ///
@@ -233,11 +235,17 @@ impl<W: Write> Writer<W> {
             // No data was written to us, don't emit anything.
             return Ok(self.sink.take().ok_or_else(Self::e_finalized)?);
         }
-        self.finalize_armor()?;
-        if let Some(sink) = self.sink.take() {
-            Ok(sink)
+
+        // We need to clear self.sink if this succeeds or not, so be
+        // careful with the result here.  Otherwise, self.sink may
+        // still be present when the object is really dropped,
+        // invoking finalize_armor again.
+        let r = self.finalize_armor();
+        let sink = self.sink.take();
+        if let Err(e) = r {
+            Err(e)
         } else {
-            Err(Self::e_finalized())
+            sink.ok_or(Self::e_finalized())
         }
     }
 
@@ -284,6 +292,7 @@ impl<W: Write> Writer<W> {
                    base64::encode_config(&bytes, base64::STANDARD_NO_PAD),
                    LINE_ENDING, self.kind.end(), LINE_ENDING)?;
 
+            self.dirty = false;
             Ok(())
         } else {
             Err(Self::e_finalized())
@@ -376,6 +385,9 @@ impl<W: Write> Write for Writer<W> {
 
 impl<W: Write> Drop for Writer<W> {
     fn drop(&mut self) {
+        debug_assert!(self.sink.is_none(),
+                      "armor writer dropped without being finalized, \
+                       use armor::Writer::finalize()");
         let _ = self.finalize_armor();
     }
 }
@@ -471,7 +483,7 @@ impl<'a> Reader<'a> {
     /// reader.read_to_end(&mut buf)?;
     ///
     /// let message = Message::from_bytes(&buf)?;
-    /// assert_eq!(message.body().unwrap().body().unwrap(),
+    /// assert_eq!(message.body().unwrap().body(),
     ///            b"Hello world!");
     /// # Ok(())
     /// # }
@@ -593,10 +605,10 @@ impl<'a> Reader<'a> {
         lazy_static!{
             static ref START_CHARS : Vec<u8> = {
                 let mut valid_start = Vec::new();
-                for &tag in [ Tag::PKESK, Tag::SKESK,
+                for &tag in &[ Tag::PKESK, Tag::SKESK,
                               Tag::OnePassSig, Tag::Signature,
                               Tag::PublicKey, Tag::SecretKey,
-                              Tag::CompressedData, Tag::Literal ].into_iter() {
+                              Tag::CompressedData, Tag::Literal ] {
                     let mut ctb = [ 0u8; 1 ];
                     let mut o = [ 0u8; 4 ];
 
@@ -1019,6 +1031,14 @@ impl<'a> Read for Reader<'a> {
             self.initialize()?;
         }
 
+        if buf.len() == 0 {
+            // Short-circuit here.  Otherwise, we copy 0 bytes into
+            // the buffer, which means we decoded 0 bytes, and we
+            // wrongfully assume that we reached the end of the
+            // armored block.
+            return Ok(0);
+        }
+
         if self.finalized {
             assert_eq!(self.buffer.len(), 0);
             return Ok(0);
@@ -1029,7 +1049,7 @@ impl<'a> Read for Reader<'a> {
 
             let amount = cmp::min(buf.len(), self.buffer.len());
             buf[..amount].copy_from_slice(&self.buffer[..amount]);
-            self.buffer.drain(..amount);
+            crate::vec_drain_prefix(&mut self.buffer, amount);
 
             (0, amount)
         } else {
@@ -1104,7 +1124,7 @@ impl<'a> Read for Reader<'a> {
 
                 let copied = cmp::min(buf.len(), self.buffer.len());
                 buf[..copied].copy_from_slice(&self.buffer[..copied]);
-                self.buffer.drain(..copied);
+                crate::vec_drain_prefix(&mut self.buffer, copied);
 
                 copied
             } else {
@@ -1214,8 +1234,6 @@ impl<'a> Read for Reader<'a> {
     }
 }
 
-// XXX: impl BufferedReader for Reader
-
 const CRC24_INIT: u32 = 0xB704CE;
 const CRC24_POLY: u32 = 0x1864CFB;
 
@@ -1310,12 +1328,11 @@ mod test {
     #[test]
     fn enarmor() {
         for (bin, asc) in TEST_BIN.iter().zip(TEST_ASC.iter()) {
-            let mut buf = Vec::new();
-            {
-                let mut w = Writer::new(&mut buf, Kind::File, &[]).unwrap();
-                w.write(&[]).unwrap();  // Avoid zero-length optimization.
-                w.write_all(bin).unwrap();
-            }
+            let mut w =
+                Writer::new(Vec::new(), Kind::File, &[]).unwrap();
+            w.write(&[]).unwrap();  // Avoid zero-length optimization.
+            w.write_all(bin).unwrap();
+            let buf = w.finalize().unwrap();
             assert_eq!(String::from_utf8_lossy(&buf),
                        String::from_utf8_lossy(asc));
         }
@@ -1324,14 +1341,12 @@ mod test {
     #[test]
     fn enarmor_bytewise() {
         for (bin, asc) in TEST_BIN.iter().zip(TEST_ASC.iter()) {
-            let mut buf = Vec::new();
-            {
-                let mut w = Writer::new(&mut buf, Kind::File, &[]).unwrap();
-                w.write(&[]).unwrap();  // Avoid zero-length optimization.
-                for b in bin.iter() {
-                    w.write(&[*b]).unwrap();
-                }
+            let mut w = Writer::new(Vec::new(), Kind::File, &[]).unwrap();
+            w.write(&[]).unwrap();  // Avoid zero-length optimization.
+            for b in bin.iter() {
+                w.write(&[*b]).unwrap();
             }
+            let buf = w.finalize().unwrap();
             assert_eq!(String::from_utf8_lossy(&buf),
                        String::from_utf8_lossy(asc));
         }
@@ -1341,19 +1356,14 @@ mod test {
     fn drop_writer() {
         // No ASCII frame shall be emitted if the writer is dropped
         // unused.
-        let mut buf = Vec::new();
-        {
-            drop(Writer::new(&mut buf, Kind::File, &[]).unwrap());
-        }
-        assert!(buf.is_empty());
+        assert!(Writer::new(Vec::new(), Kind::File, &[]).unwrap()
+                .finalize().unwrap().is_empty());
 
         // However, if the user insists, we will encode a zero-byte
         // string.
-        let mut buf = Vec::new();
-        {
-            let mut w = Writer::new(&mut buf, Kind::File, &[]).unwrap();
-            w.write(&[]).unwrap();
-        }
+        let mut w = Writer::new(Vec::new(), Kind::File, &[]).unwrap();
+        w.write(&[]).unwrap();
+        let buf = w.finalize().unwrap();
         assert_eq!(
             &buf[..],
             &b"-----BEGIN PGP ARMORED FILE-----\n\
@@ -1592,10 +1602,9 @@ mod test {
                 return true;
             }
 
-            let mut encoded = Vec::new();
-            Writer::new(&mut encoded, kind, &[]).unwrap()
-                .write_all(&payload)
-                .unwrap();
+            let mut w = Writer::new(Vec::new(), kind, &[]).unwrap();
+            w.write_all(&payload).unwrap();
+            let encoded = w.finalize().unwrap();
 
             let mut recovered = Vec::new();
             Reader::new(Cursor::new(&encoded),
@@ -1610,5 +1619,15 @@ mod test {
 
             payload == recovered && payload == recovered_any
         }
+    }
+
+    /// Tests issue #404, zero-sized reads break reader.
+    #[test]
+    fn zero_sized_read() {
+        let mut r = Reader::from_bytes(crate::tests::file("armor/test-1.asc"),
+                                       None);
+        let mut buf = Vec::new();
+        r.read(&mut buf).unwrap();
+        r.read(&mut buf).unwrap();
     }
 }

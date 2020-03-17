@@ -11,14 +11,13 @@ use crate::vec_truncate;
 
 use buffered_reader::BufferedReader;
 
-use nettle::Cipher;
-use nettle::Mode;
+use nettle::cipher::{self, Cipher};
+use nettle::mode::{self, Mode};
 
 impl SymmetricAlgorithm {
     /// Length of a key for this algorithm in bytes.  Fails if Sequoia
     /// does not support this algorithm.
     pub fn key_size(self) -> Result<usize> {
-        use nettle::cipher;
         match self {
             SymmetricAlgorithm::TripleDES => Ok(cipher::Des3::KEY_SIZE),
             SymmetricAlgorithm::CAST5 => Ok(cipher::Cast128::KEY_SIZE),
@@ -38,7 +37,6 @@ impl SymmetricAlgorithm {
     /// Length of a block for this algorithm in bytes.  Fails if
     /// Sequoia does not support this algorithm.
     pub fn block_size(self) -> Result<usize> {
-        use nettle::cipher;
         match self {
             SymmetricAlgorithm::TripleDES => Ok(cipher::Des3::BLOCK_SIZE),
             SymmetricAlgorithm::CAST5 => Ok(cipher::Cast128::BLOCK_SIZE),
@@ -56,7 +54,6 @@ impl SymmetricAlgorithm {
 
     /// Creates a Nettle context for encrypting in CFB mode.
     pub fn make_encrypt_cfb(self, key: &[u8]) -> Result<Box<dyn Mode>> {
-        use nettle::{mode, cipher};
         match self {
             SymmetricAlgorithm::TripleDES =>
                 Ok(Box::new(
@@ -94,7 +91,6 @@ impl SymmetricAlgorithm {
 
     /// Creates a Nettle context for decrypting in CFB mode.
     pub fn make_decrypt_cfb(self, key: &[u8]) -> Result<Box<dyn Mode>> {
-        use nettle::{mode, cipher};
         match self {
             SymmetricAlgorithm::TripleDES =>
                 Ok(Box::new(
@@ -205,7 +201,7 @@ impl<R: io::Read> io::Read for Decryptor<R> {
         if self.buffer.len() > 0 {
             let to_copy = cmp::min(self.buffer.len(), plaintext.len());
             &plaintext[..to_copy].copy_from_slice(&self.buffer[..to_copy]);
-            self.buffer.drain(..to_copy);
+            crate::vec_drain_prefix(&mut self.buffer, to_copy);
             pos = to_copy;
         }
 
@@ -274,7 +270,7 @@ impl<R: io::Read> io::Read for Decryptor<R> {
                                         format!("{}", e)))?;
 
         &plaintext[pos..pos + to_copy].copy_from_slice(&self.buffer[..to_copy]);
-        self.buffer.drain(..to_copy);
+        crate::vec_drain_prefix(&mut self.buffer, to_copy);
 
         pos += to_copy;
 
@@ -380,7 +376,7 @@ impl<R: BufferedReader<C>, C> BufferedReader<C>
 
     fn into_inner<'b>(self: Box<Self>)
             -> Option<Box<dyn BufferedReader<C> + 'b>> where Self: 'b {
-        Some(Box::new(self.reader.reader.source))
+        Some(self.reader.reader.source.as_boxed())
     }
 
     fn cookie_set(&mut self, cookie: C) -> C {

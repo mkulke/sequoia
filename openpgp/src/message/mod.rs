@@ -14,8 +14,6 @@ use std::fmt;
 use std::io;
 use std::path::Path;
 
-use failure;
-
 use crate::Result;
 use crate::Error;
 use crate::Packet;
@@ -36,19 +34,27 @@ use lalrpop_util::ParseError;
 use self::grammar::MessageParser;
 
 /// Errors that MessageValidator::check may return.
+///
+/// Note: This enum cannot be exhaustively matched to allow future
+/// extensions.
 #[derive(Debug, Clone)]
 pub enum MessageParserError {
     /// A parser error.
     Parser(ParseError<usize, Token, LexicalError>),
     /// An OpenPGP error.
     OpenPGP(Error),
+
+    /// This marks this enum as non-exhaustive.  Do not use this
+    /// variant.
+    #[doc(hidden)] __Nonexhaustive,
 }
 
-impl From<MessageParserError> for failure::Error {
+impl From<MessageParserError> for anyhow::Error {
     fn from(err: MessageParserError) -> Self {
         match err {
             MessageParserError::Parser(p) => p.into(),
             MessageParserError::OpenPGP(p) => p.into(),
+            MessageParserError::__Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -64,7 +70,7 @@ pub enum MessageValidity {
     /// prefix of an OpenPGP message.
     MessagePrefix,
     /// The message is definitely not valid.
-    Error(failure::Error),
+    Error(anyhow::Error),
 }
 
 impl MessageValidity {
@@ -339,7 +345,7 @@ impl<'a> Parse<'a, Message> for Message {
 }
 
 impl std::str::FromStr for Message {
-    type Err = failure::Error;
+    type Err = anyhow::Error;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         Self::from_bytes(s.as_bytes())
@@ -450,11 +456,10 @@ mod tests {
     use crate::SymmetricAlgorithm;
     use crate::PublicKeyAlgorithm;
     use crate::SignatureType;
-    use crate::crypto::s2k::S2K;
+    use crate::crypto::S2K;
     use crate::crypto::mpis::{Ciphertext, MPI};
     use crate::packet::prelude::*;
     use crate::KeyID;
-    use crate::Container;
 
     #[test]
     fn tokens() {
@@ -581,7 +586,7 @@ mod tests {
             },
         ];
 
-        for v in test_vectors.into_iter() {
+        for v in &test_vectors {
             if v.result {
                 let mut l = MessageValidator::new();
                 for token in v.s.iter() {
@@ -700,7 +705,7 @@ mod tests {
             },
         ];
 
-        for v in test_vectors.into_iter() {
+        for v in &test_vectors {
             let mut l = MessageValidator::new();
             for (token, depth) in v.s.iter() {
                 l.push(*token,
@@ -998,10 +1003,9 @@ mod tests {
         //  1: MDC
         // => good.
         let mut seip = SEIP1::new();
-        seip.set_children(Some(Container::new()));
-        seip.children_mut().unwrap().push(
+        seip.children_mut().push(
             lit.clone().into());
-        seip.children_mut().unwrap().push(
+        seip.children_mut().push(
             MDC::from([0u8; 20]).into());
         packets[1] = seip.into();
 
@@ -1081,7 +1085,8 @@ mod tests {
         //  2: Literal
         // => bad.
         packets.remove(3);
-        packets[2].children_mut().unwrap().push(lit.clone().into());
+        packets[2].container_mut().unwrap()
+            .children_mut().push(lit.clone().into());
 
         assert!(packets.iter().map(|p| p.tag()).collect::<Vec<Tag>>()
                 == [ Tag::SKESK, Tag::SKESK, Tag::SEIP ]);
@@ -1095,7 +1100,7 @@ mod tests {
         // 2: SEIP
         //  0: Literal
         // => good.
-        packets[2].children_mut().unwrap().packets.pop().unwrap();
+        packets[2].container_mut().unwrap().children_mut().pop().unwrap();
 
         #[allow(deprecated)]
         packets.insert(

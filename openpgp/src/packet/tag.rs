@@ -1,5 +1,6 @@
 use std::fmt;
 use std::cmp::Ordering;
+use std::hash::{Hash, Hasher};
 
 use quickcheck::{Arbitrary, Gen};
 
@@ -8,7 +9,7 @@ use quickcheck::{Arbitrary, Gen};
 ///   [Section 4.3 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-4.3
 ///
 /// The values correspond to the serialized format.
-#[derive(Clone, Copy, Debug, Hash)]
+#[derive(Clone, Copy, Debug)]
 pub enum Tag {
     /// Reserved Packet tag.
     Reserved,
@@ -47,6 +48,8 @@ pub enum Tag {
     /// Modification Detection Code Packet.
     MDC,
     /// AEAD Encrypted Data Packet.
+    ///
+    /// This feature is [experimental](../index.html#experimental-features).
     AED,
     /// Unassigned packets (as of RFC4880).
     Unknown(u8),
@@ -75,6 +78,13 @@ impl Ord for Tag
         let a : u8 = (*self).into();
         let b : u8 = (*other).into();
         a.cmp(&b)
+    }
+}
+
+impl Hash for Tag {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let t: u8 = (*self).into();
+        t.hash(state);
     }
 }
 

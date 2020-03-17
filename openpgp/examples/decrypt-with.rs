@@ -5,25 +5,28 @@ use std::collections::HashMap;
 use std::env;
 use std::io;
 
-extern crate failure;
 extern crate sequoia_openpgp as openpgp;
 
+use crate::openpgp::cert::prelude::*;
 use crate::openpgp::crypto::{KeyPair, SessionKey};
 use crate::openpgp::types::SymmetricAlgorithm;
-use crate::openpgp::packet::key;
 use crate::openpgp::parse::{
     Parse,
     stream::{
         DecryptionHelper,
         Decryptor,
         VerificationHelper,
-        VerificationResult,
+        GoodChecksum,
         MessageStructure,
         MessageLayer,
     },
 };
+use crate::openpgp::policy::Policy;
+use crate::openpgp::policy::StandardPolicy as P;
 
 pub fn main() {
+    let p = &P::new();
+
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         panic!("A simple decryption filter.\n\n\
@@ -39,7 +42,7 @@ pub fn main() {
 
     // Now, create a decryptor with a helper using the given Certs.
     let mut decryptor =
-        Decryptor::from_reader(io::stdin(), Helper::new(certs), None).unwrap();
+        Decryptor::from_reader(p, io::stdin(), Helper::new(p, certs), None).unwrap();
 
     // Finally, stream the decrypted data to stdout.
     io::copy(&mut decryptor, &mut io::stdout())
@@ -50,27 +53,20 @@ pub fn main() {
 /// keys for the signature verification and implements the
 /// verification policy.
 struct Helper {
-    keys: HashMap<openpgp::KeyID, KeyPair<key::UnspecifiedRole>>,
+    keys: HashMap<openpgp::KeyID, KeyPair>,
 }
 
 impl Helper {
     /// Creates a Helper for the given Certs with appropriate secrets.
-    fn new(certs: Vec<openpgp::Cert>) -> Self {
+    fn new(p: &dyn Policy, certs: Vec<openpgp::Cert>) -> Self {
         // Map (sub)KeyIDs to secrets.
         let mut keys = HashMap::new();
         for cert in certs {
-            for (sig, _, key) in cert.keys_all() {
-                if sig.map(|s| (s.key_flags().for_storage_encryption()
-                                || s.key_flags().for_transport_encryption()))
-                    .unwrap_or(false)
-                {
-                    // This only works for unencrypted secret keys.
-                    if let Ok(keypair) =
-                        key.clone().mark_parts_secret().unwrap().into_keypair()
-                    {
-                        keys.insert(key.keyid(), keypair);
-                    }
-                }
+            for ka in cert.keys().unencrypted_secret().with_policy(p, None)
+                .for_storage_encryption().for_transport_encryption()
+            {
+                keys.insert(ka.key().keyid(),
+                            ka.key().clone().into_keypair().unwrap());
             }
         }
 
@@ -84,6 +80,7 @@ impl DecryptionHelper for Helper {
     fn decrypt<D>(&mut self,
                   pkesks: &[openpgp::packet::PKESK],
                   _skesks: &[openpgp::packet::SKESK],
+                  sym_algo: Option<SymmetricAlgorithm>,
                   mut decrypt: D)
                   -> openpgp::Result<Option<openpgp::Fingerprint>>
         where D: FnMut(SymmetricAlgorithm, &SessionKey) -> openpgp::Result<()>
@@ -91,7 +88,7 @@ impl DecryptionHelper for Helper {
         // Try each PKESK until we succeed.
         for pkesk in pkesks {
             if let Some(pair) = self.keys.get_mut(pkesk.recipient()) {
-                if let Ok(_) = pkesk.decrypt(pair)
+                if let Ok(_) = pkesk.decrypt(pair, sym_algo)
                     .and_then(|(algo, session_key)| decrypt(algo, &session_key))
                 {
                     break;
@@ -106,12 +103,11 @@ impl DecryptionHelper for Helper {
 
 impl VerificationHelper for Helper {
     fn get_public_keys(&mut self, _ids: &[openpgp::KeyHandle])
-                       -> failure::Fallible<Vec<openpgp::Cert>> {
+                       -> openpgp::Result<Vec<openpgp::Cert>> {
         Ok(Vec::new()) // Feed the Certs to the verifier here.
     }
-    fn check(&mut self, structure: &MessageStructure)
-             -> failure::Fallible<()> {
-        use self::VerificationResult::*;
+    fn check(&mut self, structure: MessageStructure)
+             -> openpgp::Result<()> {
         for layer in structure.iter() {
             match layer {
                 MessageLayer::Compression { algo } =>
@@ -126,19 +122,11 @@ impl VerificationHelper for Helper {
                 MessageLayer::SignatureGroup { ref results } =>
                     for result in results {
                         match result {
-                            GoodChecksum { cert, .. } => {
-                                eprintln!("Good signature from {}", cert);
+                            Ok(GoodChecksum { ka, .. }) => {
+                                eprintln!("Good signature from {}", ka.cert());
                             },
-                            NotAlive { cert, .. } => {
-                                eprintln!("Good, but not alive signature from {}",
-                                          cert);
-                            },
-                            MissingKey { .. } => {
-                                eprintln!("No key to check signature");
-                            },
-                            BadChecksum { cert, .. } => {
-                                eprintln!("Bad signature from {}", cert);
-                            },
+                            Err(e) =>
+                                eprintln!("Error: {:?}", e),
                         }
                     }
             }

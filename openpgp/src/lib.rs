@@ -1,20 +1,15 @@
 //! OpenPGP data types and associated machinery.
 //!
 //! This crate aims to provide a complete implementation of OpenPGP as
-//! defined by [RFC 4880] as well as several extensions (e.g., [RFC
-//! 6637], which describes ECC cryptography for OpenPGP, and [RFC
-//! 4880bis], the draft of the next OpenPGP standard).  This includes
-//! support for unbuffered message processing.
+//! defined by [RFC 4880] as well as some extensions (e.g., [RFC
+//! 6637], which describes ECC cryptography for OpenPGP.  This
+//! includes support for unbuffered message processing.
 //!
 //! A few features that the OpenPGP community considers to be
-//! deprecated (e.g., version 3 compatibility) have been left out as
-//! well as support for functionality that we consider to be not only
-//! completely useless, but also dangerous (e.g., support for
-//! [unhashed signature subpackets]).  We have also updated some
-//! OpenPGP defaults to avoid foot guns (e.g., this crate does not
-//! fallback to IDEA, but instead assumes all OpenPGP implementations
-//! understand AES).  If some functionality is missing, please file a
-//! bug report.
+//! deprecated (e.g., version 3 compatibility) have been left out.  We
+//! have also updated some OpenPGP defaults to avoid foot guns (e.g.,
+//! we selected modern algorithm defaults).  If some functionality is
+//! missing, please file a bug report.
 //!
 //! A non-goal of this crate is support for any sort of high-level,
 //! bolted-on functionality.  For instance, [RFC 4880] does not define
@@ -34,16 +29,22 @@
 //!
 //! [RFC 4880]: https://tools.ietf.org/html/rfc4880
 //! [RFC 6637]: https://tools.ietf.org/html/rfc6637
-//! [RFC 4880bis]: https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-05
-//! [unhashed signature subpackets]: https://tools.ietf.org/html/rfc4880#section-5.2.3.2
 //! [sequoia-core]: ../sequoia_core
+//!
+//! # Experimental Features
+//!
+//! This crate implements functionality from [RFC 4880bis], notable
+//! AEAD encryption containers.  As of this writing, this RFC is still
+//! a draft and the syntax or semantic defined in it may change or go
+//! away.  Therefore, all related functionality may change and
+//! artifacts created using this functionality may not be usable in
+//! the future.  Do not use it for things other than experiments.
+//!
+//! [RFC 4880bis]: https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-08
 
 #![warn(missing_docs)]
 
 extern crate lalrpop_util;
-
-#[macro_use]
-extern crate failure;
 
 extern crate buffered_reader;
 
@@ -90,6 +91,25 @@ fn vec_truncate(v: &mut Vec<u8>, len: usize) {
     }
 }
 
+/// Like `drop(Vec<u8>::drain(..prefix_len))`, but fast in debug
+/// builds.
+fn vec_drain_prefix(v: &mut Vec<u8>, prefix_len: usize) {
+    if cfg!(debug_assertions) {
+        // Panic like v.drain(..prefix_len).
+        assert!(prefix_len <= v.len(), "prefix len {} > vector len {}",
+                prefix_len, v.len());
+        let new_len = v.len() - prefix_len;
+        unsafe {
+            std::ptr::copy(v[prefix_len..].as_ptr(),
+                           v[..].as_mut_ptr(),
+                           new_len);
+        }
+        vec_truncate(v, new_len);
+    } else {
+        v.drain(..prefix_len);
+    }
+}
+
 // Like assert!, but checks a pattern.
 //
 //   assert_match!(Some(_) = x);
@@ -98,7 +118,7 @@ fn vec_truncate(v: &mut Vec<u8>, len: usize) {
 // declare the modules.
 #[allow(unused_macros)]
 macro_rules! assert_match {
-    ( $error: pat = $expr:expr, $fmt:expr, $($pargs:expr),* ) => {
+    ( $error: pat = $expr:expr, $fmt:expr, $($pargs:expr),* ) => {{
         let x = $expr;
         if let $error = x {
             /* Pass.  */
@@ -108,7 +128,7 @@ macro_rules! assert_match {
                    stringify!($error), x,
                    if $fmt.len() > 0 { ": " } else { "." }, extra);
         }
-    };
+    }};
     ( $error: pat = $expr: expr, $fmt:expr ) => {
         assert_match!($error = $expr, $fmt, );
     };
@@ -119,7 +139,6 @@ macro_rules! assert_match {
 
 #[macro_use]
 pub mod armor;
-pub mod autocrypt;
 pub mod fmt;
 pub mod crypto;
 
@@ -147,6 +166,7 @@ mod fingerprint;
 mod keyid;
 mod keyhandle;
 pub use keyhandle::KeyHandle;
+pub mod policy;
 
 pub(crate) mod utils;
 
@@ -163,90 +183,93 @@ fn frozen_time() -> std::time::SystemTime {
 }
 
 /// Crate result specialization.
-pub type Result<T> = ::std::result::Result<T, failure::Error>;
+pub type Result<T> = ::std::result::Result<T, anyhow::Error>;
 
-#[derive(Fail, Debug, Clone)]
+#[derive(thiserror::Error, Debug, Clone)]
 /// Errors returned by this module.
+///
+/// Note: This enum cannot be exhaustively matched to allow future
+/// extensions.
 pub enum Error {
     /// Invalid argument.
-    #[fail(display = "Invalid argument: {}", _0)]
+    #[error("Invalid argument: {0}")]
     InvalidArgument(String),
 
     /// Invalid operation.
-    #[fail(display = "Invalid operation: {}", _0)]
+    #[error("Invalid operation: {0}")]
     InvalidOperation(String),
 
     /// A malformed packet.
-    #[fail(display = "Malformed packet: {}", _0)]
+    #[error("Malformed packet: {0}")]
     MalformedPacket(String),
 
     /// Packet size exceeds the configured limit.
-    #[fail(display = "{} Packet ({} bytes) exceeds limit of {} bytes",
+    #[error("{} Packet ({} bytes) exceeds limit of {} bytes",
            _0, _1, _2)]
     PacketTooLarge(packet::Tag, u32, u32),
 
     /// Unsupported packet type.
-    #[fail(display = "Unsupported packet type.  Tag: {}", _0)]
+    #[error("Unsupported packet type.  Tag: {0}")]
     UnsupportedPacketType(packet::Tag),
 
     /// Unsupported hash algorithm identifier.
-    #[fail(display = "Unsupported hash algorithm: {}", _0)]
+    #[error("Unsupported hash algorithm: {0}")]
     UnsupportedHashAlgorithm(HashAlgorithm),
 
     /// Unsupported public key algorithm identifier.
-    #[fail(display = "Unsupported public key algorithm: {}", _0)]
+    #[error("Unsupported public key algorithm: {0}")]
     UnsupportedPublicKeyAlgorithm(PublicKeyAlgorithm),
 
     /// Unsupported elliptic curve ASN.1 OID.
-    #[fail(display = "Unsupported elliptic curve: {}", _0)]
+    #[error("Unsupported elliptic curve: {0}")]
     UnsupportedEllipticCurve(types::Curve),
 
     /// Unsupported symmetric key algorithm.
-    #[fail(display = "Unsupported symmetric algorithm: {}", _0)]
+    #[error("Unsupported symmetric algorithm: {0}")]
     UnsupportedSymmetricAlgorithm(SymmetricAlgorithm),
 
     /// Unsupported AEAD algorithm.
-    #[fail(display = "Unsupported AEAD algorithm: {}", _0)]
+    #[error("Unsupported AEAD algorithm: {0}")]
     UnsupportedAEADAlgorithm(types::AEADAlgorithm),
 
     /// Unsupported Compression algorithm.
-    #[fail(display = "Unsupported Compression algorithm: {}", _0)]
+    #[error("Unsupported Compression algorithm: {0}")]
     UnsupportedCompressionAlgorithm(types::CompressionAlgorithm),
 
     /// Unsupported signature type.
-    #[fail(display = "Unsupported signature type: {}", _0)]
+    #[error("Unsupported signature type: {0}")]
     UnsupportedSignatureType(SignatureType),
 
     /// Invalid password.
-    #[fail(display = "Invalid password")]
+    #[error("Invalid password")]
     InvalidPassword,
 
     /// Invalid session key.
-    #[fail(display = "Invalid session key: {}", _0)]
+    #[error("Invalid session key: {0}")]
     InvalidSessionKey(String),
 
     /// Missing session key.
-    #[fail(display = "Missing session key: {}", _0)]
+    #[error("Missing session key: {0}")]
     MissingSessionKey(String),
 
     /// Malformed MPI.
-    #[fail(display = "Malformed MPI: {}", _0)]
+    #[error("Malformed MPI: {0}")]
     MalformedMPI(String),
 
     /// Bad signature.
-    #[fail(display = "Bad signature: {}", _0)]
+    #[error("Bad signature: {0}")]
     BadSignature(String),
 
     /// Message has been manipulated.
-    #[fail(display = "Message has been manipulated")]
+    #[error("Message has been manipulated")]
     ManipulatedMessage,
 
     /// Malformed message.
-    #[fail(display = "Malformed Message: {}", _0)]
+    #[error("Malformed Message: {0}")]
     MalformedMessage(String),
 
-    /// Malformed tranferable public key.
-    #[fail(display = "Malformed Cert: {}", _0)]
+    /// Malformed certificate.
+    #[error("Malformed Cert: {0}")]
     MalformedCert(String),
 
     /// Unsupported Cert.
@@ -254,12 +277,39 @@ pub enum Error {
     /// This usually occurs, because the primary key is in an
     /// unsupported format.  In particular, Sequoia does not support
     /// version 3 keys.
-    #[fail(display = "Unsupported Cert: {}", _0)]
+    #[error("Unsupported Cert: {0}")]
     UnsupportedCert(String),
 
     /// Index out of range.
-    #[fail(display = "Index out of range")]
+    #[error("Index out of range")]
     IndexOutOfRange,
+
+    /// Expired.
+    #[error("Expired on {0:?}")]
+    Expired(std::time::SystemTime),
+
+    /// Not yet live.
+    #[error("Not live until {0:?}")]
+    NotYetLive(std::time::SystemTime),
+
+    /// No binding signature.
+    #[error("No binding signature at time {0:?}")]
+    NoBindingSignature(std::time::SystemTime),
+
+    /// Invalid key.
+    #[error("Invalid key: {0:?}")]
+    InvalidKey(String),
+
+    /// The operation is not allowed, because it violates the policy.
+    ///
+    /// The optional time is the time at which the operation was
+    /// determined to no longer be secure.
+    #[error("Not secure as of: {1:?}: {0}")]
+    PolicyViolation(String, Option<std::time::SystemTime>),
+
+    /// This marks this enum as non-exhaustive.  Do not use this
+    /// variant.
+    #[doc(hidden)] #[error("__Nonexhaustive")] __Nonexhaustive,
 }
 
 /// The OpenPGP packets that Sequoia understands.
@@ -277,6 +327,9 @@ pub enum Error {
 /// than a `CompressedData` packet.
 ///
 ///   [Section 5 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5
+///
+/// Note: This enum cannot be exhaustively matched to allow future
+/// extensions.
 #[derive(Debug)]
 #[derive(PartialEq, Eq, Hash, Clone)]
 pub enum Packet {
@@ -316,6 +369,10 @@ pub enum Packet {
     MDC(packet::MDC),
     /// AEAD Encrypted Data Packet.
     AED(packet::AED),
+
+    /// This marks this enum as non-exhaustive.  Do not use this
+    /// variant.
+    #[doc(hidden)] __Nonexhaustive,
 }
 
 impl Packet {
@@ -345,6 +402,7 @@ impl Packet {
             &Packet::SEIP(_) => Tag::SEIP,
             &Packet::MDC(_) => Tag::MDC,
             &Packet::AED(_) => Tag::AED,
+            Packet::__Nonexhaustive => unreachable!(),
         }
     }
 
@@ -376,6 +434,7 @@ impl Packet {
             &Packet::SEIP(_) => Some(Tag::SEIP),
             &Packet::MDC(_) => Some(Tag::MDC),
             &Packet::AED(_) => Some(Tag::AED),
+            Packet::__Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -445,21 +504,4 @@ pub enum KeyID {
     /// instance, we don't grok v3 fingerprints.  And, it is possible
     /// that the Issuer subpacket contains the wrong number of bytes.
     Invalid(Box<[u8]>)
-}
-
-/// The revocation status.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RevocationStatus<'a> {
-    /// The key is definitely revoked.
-    ///
-    /// The relevant self-revocations are returned.
-    Revoked(Vec<&'a packet::Signature>),
-    /// There is a revocation certificate from a possible designated
-    /// revoker.
-    CouldBe(Vec<&'a packet::Signature>),
-    /// The key does not appear to be revoked.
-    ///
-    /// An attacker could still have performed a DoS, which prevents
-    /// us from seeing the revocation certificate.
-    NotAsFarAsWeKnow,
 }

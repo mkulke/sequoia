@@ -129,7 +129,13 @@ pub fn build() -> App<'static, 'static> {
                          .possible_values(&["none", "pad", "zip", "zlib",
                                             "bzip2"])
                          .default_value("pad")
-                         .help("Selects compression scheme to use")))
+                         .help("Selects compression scheme to use"))
+                    .arg(Arg::with_name("time").value_name("TIME")
+                         .long("time")
+                         .short("t")
+                         .help("Chooses keys valid at the specified time and \
+                                sets the signature's creation time"))
+        )
 
         .subcommand(SubCommand::with_name("sign")
                     .display_order(25)
@@ -164,7 +170,12 @@ pub fn build() -> App<'static, 'static> {
                          .value_name("TSK-FILE")
                          .number_of_values(1)
                          .help("Secret key to sign with, given as a file \
-                                (can be given multiple times)")))
+                                (can be given multiple times)"))
+                    .arg(Arg::with_name("time").value_name("TIME")
+                         .long("time")
+                         .short("t")
+                         .help("Chooses keys valid at the specified time and \
+                                sets the signature's creation time")))
         .subcommand(SubCommand::with_name("verify")
                     .display_order(26)
                     .about("Verifies a message")
@@ -382,12 +393,21 @@ pub fn build() -> App<'static, 'static> {
                              .long("with-password")
                              .help("Prompt for a password to protect the \
                                     generated key with."))
-                        .arg(Arg::with_name("expiry")
-                             .value_name("EXPIRY")
-                             .long("expiry")
+
+                        .group(ArgGroup::with_name("expiration-group")
+                               .args(&["expires", "expires-in"]))
+
+                        .arg(Arg::with_name("expires")
+                             .value_name("TIME")
+                             .long("expires")
+                             .help("Absolute time When the key should expire, \
+                                    or 'never'."))
+                        .arg(Arg::with_name("expires-in")
+                             .value_name("DURATION")
+                             .long("expires-in")
                              // Catch negative numbers.
                              .allow_hyphen_values(true)
-                             .help("When the key should expire.  \
+                             .help("Relative time when the key should expire.  \
                                     Either 'N[ymwd]', for N years, months, \
                                     weeks, or days, or 'never'."))
 
@@ -450,6 +470,36 @@ pub fn build() -> App<'static, 'static> {
                                      .long("hex")
                                      .short("x")
                                      .help("Print a hexdump")))
+
+                    .subcommand(SubCommand::with_name("decrypt")
+                                .display_order(10)
+                                .about("Decrypts an OpenPGP message, dumping \
+                                        the content of the encryption \
+                                        container without further processing")
+                                .arg(Arg::with_name("input").value_name("FILE")
+                                     .help("Sets the input file to use"))
+                                .arg(Arg::with_name("output").value_name("FILE")
+                                     .long("output")
+                                     .short("o")
+                                     .help("Sets the output file to use"))
+                                .arg(Arg::with_name("binary")
+                                     .long("binary")
+                                     .short("B")
+                                     .help("Don't ASCII-armor encode the \
+                                            OpenPGP data"))
+                                .arg(Arg::with_name("secret-key-file")
+                                     .long("secret-key-file")
+                                     .multiple(true)
+                                     .takes_value(true)
+                                     .value_name("TSK-FILE")
+                                     .number_of_values(1)
+                                     .help("Secret key to decrypt with, given \
+                                            as a file \
+                                            (can be given multiple times)"))
+                                .arg(Arg::with_name("dump-session-key")
+                                     .long("dump-session-key")
+                                     .help("Prints the session key to stderr")))
+
                     .subcommand(SubCommand::with_name("split")
                                 .about("Splits a message into OpenPGP packets")
                                 .arg(Arg::with_name("input").value_name("FILE")
@@ -518,9 +568,12 @@ pub fn build() -> App<'static, 'static> {
                                         is updated and existing ones \
                                         will be updated.")
                                 .arg(Arg::with_name("base_directory")
-                                     .value_name("BASE-DIRECTORY")
+                                     .value_name("WEB-ROOT")
                                      .required(true)
-                                     .help("The location to write the WKD to"))
+                                     .help("The location to write the WKD to. \
+                                            This must be the directory the \
+                                            webserver is serving the \
+                                            '.well-known' directory from."))
                                 .arg(Arg::with_name("domain")
                                     .value_name("DOMAIN")
                                     .help("The domain for the WKD.")

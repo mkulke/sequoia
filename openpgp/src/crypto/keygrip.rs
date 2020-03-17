@@ -30,7 +30,7 @@ impl fmt::Display for Keygrip {
 }
 
 impl std::str::FromStr for Keygrip {
-    type Err = failure::Error;
+    type Err = anyhow::Error;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         Self::from_hex(s)
@@ -63,10 +63,16 @@ impl PublicKey {
         fn hash_sexp_mpi(hash: &mut hash::Context, kind: char, prefix: &[u8],
                          mpi: &MPI)
         {
+            hash_sexp(hash, kind, prefix, mpi.value());
+        }
+
+        fn hash_sexp(hash: &mut hash::Context, kind: char, prefix: &[u8],
+                     buf: &[u8])
+        {
             write!(hash, "(1:{}{}:",
-                   kind, mpi.value().len() + prefix.len()).unwrap();
+                   kind, buf.len() + prefix.len()).unwrap();
             hash.update(prefix);
-            hash.update(mpi.value());
+            hash.update(buf);
             write!(hash, ")").unwrap();
         }
 
@@ -77,18 +83,21 @@ impl PublicKey {
                     continue;  // Skip cofactor.
                 }
 
-                let mut m =
-                    if i == 6 { q.clone() } else { ecc_param(curve, i) };
+                let param;
+                let mut m = if i == 6 {
+                    q.value()
+                } else {
+                    param = ecc_param(curve, i);
+                    param.value()
+                };
 
                 // Opaque encoding?
-                if m.value()[0] == 0x40 {
+                if m[0] == 0x40 {
                     // Drop the prefix!
-                    let mut p = Vec::from(m.value());
-                    p.remove(0);
-                    m = p.into();
+                    m = &m[1..];
                 }
 
-                hash_sexp_mpi(hash, name, &[], &m);
+                hash_sexp(hash, name, &[], m);
             }
         }
 
@@ -117,7 +126,7 @@ impl PublicKey {
                 hash_sexp_mpi(&mut hash, 'y', b"", y);
             },
 
-            &Elgamal { ref p, ref g, ref y } => {
+            &ElGamal { ref p, ref g, ref y } => {
                 hash_sexp_mpi(&mut hash, 'p', b"\x00", p);
                 hash_sexp_mpi(&mut hash, 'g', b"", g);
                 hash_sexp_mpi(&mut hash, 'y', b"", y);
@@ -131,6 +140,8 @@ impl PublicKey {
                 return Err(Error::InvalidOperation(
                     "Keygrip not defined for this kind of public key".into())
                            .into()),
+
+            __Nonexhaustive => unreachable!(),
         }
 
         let mut digest = [0; 20];
@@ -257,7 +268,7 @@ mod tests {
                      ", false).unwrap().into(),
             }, Keygrip(*b"\xc6\x39\x83\x1a\x43\xe5\x05\x5d\xc6\xd8\
                           \x4a\xa6\xf9\xeb\x23\xbf\xa9\x12\x2d\x5b")),
-            (PublicKey::Elgamal {
+            (PublicKey::ElGamal {
                 p: from_hex(
                     "00B93B93386375F06C2D38560F3B9C6D6D7B7506B20C1773F73F8DE56E6CD65D\
                      F48DFAAA1E93F57A2789B168362A0F787320499F0B2461D3A4268757A7B27517\
@@ -325,6 +336,11 @@ mod tests {
             // erika-corinna-daniela-simone-antonia-nistp521.pgp
             (FP::from_hex("B9E41C493B8988A7EDC502D99A404C898D411DC8").unwrap(),
              KG::from_hex("8F669049015534649776D0F1F439D37EE3F3D948").unwrap()),
+            // keygrip-issue-439.pgp
+            (FP::from_hex("597B1FEA9F1B91F6749E8A24652CC528EBDA1B20").unwrap(),
+             KG::from_hex("EF0CCDE02FFF9E24EFCCBF6F6FFE52716820E497").unwrap()),
+            (FP::from_hex("7147EB2C548AEF87E425B9543EF9867F7073B689").unwrap(),
+             KG::from_hex("642314FF90E6F8DA595EF51B7BA6B25071D3B0F1").unwrap()),
         ].iter().cloned().collect();
 
         for (name, cert) in [
@@ -336,14 +352,15 @@ mod tests {
             "erika-corinna-daniela-simone-antonia-nistp256.pgp",
             "erika-corinna-daniela-simone-antonia-nistp384.pgp",
             "erika-corinna-daniela-simone-antonia-nistp521.pgp",
+            "keygrip-issue-439.pgp",
         ]
             .iter().map(|n| (n, crate::Cert::from_bytes(crate::tests::key(n)).unwrap()))
         {
             eprintln!("{}", name);
-            for key in cert.keys_all() {
-                let fp = key.2.fingerprint();
+            for key in cert.keys().map(|a| a.key()) {
+                let fp = key.fingerprint();
                 eprintln!("(sub)key: {}", fp);
-                assert_eq!(&key.2.mpis().keygrip().unwrap(),
+                assert_eq!(&key.mpis().keygrip().unwrap(),
                            keygrips.get(&fp).unwrap());
             }
         }

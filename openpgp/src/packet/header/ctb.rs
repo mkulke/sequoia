@@ -58,7 +58,7 @@ impl CTBNew {
 /// See [Section 4.2.1 of RFC 4880] for more details.
 ///
 ///   [Section 4.2.1 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-4.2.1
-///   [old CTB]: ./CTBOld.t.html
+///   [old CTB]: struct.CTBOld.html
 #[derive(Debug)]
 #[derive(Clone, Copy, PartialEq)]
 pub enum PacketLengthType {
@@ -75,7 +75,7 @@ pub enum PacketLengthType {
 }
 
 impl TryFrom<u8> for PacketLengthType {
-    type Error = failure::Error;
+    type Error = anyhow::Error;
 
     fn try_from(u: u8) -> Result<Self> {
         match u {
@@ -170,8 +170,8 @@ impl CTBOld {
 /// There are two CTB variants: the [old CTB format] and the [new CTB
 /// format].
 ///
-///   [old CTB format]: ./CTBOld.t.html
-///   [new CTB format]: ./CTBNew.t.html
+///   [old CTB format]: struct.CTBOld.html
+///   [new CTB format]: struct.CTBNew.html
 ///
 /// Note: CTB stands for Cipher Type Byte.
 #[derive(Clone, Debug)]
@@ -195,7 +195,6 @@ impl CTB {
     pub fn from_ptag(ptag: u8) -> Result<CTB> {
         // The top bit of the ptag must be set.
         if ptag & 0b1000_0000 == 0 {
-            // XXX: Use a proper error.
             return Err(
                 Error::MalformedPacket(
                     format!("Malformed CTB: MSB of ptag ({:#010b}) not set{}.",

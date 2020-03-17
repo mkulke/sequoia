@@ -12,10 +12,10 @@ use crate::openpgp::types::{
     SymmetricAlgorithm,
 };
 use crate::openpgp::crypto::SessionKey;
-use crate::openpgp::types::KeyFlags;
 use crate::openpgp::parse::stream::*;
 use crate::openpgp::serialize::{Serialize, stream::*};
-use crate::openpgp::cert::{CertBuilder, CipherSuite};
+use crate::openpgp::cert::prelude::*;
+use crate::openpgp::policy::Policy;
 
 extern crate sequoia_ipc as ipc;
 use crate::ipc::gnupg::{Context, Agent, KeyPair};
@@ -81,6 +81,9 @@ fn gpg_import(ctx: &Context, what: &[u8]) {
 #[test]
 fn sign() {
     use self::CipherSuite::*;
+    use openpgp::policy::StandardPolicy as P;
+
+    let p = &P::new();
     let ctx = make_context!();
 
     for cs in &[RSA2k, Cv25519, P521] {
@@ -95,7 +98,9 @@ fn sign() {
         gpg_import(&ctx, &buf);
 
         let keypair = KeyPair::new(
-            &ctx, cert.keys_valid().for_signing().take(1).next().unwrap().2)
+            &ctx,
+            cert.keys().with_policy(p, None).alive().revoked(false)
+                .for_signing().take(1).next().unwrap().key())
             .unwrap();
 
         let mut message = Vec::new();
@@ -127,7 +132,7 @@ fn sign() {
 
         // Now, create a verifier with a helper using the given Certs.
         let mut verifier =
-            Verifier::from_bytes(&message, helper, None).unwrap();
+            Verifier::from_bytes(p, &message, helper, None).unwrap();
 
         // Verify the data.
         let mut sink = Vec::new();
@@ -146,36 +151,28 @@ fn sign() {
             Ok(vec![self.cert.clone()])
         }
 
-        fn check(&mut self, structure: &MessageStructure)
+        fn check(&mut self, structure: MessageStructure)
                  -> openpgp::Result<()> {
             // In this function, we implement our signature verification
             // policy.
 
             let mut good = false;
-            for (i, layer) in structure.iter().enumerate() {
+            for (i, layer) in structure.into_iter().enumerate() {
                 match (i, layer) {
                     // First, we are interested in signatures over the
                     // data, i.e. level 0 signatures.
-                    (0, MessageLayer::SignatureGroup { ref results }) => {
+                    (0, MessageLayer::SignatureGroup { results }) => {
                         // Finally, given a VerificationResult, which only says
                         // whether the signature checks out mathematically, we apply
                         // our policy.
-                        match results.get(0) {
-                            Some(VerificationResult::GoodChecksum { .. }) =>
-                                good = true,
-                            Some(VerificationResult::NotAlive { .. }) =>
-                                return Err(failure::err_msg(
-                                    "Good, but not live signature")),
-                            Some(VerificationResult::MissingKey { .. }) =>
-                                return Err(failure::err_msg(
-                                    "Missing key to verify signature")),
-                            Some(VerificationResult::BadChecksum { .. }) =>
-                                return Err(failure::err_msg("Bad signature")),
-                            None =>
-                                return Err(failure::err_msg("No signature")),
+                        match results.into_iter().next() {
+                            Some(Ok(_)) => good = true,
+                            Some(Err(e)) =>
+                                return Err(openpgp::Error::from(e).into()),
+                            None => (),
                         }
                     },
-                    _ => return Err(failure::err_msg(
+                    _ => return Err(anyhow::anyhow!(
                         "Unexpected message structure")),
                 }
             }
@@ -183,7 +180,7 @@ fn sign() {
             if good {
                 Ok(()) // Good signature.
             } else {
-                Err(failure::err_msg("Signature verification failed"))
+                Err(anyhow::anyhow!("Signature verification failed"))
             }
         }
     }
@@ -192,6 +189,9 @@ fn sign() {
 #[test]
 fn decrypt() {
     use self::CipherSuite::*;
+    use openpgp::policy::StandardPolicy as P;
+
+    let p = &P::new();
     let ctx = make_context!();
 
     for cs in &[RSA2k, Cv25519, P521] {
@@ -208,9 +208,9 @@ fn decrypt() {
         let mut message = Vec::new();
         {
             let recipient =
-                cert.keys_valid().key_flags(
-                    KeyFlags::default().set_transport_encryption(true))
-                .map(|(_, _, key)| key.into())
+                cert.keys().with_policy(p, None).alive().revoked(false)
+                .for_transport_encryption()
+                .map(|ka| ka.key().into())
                 .nth(0).unwrap();
 
             // Start streaming an OpenPGP message.
@@ -234,10 +234,10 @@ fn decrypt() {
 
         // Make a helper that that feeds the recipient's secret key to the
         // decryptor.
-        let helper = Helper { ctx: &ctx, cert: &cert, };
+        let helper = Helper { policy: p, ctx: &ctx, cert: &cert, };
 
         // Now, create a decryptor with a helper using the given Certs.
-        let mut decryptor = Decryptor::from_bytes(&message, helper, None)
+        let mut decryptor = Decryptor::from_bytes(p, &message, helper, None)
             .unwrap();
 
         // Decrypt the data.
@@ -246,6 +246,7 @@ fn decrypt() {
         assert_eq!(MESSAGE.as_bytes(), &sink[..]);
 
         struct Helper<'a> {
+            policy: &'a dyn Policy,
             ctx: &'a Context,
             cert: &'a openpgp::Cert,
         }
@@ -257,7 +258,7 @@ fn decrypt() {
                 Ok(Vec::new())
             }
 
-            fn check(&mut self, _structure: &MessageStructure)
+            fn check(&mut self, _structure: MessageStructure)
                      -> openpgp::Result<()> {
                 // Implement your signature verification policy here.
                 Ok(())
@@ -268,6 +269,7 @@ fn decrypt() {
             fn decrypt<D>(&mut self,
                           pkesks: &[openpgp::packet::PKESK],
                           _skesks: &[openpgp::packet::SKESK],
+                          sym_algo: Option<SymmetricAlgorithm>,
                           mut decrypt: D)
                           -> openpgp::Result<Option<openpgp::Fingerprint>>
                 where D: FnMut(SymmetricAlgorithm, &SessionKey) ->
@@ -275,12 +277,12 @@ fn decrypt() {
             {
                 let mut keypair = KeyPair::new(
                     self.ctx,
-                    self.cert.keys_valid().key_flags(
-                        KeyFlags::default().set_transport_encryption(true))
-                        .take(1).next().unwrap().2)
+                    self.cert.keys().with_policy(self.policy, None)
+                        .for_storage_encryption().for_transport_encryption()
+                        .take(1).next().unwrap().key())
                     .unwrap();
 
-                pkesks[0].decrypt(&mut keypair)
+                pkesks[0].decrypt(&mut keypair, sym_algo)
                     .and_then(|(algo, session_key)| decrypt(algo, &session_key))
                     .map(|_| None)
                 // XXX: In production code, return the Fingerprint of the

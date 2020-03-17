@@ -4,22 +4,20 @@ use std::io;
 use std::cmp;
 use std::cmp::Ordering;
 use std::path::Path;
-use std::slice;
 use std::mem;
 use std::fmt;
 use std::ops::{Deref, DerefMut};
 use std::time;
 
+use anyhow::Context;
+
 use crate::{
-    crypto::{hash::Hash, Signer},
+    crypto::Signer,
     Error,
     Result,
-    RevocationStatus,
     SignatureType,
-    HashAlgorithm,
     packet,
     packet::Signature,
-    packet::signature,
     packet::Key,
     packet::key,
     packet::UserID,
@@ -29,22 +27,33 @@ use crate::{
     PacketPile,
     KeyID,
     Fingerprint,
+    KeyHandle,
+    policy::Policy,
 };
 use crate::parse::{Parse, PacketParserResult, PacketParser};
 use crate::types::{
+    AEADAlgorithm,
+    CompressionAlgorithm,
+    Features,
+    HashAlgorithm,
+    KeyServerPreferences,
     ReasonForRevocation,
-    RevocationType,
+    RevocationStatus,
+    SymmetricAlgorithm,
 };
 
+pub mod amalgamation;
+use amalgamation::ValidAmalgamation;
 mod builder;
 mod bindings;
+pub mod components;
+mod component_iter;
 mod keyiter;
+pub mod key_amalgamation;
 mod parser;
 mod revoke;
 
 pub use self::builder::{CertBuilder, CipherSuite};
-
-pub use keyiter::KeyIter;
 
 pub use parser::{
     KeyringValidity,
@@ -60,6 +69,9 @@ pub use revoke::{
     UserAttributeRevocationBuilder,
     UserIDRevocationBuilder,
 };
+
+pub mod prelude;
+use prelude::*;
 
 const TRACE : bool = false;
 
@@ -86,498 +98,52 @@ fn sig_cmp(a: &Signature, b: &Signature) -> Ordering {
     }
 }
 
-/// A key (primary or subkey, public or private) and any associated
-/// signatures.
-pub type KeyBinding<KeyPart, KeyRole> = ComponentBinding<Key<KeyPart, KeyRole>>;
-
-impl<K: key::KeyParts, R: key::KeyRole> KeyBinding<K, R>
-{
-    /// Gets the key packet's `SecretKeyMaterial`.
-    ///
-    /// Note: The key module installs conversion functions on
-    /// KeyBinding.  They need to access the key's secret.
-    pub(crate) fn secret(&self)
-                         -> Option<&crate::packet::key::SecretKeyMaterial> {
-        self.key().secret()
-    }
-}
-
-/// A primary key and any associated signatures.
-type PrimaryKeyBinding<KeyPart> = KeyBinding<KeyPart, key::PrimaryRole>;
-
-/// A subkey and any associated signatures.
-pub type SubkeyBinding<KeyPart> = KeyBinding<KeyPart, key::SubordinateRole>;
-
-/// A key (primary or subkey, public or private) and any associated
-/// signatures.
-#[allow(dead_code)]
-type GenericKeyBinding
-    = ComponentBinding<Key<key::UnspecifiedParts, key::UnspecifiedRole>>;
-
-/// A User ID and any associated signatures.
-pub type UserIDBinding = ComponentBinding<UserID>;
-
-/// A User Attribute and any associated signatures.
-pub type UserAttributeBinding = ComponentBinding<UserAttribute>;
-
-/// An unknown component and any associated signatures.
-///
-/// Note: all signatures are stored as certifications.
-pub type UnknownBinding = ComponentBinding<Unknown>;
-
-/// A Cert component binding.
-///
-/// A Cert component is a primary key, a subkey, a user id, or a user
-/// attribute.  A binding is a Cert component and any related
-/// signatures.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ComponentBinding<C> {
-    component: C,
-
-    // Self signatures.
-    self_signatures: Vec<Signature>,
-
-    // Third-party certifications.  (In general, this will only be by
-    // designated revokers.)
-    certifications: Vec<Signature>,
-
-    // Self revocations.
-    self_revocations: Vec<Signature>,
-
-    // Third-party revocations (e.g., designated revokers).
-    other_revocations: Vec<Signature>,
-}
-
-impl<C> ComponentBinding<C> {
-    /// Returns a reference to the component.
-    pub fn component(&self) -> &C {
-        &self.component
-    }
-
-    /// Returns a mutable reference to the component.
-    fn component_mut(&mut self) -> &mut C {
-        &mut self.component
-    }
-
-    /// Returns the active binding signature at time `t`.
-    ///
-    /// An active binding signature is a non-revoked, self-signature
-    /// that is alive at time `t` (`creation time <= t`, `t <=
-    /// expiry`).
-    ///
-    /// This function returns None if there are no active binding
-    /// signatures at time `t`.
-    pub fn binding_signature<T>(&self, t: T) -> Option<&Signature>
-        where T: Into<Option<time::SystemTime>>
-    {
-        let t = t.into().unwrap_or_else(|| time::SystemTime::now());
-
-        // Recall: the signatures are sorted by their creation time in
-        // descending order, i.e., newest first.
-        //
-        // We want the newest signature that is older than t.  So,
-        // search for `t`.
-
-        let i =
-            // Usually, the first signature is what we are looking for.
-            // Short circuit the binary search.
-            if Some(t) >= self.self_signatures.get(0)
-                              .and_then(|s| s.signature_creation_time())
-            {
-                0
-            } else {
-                match self.self_signatures.binary_search_by(
-                    |s| canonical_signature_order(
-                        s.signature_creation_time(), Some(t)))
-                {
-                    // If there are multiple matches, then we need to search
-                    // backwards to find the first one.  Consider:
-                    //
-                    //     t: 9 8 8 8 8 7
-                    //     i: 0 1 2 3 4 5
-                    //
-                    // If we are looking for t == 8, then binary_search could
-                    // return index 1, 2, 3 or 4.
-                    Ok(mut i) => {
-                        // XXX: we use PartialOrd to compare Tms due to
-                        // https://github.com/rust-lang-deprecated/time/issues/180
-                        while i > 0
-                            && self.self_signatures[i - 1].signature_creation_time()
-                            .cmp(&Some(t)) == Ordering::Equal
-                        {
-                            i -= 1;
-                        }
-                        i
-                    }
-
-                    // There was no match.  `i` is where a new element could
-                    // be inserted while maintaining the sorted order.
-                    // Consider:
-                    //
-                    //    t: 9 8 6 5
-                    //    i: 0 1 2 3
-                    //
-                    // If we are looing for t == 7, then binary_search will
-                    // return i == 2.  That's exactly where we should start
-                    // looking.
-                    Err(i) => i,
-                }
-            };
-
-        self.self_signatures[i..].iter().filter(|s| {
-            s.signature_alive(t, time::Duration::new(0, 0))
-        }).nth(0)
-    }
-
-    /// The self-signatures.
-    ///
-    /// The signatures are validated, and they are reverse sorted by
-    /// their creation time (newest first).
-    pub fn self_signatures(&self) -> &[Signature] {
-        &self.self_signatures
-    }
-
-    /// Any third-party certifications.
-    ///
-    /// The signatures are *not* validated.  They are reverse sorted by
-    /// their creation time (newest first).
-    pub fn certifications(&self) -> &[Signature] {
-        &self.certifications
-    }
-
-    /// Revocations issued by the key itself.
-    ///
-    /// The revocations are validated, and they are reverse sorted by
-    /// their creation time (newest first).
-    pub fn self_revocations(&self) -> &[Signature] {
-        &self.self_revocations
-    }
-
-    /// Revocations issued by other keys.
-    ///
-    /// The revocations are *not* validated.  They are reverse sorted
-    /// by their creation time (newest first).
-    pub fn other_revocations(&self) -> &[Signature] {
-        &self.other_revocations
-    }
-
-    /// Returns the component's revocation status at time `t`.
-    ///
-    /// A component is considered to be revoked at time `t` if:
-    ///
-    ///   - There is a live revocation at time `t` that is newer than
-    ///     all live self signatures at time `t`.
-    ///
-    ///   - `hard_revocations_are_final` is true, and there is a hard
-    ///     revocation (even if it is not live at time `t`, and even
-    ///     if there is a newer self-signature).
-    ///
-    /// selfsig must be the newest live self signature at time `t`.
-    fn _revoked<'a, T>(&'a self, hard_revocations_are_final: bool,
-                       selfsig: Option<&Signature>, t: T)
-        -> RevocationStatus<'a>
-        where T: Into<Option<time::SystemTime>>
-    {
-        // Fallback time.
-        let time_zero = || time::UNIX_EPOCH;
-        let t = t.into()
-            .unwrap_or_else(|| time::SystemTime::now());
-        let selfsig_creation_time
-            = selfsig.and_then(|s| s.signature_creation_time())
-                     .unwrap_or_else(time_zero);
-
-        tracer!(TRACE, "ComponentBinding::_revoked", 0);
-        t!("hard_revocations_are_final: {}, selfsig: {:?}, t: {:?}",
-           hard_revocations_are_final,
-           selfsig_creation_time,
-           t);
-        if let Some(selfsig) = selfsig {
-            assert!(selfsig.signature_alive(t, time::Duration::new(0, 0)));
-        }
-
-        macro_rules! check {
-            ($revs:expr) => ({
-                let revs = $revs.iter().filter_map(|rev| {
-                    if hard_revocations_are_final
-                        && rev.reason_for_revocation()
-                               .map(|(r, _)| {
-                                   r.revocation_type() == RevocationType::Hard
-                               })
-                               // If there is no Reason for Revocation
-                               // packet, assume that it is a hard
-                               // revocation.
-                               .unwrap_or(true)
-                    {
-                        t!("  got a hard revocation: {:?}, {:?}",
-                           rev.signature_creation_time()
-                               .unwrap_or_else(time_zero),
-                           rev.reason_for_revocation()
-                               .map(|r| (r.0, String::from_utf8_lossy(r.1))));
-                        Some(rev)
-                    } else if selfsig_creation_time
-                              > rev.signature_creation_time()
-                                    .unwrap_or_else(time_zero)
-                    {
-                        t!("  ignoring out of date revocation ({:?})",
-                           rev.signature_creation_time()
-                               .unwrap_or_else(time_zero));
-                        None
-                    } else if !rev.signature_alive(t, time::Duration::new(0, 0)) {
-                        t!("  ignoring revocation that is not alive ({:?} - {:?})",
-                           rev.signature_creation_time()
-                               .unwrap_or_else(time_zero),
-                           rev.signature_expiration_time()
-                               .unwrap_or_else(|| time::Duration::new(0, 0)));
-                        None
-                    } else {
-                        t!("  got a revocation: {:?} ({:?})",
-                           rev.signature_creation_time()
-                               .unwrap_or_else(time_zero),
-                           rev.reason_for_revocation()
-                               .map(|r| (r.0, String::from_utf8_lossy(r.1))));
-                        Some(rev)
-                    }
-                }).collect::<Vec<&Signature>>();
-
-                if revs.len() == 0 {
-                    None
-                } else {
-                    Some(revs)
-                }
-            })
-        }
-
-        if let Some(revs) = check!(&self.self_revocations) {
-            RevocationStatus::Revoked(revs)
-        } else if let Some(revs) = check!(&self.other_revocations) {
-            RevocationStatus::CouldBe(revs)
-        } else {
-            RevocationStatus::NotAsFarAsWeKnow
-        }
-    }
-
-    // Converts the component into an iterator over the contained
-    // packets.
-    fn into_packets<'a>(self) -> impl Iterator<Item=Packet>
-        where Packet: From<C>
-    {
-        let p : Packet = self.component.into();
-        std::iter::once(p)
-            .chain(self.self_signatures.into_iter().map(|s| s.into()))
-            .chain(self.certifications.into_iter().map(|s| s.into()))
-            .chain(self.self_revocations.into_iter().map(|s| s.into()))
-            .chain(self.other_revocations.into_iter().map(|s| s.into()))
-    }
-
-    // Sorts and dedups the binding's signatures.
-    //
-    // This function assumes that the signatures have already been
-    // cryptographically checked.
-    //
-    // Note: this uses Signature::eq to compare signatures.  That
-    // function ignores unhashed packets.  If there are two signatures
-    // that only differ in their unhashed subpackets, they will be
-    // deduped.  The unhashed areas are *not* merged; the one that is
-    // kept is undefined.
-    fn sort_and_dedup(&mut self)
-    {
-        self.self_signatures.sort_by(sig_cmp);
-        self.self_signatures.dedup();
-
-        // There is no need to sort the certifications, but we do
-        // want to remove dups and sorting is a prerequisite.
-        self.certifications.sort_by(sig_cmp);
-        self.certifications.dedup();
-
-        self.self_revocations.sort_by(sig_cmp);
-        self.self_revocations.dedup();
-
-        self.other_revocations.sort_by(sig_cmp);
-        self.other_revocations.dedup();
-    }
-}
-
-impl<P: key::KeyParts, R: key::KeyRole> ComponentBinding<Key<P, R>> {
-    /// Returns a reference to the key.
-    pub fn key(&self) -> &Key<P, R> {
-        self.component()
-    }
-
-    /// Returns a mut reference to the key.
-    fn key_mut(&mut self) -> &mut Key<P, R> {
-        self.component_mut()
-    }
-}
-
-impl<P: key::KeyParts> ComponentBinding<Key<P, key::SubordinateRole>> {
-    /// Returns the subkey's revocation status at time `t`.
-    ///
-    /// A subkey is revoked at time `t` if:
-    ///
-    ///   - There is a live revocation at time `t` that is newer than
-    ///     all live self signatures at time `t`, or
-    ///
-    ///   - There is a hard revocation (even if it is not live at
-    ///     time `t`, and even if there is a newer self-signature).
-    ///
-    /// Note: Certs and subkeys have different criteria from User IDs
-    /// and User Attributes.
-    ///
-    /// Note: this only returns whether this subkey is revoked; it
-    /// does not imply anything about the Cert or other components.
-    pub fn revoked<T>(&self, t: T)
-        -> RevocationStatus
-        where T: Into<Option<time::SystemTime>>
-    {
-        let t = t.into();
-        self._revoked(true, self.binding_signature(t), t)
-    }
-}
-
-impl ComponentBinding<UserID> {
-    /// Returns a reference to the User ID.
-    pub fn userid(&self) -> &UserID {
-        self.component()
-    }
-
-    /// Returns the User ID's revocation status at time `t`.
-    ///
-    /// A User ID is revoked at time `t` if:
-    ///
-    ///   - There is a live revocation at time `t` that is newer than
-    ///     all live self signatures at time `t`, or
-    ///
-    /// Note: Certs and subkeys have different criteria from User IDs
-    /// and User Attributes.
-    ///
-    /// Note: this only returns whether this User ID is revoked; it
-    /// does not imply anything about the Cert or other components.
-    pub fn revoked<T>(&self, t: T)
-        -> RevocationStatus
-        where T: Into<Option<time::SystemTime>>
-    {
-        let t = t.into();
-        self._revoked(false, self.binding_signature(t), t)
-    }
-}
-
-impl ComponentBinding<UserAttribute> {
-    /// Returns a reference to the User Attribute.
-    pub fn user_attribute(&self) -> &UserAttribute {
-        self.component()
-    }
-
-    /// Returns the User Attribute's revocation status at time `t`.
-    ///
-    /// A User Attribute is revoked at time `t` if:
-    ///
-    ///   - There is a live revocation at time `t` that is newer than
-    ///     all live self signatures at time `t`, or
-    ///
-    /// Note: Certs and subkeys have different criteria from User IDs
-    /// and User Attributes.
-    ///
-    /// Note: this only returns whether this User Attribute is revoked;
-    /// it does not imply anything about the Cert or other components.
-    pub fn revoked<T>(&self, t: T)
-        -> RevocationStatus
-        where T: Into<Option<time::SystemTime>>
-    {
-        let t = t.into();
-        self._revoked(false, self.binding_signature(t), t)
-    }
-}
-
-impl ComponentBinding<Unknown> {
-    /// Returns a reference to the unknown component.
-    pub fn unknown(&self) -> &Unknown {
-        self.component()
-    }
-}
-
-
 impl fmt::Display for Cert {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.primary().fingerprint())
+        write!(f, "{}", self.fingerprint())
     }
 }
 
-/// An iterator over `ComponentBinding`s.
-pub struct ComponentBindingIter<'a, C> {
-    iter: Option<slice::Iter<'a, ComponentBinding<C>>>,
-}
-
-/// An iterator over `KeyBinding`s.
-pub type KeyBindingIter<'a, P, R> = ComponentBindingIter<'a, Key<P, R>>;
-/// An iterator over `UserIDBinding`s.
-pub type UserIDBindingIter<'a> = ComponentBindingIter<'a, UserID>;
-/// An iterator over `UserAttributeBinding`s.
-pub type UserAttributeBindingIter<'a> = ComponentBindingIter<'a, UserAttribute>;
-/// An iterator over `UnknownBinding`s.
-pub type UnknownBindingIter<'a> = ComponentBindingIter<'a, Unknown>;
-
-impl<'a, C> Iterator for ComponentBindingIter<'a, C>
-{
-    type Item = &'a ComponentBinding<C>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self.iter {
-            Some(ref mut iter) => iter.next(),
-            None => None,
-        }
-    }
-}
-
-impl<'a, C> ExactSizeIterator for ComponentBindingIter<'a, C>
-{
-    fn len(&self) -> usize {
-        match self.iter {
-            Some(ref iter) => iter.len(),
-            None => 0,
-        }
-    }
-}
-
-/// A collection of `ComponentBindings`.
+/// A collection of `ComponentBundles`.
 ///
-/// Note: we need this, because we can't `impl Vec<ComponentBindings>`.
+/// Note: we need this, because we can't `impl Vec<ComponentBundles>`.
 #[derive(Debug, Clone, PartialEq)]
-struct ComponentBindings<C>
-    where ComponentBinding<C>: cmp::PartialEq
+struct ComponentBundles<C>
+    where ComponentBundle<C>: cmp::PartialEq
 {
-    bindings: Vec<ComponentBinding<C>>,
+    bindings: Vec<ComponentBundle<C>>,
 }
 
-impl<C> Deref for ComponentBindings<C>
-    where ComponentBinding<C>: cmp::PartialEq
+impl<C> Deref for ComponentBundles<C>
+    where ComponentBundle<C>: cmp::PartialEq
 {
-    type Target = Vec<ComponentBinding<C>>;
+    type Target = Vec<ComponentBundle<C>>;
 
     fn deref(&self) -> &Self::Target {
         &self.bindings
     }
 }
 
-impl<C> DerefMut for ComponentBindings<C>
-    where ComponentBinding<C>: cmp::PartialEq
+impl<C> DerefMut for ComponentBundles<C>
+    where ComponentBundle<C>: cmp::PartialEq
 {
-    fn deref_mut(&mut self) -> &mut Vec<ComponentBinding<C>> {
+    fn deref_mut(&mut self) -> &mut Vec<ComponentBundle<C>> {
         &mut self.bindings
     }
 }
 
-impl<C> Into<Vec<ComponentBinding<C>>> for ComponentBindings<C>
-    where ComponentBinding<C>: cmp::PartialEq
+impl<C> Into<Vec<ComponentBundle<C>>> for ComponentBundles<C>
+    where ComponentBundle<C>: cmp::PartialEq
 {
-    fn into(self) -> Vec<ComponentBinding<C>> {
+    fn into(self) -> Vec<ComponentBundle<C>> {
         self.bindings
     }
 }
 
-impl<C> IntoIterator for ComponentBindings<C>
-    where ComponentBinding<C>: cmp::PartialEq
+impl<C> IntoIterator for ComponentBundles<C>
+    where ComponentBundle<C>: cmp::PartialEq
 {
-    type Item = ComponentBinding<C>;
+    type Item = ComponentBundle<C>;
     type IntoIter = std::vec::IntoIter<Self::Item>;
 
     fn into_iter(self) -> Self::IntoIter {
@@ -585,16 +151,16 @@ impl<C> IntoIterator for ComponentBindings<C>
     }
 }
 
-impl<C> ComponentBindings<C>
-    where ComponentBinding<C>: cmp::PartialEq
+impl<C> ComponentBundles<C>
+    where ComponentBundle<C>: cmp::PartialEq
 {
     fn new() -> Self {
         Self { bindings: vec![] }
     }
 }
 
-impl<C> ComponentBindings<C>
-    where ComponentBinding<C>: cmp::PartialEq
+impl<C> ComponentBundles<C>
+    where ComponentBundle<C>: cmp::PartialEq
 {
     // Sort and dedup the components.
     //
@@ -638,29 +204,90 @@ impl<C> ComponentBindings<C>
 
 /// A vecor of key (primary or subkey, public or private) and any
 /// associated signatures.
-type KeyBindings<KeyPart, KeyRole> = ComponentBindings<Key<KeyPart, KeyRole>>;
+type KeyBundles<KeyPart, KeyRole> = ComponentBundles<Key<KeyPart, KeyRole>>;
 
 /// A vector of subkeys and any associated signatures.
-type SubkeyBindings<KeyPart> = KeyBindings<KeyPart, key::SubordinateRole>;
+type SubkeyBindings<KeyPart> = KeyBundles<KeyPart, key::SubordinateRole>;
 
 /// A vector of key (primary or subkey, public or private) and any
 /// associated signatures.
 #[allow(dead_code)]
 type GenericKeyBindings
-    = ComponentBindings<Key<key::UnspecifiedParts, key::UnspecifiedRole>>;
+    = ComponentBundles<Key<key::UnspecifiedParts, key::UnspecifiedRole>>;
 
 /// A vector of User ID bindings and any associated signatures.
-type UserIDBindings = ComponentBindings<UserID>;
+type UserIDBindings = ComponentBundles<UserID>;
 
 /// A vector of User Attribute bindings and any associated signatures.
-type UserAttributeBindings = ComponentBindings<UserAttribute>;
+type UserAttributeBindings = ComponentBundles<UserAttribute>;
 
 /// A vector of unknown components and any associated signatures.
 ///
 /// Note: all signatures are stored as certifications.
-type UnknownBindings = ComponentBindings<Unknown>;
+type UnknownBindings = ComponentBundles<Unknown>;
 
+/// Queries certificate holder's preferences.
+///
+/// A certificate's key holder controls the primary key.  Subpackets
+/// on self signatures can be used to express preferences for
+/// algorithms and key management.  Furthermore, the key holder's
+/// OpenPGP implementation can express its feature set.
+pub trait Preferences<'a, C: 'a>: ValidAmalgamation<'a, C> {
+    /// Returns symmetric algorithms that the key holder prefers.
+    ///
+    /// The algorithms are ordered according by the key holder's
+    /// preference.
+    fn preferred_symmetric_algorithms(&self)
+                                      -> Option<&'a [SymmetricAlgorithm]> {
+        self.map(|s| s.preferred_symmetric_algorithms())
+    }
 
+    /// Returns hash algorithms that the key holder prefers.
+    ///
+    /// The algorithms are ordered according by the key holder's
+    /// preference.
+    fn preferred_hash_algorithms(&self) -> Option<&'a [HashAlgorithm]> {
+        self.map(|s| s.preferred_hash_algorithms())
+    }
+
+    /// Returns compression algorithms that the key holder prefers.
+    ///
+    /// The algorithms are ordered according by the key holder's
+    /// preference.
+    fn preferred_compression_algorithms(&self)
+                                        -> Option<&'a [CompressionAlgorithm]> {
+        self.map(|s| s.preferred_compression_algorithms())
+    }
+
+    /// Returns AEAD algorithms that the key holder prefers.
+    ///
+    /// The algorithms are ordered according by the key holder's
+    /// preference.
+    fn preferred_aead_algorithms(&self) -> Option<&'a [AEADAlgorithm]> {
+        self.map(|s| s.preferred_aead_algorithms())
+    }
+
+    /// Returns the key holder's keyserver preferences.
+    fn key_server_preferences(&self) -> Option<KeyServerPreferences> {
+        self.map(|s| s.key_server_preferences())
+    }
+
+    /// Returns the key holder's preferred keyserver for updates.
+    fn preferred_key_server(&self) -> Option<&'a [u8]> {
+        self.map(|s| s.preferred_key_server())
+    }
+
+    /// Returns the key holder's feature set.
+    fn features(&self) -> Option<Features> {
+        self.map(|s| s.features())
+    }
+}
+
+// DOC-HACK: To avoid having a top-level re-export of `Cert`, we move
+// it in a submodule `def`.
+pub use def::Cert;
+mod def {
+use super::*;
 /// A OpenPGP Certificate.
 ///
 /// A Certificate (see [RFC 4880, section 11.1]) can be used to verify
@@ -669,8 +296,10 @@ type UnknownBindings = ComponentBindings<Unknown>;
 ///
 /// Certs are always canonicalized in the sense that only elements
 /// (user id, user attribute, subkey) with at least one valid
-/// self-signature are preserved.  Also, invalid self-signatures are
-/// dropped.  The self-signatures are sorted so that the newest
+/// self-signature at a given time under a given policy are used.
+/// However, we keep all packets around for re-serialization.  It
+/// could be an component that we simply do not understand.
+/// The self-signatures are sorted so that the newest
 /// self-signature comes first.  Components are sorted, but in an
 /// undefined manner (i.e., when parsing the same Cert multiple times,
 /// the components will be in the same order, but we reserve the right
@@ -694,14 +323,14 @@ type UnknownBindings = ComponentBindings<Unknown>;
 ///
 /// To filter certificates, iterate over all components, clone what
 /// you want to keep, and reassemble the certificate.  The following
-/// example simply copies all the packets, and can be adopted to
+/// example simply copies all the packets, and can be adapted to
 /// suit your policy:
 ///
 /// ```rust
 /// # extern crate sequoia_openpgp as openpgp;
 /// # use openpgp::Result;
 /// # use openpgp::parse::{Parse, PacketParserResult, PacketParser};
-/// use openpgp::{Cert, cert::CertBuilder};
+/// use openpgp::cert::prelude::*;
 ///
 /// # fn main() { f().unwrap(); }
 /// # fn f() -> Result<()> {
@@ -711,11 +340,12 @@ type UnknownBindings = ComponentBindings<Unknown>;
 ///     let mut acc = Vec::new();
 ///
 ///     // Primary key and related signatures.
-///     acc.push(cert.primary().clone().into());
-///     for s in cert.direct_signatures()  { acc.push(s.clone().into()) }
-///     for s in cert.certifications()     { acc.push(s.clone().into()) }
-///     for s in cert.self_revocations()   { acc.push(s.clone().into()) }
-///     for s in cert.other_revocations()  { acc.push(s.clone().into()) }
+///     let c = cert.primary_key();
+///     acc.push(c.key().clone().into());
+///     for s in c.self_signatures()   { acc.push(s.clone().into()) }
+///     for s in c.certifications()    { acc.push(s.clone().into()) }
+///     for s in c.self_revocations()  { acc.push(s.clone().into()) }
+///     for s in c.other_revocations() { acc.push(s.clone().into()) }
 ///
 ///     // UserIDs and related signatures.
 ///     for c in cert.userids() {
@@ -736,7 +366,7 @@ type UnknownBindings = ComponentBindings<Unknown>;
 ///     }
 ///
 ///     // Subkeys and related signatures.
-///     for c in cert.subkeys() {
+///     for c in cert.keys().subkeys() {
 ///         acc.push(c.key().clone().into());
 ///         for s in c.self_signatures()   { acc.push(s.clone().into()) }
 ///         for s in c.certifications()    { acc.push(s.clone().into()) }
@@ -781,9 +411,9 @@ type UnknownBindings = ComponentBindings<Unknown>;
 /// #     let ppr = PacketParser::from_bytes(&b""[..])?;
 /// match Cert::from_packet_parser(ppr) {
 ///     Ok(cert) => {
-///         println!("Key: {}", cert.primary());
-///         for binding in cert.userids() {
-///             println!("User ID: {}", binding.userid());
+///         println!("Key: {}", cert.fingerprint());
+///         for uid in cert.userids() {
+///             println!("User ID: {}", uid.userid());
 ///         }
 ///     }
 ///     Err(err) => {
@@ -796,21 +426,28 @@ type UnknownBindings = ComponentBindings<Unknown>;
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct Cert {
-    primary: PrimaryKeyBinding<key::PublicParts>,
+    pub(super) // doc-hack, see above
+    primary: PrimaryKeyBundle<key::PublicParts>,
 
+    pub(super) // doc-hack, see above
     userids: UserIDBindings,
+    pub(super) // doc-hack, see above
     user_attributes: UserAttributeBindings,
+    pub(super) // doc-hack, see above
     subkeys: SubkeyBindings<key::PublicParts>,
 
     // Unknown components, e.g., some UserAttribute++ packet from the
     // future.
+    pub(super) // doc-hack, see above
     unknowns: UnknownBindings,
     // Signatures that we couldn't find a place for.
+    pub(super) // doc-hack, see above
     bad: Vec<packet::Signature>,
 }
+} // doc-hack, see above
 
 impl std::str::FromStr for Cert {
-    type Err = failure::Error;
+    type Err = anyhow::Error;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         Self::from_bytes(s.as_bytes())
@@ -837,195 +474,10 @@ impl<'a> Parse<'a, Cert> for Cert {
 }
 
 impl Cert {
-    /// Returns a reference to the primary key binding.
-    ///
-    /// Note: information about the primary key is often stored on the
-    /// primary User ID's self signature.  Since these signatures are
-    /// associated with the UserID and not the primary key, that
-    /// information is not contained in the key binding.  Instead, you
-    /// should use methods like `Cert::primary_key_signature()` to get
-    /// information about the primary key.
-    pub fn primary(&self) -> &key::PublicKey {
-        &self.primary.key()
-    }
-
-    /// Returns the binding for the primary User ID at time `t`.
-    ///
-    /// See `Cert::primary_userid_full` for a description of how the
-    /// primary user id is determined.
-    pub fn primary_userid<T>(&self, t: T) -> Option<&UserIDBinding>
-        where T: Into<Option<time::SystemTime>>
+    /// Returns the amalgamated primary key.
+    pub fn primary_key(&self) -> PrimaryKeyAmalgamation<key::PublicParts>
     {
-        self.primary_userid_full(t).map(|r| r.0)
-    }
-
-    /// Returns the binding for the primary User ID at time `t` and
-    /// some associated data.
-    ///
-    /// In addition to the User ID binding, this also returns the
-    /// binding signature and the User ID's `RevocationStatus` at time
-    /// `t`.
-    ///
-    /// The primary User ID is determined by taking the User IDs that
-    /// are alive at time `t`, and sorting them as follows:
-    ///
-    ///   - non-revoked first
-    ///   - primary first
-    ///   - signature creation first
-    ///
-    /// If there is more than one, than one is selected in a
-    /// deterministic, but undefined manner.
-    pub fn primary_userid_full<T>(&self, t: T)
-        -> Option<(&UserIDBinding, &Signature, RevocationStatus)>
-        where T: Into<Option<time::SystemTime>>
-    {
-        let t = t.into()
-            .unwrap_or_else(|| time::SystemTime::now());
-        self.userids()
-            // Filter out User IDs that are not alive at time `t`.
-            //
-            // While we have the binding signature, extract a few
-            // properties to avoid recomputing the same thing multiple
-            // times.
-            .filter_map(|b| {
-                // No binding signature at time `t` => not alive.
-                let selfsig = b.binding_signature(t)?;
-
-                if !selfsig.signature_alive(t, time::Duration::new(0, 0)) {
-                    return None;
-                }
-
-                let revoked = b.revoked(t);
-                let primary = selfsig.primary_userid().unwrap_or(false);
-                let signature_creation_time = selfsig.signature_creation_time()?;
-
-                Some(((b, selfsig, revoked), primary, signature_creation_time))
-            })
-            .max_by(|(a, a_primary, a_signature_creation_time),
-                    (b, b_primary, b_signature_creation_time)| {
-                match (destructures_to!(RevocationStatus::Revoked(_) = &a.2),
-                       destructures_to!(RevocationStatus::Revoked(_) = &b.2)) {
-                    (true, false) => return Ordering::Less,
-                    (false, true) => return Ordering::Greater,
-                    _ => (),
-                }
-                match (a_primary, b_primary) {
-                    (true, false) => return Ordering::Greater,
-                    (false, true) => return Ordering::Less,
-                    _ => (),
-                }
-                match a_signature_creation_time.cmp(&b_signature_creation_time) {
-                    Ordering::Less => return Ordering::Less,
-                    Ordering::Greater => return Ordering::Greater,
-                    Ordering::Equal => (),
-                }
-
-                // Fallback to a lexographical comparison.  Prefer
-                // the "smaller" one.
-                match a.0.userid().value().cmp(&b.0.userid().value()) {
-                    Ordering::Less => return Ordering::Greater,
-                    Ordering::Greater => return Ordering::Less,
-                    Ordering::Equal =>
-                        panic!("non-canonicalized Cert (duplicate User IDs)"),
-                }
-            })
-            .map(|b| b.0)
-    }
-
-    /// Returns the primary key's current self-signature as of `t`.
-    ///
-    /// If the current self-signature is from a User ID binding (and
-    /// not a direct signature), this also returns the User ID binding
-    /// and its revocation status as of `t`.
-    ///
-    /// The primary key's current self-signature as of `t` is, in
-    /// order of preference:
-    ///
-    ///   - The binding signature of the primary User ID at time `t`,
-    ///     if the primary User ID is not revoked at time `t`.
-    ///
-    ///   - The newest, live, direct self signature at time `t`.
-    ///
-    ///   - The binding signature of the primary User ID at time `t`
-    ///     (this can only happen if there are only revoked User IDs
-    ///     at time `t`).
-    ///
-    /// If there are no applicable signatures, `None` is returned.
-    pub fn primary_key_signature_full<T>(&self, t: T)
-        -> Option<(&Signature, Option<(&UserIDBinding, RevocationStatus)>)>
-        where T: Into<Option<time::SystemTime>>
-    {
-        let t = t.into()
-            .unwrap_or_else(|| time::SystemTime::now());
-
-        // 1. Self-signature from the non-revoked primary UserID.
-        let primary_userid = self.primary_userid_full(t);
-        if let Some((ref u, ref s, ref r)) = primary_userid {
-            if !destructures_to!(RevocationStatus::Revoked(_) = r) {
-                return Some((s, Some((u, r.clone()))));
-            }
-        }
-
-        // 2. Direct signature.
-        if let Some(s) = self.primary.binding_signature(t) {
-            return Some((s, None));
-        }
-
-        // 3. All User IDs are revoked.
-        if let Some((u, s, r)) = primary_userid {
-            assert!(destructures_to!(RevocationStatus::Revoked(_) = &r));
-            return Some((s, Some((u, r))));
-        }
-
-        // 4. No user ids and no direct signatures.
-        None
-    }
-
-    /// Returns the primary key's current self-signature.
-    ///
-    /// This function is identical to
-    /// `Cert::primary_key_signature_full()`, but it doesn't return the
-    /// `UserIDBinding`.
-    pub fn primary_key_signature<T>(&self, t: T) -> Option<&Signature>
-        where T: Into<Option<time::SystemTime>>
-    {
-        if let Some((sig, _)) = self.primary_key_signature_full(t) {
-            Some(sig)
-        } else {
-            None
-        }
-    }
-
-    /// The direct signatures.
-    ///
-    /// The signatures are validated, and they are reverse sorted by
-    /// their creation time (newest first).
-    pub fn direct_signatures(&self) -> &[Signature] {
-        &self.primary.self_signatures
-    }
-
-    /// Third-party certifications.
-    ///
-    /// The signatures are *not* validated.  They are reverse sorted by
-    /// their creation time (newest first).
-    pub fn certifications(&self) -> &[Signature] {
-        &self.primary.certifications
-    }
-
-    /// Revocations issued by the key itself.
-    ///
-    /// The revocations are validated, and they are reverse sorted by
-    /// their creation time (newest first).
-    pub fn self_revocations(&self) -> &[Signature] {
-        &self.primary.self_revocations
-    }
-
-    /// Revocations issued by other keys.
-    ///
-    /// The revocations are *not* validated.  They are reverse sorted
-    /// by their creation time (newest first).
-    pub fn other_revocations(&self) -> &[Signature] {
-        &self.primary.other_revocations
+        PrimaryKeyAmalgamation::new(&self)
     }
 
     /// Returns the Cert's revocation status at time `t`.
@@ -1043,11 +495,26 @@ impl Cert {
     ///
     /// Note: this only returns whether this Cert is revoked; it does
     /// not imply anything about the Cert or other components.
-    pub fn revoked<T>(&self, t: T) -> RevocationStatus
+    pub fn revoked<T>(&self, policy: &dyn Policy, t: T) -> RevocationStatus
         where T: Into<Option<time::SystemTime>>
     {
         let t = t.into();
-        self.primary._revoked(true, self.primary_key_signature(t), t)
+        // Both a primary key signature and the primary userid's
+        // binding signature can override a soft revocation.  Compute
+        // the most recent one.
+        let vkao = self.primary_key().with_policy(policy, t).ok();
+        let mut sig = vkao.as_ref().map(|vka| vka.binding_signature());
+        if let Some(direct) = vkao.as_ref()
+            .and_then(|vka| vka.direct_key_signature())
+        {
+            match (direct.signature_creation_time(),
+                   sig.and_then(|s| s.signature_creation_time())) {
+                (Some(ds), Some(bs)) if ds > bs =>
+                    sig = Some(direct),
+                _ => ()
+            }
+        }
+        self.primary_key().bundle()._revoked(policy, t, true, sig)
     }
 
     /// Revokes the Cert in place.
@@ -1064,26 +531,30 @@ impl Cert {
     /// ```rust
     /// # extern crate sequoia_openpgp as openpgp;
     /// # use openpgp::Result;
-    /// use openpgp::RevocationStatus;
+    /// use openpgp::types::RevocationStatus;
     /// use openpgp::types::{ReasonForRevocation, SignatureType};
-    /// use openpgp::cert::{CipherSuite, CertBuilder};
+    /// use openpgp::cert::prelude::*;
     /// use openpgp::crypto::KeyPair;
     /// use openpgp::parse::Parse;
+    /// use sequoia_openpgp::policy::StandardPolicy;
+    ///
     /// # fn main() { f().unwrap(); }
     /// # fn f() -> Result<()>
     /// # {
+    /// let p = &StandardPolicy::new();
+    ///
     /// let (mut cert, _) = CertBuilder::new()
     ///     .set_cipher_suite(CipherSuite::Cv25519)
     ///     .generate()?;
     /// assert_eq!(RevocationStatus::NotAsFarAsWeKnow,
-    ///            cert.revoked(None));
+    ///            cert.revoked(p, None));
     ///
-    /// let mut keypair = cert.primary().clone()
+    /// let mut keypair = cert.primary_key().key().clone()
     ///     .mark_parts_secret()?.into_keypair()?;
     /// let cert = cert.revoke_in_place(&mut keypair,
     ///                               ReasonForRevocation::KeyCompromised,
     ///                               b"It was the maid :/")?;
-    /// if let RevocationStatus::Revoked(sigs) = cert.revoked(None) {
+    /// if let RevocationStatus::Revoked(sigs) = cert.revoked(p, None) {
     ///     assert_eq!(sigs.len(), 1);
     ///     assert_eq!(sigs[0].typ(), SignatureType::KeyRevocation);
     ///     assert_eq!(sigs[0].reason_for_revocation(),
@@ -1095,10 +566,9 @@ impl Cert {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn revoke_in_place<R>(self, primary_signer: &mut dyn Signer<R>,
-                              code: ReasonForRevocation, reason: &[u8])
+    pub fn revoke_in_place(self, primary_signer: &mut dyn Signer,
+                           code: ReasonForRevocation, reason: &[u8])
         -> Result<Cert>
-        where R: key::KeyRole
     {
         let sig = CertRevocationBuilder::new()
             .set_reason_for_revocation(code, reason)?
@@ -1106,28 +576,16 @@ impl Cert {
         self.merge_packets(vec![sig.into()])
     }
 
-    /// Returns whether or not the Cert is expired at `t`.
-    pub fn expired<T>(&self, t: T) -> bool
-        where T: Into<Option<time::SystemTime>>
-    {
-        let t = t.into();
-        if let Some(Signature::V4(sig)) = self.primary_key_signature(t) {
-            sig.key_expired(self.primary(), t)
-        } else {
-            false
-        }
-    }
-
     /// Returns whether or not the Cert is alive at `t`.
-    pub fn alive<T>(&self, t: T) -> bool
+    pub fn alive<T>(&self, policy: &dyn Policy, t: T) -> Result<()>
+
         where T: Into<Option<time::SystemTime>>
     {
         let t = t.into();
-        if let Some(sig) = self.primary_key_signature(t) {
-            sig.key_alive(self.primary(), t)
-        } else {
-            false
-        }
+        self.primary_key()
+            .with_policy(policy, t).context(
+                "primary key rejected by policy")?
+            .alive()
     }
 
     /// Sets the key to expire in delta seconds.
@@ -1137,78 +595,76 @@ impl Cert {
     ///
     /// This function exists to facilitate testing, which is why it is
     /// not exported.
-    fn set_expiry_as_of<R>(self, primary_signer: &mut dyn Signer<R>,
-                           expiration: Option<time::Duration>,
-                           now: time::SystemTime)
+    #[cfg(test)]
+    fn set_validity_period_as_of(self, policy: &dyn Policy,
+                                 primary_signer: &mut dyn Signer,
+                                 expiration: Option<time::Duration>,
+                                 now: time::SystemTime)
         -> Result<Cert>
-        where R: key::KeyRole
     {
-        let sig = {
-            let (template, userid) = self
-                .primary_key_signature_full(Some(now))
-                .ok_or(Error::MalformedCert("No self-signature".into()))?;
-
-            // Recompute the signature.
-            let hash_algo = HashAlgorithm::SHA512;
-            let mut hash = hash_algo.context()?;
-
-            self.primary().hash(&mut hash);
-            if let Some((userid, _)) = userid {
-                userid.userid().hash(&mut hash);
-            } else {
-                assert_eq!(template.typ(), SignatureType::DirectKey);
-            }
-
-            // Generate the signature.
-            signature::Builder::from(template.clone())
-                .set_key_expiration_time(expiration)?
-                .set_signature_creation_time(now)?
-                .sign_hash(primary_signer, hash)?
-        };
-
-        self.merge_packets(vec![sig.into()])
+        let primary = self.primary_key().with_policy(policy, now)?;
+        let sigs = primary.set_validity_period_as_of(primary_signer,
+                                                     expiration,
+                                                     now)?;
+        self.merge_packets(sigs)
     }
 
-    /// Sets the key to expire in delta.
+    /// Sets the key to expire at the given time.
     ///
-    /// Note: the time is relative to the key's creation time, not the
-    /// current time!
-    pub fn set_expiry<R>(self, primary_signer: &mut dyn Signer<R>,
-                         expiration: Option<time::Duration>)
+    /// A policy is needed, because the expiration is updated by adding
+    /// a self-signature to the primary user id.
+    pub fn set_expiration_time(self, policy: &dyn Policy,
+                               primary_signer: &mut dyn Signer,
+                               expiration: Option<time::SystemTime>)
         -> Result<Cert>
-        where R: key::KeyRole
     {
-        self.set_expiry_as_of(primary_signer, expiration,
-                              time::SystemTime::now())
+        let now = time::SystemTime::now();
+        let primary = self.primary_key().with_policy(policy, now)?;
+        let sigs = primary.set_expiration_time(primary_signer,
+                                               expiration)?;
+        self.merge_packets(sigs)
     }
 
-    /// Returns an iterator over the Cert's `UserIDBinding`s.
-    pub fn userids(&self) -> UserIDBindingIter {
-        UserIDBindingIter { iter: Some(self.userids.iter()) }
+    /// Returns the amalgamated primary userid at `t`, if any.
+    pub fn primary_userid<'a, T>(&'a self, policy: &'a dyn Policy, t: T)
+        -> Option<ValidComponentAmalgamation<'a, UserID>>
+        where T: Into<Option<std::time::SystemTime>>
+    {
+        let t = t.into().unwrap_or_else(std::time::SystemTime::now);
+        ValidComponentAmalgamation::primary(self, self.userids.iter(),
+                                            policy, t)
     }
 
-    /// Returns an iterator over the Cert's valid `UserAttributeBinding`s.
-    ///
-    /// A valid `UserIDAttributeBinding` has at least one good
-    /// self-signature.
-    pub fn user_attributes(&self) -> UserAttributeBindingIter {
-        UserAttributeBindingIter { iter: Some(self.user_attributes.iter()) }
+    /// Returns an iterator over the Cert's userids.
+    pub fn userids(&self) -> ComponentIter<UserID> {
+        ComponentIter::new(self, self.userids.iter())
     }
 
-    /// Returns an iterator over the Cert's valid subkeys.
-    ///
-    /// A valid `KeyBinding` has at least one good self-signature.
-    pub fn subkeys(&self) -> KeyBindingIter<key::PublicParts,
+    /// Returns the amalgamated primary user attribute at `t`, if any.
+    pub fn primary_user_attribute<'a, T>(&'a self, policy: &'a dyn Policy, t: T)
+        -> Option<ValidComponentAmalgamation<'a, UserAttribute>>
+        where T: Into<Option<std::time::SystemTime>>
+    {
+        let t = t.into().unwrap_or_else(std::time::SystemTime::now);
+        ValidComponentAmalgamation::primary(self, self.user_attributes.iter(),
+                                            policy, t)
+    }
+
+    /// Returns an iterator over the Cert's `UserAttributeBundle`s.
+    pub fn user_attributes(&self) -> ComponentIter<UserAttribute> {
+        ComponentIter::new(self, self.user_attributes.iter())
+    }
+
+    /// Returns an iterator over the Cert's subkeys.
+    pub(crate) fn subkeys(&self) -> UnfilteredKeyBundleIter<key::PublicParts,
                                             key::SubordinateRole>
     {
-        KeyBindingIter { iter: Some(self.subkeys.iter()) }
+        UnfilteredKeyBundleIter { iter: Some(self.subkeys.iter()) }
     }
 
-    /// Returns an iterator over the Cert's valid unknown components.
-    ///
-    /// A valid `UnknownBinding` has at least one good self-signature.
-    pub fn unknowns(&self) -> UnknownBindingIter {
-        UnknownBindingIter { iter: Some(self.unknowns.iter()) }
+    /// Returns an iterator over the Cert's unknown components.
+    pub fn unknowns(&self) -> UnknownBundleIter {
+        UnknownBundleIter { iter: Some(self.unknowns.iter()) }
     }
 
     /// Returns a slice containing all bad signatures.
@@ -1219,37 +675,11 @@ impl Cert {
         &self.bad
     }
 
-    /// Returns an iterator over the Cert's valid keys (live and
-    /// not-revoked).
+    /// Returns an iterator over the certificate's keys.
     ///
     /// That is, this returns an iterator over the primary key and any
-    /// subkeys, along with the corresponding signatures.
-    ///
-    /// Note: since a primary key is different from a binding, the
-    /// iterator is over `Key`s and not `KeyBindings`.
-    /// Furthermore, the primary key has no binding signature.  Here,
-    /// the signature carrying the primary key's key flags is
-    /// returned.  There are corner cases where no such signature
-    /// exists (e.g. partial Certs), therefore this iterator may return
-    /// `None` for the primary key's signature.
-    ///
-    /// A valid `Key` has at least one good self-signature.
-    ///
-    /// To return all keys, do `keys_all().unfiltered()`.  See the
-    /// documentation of `keys` for how to control what keys are
-    /// returned.
-    pub fn keys_valid(&self)
-        -> KeyIter<key::PublicParts, key::UnspecifiedRole>
-    {
-        KeyIter::new(self).alive().revoked(false)
-    }
-
-    /// Returns an iterator over the Cert's keys.
-    ///
-    /// Unlike `Cert::keys_valid()`, this iterator also returns expired
-    /// and revoked keys.
-    pub fn keys_all(&self)
-        -> KeyIter<key::PublicParts, key::UnspecifiedRole>
+    /// subkeys.
+    pub fn keys(&self) -> KeyIter<key::PublicParts, key::UnspecifiedRole>
     {
         KeyIter::new(self)
     }
@@ -1317,13 +747,13 @@ impl Cert {
                 for sig in mem::replace(&mut $binding.$sigs, Vec::new())
                     .into_iter()
                 {
-                    if let Ok(true) = sig.$verify_method(self.primary.key(),
-                                                         self.primary.key(),
-                                                         $($verify_args),*) {
+                    if let Ok(()) = sig.$verify_method(self.primary.key(),
+                                                       self.primary.key(),
+                                                       $($verify_args),*) {
                         $binding.$sigs.push(sig);
                     } else {
                         t!("Sig {:02X}{:02X}, type = {} doesn't belong to {}",
-                           sig.hash_prefix()[0], sig.hash_prefix()[1],
+                           sig.digest_prefix()[0], sig.digest_prefix()[1],
                            sig.typ(), $desc);
 
                         self.bad.push(sig);
@@ -1336,10 +766,92 @@ impl Cert {
             });
         }
 
+        // The same as check!, but for third party signatures.  If we
+        // do have the key that made the signature, we can verify it
+        // like in check!.  Otherwise, we use the hash prefix as
+        // heuristic approximating the verification.
+        macro_rules! check_3rd_party {
+            ($desc:expr,            // a description of the component
+             $binding:expr,         // the binding to check
+             $sigs:ident,           // a vector of sigs in $binding to check
+             $lookup_fn:expr,       // a function to lookup keys
+             $verify_method:ident,  // the method to call to verify it
+             $hash_method:ident,    // the method to call to compute the hash
+             $($verify_args:expr),* // additional arguments to pass to the above
+            ) => ({
+                t!("check_3rd_party!({}, {}, {:?}, {}, {}, ...)",
+                   $desc, stringify!($binding), $binding.$sigs,
+                   stringify!($verify_method), stringify!($hash_method));
+                for sig in mem::replace(&mut $binding.$sigs, Vec::new())
+                    .into_iter()
+                {
+                    // Use hash prefix as heuristic.
+                    if let Ok(hash) = Signature::$hash_method(
+                        &sig, self.primary.key(), $($verify_args),*) {
+                        if &sig.digest_prefix()[..] == &hash[..2] {
+                            // See if we can get the key for a
+                            // positive verification.
+                            if let Some(key) = $lookup_fn(&sig) {
+                                if let Ok(()) = sig.$verify_method(
+                                    &key, self.primary.key(), $($verify_args),*)
+                                {
+                                    $binding.$sigs.push(sig);
+                                } else {
+                                    t!("Sig {:02X}{:02X}, type = {} \
+                                        doesn't belong to {}",
+                                       sig.digest_prefix()[0],
+                                       sig.digest_prefix()[1],
+                                       sig.typ(), $desc);
+
+                                    self.bad.push(sig);
+                                }
+                            } else {
+                                // No key, we need to trust our heuristic.
+                                $binding.$sigs.push(sig);
+                            }
+                        } else {
+                            t!("Sig {:02X}{:02X}, type = {} \
+                                doesn't belong to {}",
+                               sig.digest_prefix()[0], sig.digest_prefix()[1],
+                               sig.typ(), $desc);
+
+                            self.bad.push(sig);
+                        }
+                    } else {
+                        // Hashing failed, we likely don't support
+                        // the hash algorithm.
+                        t!("Sig {:02X}{:02X}, type = {}: \
+                            Hashing failed",
+                           sig.digest_prefix()[0], sig.digest_prefix()[1],
+                           sig.typ());
+
+                        self.bad.push(sig);
+                    }
+                }
+            });
+            ($desc:expr, $binding:expr, $sigs:ident, $lookup_fn:expr,
+             $verify_method:ident, $hash_method:ident) => ({
+                 check_3rd_party!($desc, $binding, $sigs, $lookup_fn,
+                                  $verify_method, $hash_method, )
+            });
+        }
+
+        // Placeholder lookup function.
+        fn lookup_fn(_: &Signature)
+                     -> Option<Key<key::PublicParts, key::UnspecifiedRole>> {
+            None
+        }
+
         check!("primary key",
-               self.primary, self_signatures, verify_primary_key_binding);
+               self.primary, self_signatures, verify_direct_key);
         check!("primary key",
                self.primary, self_revocations, verify_primary_key_revocation);
+        check_3rd_party!("primary key",
+                         self.primary, certifications, lookup_fn,
+                         verify_direct_key, hash_direct_key);
+        check_3rd_party!("primary key",
+                         self.primary, other_revocations, lookup_fn,
+                         verify_primary_key_revocation, hash_direct_key);
 
         for binding in self.userids.iter_mut() {
             check!(format!("userid \"{}\"",
@@ -1350,6 +862,18 @@ impl Cert {
                            String::from_utf8_lossy(binding.userid().value())),
                    binding, self_revocations, verify_userid_revocation,
                    binding.userid());
+            check_3rd_party!(
+                format!("userid \"{}\"",
+                        String::from_utf8_lossy(binding.userid().value())),
+                binding, certifications, lookup_fn,
+                verify_userid_binding, hash_userid_binding,
+                binding.userid());
+            check_3rd_party!(
+                format!("userid \"{}\"",
+                        String::from_utf8_lossy(binding.userid().value())),
+                binding, other_revocations, lookup_fn,
+                verify_userid_revocation, hash_userid_binding,
+                binding.userid());
         }
 
         for binding in self.user_attributes.iter_mut() {
@@ -1359,6 +883,16 @@ impl Cert {
             check!("user attribute",
                    binding, self_revocations, verify_user_attribute_revocation,
                    binding.user_attribute());
+            check_3rd_party!(
+                "user attribute",
+                binding, certifications, lookup_fn,
+                verify_user_attribute_binding, hash_user_attribute_binding,
+                binding.user_attribute());
+            check_3rd_party!(
+                "user attribute",
+                binding, other_revocations, lookup_fn,
+                verify_user_attribute_revocation, hash_user_attribute_binding,
+                binding.user_attribute());
         }
 
         for binding in self.subkeys.iter_mut() {
@@ -1368,27 +902,51 @@ impl Cert {
             check!(format!("subkey {}", binding.key().keyid()),
                    binding, self_revocations, verify_subkey_revocation,
                    binding.key());
+            check_3rd_party!(
+                format!("subkey {}", binding.key().keyid()),
+                binding, certifications, lookup_fn,
+                verify_subkey_binding, hash_subkey_binding,
+                binding.key());
+            check_3rd_party!(
+                format!("subkey {}", binding.key().keyid()),
+                binding, other_revocations, lookup_fn,
+                verify_subkey_revocation, hash_subkey_binding,
+                binding.key());
         }
 
         // See if the signatures that didn't validate are just out of
         // place.
+        let mut bad_sigs: Vec<(Option<usize>, Signature)> =
+            mem::replace(&mut self.bad, Vec::new()).into_iter()
+            .map(|sig| (None, sig)).collect();
 
-        'outer: for sig in mem::replace(&mut self.bad, Vec::new()) {
+        // Do the same for signatures on unknown components, but
+        // remember where we took them from.
+        for (i, c) in self.unknowns.iter_mut().enumerate() {
+            for sig in mem::replace(&mut c.certifications, Vec::new()) {
+                bad_sigs.push((Some(i), sig));
+            }
+        }
+
+        'outer: for (unknown_idx, sig) in bad_sigs {
+            // Did we find a new place for sig?
+            let mut found_component = false;
+
             macro_rules! check_one {
                 ($desc:expr, $sigs:expr, $sig:expr,
                  $verify_method:ident, $($verify_args:expr),*) => ({
-                     t!("check!({}, {:?}, {:?}, {}, ...)",
+                     t!("check_one!({}, {:?}, {:?}, {}, ...)",
                         $desc, $sigs, $sig,
                         stringify!($verify_method));
-                     if let Ok(true)
+                     if let Ok(())
                          = $sig.$verify_method(self.primary.key(),
                                                self.primary.key(),
                                                $($verify_args),*)
                      {
                          t!("Sig {:02X}{:02X}, {:?} \
                              was out of place.  Belongs to {}.",
-                            $sig.hash_prefix()[0],
-                            $sig.hash_prefix()[1],
+                            $sig.digest_prefix()[0],
+                            $sig.digest_prefix()[1],
                             $sig.typ(), $desc);
 
                          $sigs.push($sig);
@@ -1401,74 +959,203 @@ impl Cert {
                 });
             }
 
-            check_one!("primary key", self.primary.self_signatures, sig,
-                       verify_primary_key_binding);
-            check_one!("primary key", self.primary.self_revocations, sig,
-                       verify_primary_key_revocation);
+            // The same as check_one!, but for third party signatures.
+            // If we do have the key that made the signature, we can
+            // verify it like in check!.  Otherwise, we use the hash
+            // prefix as heuristic approximating the verification.
+            macro_rules! check_one_3rd_party {
+                ($desc:expr,            // a description of the component
+                 $sigs:expr,            // where to put $sig if successful
+                 $sig:ident,            // the signature to check
+                 $lookup_fn:expr,       // a function to lookup keys
+                 $verify_method:ident,  // the method to verify it
+                 $hash_method:ident,    // the method to compute the hash
+                 $($verify_args:expr),* // additional arguments for the above
+                ) => ({
+                    t!("check_one_3rd_party!({}, {}, {:?}, {}, {}, ...)",
+                       $desc, stringify!($sigs), $sig,
+                       stringify!($verify_method), stringify!($hash_method));
+                    if let Some(key) = $lookup_fn(&sig) {
+                        if let Ok(()) = sig.$verify_method(&key,
+                                                           self.primary.key(),
+                                                           $($verify_args),*)
+                        {
+                            t!("Sig {:02X}{:02X}, {:?} \
+                                was out of place.  Belongs to {}.",
+                               $sig.digest_prefix()[0],
+                               $sig.digest_prefix()[1],
+                               $sig.typ(), $desc);
 
-            for binding in self.userids.iter_mut() {
-                check_one!(format!("userid \"{}\"",
-                                   String::from_utf8_lossy(
-                                       binding.userid().value())),
-                           binding.self_signatures, sig,
-                           verify_userid_binding, binding.userid());
-                check_one!(format!("userid \"{}\"",
-                                   String::from_utf8_lossy(
-                                       binding.userid().value())),
-                           binding.self_revocations, sig,
-                           verify_userid_revocation, binding.userid());
+                            $sigs.push($sig);
+                            continue 'outer;
+                        }
+                    } else {
+                        // Use hash prefix as heuristic.
+                        if let Ok(hash) = Signature::$hash_method(
+                            &sig, self.primary.key(), $($verify_args),*) {
+                            if &sig.digest_prefix()[..] == &hash[..2] {
+                                t!("Sig {:02X}{:02X}, {:?} \
+                                    was out of place.  Likely belongs to {}.",
+                                   $sig.digest_prefix()[0],
+                                   $sig.digest_prefix()[1],
+                                   $sig.typ(), $desc);
+
+                                $sigs.push($sig.clone());
+                                // The cost of missing a revocation
+                                // certificate merely because we put
+                                // it into the wrong place seem to
+                                // outweigh the cost of duplicating
+                                // it.
+                                t!("Will keep trying to match this sig to \
+                                    other components (found before? {:?})...",
+                                   found_component);
+                                found_component = true;
+                            }
+                        }
+                    }
+                });
+                ($desc:expr, $sigs:expr, $sig:ident, $lookup_fn:expr,
+                 $verify_method:ident, $hash_method:ident) => ({
+                     check_one_3rd_party!($desc, $sigs, $sig, $lookup_fn,
+                                          $verify_method, $hash_method, )
+                 });
             }
 
-            for binding in self.user_attributes.iter_mut() {
-                check_one!("user attribute",
-                           binding.self_signatures, sig,
-                           verify_user_attribute_binding,
-                           binding.user_attribute());
-                check_one!("user attribute",
-                           binding.self_revocations, sig,
-                           verify_user_attribute_revocation,
-                           binding.user_attribute());
+            use SignatureType::*;
+            match sig.typ() {
+                DirectKey => {
+                    check_one!("primary key", self.primary.self_signatures,
+                               sig, verify_direct_key);
+                    check_one_3rd_party!(
+                        "primary key", self.primary.certifications, sig,
+                        lookup_fn,
+                        verify_direct_key, hash_direct_key);
+                },
+
+                KeyRevocation => {
+                    check_one!("primary key", self.primary.self_revocations,
+                               sig, verify_primary_key_revocation);
+                    check_one_3rd_party!(
+                        "primary key", self.primary.other_revocations, sig,
+                        lookup_fn, verify_primary_key_revocation,
+                        hash_direct_key);
+                },
+
+                GenericCertification | PersonaCertification
+                    | CasualCertification | PositiveCertification =>
+                {
+                    for binding in self.userids.iter_mut() {
+                        check_one!(format!("userid \"{}\"",
+                                           String::from_utf8_lossy(
+                                               binding.userid().value())),
+                                   binding.self_signatures, sig,
+                                   verify_userid_binding, binding.userid());
+                        check_one_3rd_party!(
+                            format!("userid \"{}\"",
+                                    String::from_utf8_lossy(
+                                        binding.userid().value())),
+                            binding.certifications, sig, lookup_fn,
+                            verify_userid_binding, hash_userid_binding,
+                            binding.userid());
+                    }
+
+                    for binding in self.user_attributes.iter_mut() {
+                        check_one!("user attribute",
+                                   binding.self_signatures, sig,
+                                   verify_user_attribute_binding,
+                                   binding.user_attribute());
+                        check_one_3rd_party!(
+                            "user attribute",
+                            binding.certifications, sig, lookup_fn,
+                            verify_user_attribute_binding,
+                            hash_user_attribute_binding,
+                            binding.user_attribute());
+                    }
+                },
+
+                CertificationRevocation => {
+                    for binding in self.userids.iter_mut() {
+                        check_one!(format!("userid \"{}\"",
+                                           String::from_utf8_lossy(
+                                               binding.userid().value())),
+                                   binding.self_revocations, sig,
+                                   verify_userid_revocation,
+                                   binding.userid());
+                        check_one_3rd_party!(
+                            format!("userid \"{}\"",
+                                    String::from_utf8_lossy(
+                                        binding.userid().value())),
+                            binding.other_revocations, sig, lookup_fn,
+                            verify_userid_revocation, hash_userid_binding,
+                            binding.userid());
+                    }
+
+                    for binding in self.user_attributes.iter_mut() {
+                        check_one!("user attribute",
+                                   binding.self_revocations, sig,
+                                   verify_user_attribute_revocation,
+                                   binding.user_attribute());
+                        check_one_3rd_party!(
+                            "user attribute",
+                            binding.other_revocations, sig, lookup_fn,
+                            verify_user_attribute_revocation,
+                            hash_user_attribute_binding,
+                            binding.user_attribute());
+                    }
+                },
+
+                SubkeyBinding => {
+                    for binding in self.subkeys.iter_mut() {
+                        check_one!(format!("subkey {}", binding.key().keyid()),
+                                   binding.self_signatures, sig,
+                                   verify_subkey_binding, binding.key());
+                        check_one_3rd_party!(
+                            format!("subkey {}", binding.key().keyid()),
+                            binding.certifications, sig, lookup_fn,
+                            verify_subkey_binding, hash_subkey_binding,
+                            binding.key());
+                    }
+                },
+
+                SubkeyRevocation => {
+                    for binding in self.subkeys.iter_mut() {
+                        check_one!(format!("subkey {}", binding.key().keyid()),
+                                   binding.self_revocations, sig,
+                                   verify_subkey_revocation, binding.key());
+                        check_one_3rd_party!(
+                            format!("subkey {}", binding.key().keyid()),
+                            binding.other_revocations, sig, lookup_fn,
+                            verify_subkey_revocation, hash_subkey_binding,
+                            binding.key());
+                    }
+                },
+
+                typ => {
+                    t!("Odd signature type: {:?}", typ);
+                },
             }
 
-            for binding in self.subkeys.iter_mut() {
-                check_one!(format!("subkey {}", binding.key().keyid()),
-                           binding.self_signatures, sig,
-                           verify_subkey_binding, binding.key());
-                check_one!(format!("subkey {}", binding.key().keyid()),
-                           binding.self_revocations, sig,
-                           verify_subkey_revocation, binding.key());
+            if found_component {
+                continue;
             }
 
             // Keep them for later.
             t!("Self-sig {:02X}{:02X}, {:?} doesn't belong \
                 to any known component or is bad.",
-               sig.hash_prefix()[0], sig.hash_prefix()[1],
+               sig.digest_prefix()[0], sig.digest_prefix()[1],
                sig.typ());
-            self.bad.push(sig);
+
+            if let Some(i) = unknown_idx {
+                self.unknowns[i].certifications.push(sig);
+            } else {
+                self.bad.push(sig);
+            }
         }
 
         if self.bad.len() > 0 {
             t!("{}: ignoring {} bad self-signatures",
-               self.primary().keyid(), self.bad.len());
+               self.keyid(), self.bad.len());
         }
-
-        // Only keep user ids / user attributes / subkeys with at
-        // least one valid self-signature or self-revocation.
-        self.userids.retain(|userid| {
-            userid.self_signatures.len() > 0 || userid.self_revocations.len() > 0
-        });
-        t!("Retained {} userids", self.userids.len());
-
-        self.user_attributes.retain(|ua| {
-            ua.self_signatures.len() > 0 || ua.self_revocations.len() > 0
-        });
-        t!("Retained {} user_attributes", self.user_attributes.len());
-
-        self.subkeys.retain(|subkey| {
-            subkey.self_signatures.len() > 0 || subkey.self_revocations.len() > 0
-        });
-        t!("Retained {} subkeys", self.subkeys.len());
-
 
         self.primary.sort_and_dedup();
 
@@ -1486,30 +1173,19 @@ impl Cert {
         //   - One is corrupted
         //   - There are two versions that are encrypted differently
         self.subkeys.sort_and_dedup(Key::public_cmp,
-            |ref mut a, ref mut b| {
+            |a, b| {
                 // Recall: if a and b are equal, a will be dropped.
-                if b.secret().is_none() && a.secret().is_some() {
-                    b.set_secret(a.set_secret(None));
+                if ! b.has_secret() && a.has_secret() {
+                    std::mem::swap(a, b);
                 }
             });
-        self.unknowns.sort_and_dedup(Unknown::cmp, |_, _| {});
 
-        // In case we have subkeys bound to the primary, it must be
-        // certification capable.
-        if ! self.subkeys.is_empty() {
-            let pk_can_certify =
-                self.primary_key_signature(None)
-                .map(|sig| sig.key_flags().for_certification())
-                .unwrap_or(true);
-
-            if ! pk_can_certify {
-                // Primary not certification capable, all binding sigs
-                // are invalid.
-                t!("Primary key not certification capable, dropping subkeys");
-                self.subkeys.clear();
-            }
+        let primary_fp: KeyHandle = self.key_handle();
+        let primary_keyid = KeyHandle::KeyID(primary_fp.clone().into());
+        for c in self.unknowns.iter_mut() {
+            parser::split_sigs(&primary_fp, &primary_keyid, c);
         }
-
+        self.unknowns.sort_and_dedup(Unknown::best_effort_cmp, |_, _| {});
 
         // XXX: Check if the sigs in other_sigs issuer are actually
         // designated revokers for this key (listed in a "Revocation
@@ -1534,13 +1210,18 @@ impl Cert {
     }
 
     /// Returns the Cert's fingerprint.
+    pub fn key_handle(&self) -> KeyHandle {
+        self.primary.key().key_handle()
+    }
+
+    /// Returns the Cert's fingerprint.
     pub fn fingerprint(&self) -> Fingerprint {
-        self.primary().fingerprint()
+        self.primary.key().fingerprint()
     }
 
     /// Returns the Cert's keyid.
     pub fn keyid(&self) -> KeyID {
-        self.primary().keyid()
+        self.primary.key().keyid()
     }
 
     /// Converts the Cert into an iterator over a sequence of packets.
@@ -1551,6 +1232,8 @@ impl Cert {
             .chain(self.userids.into_iter().flat_map(|b| b.into_packets()))
             .chain(self.user_attributes.into_iter().flat_map(|b| b.into_packets()))
             .chain(self.subkeys.into_iter().flat_map(|b| b.into_packets()))
+            .chain(self.unknowns.into_iter().flat_map(|b| b.into_packets()))
+            .chain(self.bad.into_iter().map(|s| s.into()))
     }
 
     /// Converts the Cert into a `PacketPile`.
@@ -1564,8 +1247,7 @@ impl Cert {
     ///
     /// If `other` is a different key, then an error is returned.
     pub fn merge(mut self, mut other: Cert) -> Result<Self> {
-        if self.primary().fingerprint()
-            != other.primary().fingerprint()
+        if self.fingerprint() != other.fingerprint()
         {
             // The primary key is not the same.  There is nothing to
             // do.
@@ -1573,8 +1255,10 @@ impl Cert {
                 "Primary key mismatch".into()).into());
         }
 
-        if self.primary.key().secret().is_none() && other.primary.key().secret().is_some() {
-            self.primary.key_mut().set_secret(other.primary.key_mut().set_secret(None));
+        if ! self.primary.key().has_secret()
+            && other.primary.key().has_secret()
+        {
+            std::mem::swap(self.primary.key_mut(), other.primary.key_mut());
         }
 
         self.primary.self_signatures.append(
@@ -1598,27 +1282,198 @@ impl Cert {
     ///
     /// This recanonicalizes the Cert.  If the packets are invalid,
     /// they are dropped.
-    pub fn merge_packets(self, mut packets: Vec<Packet>) -> Result<Self> {
+    ///
+    /// If a key is merged in that already exists in the cert, it
+    /// replaces the key.  This way, secret key material can be added,
+    /// removed, encrypted, or decrypted.
+    pub fn merge_packets(self, packets: Vec<Packet>) -> Result<Self> {
         let mut combined = self.into_packets().collect::<Vec<_>>();
-        combined.append(&mut packets);
+
+        fn replace_or_push<P, R>(acc: &mut Vec<Packet>, k: Key<P, R>)
+            where P: key::KeyParts,
+                  R: key::KeyRole,
+                  Packet: From<packet::Key<P, R>>,
+        {
+            for q in acc.iter_mut() {
+                let replace = match q {
+                    Packet::PublicKey(k_) =>
+                        k_.public_cmp(&k) == Ordering::Equal,
+                    Packet::SecretKey(k_) =>
+                        k_.public_cmp(&k) == Ordering::Equal,
+                    Packet::PublicSubkey(k_) =>
+                        k_.public_cmp(&k) == Ordering::Equal,
+                    Packet::SecretSubkey(k_) =>
+                        k_.public_cmp(&k) == Ordering::Equal,
+                    _ => false,
+                };
+
+                if replace {
+                    *q = k.into();
+                    return;
+                }
+            }
+            acc.push(k.into());
+        };
+
+        for p in packets.into_iter() {
+            match p {
+                Packet::PublicKey(k) => replace_or_push(&mut combined, k),
+                Packet::SecretKey(k) => replace_or_push(&mut combined, k),
+                Packet::PublicSubkey(k) => replace_or_push(&mut combined, k),
+                Packet::SecretSubkey(k) => replace_or_push(&mut combined, k),
+                p => combined.push(p),
+            }
+        }
+
         Cert::from_packet_pile(PacketPile::from(combined))
     }
 
     /// Returns whether at least one of the keys includes a secret
     /// part.
     pub fn is_tsk(&self) -> bool {
-        if self.primary().secret().is_some() {
+        if self.primary_key().has_secret() {
             return true;
         }
         self.subkeys().any(|sk| {
-            sk.binding_signature(None).is_some() && sk.key().secret().is_some()
+            sk.key().has_secret()
         })
+    }
+
+    /// Fixes a time and policy for use with this certificate.
+    ///
+    /// If `time` is `None`, the current time is used.
+    ///
+    /// Returns an error if the certificate is not valid for the given
+    /// policy at the given time.
+    pub fn with_policy<'a, T>(&'a self, policy: &'a dyn Policy, time: T)
+                              -> Result<ValidCert<'a>>
+        where T: Into<Option<time::SystemTime>>,
+    {
+        let time = time.into().unwrap_or_else(time::SystemTime::now);
+        self.primary_key().with_policy(policy, time)?;
+
+        Ok(ValidCert {
+            cert: self,
+            policy,
+            time: time,
+        })
+    }
+}
+
+/// A certificate under a given policy at a given time.
+pub struct ValidCert<'a> {
+    cert: &'a Cert,
+    policy: &'a dyn Policy,
+    // The reference time.
+    time: time::SystemTime,
+}
+
+impl<'a> std::ops::Deref for ValidCert<'a> {
+    type Target = Cert;
+
+    fn deref(&self) -> &Self::Target {
+        self.cert
+    }
+}
+
+impl<'a> ValidCert<'a> {
+    /// Returns the amalgamation's reference time.
+    ///
+    /// For queries that are with respect to a point in time, this
+    /// determines that point in time.
+    pub fn time(&self) -> time::SystemTime {
+        self.time
+    }
+
+    /// Returns the amalgamation's policy.
+    pub fn policy(&self) -> &'a dyn Policy {
+        self.policy
+    }
+
+    /// Changes the amalgamation's policy.
+    ///
+    /// If `time` is `None`, the current time is used.
+    pub fn with_policy<T>(self, policy: &'a dyn Policy, time: T) -> Self
+        where T: Into<Option<time::SystemTime>>,
+    {
+        ValidCert {
+            cert: self.cert,
+            policy,
+            time: time.into().unwrap_or_else(time::SystemTime::now),
+        }
+    }
+
+    /// Returns the Cert's revocation status.
+    ///
+    /// A Cert is revoked if:
+    ///
+    ///   - There is a live revocation that is newer than all live
+    ///     self signatures, or
+    ///
+    ///   - There is a hard revocation (even if it is not live at time
+    ///     `t`, and even if there is a newer self-signature).
+    ///
+    /// Note: Certs and subkeys have different criteria from User IDs
+    /// and User Attributes.
+    ///
+    /// Note: this only returns whether this Cert is revoked; it does
+    /// not imply anything about the Cert or other components.
+    pub fn revoked(&self) -> RevocationStatus {
+        self.cert.revoked(self.policy, self.time)
+    }
+
+    /// Returns whether or not the Cert is alive.
+    pub fn alive(&self) -> Result<()> {
+        self.cert.alive(self.policy, self.time)
+    }
+
+    /// Returns the amalgamated primary key.
+    pub fn primary_key(&self)
+        -> ValidPrimaryKeyAmalgamation<key::PublicParts>
+    {
+        self.cert.primary_key().with_policy(self.policy, self.time)
+            .expect("A ValidKeyAmalgamation must have a ValidPrimaryKeyAmalgamation")
+    }
+
+    /// Returns an iterator over the certificate's keys.
+    ///
+    /// That is, this returns an iterator over the primary key and any
+    /// subkeys.
+    pub fn keys(&self) -> ValidKeyIter<key::PublicParts, key::UnspecifiedRole> {
+        self.cert.keys().with_policy(self.policy, self.time)
+    }
+
+    /// Returns the amalgamated primary userid, if any.
+    pub fn primary_userid(&self)
+        -> Option<ValidComponentAmalgamation<'a, UserID>>
+    {
+        self.cert.primary_userid(self.policy, self.time)
+    }
+
+    /// Returns an iterator over the Cert's userids.
+    pub fn userids(&self) -> ValidComponentIter<UserID> {
+        self.cert.userids().with_policy(self.policy, self.time)
+    }
+
+    /// Returns the amalgamated primary user attribute, if any.
+    pub fn primary_user_attribute(&self)
+        -> Option<ValidComponentAmalgamation<'a, UserAttribute>>
+    {
+        self.cert.primary_user_attribute(self.policy, self.time)
+    }
+
+    /// Returns an iterator over the Cert's `UserAttributeBundle`s.
+    pub fn user_attributes(&self) -> ValidComponentIter<UserAttribute> {
+        self.cert.user_attributes().with_policy(self.policy, self.time)
     }
 }
 
 #[cfg(test)]
 mod test {
     use crate::serialize::Serialize;
+    use crate::policy::StandardPolicy as P;
+    use crate::types::Curve;
+    use crate::packet::signature;
     use super::*;
 
     use crate::{
@@ -1661,10 +1516,10 @@ mod test {
             assert_eq!(cert.userids[0].userid().value(),
                        &b"Testy McTestface <testy@example.org>"[..]);
             assert_eq!(cert.userids[0].self_signatures.len(), 1);
-            assert_eq!(cert.userids[0].self_signatures[0].hash_prefix(),
+            assert_eq!(cert.userids[0].self_signatures[0].digest_prefix(),
                        &[ 0xc6, 0x8f ]);
             assert_eq!(cert.user_attributes.len(), 0);
-            assert_eq!(cert.subkeys.len(), 0);
+            assert_eq!(cert.subkeys.len(), 1);
         }
     }
 
@@ -1683,7 +1538,7 @@ mod test {
             assert_eq!(cert.userids[0].userid().value(),
                        &b"Testy McTestface <testy@example.org>"[..]);
             assert_eq!(cert.userids[0].self_signatures.len(), 1);
-            assert_eq!(cert.userids[0].self_signatures[0].hash_prefix(),
+            assert_eq!(cert.userids[0].self_signatures[0].digest_prefix(),
                        &[ 0xc6, 0x8f ]);
 
             assert_eq!(cert.user_attributes.len(), 0);
@@ -1691,7 +1546,7 @@ mod test {
             assert_eq!(cert.subkeys.len(), 1, "number of subkeys");
             assert_eq!(cert.subkeys[0].key().creation_time(),
                        Timestamp::from(1511355130).into());
-            assert_eq!(cert.subkeys[0].self_signatures[0].hash_prefix(),
+            assert_eq!(cert.subkeys[0].self_signatures[0].digest_prefix(),
                        &[ 0xb7, 0xb9 ]);
 
             let cert = parse_cert(crate::tests::key("testy-no-subkey.pgp"),
@@ -1707,7 +1562,7 @@ mod test {
             assert_eq!(cert.userids[0].userid().value(),
                        &b"Testy McTestface <testy@example.org>"[..]);
             assert_eq!(cert.userids[0].self_signatures.len(), 1);
-            assert_eq!(cert.userids[0].self_signatures[0].hash_prefix(),
+            assert_eq!(cert.userids[0].self_signatures[0].digest_prefix(),
                        &[ 0xc6, 0x8f ]);
 
             assert_eq!(cert.subkeys.len(), 0, "number of subkeys");
@@ -1942,7 +1797,7 @@ mod test {
             .unwrap();
 
         let mut userids = cert.userids()
-            .map(|u| String::from_utf8_lossy(u.userid().value()).into_owned())
+            .map(|u| String::from_utf8_lossy(u.value()).into_owned())
             .collect::<Vec<String>>();
         userids.sort();
 
@@ -1971,7 +1826,7 @@ mod test {
             Cert::from_bytes(crate::tests::key("dkg-sigs-out-of-order.pgp")).unwrap();
 
         let mut userids = cert.userids()
-            .map(|u| String::from_utf8_lossy(u.userid().value()).into_owned())
+            .map(|u| String::from_utf8_lossy(u.value()).into_owned())
             .collect::<Vec<String>>();
         userids.sort();
 
@@ -2094,17 +1949,17 @@ mod test {
 
     #[test]
     fn merge_with_incomplete_update() {
+        let p = &P::new();
+
         let cert = Cert::from_bytes(crate::tests::key("about-to-expire.expired.pgp"))
             .unwrap();
-        assert!(cert.primary_key_signature(None).unwrap()
-                .key_expired(cert.primary(), None));
+        cert.primary_key().with_policy(p, None).unwrap().alive().unwrap_err();
 
         let update =
             Cert::from_bytes(crate::tests::key("about-to-expire.update-no-uid.pgp"))
             .unwrap();
         let cert = cert.merge(update).unwrap();
-        assert!(! cert.primary_key_signature(None).unwrap()
-                .key_expired(cert.primary(), None));
+        cert.primary_key().with_policy(p, None).unwrap().alive().unwrap();
     }
 
     #[test]
@@ -2160,36 +2015,79 @@ mod test {
     }
 
     #[test]
-    fn set_expiry() {
-        let now = time::SystemTime::now();
+    fn set_validity_period() {
+        let p = &P::new();
+
+        let (cert, _) = CertBuilder::general_purpose(None, Some("Test"))
+            .generate().unwrap();
+        assert_eq!(cert.clone().into_packet_pile().children().count(),
+                   1 // primary key
+                   + 1 // direct key signature
+                   + 1 // userid
+                   + 1 // binding signature
+                   + 1 // subkey
+                   + 1 // binding signature
+        );
+        let cert = check_set_validity_period(p, cert);
+        assert_eq!(cert.clone().into_packet_pile().children().count(),
+                   1 // primary key
+                   + 1 // direct key signature
+                   + 2 // two new direct key signatures
+                   + 1 // userid
+                   + 1 // binding signature
+                   + 2 // two new binding signatures
+                   + 1 // subkey
+                   + 1 // binding signature
+        );
+    }
+    #[test]
+    fn set_validity_period_uidless() {
+        use crate::types::{Duration, Timestamp};
+        let p = &P::new();
+
+        let (cert, _) = CertBuilder::new()
+            .set_expiration_time(None) // Just to assert this works.
+            .set_expiration_time(
+                Some(Timestamp::now().checked_add(
+                    Duration::weeks(52).unwrap()).unwrap().into()))
+            .generate().unwrap();
+        assert_eq!(cert.clone().into_packet_pile().children().count(),
+                   1 // primary key
+                   + 1 // direct key signature
+        );
+        let cert = check_set_validity_period(p, cert);
+        assert_eq!(cert.clone().into_packet_pile().children().count(),
+                   1 // primary key
+                   + 1 // direct key signature
+                   + 2 // two new direct key signatures
+        );
+    }
+    fn check_set_validity_period(policy: &dyn Policy, cert: Cert) -> Cert {
+        let now = cert.primary_key().creation_time();
         let a_sec = time::Duration::new(1, 0);
 
-        let (cert, _) = CertBuilder::autocrypt(None, Some("Test"))
-            .generate().unwrap();
-        let expiry_orig = cert.primary_key_signature(None).unwrap()
-            .key_expiration_time()
+        let expiry_orig = cert.primary_key().with_policy(policy, now).unwrap()
+            .key_validity_period()
             .expect("Keys expire by default.");
 
-        let mut keypair = cert.primary().clone().mark_parts_secret()
+        let mut keypair = cert.primary_key().key().clone().mark_parts_secret()
             .unwrap().into_keypair().unwrap();
 
         // Clear the expiration.
         let as_of1 = now + time::Duration::new(10, 0);
-        let cert = cert.set_expiry_as_of(
-            &mut keypair,
-            None,
-            as_of1).unwrap();
+        let cert = cert.set_validity_period_as_of(
+            policy, &mut keypair, None, as_of1).unwrap();
         {
             // If t < as_of1, we should get the original expiry.
-            assert_eq!(cert.primary_key_signature(now).unwrap()
-                           .key_expiration_time(),
+            assert_eq!(cert.primary_key().with_policy(policy, now).unwrap()
+                           .key_validity_period(),
                        Some(expiry_orig));
-            assert_eq!(cert.primary_key_signature(as_of1 - a_sec).unwrap()
-                           .key_expiration_time(),
+            assert_eq!(cert.primary_key().with_policy(policy, as_of1 - a_sec).unwrap()
+                           .key_validity_period(),
                        Some(expiry_orig));
             // If t >= as_of1, we should get the new expiry.
-            assert_eq!(cert.primary_key_signature(as_of1).unwrap()
-                           .key_expiration_time(),
+            assert_eq!(cert.primary_key().with_policy(policy, as_of1).unwrap()
+                           .key_validity_period(),
                        None);
         }
 
@@ -2200,31 +2098,30 @@ mod test {
         assert!(expiry_new > time::Duration::new(0, 0));
 
         let as_of2 = as_of1 + time::Duration::new(10, 0);
-        let cert = cert.set_expiry_as_of(
-            &mut keypair,
-            Some(expiry_new),
-            as_of2).unwrap();
+        let cert = cert.set_validity_period_as_of(
+            policy, &mut keypair, Some(expiry_new), as_of2).unwrap();
         {
             // If t < as_of1, we should get the original expiry.
-            assert_eq!(cert.primary_key_signature(now).unwrap()
-                           .key_expiration_time(),
+            assert_eq!(cert.primary_key().with_policy(policy, now).unwrap()
+                           .key_validity_period(),
                        Some(expiry_orig));
-            assert_eq!(cert.primary_key_signature(as_of1 - a_sec).unwrap()
-                           .key_expiration_time(),
+            assert_eq!(cert.primary_key().with_policy(policy, as_of1 - a_sec).unwrap()
+                           .key_validity_period(),
                        Some(expiry_orig));
             // If as_of1 <= t < as_of2, we should get the second
             // expiry (None).
-            assert_eq!(cert.primary_key_signature(as_of1).unwrap()
-                           .key_expiration_time(),
+            assert_eq!(cert.primary_key().with_policy(policy, as_of1).unwrap()
+                           .key_validity_period(),
                        None);
-            assert_eq!(cert.primary_key_signature(as_of2 - a_sec).unwrap()
-                           .key_expiration_time(),
+            assert_eq!(cert.primary_key().with_policy(policy, as_of2 - a_sec).unwrap()
+                           .key_validity_period(),
                        None);
             // If t <= as_of2, we should get the new expiry.
-            assert_eq!(cert.primary_key_signature(as_of2).unwrap()
-                           .key_expiration_time(),
+            assert_eq!(cert.primary_key().with_policy(policy, as_of2).unwrap()
+                           .key_validity_period(),
                        Some(expiry_new));
         }
+        cert
     }
 
     #[test]
@@ -2233,14 +2130,18 @@ mod test {
         // XXX: testing sequoia against itself isn't optimal, but I couldn't
         // find a tool to generate direct key signatures :-(
 
+        let p = &P::new();
+
         let (cert1, _) = CertBuilder::new().generate().unwrap();
         let mut buf = Vec::default();
 
         cert1.serialize(&mut buf).unwrap();
         let cert2 = Cert::from_bytes(&buf).unwrap();
 
-        assert_eq!(cert2.primary_key_signature(None).unwrap().typ(),
-                   SignatureType::DirectKey);
+        assert_eq!(
+            cert2.primary_key().with_policy(p, None).unwrap()
+                .direct_key_signature().unwrap().typ(),
+            SignatureType::DirectKey);
         assert_eq!(cert2.userids().count(), 0);
     }
 
@@ -2248,13 +2149,16 @@ mod test {
     fn revoked() {
         fn check(cert: &Cert, direct_revoked: bool,
                  userid_revoked: bool, subkey_revoked: bool) {
+            let p = &P::new();
+
             // If we have a user id---even if it is revoked---we have
             // a primary key signature.
-            let typ = cert.primary_key_signature(None).unwrap().typ();
-            assert_eq!(typ, SignatureType::PositiveCertificate,
+            let typ = cert.primary_key().with_policy(p, None).unwrap()
+                .binding_signature().typ();
+            assert_eq!(typ, SignatureType::PositiveCertification,
                        "{:#?}", cert);
 
-            let revoked = cert.revoked(None);
+            let revoked = cert.revoked(p, None);
             if direct_revoked {
                 assert_match!(RevocationStatus::Revoked(_) = revoked,
                               "{:#?}", cert);
@@ -2263,12 +2167,12 @@ mod test {
                            "{:#?}", cert);
             }
 
-            for userid in cert.userids() {
-                let typ = userid.binding_signature(None).unwrap().typ();
-                assert_eq!(typ, SignatureType::PositiveCertificate,
+            for userid in cert.userids().with_policy(p, None) {
+                let typ = userid.binding_signature().typ();
+                assert_eq!(typ, SignatureType::PositiveCertification,
                            "{:#?}", cert);
 
-                let revoked = userid.revoked(None);
+                let revoked = userid.revoked();
                 if userid_revoked {
                     assert_match!(RevocationStatus::Revoked(_) = revoked);
                 } else {
@@ -2278,11 +2182,11 @@ mod test {
             }
 
             for subkey in cert.subkeys() {
-                let typ = subkey.binding_signature(None).unwrap().typ();
+                let typ = subkey.binding_signature(p, None).unwrap().typ();
                 assert_eq!(typ, SignatureType::SubkeyBinding,
                            "{:#?}", cert);
 
-                let revoked = subkey.revoked(None);
+                let revoked = subkey.revoked(p, None);
                 if subkey_revoked {
                     assert_match!(RevocationStatus::Revoked(_) = revoked);
                 } else {
@@ -2338,12 +2242,14 @@ mod test {
 
     #[test]
     fn revoke() {
-        let (cert, _) = CertBuilder::autocrypt(None, Some("Test"))
+        let p = &P::new();
+
+        let (cert, _) = CertBuilder::general_purpose(None, Some("Test"))
             .generate().unwrap();
         assert_eq!(RevocationStatus::NotAsFarAsWeKnow,
-                   cert.revoked(None));
+                   cert.revoked(p, None));
 
-        let mut keypair = cert.primary().clone().mark_parts_secret()
+        let mut keypair = cert.primary_key().key().clone().mark_parts_secret()
             .unwrap().into_keypair().unwrap();
 
         let sig = CertRevocationBuilder::new()
@@ -2353,19 +2259,19 @@ mod test {
             .build(&mut keypair, &cert, None)
             .unwrap();
         assert_eq!(sig.typ(), SignatureType::KeyRevocation);
-        assert_eq!(sig.issuer(), Some(cert.primary().keyid()));
+        assert_eq!(sig.issuer(), Some(&cert.keyid()));
         assert_eq!(sig.issuer_fingerprint(),
-                   Some(cert.primary().fingerprint()));
+                   Some(&cert.fingerprint()));
 
         let cert = cert.merge_packets(vec![sig.into()]).unwrap();
-        assert_match!(RevocationStatus::Revoked(_) = cert.revoked(None));
+        assert_match!(RevocationStatus::Revoked(_) = cert.revoked(p, None));
 
 
         // Have other revoke cert.
-        let (other, _) = CertBuilder::autocrypt(None, Some("Test 2"))
+        let (other, _) = CertBuilder::general_purpose(None, Some("Test 2"))
             .generate().unwrap();
 
-        let mut keypair = other.primary().clone().mark_parts_secret()
+        let mut keypair = other.primary_key().key().clone().mark_parts_secret()
             .unwrap().into_keypair().unwrap();
 
         let sig = CertRevocationBuilder::new()
@@ -2376,25 +2282,24 @@ mod test {
             .unwrap();
 
         assert_eq!(sig.typ(), SignatureType::KeyRevocation);
-        assert_eq!(sig.issuer(), Some(other.primary().keyid()));
+        assert_eq!(sig.issuer(), Some(&other.keyid()));
         assert_eq!(sig.issuer_fingerprint(),
-                   Some(other.primary().fingerprint()));
+                   Some(&other.fingerprint()));
     }
 
     #[test]
     fn revoke_subkey() {
-        use std::{thread, time};
-
+        let p = &P::new();
         let (cert, _) = CertBuilder::new()
             .add_transport_encryption_subkey()
             .generate().unwrap();
 
-        thread::sleep(time::Duration::from_secs(2));
         let sig = {
             let subkey = cert.subkeys().nth(0).unwrap();
-            assert_eq!(RevocationStatus::NotAsFarAsWeKnow, subkey.revoked(None));
+            assert_eq!(RevocationStatus::NotAsFarAsWeKnow,
+                       subkey.revoked(p, None));
 
-            let mut keypair = cert.primary().clone().mark_parts_secret()
+            let mut keypair = cert.primary_key().key().clone().mark_parts_secret()
                 .unwrap().into_keypair().unwrap();
             SubkeyRevocationBuilder::new()
                 .set_reason_for_revocation(
@@ -2406,27 +2311,26 @@ mod test {
         assert_eq!(sig.typ(), SignatureType::SubkeyRevocation);
         let cert = cert.merge_packets(vec![sig.into()]).unwrap();
         assert_eq!(RevocationStatus::NotAsFarAsWeKnow,
-                   cert.revoked(None));
+                   cert.revoked(p, None));
 
         let subkey = cert.subkeys().nth(0).unwrap();
-        assert_match!(RevocationStatus::Revoked(_) = subkey.revoked(None));
+        assert_match!(RevocationStatus::Revoked(_)
+                      = subkey.revoked(p, None));
     }
 
     #[test]
     fn revoke_uid() {
-        use std::{thread, time};
-
+        let p = &P::new();
         let (cert, _) = CertBuilder::new()
             .add_userid("Test1")
             .add_userid("Test2")
             .generate().unwrap();
 
-        thread::sleep(time::Duration::from_secs(2));
         let sig = {
-            let uid = cert.userids().skip(1).next().unwrap();
-            assert_eq!(RevocationStatus::NotAsFarAsWeKnow, uid.revoked(None));
+            let uid = cert.userids().with_policy(p, None).nth(1).unwrap();
+            assert_eq!(RevocationStatus::NotAsFarAsWeKnow, uid.revoked());
 
-            let mut keypair = cert.primary().clone().mark_parts_secret()
+            let mut keypair = cert.primary_key().key().clone().mark_parts_secret()
                 .unwrap().into_keypair().unwrap();
             UserIDRevocationBuilder::new()
                 .set_reason_for_revocation(
@@ -2435,21 +2339,23 @@ mod test {
                 .build(&mut keypair, &cert, uid.userid(), None)
                 .unwrap()
         };
-        assert_eq!(sig.typ(), SignatureType::CertificateRevocation);
+        assert_eq!(sig.typ(), SignatureType::CertificationRevocation);
         let cert = cert.merge_packets(vec![sig.into()]).unwrap();
         assert_eq!(RevocationStatus::NotAsFarAsWeKnow,
-                   cert.revoked(None));
+                   cert.revoked(p, None));
 
-        let uid = cert.userids().skip(1).next().unwrap();
-        assert_match!(RevocationStatus::Revoked(_) = uid.revoked(None));
+        let uid = cert.userids().with_policy(p, None).nth(1).unwrap();
+        assert_match!(RevocationStatus::Revoked(_) = uid.revoked());
     }
 
     #[test]
     fn key_revoked() {
         use crate::types::Features;
         use crate::packet::key::Key4;
-        use crate::types::Curve;
         use rand::{thread_rng, Rng, distributions::Open01};
+
+        let p = &P::new();
+
         /*
          * t1: 1st binding sig ctime
          * t2: soft rev sig ctime
@@ -2470,19 +2376,20 @@ mod test {
         let t3 = time::UNIX_EPOCH + time::Duration::new(1009839600, 0); // 2002-1-1
         let t4 = time::UNIX_EPOCH + time::Duration::new(1041375600, 0); // 2003-1-1
 
-        let key: key::SecretKey
+        let mut key: key::SecretKey
             = Key4::generate_ecc(true, Curve::Ed25519).unwrap().into();
+        key.set_creation_time(t1).unwrap();
         let mut pair = key.clone().into_keypair().unwrap();
         let (bind1, rev1, bind2, rev2) = {
             let bind1 = signature::Builder::new(SignatureType::DirectKey)
                 .set_features(&Features::sequoia()).unwrap()
                 .set_key_flags(&KeyFlags::default()).unwrap()
                 .set_signature_creation_time(t1).unwrap()
-                .set_key_expiration_time(Some(time::Duration::new(10 * 52 * 7 * 24 * 60 * 60, 0))).unwrap()
+                .set_key_validity_period(Some(time::Duration::new(10 * 52 * 7 * 24 * 60 * 60, 0))).unwrap()
                 .set_issuer_fingerprint(key.fingerprint()).unwrap()
                 .set_issuer(key.keyid()).unwrap()
                 .set_preferred_hash_algorithms(vec![HashAlgorithm::SHA512]).unwrap()
-                .sign_primary_key_binding(&mut pair).unwrap();
+                .sign_direct_key(&mut pair).unwrap();
 
             let rev1 = signature::Builder::new(SignatureType::KeyRevocation)
                 .set_signature_creation_time(t2).unwrap()
@@ -2490,17 +2397,17 @@ mod test {
                                            &b""[..]).unwrap()
                 .set_issuer_fingerprint(key.fingerprint()).unwrap()
                 .set_issuer(key.keyid()).unwrap()
-                .sign_primary_key_binding(&mut pair).unwrap();
+                .sign_direct_key(&mut pair).unwrap();
 
             let bind2 = signature::Builder::new(SignatureType::DirectKey)
                 .set_features(&Features::sequoia()).unwrap()
                 .set_key_flags(&KeyFlags::default()).unwrap()
                 .set_signature_creation_time(t3).unwrap()
-                .set_key_expiration_time(Some(time::Duration::new(10 * 52 * 7 * 24 * 60 * 60, 0))).unwrap()
+                .set_key_validity_period(Some(time::Duration::new(10 * 52 * 7 * 24 * 60 * 60, 0))).unwrap()
                 .set_issuer_fingerprint(key.fingerprint()).unwrap()
                 .set_issuer(key.keyid()).unwrap()
                 .set_preferred_hash_algorithms(vec![HashAlgorithm::SHA512]).unwrap()
-                .sign_primary_key_binding(&mut pair).unwrap();
+                .sign_direct_key(&mut pair).unwrap();
 
             let rev2 = signature::Builder::new(SignatureType::KeyRevocation)
                 .set_signature_creation_time(t4).unwrap()
@@ -2508,7 +2415,7 @@ mod test {
                                            &b""[..]).unwrap()
                 .set_issuer_fingerprint(key.fingerprint()).unwrap()
                 .set_issuer(key.keyid()).unwrap()
-                .sign_primary_key_binding(&mut pair).unwrap();
+                .sign_direct_key(&mut pair).unwrap();
 
             (bind1, rev1, bind2, rev2)
         };
@@ -2523,46 +2430,49 @@ mod test {
         let f1: f32 = thread_rng().sample(Open01);
         let f2: f32 = thread_rng().sample(Open01);
         let f3: f32 = thread_rng().sample(Open01);
+        let f4: f32 = thread_rng().sample(Open01);
         let te1 = t1 - time::Duration::new((60. * 60. * 24. * 300.0 * f1) as u64, 0);
         let t12 = t1 + time::Duration::new((60. * 60. * 24. * 300.0 * f2) as u64, 0);
         let t23 = t2 + time::Duration::new((60. * 60. * 24. * 300.0 * f3) as u64, 0);
-        let t34 = t3 + time::Duration::new((60. * 60. * 24. * 300.0 * f3) as u64, 0);
+        let t34 = t3 + time::Duration::new((60. * 60. * 24. * 300.0 * f4) as u64, 0);
 
-        assert_eq!(cert.revoked(te1), RevocationStatus::NotAsFarAsWeKnow);
-        assert_eq!(cert.revoked(t12), RevocationStatus::NotAsFarAsWeKnow);
-        assert_match!(RevocationStatus::Revoked(_) = cert.revoked(t23));
-        assert_eq!(cert.revoked(t34), RevocationStatus::NotAsFarAsWeKnow);
+        assert_eq!(cert.revoked(p, te1), RevocationStatus::NotAsFarAsWeKnow);
+        assert_eq!(cert.revoked(p, t12), RevocationStatus::NotAsFarAsWeKnow);
+        assert_match!(RevocationStatus::Revoked(_) = cert.revoked(p, t23));
+        assert_eq!(cert.revoked(p, t34), RevocationStatus::NotAsFarAsWeKnow);
 
         // Merge in the hard revocation.
         let cert = cert.merge_packets(vec![ rev2.into() ]).unwrap();
-        assert_match!(RevocationStatus::Revoked(_) = cert.revoked(te1));
-        assert_match!(RevocationStatus::Revoked(_) = cert.revoked(t12));
-        assert_match!(RevocationStatus::Revoked(_) = cert.revoked(t23));
-        assert_match!(RevocationStatus::Revoked(_) = cert.revoked(t34));
-        assert_match!(RevocationStatus::Revoked(_) = cert.revoked(t4));
+        assert_match!(RevocationStatus::Revoked(_) = cert.revoked(p, te1));
+        assert_match!(RevocationStatus::Revoked(_) = cert.revoked(p, t12));
+        assert_match!(RevocationStatus::Revoked(_) = cert.revoked(p, t23));
+        assert_match!(RevocationStatus::Revoked(_) = cert.revoked(p, t34));
+        assert_match!(RevocationStatus::Revoked(_) = cert.revoked(p, t4));
         assert_match!(RevocationStatus::Revoked(_)
-                      = cert.revoked(time::SystemTime::now()));
+                      = cert.revoked(p, time::SystemTime::now()));
     }
 
     #[test]
     fn key_revoked2() {
         tracer!(true, "cert_revoked2", 0);
 
-        fn cert_revoked<T>(cert: &Cert, t: T) -> bool
+        let p = &P::new();
+
+        fn cert_revoked<T>(p: &dyn Policy, cert: &Cert, t: T) -> bool
             where T: Into<Option<time::SystemTime>>
         {
             !destructures_to!(RevocationStatus::NotAsFarAsWeKnow
-                              = cert.revoked(t))
+                              = cert.revoked(p, t))
         }
 
-        fn subkey_revoked<T>(cert: &Cert, t: T) -> bool
+        fn subkey_revoked<T>(p: &dyn Policy, cert: &Cert, t: T) -> bool
             where T: Into<Option<time::SystemTime>>
         {
             !destructures_to!(RevocationStatus::NotAsFarAsWeKnow
-                              = cert.subkeys().nth(0).unwrap().revoked(t))
+                              = cert.subkeys().nth(0).unwrap().revoked(p, t))
         }
 
-        let tests : [(&str, Box<dyn Fn(&Cert, _) -> bool>); 2] = [
+        let tests : [(&str, Box<dyn Fn(&dyn Policy, &Cert, _) -> bool>); 2] = [
             ("cert", Box::new(cert_revoked)),
             ("subkey", Box::new(subkey_revoked)),
         ];
@@ -2575,11 +2485,11 @@ mod test {
             let cert = Cert::from_bytes(
                 crate::tests::key(
                     &format!("really-revoked-{}-0-public.pgp", f))).unwrap();
-            let selfsig0 = cert.primary_key_signature(None).unwrap()
-                .signature_creation_time().unwrap();
+            let selfsig0 = cert.primary_key().with_policy(p, None).unwrap()
+                .binding_signature().signature_creation_time().unwrap();
 
-            assert!(!revoked(&cert, Some(selfsig0)));
-            assert!(!revoked(&cert, None));
+            assert!(!revoked(p, &cert, Some(selfsig0)));
+            assert!(!revoked(p, &cert, None));
 
             t!("Soft revocation");
             let cert = cert.merge(
@@ -2589,8 +2499,8 @@ mod test {
                 ).unwrap()).unwrap();
             // A soft revocation made after `t` is ignored when
             // determining whether the key is revoked at time `t`.
-            assert!(!revoked(&cert, Some(selfsig0)));
-            assert!(revoked(&cert, None));
+            assert!(!revoked(p, &cert, Some(selfsig0)));
+            assert!(revoked(p, &cert, None));
 
             t!("New self signature");
             let cert = cert.merge(
@@ -2598,9 +2508,9 @@ mod test {
                     crate::tests::key(
                         &format!("really-revoked-{}-2-new-self-sig.pgp", f))
                 ).unwrap()).unwrap();
-            assert!(!revoked(&cert, Some(selfsig0)));
+            assert!(!revoked(p, &cert, Some(selfsig0)));
             // Newer self-sig override older soft revocations.
-            assert!(!revoked(&cert, None));
+            assert!(!revoked(p, &cert, None));
 
             t!("Hard revocation");
             let cert = cert.merge(
@@ -2609,8 +2519,8 @@ mod test {
                         &format!("really-revoked-{}-3-hard-revocation.pgp", f))
                 ).unwrap()).unwrap();
             // Hard revocations trump all.
-            assert!(revoked(&cert, Some(selfsig0)));
-            assert!(revoked(&cert, None));
+            assert!(revoked(p, &cert, Some(selfsig0)));
+            assert!(revoked(p, &cert, None));
 
             t!("New self signature");
             let cert = cert.merge(
@@ -2618,39 +2528,39 @@ mod test {
                     crate::tests::key(
                         &format!("really-revoked-{}-4-new-self-sig.pgp", f))
                 ).unwrap()).unwrap();
-            assert!(revoked(&cert, Some(selfsig0)));
-            assert!(revoked(&cert, None));
+            assert!(revoked(p, &cert, Some(selfsig0)));
+            assert!(revoked(p, &cert, None));
         }
     }
 
     #[test]
     fn userid_revoked2() {
-        fn check_userids<T>(cert: &Cert, revoked: bool, t: T)
+        fn check_userids<T>(p: &dyn Policy, cert: &Cert, revoked: bool, t: T)
             where T: Into<Option<time::SystemTime>>, T: Copy
         {
             assert_match!(RevocationStatus::NotAsFarAsWeKnow
-                          = cert.revoked(None));
+                          = cert.revoked(p, None));
 
             let mut slim_shady = false;
             let mut eminem = false;
-            for b in cert.userids() {
+            for b in cert.userids().with_policy(p, t) {
                 if b.userid().value() == b"Slim Shady" {
                     assert!(!slim_shady);
                     slim_shady = true;
 
                     if revoked {
                         assert_match!(RevocationStatus::Revoked(_)
-                                      = b.revoked(t));
+                                      = b.revoked());
                     } else {
                         assert_match!(RevocationStatus::NotAsFarAsWeKnow
-                                      = b.revoked(t));
+                                      = b.revoked());
                     }
                 } else {
                     assert!(!eminem);
                     eminem = true;
 
                     assert_match!(RevocationStatus::NotAsFarAsWeKnow
-                                  = b.revoked(t));
+                                  = b.revoked());
                 }
             }
 
@@ -2658,26 +2568,27 @@ mod test {
             assert!(eminem);
         }
 
-        fn check_uas<T>(cert: &Cert, revoked: bool, t: T)
+        fn check_uas<T>(p: &dyn Policy, cert: &Cert, revoked: bool, t: T)
             where T: Into<Option<time::SystemTime>>, T: Copy
         {
             assert_match!(RevocationStatus::NotAsFarAsWeKnow
-                          = cert.revoked(None));
+                          = cert.revoked(p, None));
 
             assert_eq!(cert.user_attributes().count(), 1);
             let ua = cert.user_attributes().nth(0).unwrap();
             if revoked {
                 assert_match!(RevocationStatus::Revoked(_)
-                              = ua.revoked(t));
+                              = ua.revoked(p, t));
             } else {
                 assert_match!(RevocationStatus::NotAsFarAsWeKnow
-                              = ua.revoked(t));
+                              = ua.revoked(p, t));
             }
         }
 
         tracer!(true, "userid_revoked2", 0);
 
-        let tests : [(&str, Box<dyn Fn(&Cert, bool, _)>); 2] = [
+        let p = &P::new();
+        let tests : [(&str, Box<dyn Fn(&dyn Policy, &Cert, bool, _)>); 2] = [
             ("userid", Box::new(check_userids)),
             ("user-attribute", Box::new(check_uas)),
         ];
@@ -2693,14 +2604,13 @@ mod test {
 
             let now = time::SystemTime::now();
             let selfsig0
-                = cert.userids().map(|b| {
-                    b.binding_signature(now).unwrap()
-                        .signature_creation_time().unwrap()
+                = cert.userids().with_policy(p, now).map(|b| {
+                    b.binding_signature().signature_creation_time().unwrap()
                 })
                 .max().unwrap();
 
-            check(&cert, false, selfsig0);
-            check(&cert, false, now);
+            check(p, &cert, false, selfsig0);
+            check(p, &cert, false, now);
 
             // A soft-revocation.
             let cert = cert.merge(
@@ -2709,8 +2619,8 @@ mod test {
                         &format!("really-revoked-{}-1-soft-revocation.pgp", f))
                 ).unwrap()).unwrap();
 
-            check(&cert, false, selfsig0);
-            check(&cert, true, now);
+            check(p, &cert, false, selfsig0);
+            check(p, &cert, true, now);
 
             // A new self signature.  This should override the soft-revocation.
             let cert = cert.merge(
@@ -2719,8 +2629,8 @@ mod test {
                         &format!("really-revoked-{}-2-new-self-sig.pgp", f))
                 ).unwrap()).unwrap();
 
-            check(&cert, false, selfsig0);
-            check(&cert, false, now);
+            check(p, &cert, false, selfsig0);
+            check(p, &cert, false, now);
 
             // A hard revocation.  Unlike for Certs, this does NOT trumps
             // everything.
@@ -2730,8 +2640,8 @@ mod test {
                         &format!("really-revoked-{}-3-hard-revocation.pgp", f))
                 ).unwrap()).unwrap();
 
-            check(&cert, false, selfsig0);
-            check(&cert, true, now);
+            check(p, &cert, false, selfsig0);
+            check(p, &cert, true, now);
 
             // A newer self siganture.
             let cert = cert.merge(
@@ -2740,18 +2650,19 @@ mod test {
                         &format!("really-revoked-{}-4-new-self-sig.pgp", f))
                 ).unwrap()).unwrap();
 
-            check(&cert, false, selfsig0);
-            check(&cert, false, now);
+            check(p, &cert, false, selfsig0);
+            check(p, &cert, false, now);
         }
     }
 
     #[test]
     fn unrevoked() {
+        let p = &P::new();
         let cert =
             Cert::from_bytes(crate::tests::key("un-revoked-userid.pgp")).unwrap();
 
-        for uid in cert.userids() {
-            assert_eq!(uid.revoked(None), RevocationStatus::NotAsFarAsWeKnow);
+        for uid in cert.userids().with_policy(p, None) {
+            assert_eq!(uid.revoked(), RevocationStatus::NotAsFarAsWeKnow);
         }
     }
 
@@ -2782,14 +2693,14 @@ mod test {
     // subkeys with and without a private key are merged.
     #[test]
     fn public_private_merge() {
-        let (tsk, _) = CertBuilder::autocrypt(None, Some("foo@example.com"))
+        let (tsk, _) = CertBuilder::general_purpose(None, Some("foo@example.com"))
             .generate().unwrap();
         // tsk is now a cert, but it still has its private bits.
-        assert!(tsk.primary.key().secret().is_some());
+        assert!(tsk.primary.key().has_secret());
         assert!(tsk.is_tsk());
         let subkey_count = tsk.subkeys().len();
         assert!(subkey_count > 0);
-        assert!(tsk.subkeys().all(|k| k.key().secret().is_some()));
+        assert!(tsk.subkeys().all(|k| k.key().has_secret()));
 
         // This will write out the tsk as a cert, i.e., without any
         // private bits.
@@ -2798,21 +2709,21 @@ mod test {
 
         // Reading it back in, the private bits have been stripped.
         let cert = Cert::from_bytes(&cert_bytes[..]).unwrap();
-        assert!(cert.primary.key().secret().is_none());
+        assert!(! cert.primary.key().has_secret());
         assert!(!cert.is_tsk());
-        assert!(cert.subkeys().all(|k| k.key().secret().is_none()));
+        assert!(cert.subkeys().all(|k| ! k.key().has_secret()));
 
         let merge1 = cert.clone().merge(tsk.clone()).unwrap();
         assert!(merge1.is_tsk());
-        assert!(merge1.primary.key().secret().is_some());
+        assert!(merge1.primary.key().has_secret());
         assert_eq!(merge1.subkeys().len(), subkey_count);
-        assert!(merge1.subkeys().all(|k| k.key().secret().is_some()));
+        assert!(merge1.subkeys().all(|k| k.key().has_secret()));
 
         let merge2 = tsk.clone().merge(cert.clone()).unwrap();
         assert!(merge2.is_tsk());
-        assert!(merge2.primary.key().secret().is_some());
+        assert!(merge2.primary.key().has_secret());
         assert_eq!(merge2.subkeys().len(), subkey_count);
-        assert!(merge2.subkeys().all(|k| k.key().secret().is_some()));
+        assert!(merge2.subkeys().all(|k| k.key().has_secret()));
     }
 
     #[test]
@@ -2886,6 +2797,7 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
 
     #[test]
     fn signature_order() {
+        let p = &P::new();
         let neal = Cert::from_bytes(crate::tests::key("neal.pgp")).unwrap();
 
         // This test is useless if we don't have some lists with more
@@ -2908,7 +2820,7 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
 
             // Make sure we return the most recent first.
             assert_eq!(uid.self_signatures().first().unwrap(),
-                       uid.binding_signature(None).unwrap());
+                       uid.binding_signature(p, None).unwrap());
         }
 
         assert!(cmps > 0);
@@ -2938,14 +2850,14 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
         // unrevoked user ids to revoked user ids, even if the latter
         // have newer self signatures.
 
+        let p = &P::new();
         let cert = Cert::from_bytes(
             crate::tests::key("really-revoked-userid-0-public.pgp")).unwrap();
 
         let now = time::SystemTime::now();
         let selfsig0
-            = cert.userids().map(|b| {
-                b.binding_signature(now).unwrap()
-                    .signature_creation_time().unwrap()
+            = cert.userids().with_policy(p, now).map(|b| {
+                b.binding_signature().signature_creation_time().unwrap()
             })
             .max().unwrap();
 
@@ -2953,8 +2865,10 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
         //
         //   Slim Shady: 2019-09-14T14:21
         //   Eminem:     2019-09-14T14:22
-        assert_eq!(cert.primary_userid(selfsig0).unwrap().userid().value(), b"Eminem");
-        assert_eq!(cert.primary_userid(now).unwrap().userid().value(), b"Eminem");
+        assert_eq!(cert.primary_userid(p, selfsig0).unwrap().userid().value(),
+                   b"Eminem");
+        assert_eq!(cert.primary_userid(p, now).unwrap().userid().value(),
+                   b"Eminem");
 
         // A soft-revocation for "Slim Shady".
         let cert = cert.merge(
@@ -2962,8 +2876,10 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
                 crate::tests::key("really-revoked-userid-1-soft-revocation.pgp")
             ).unwrap()).unwrap();
 
-        assert_eq!(cert.primary_userid(selfsig0).unwrap().userid().value(), b"Eminem");
-        assert_eq!(cert.primary_userid(now).unwrap().userid().value(), b"Eminem");
+        assert_eq!(cert.primary_userid(p, selfsig0).unwrap().userid().value(),
+                   b"Eminem");
+        assert_eq!(cert.primary_userid(p, now).unwrap().userid().value(),
+                   b"Eminem");
 
         // A new self signature for "Slim Shady".  This should
         // override the soft-revocation.
@@ -2972,8 +2888,10 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
                 crate::tests::key("really-revoked-userid-2-new-self-sig.pgp")
             ).unwrap()).unwrap();
 
-        assert_eq!(cert.primary_userid(selfsig0).unwrap().userid().value(), b"Eminem");
-        assert_eq!(cert.primary_userid(now).unwrap().userid().value(), b"Slim Shady");
+        assert_eq!(cert.primary_userid(p, selfsig0).unwrap().userid().value(),
+                   b"Eminem");
+        assert_eq!(cert.primary_userid(p, now).unwrap().userid().value(),
+                   b"Slim Shady");
 
         // A hard revocation for "Slim Shady".
         let cert = cert.merge(
@@ -2981,8 +2899,10 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
                 crate::tests::key("really-revoked-userid-3-hard-revocation.pgp")
             ).unwrap()).unwrap();
 
-        assert_eq!(cert.primary_userid(selfsig0).unwrap().userid().value(), b"Eminem");
-        assert_eq!(cert.primary_userid(now).unwrap().userid().value(), b"Eminem");
+        assert_eq!(cert.primary_userid(p, selfsig0).unwrap().userid().value(),
+                   b"Eminem");
+        assert_eq!(cert.primary_userid(p, now).unwrap().userid().value(),
+                   b"Eminem");
 
         // A newer self siganture for "Slim Shady". Unlike for Certs, this
         // does NOT trump everything.
@@ -2991,23 +2911,26 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
                 crate::tests::key("really-revoked-userid-4-new-self-sig.pgp")
             ).unwrap()).unwrap();
 
-        assert_eq!(cert.primary_userid(selfsig0).unwrap().userid().value(), b"Eminem");
-        assert_eq!(cert.primary_userid(now).unwrap().userid().value(), b"Slim Shady");
+        assert_eq!(cert.primary_userid(p, selfsig0).unwrap().userid().value(),
+                   b"Eminem");
+        assert_eq!(cert.primary_userid(p, now).unwrap().userid().value(),
+                   b"Slim Shady");
 
         // Play with the primary user id flag.
 
         let cert = Cert::from_bytes(
             crate::tests::key("primary-key-0-public.pgp")).unwrap();
         let selfsig0
-            = cert.userids().map(|b| {
-                b.binding_signature(now).unwrap()
-                    .signature_creation_time().unwrap()
+            = cert.userids().with_policy(p, now).map(|b| {
+                b.binding_signature().signature_creation_time().unwrap()
             })
             .max().unwrap();
 
         // There is only a single User ID.
-        assert_eq!(cert.primary_userid(selfsig0).unwrap().userid().value(), b"aaaaa");
-        assert_eq!(cert.primary_userid(now).unwrap().userid().value(), b"aaaaa");
+        assert_eq!(cert.primary_userid(p, selfsig0).unwrap().userid().value(),
+                   b"aaaaa");
+        assert_eq!(cert.primary_userid(p, now).unwrap().userid().value(),
+                   b"aaaaa");
 
 
         // Add a second user id.  Since neither is marked primary, the
@@ -3017,8 +2940,10 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
                 crate::tests::key("primary-key-1-add-userid-bbbbb.pgp")
             ).unwrap()).unwrap();
 
-        assert_eq!(cert.primary_userid(selfsig0).unwrap().userid().value(), b"aaaaa");
-        assert_eq!(cert.primary_userid(now).unwrap().userid().value(), b"bbbbb");
+        assert_eq!(cert.primary_userid(p, selfsig0).unwrap().userid().value(),
+                   b"aaaaa");
+        assert_eq!(cert.primary_userid(p, now).unwrap().userid().value(),
+                   b"bbbbb");
 
         // Mark aaaaa as primary.  It is now primary and the newest one.
         let cert = cert.merge(
@@ -3026,8 +2951,10 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
                 crate::tests::key("primary-key-2-make-aaaaa-primary.pgp")
             ).unwrap()).unwrap();
 
-        assert_eq!(cert.primary_userid(selfsig0).unwrap().userid().value(), b"aaaaa");
-        assert_eq!(cert.primary_userid(now).unwrap().userid().value(), b"aaaaa");
+        assert_eq!(cert.primary_userid(p, selfsig0).unwrap().userid().value(),
+                   b"aaaaa");
+        assert_eq!(cert.primary_userid(p, now).unwrap().userid().value(),
+                   b"aaaaa");
 
         // Update the preferences on bbbbb.  It is now the newest, but
         // it is not marked as primary.
@@ -3036,8 +2963,10 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
                 crate::tests::key("primary-key-3-make-bbbbb-new-self-sig.pgp")
             ).unwrap()).unwrap();
 
-        assert_eq!(cert.primary_userid(selfsig0).unwrap().userid().value(), b"aaaaa");
-        assert_eq!(cert.primary_userid(now).unwrap().userid().value(), b"aaaaa");
+        assert_eq!(cert.primary_userid(p, selfsig0).unwrap().userid().value(),
+                   b"aaaaa");
+        assert_eq!(cert.primary_userid(p, now).unwrap().userid().value(),
+                   b"aaaaa");
 
         // Mark bbbbb as primary.  It is now the newest and marked as
         // primary.
@@ -3046,8 +2975,10 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
                 crate::tests::key("primary-key-4-make-bbbbb-primary.pgp")
             ).unwrap()).unwrap();
 
-        assert_eq!(cert.primary_userid(selfsig0).unwrap().userid().value(), b"aaaaa");
-        assert_eq!(cert.primary_userid(now).unwrap().userid().value(), b"bbbbb");
+        assert_eq!(cert.primary_userid(p, selfsig0).unwrap().userid().value(),
+                   b"aaaaa");
+        assert_eq!(cert.primary_userid(p, now).unwrap().userid().value(),
+                   b"bbbbb");
 
         // Update the preferences on aaaaa.  It is now has the newest
         // self sig, but that self sig does not say that it is
@@ -3057,8 +2988,10 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
                 crate::tests::key("primary-key-5-make-aaaaa-self-sig.pgp")
             ).unwrap()).unwrap();
 
-        assert_eq!(cert.primary_userid(selfsig0).unwrap().userid().value(), b"aaaaa");
-        assert_eq!(cert.primary_userid(now).unwrap().userid().value(), b"bbbbb");
+        assert_eq!(cert.primary_userid(p, selfsig0).unwrap().userid().value(),
+                   b"aaaaa");
+        assert_eq!(cert.primary_userid(p, now).unwrap().userid().value(),
+                   b"bbbbb");
 
         // Hard revoke aaaaa.  Unlike with Certs, a hard revocation is
         // not treated specially.
@@ -3067,8 +3000,10 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
                 crate::tests::key("primary-key-6-revoked-aaaaa.pgp")
             ).unwrap()).unwrap();
 
-        assert_eq!(cert.primary_userid(selfsig0).unwrap().userid().value(), b"aaaaa");
-        assert_eq!(cert.primary_userid(now).unwrap().userid().value(), b"bbbbb");
+        assert_eq!(cert.primary_userid(p, selfsig0).unwrap().userid().value(),
+                   b"aaaaa");
+        assert_eq!(cert.primary_userid(p, now).unwrap().userid().value(),
+                   b"bbbbb");
     }
 
     #[test]
@@ -3078,7 +3013,8 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
 
         use crate::types::Features;
         use crate::packet::key::Key4;
-        use crate::types::Curve;
+
+        let p = &P::new();
 
         let a_sec = time::Duration::new(1, 0);
         let time_zero = time::UNIX_EPOCH;
@@ -3088,54 +3024,67 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
         let t3 = time::UNIX_EPOCH + time::Duration::new(1009839600, 0); // 2002-1-1
         let t4 = time::UNIX_EPOCH + time::Duration::new(1041375600, 0); // 2003-1-1
 
-        let key: key::SecretKey
+        let mut key: key::SecretKey
             = Key4::generate_ecc(true, Curve::Ed25519).unwrap().into();
+        key.set_creation_time(t1).unwrap();
         let mut pair = key.clone().into_keypair().unwrap();
         let pk : key::PublicKey = key.clone().into();
         let mut cert = Cert::from_packet_pile(PacketPile::from(vec![
             pk.into(),
         ])).unwrap();
+        let uid: UserID = "foo@example.org".into();
+        let sig = uid.certify(&mut pair, &cert,
+                              SignatureType::PositiveCertification,
+                              None,
+                              t1).unwrap();
+        cert = cert.merge_packets(vec![uid.into(), sig.into()]).unwrap();
 
-        for (ref t, ref offset) in [ (t2, 0), (t4, 0), (t3, 100), (t1, 300) ].into_iter() {
-            for i in 0..100 {
+        const N: usize = 5;
+        for (t, offset) in &[ (t2, 0), (t4, 0), (t3, 1 * N), (t1, 3 * N) ] {
+            for i in 0..N {
                 let binding = signature::Builder::new(SignatureType::DirectKey)
                     .set_features(&Features::sequoia()).unwrap()
                     .set_key_flags(&KeyFlags::default()).unwrap()
                     .set_signature_creation_time(t1).unwrap()
                     // Vary this...
-                    .set_key_expiration_time(Some(
-                        time::Duration::new((1 + i) * 24 * 60 * 60, 0)))
+                    .set_key_validity_period(Some(
+                        time::Duration::new((1 + i as u64) * 24 * 60 * 60, 0)))
                     .unwrap()
                     .set_issuer_fingerprint(key.fingerprint()).unwrap()
                     .set_issuer(key.keyid()).unwrap()
                     .set_preferred_hash_algorithms(vec![HashAlgorithm::SHA512]).unwrap()
                     .set_signature_creation_time(*t).unwrap()
-                    .sign_primary_key_binding(&mut pair).unwrap();
+                    .sign_direct_key(&mut pair).unwrap();
 
                 let binding : Packet = binding.into();
 
                 cert = cert.merge_packets(vec![ binding ]).unwrap();
                 // A time that matches multiple signatures.
-                assert_eq!(cert.primary_key_signature(*t),
-                           cert.direct_signatures().get(*offset));
+                let direct_signatures =
+                    cert.primary_key().bundle().self_signatures();
+                assert_eq!(cert.primary_key().with_policy(p, *t).unwrap()
+                           .direct_key_signature(),
+                           direct_signatures.get(*offset));
                 // A time that doesn't match any signature.
-                assert_eq!(cert.primary_key_signature(*t + a_sec),
-                           cert.direct_signatures().get(*offset));
+                assert_eq!(cert.primary_key().with_policy(p, *t + a_sec).unwrap()
+                           .direct_key_signature(),
+                           direct_signatures.get(*offset));
 
                 // The current time, which should use the first signature.
-                assert_eq!(cert.primary_key_signature(None),
-                           cert.direct_signatures().get(0));
+                assert_eq!(cert.primary_key().with_policy(p, None).unwrap()
+                           .direct_key_signature(),
+                           direct_signatures.get(0));
 
                 // The beginning of time, which should return no
                 // binding signatures.
-                assert_eq!(cert.primary_key_signature(time_zero), None);
+                assert!(cert.primary_key().with_policy(p, time_zero).is_err());
             }
         }
     }
 
     #[test]
     fn keysigning_party() {
-        use crate::cert::packet::signature;
+        use crate::packet::signature;
 
         for cs in &[ CipherSuite::Cv25519,
                      CipherSuite::RSA3k,
@@ -3153,6 +3102,7 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
             let (bob, _) = CertBuilder::new()
                 .set_cipher_suite(*cs)
                 .add_userid("bob@bar.com")
+                .add_signing_subkey()
                 .generate().unwrap();
 
             assert_eq!(bob.userids().len(), 1);
@@ -3160,18 +3110,17 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
             assert_eq!(bob_userid_binding.userid().value(), b"bob@bar.com");
 
             let sig_template
-                = signature::Builder::new(SignatureType::GenericCertificate)
+                = signature::Builder::new(SignatureType::GenericCertification)
                       .set_trust_signature(255, 120)
                       .unwrap();
 
             // Have alice cerify the binding "bob@bar.com" and bob's key.
             let alice_certifies_bob
                 = bob_userid_binding.userid().bind(
-                    &mut alice.primary().clone().mark_parts_secret()
+                    &mut alice.primary_key().key().clone().mark_parts_secret()
                         .unwrap().into_keypair().unwrap(),
                     &bob,
-                    sig_template,
-                    None).unwrap();
+                    sig_template).unwrap();
 
             let bob
                 = bob.merge_packets(vec![ alice_certifies_bob.clone().into() ])
@@ -3182,17 +3131,266 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
             assert_eq!(bob.userids().len(), 1);
             let bob_userid_binding = bob.userids().nth(0).unwrap();
             assert_eq!(bob_userid_binding.userid().value(), b"bob@bar.com");
+
+            // Canonicalizing Bob's cert without having Alice's key
+            // has to resort to a heuristic to order third party
+            // signatures.  However, since we know the signature's
+            // type (GenericCertification), we know that it can only
+            // go to the only userid, so there is no ambiguity in this
+            // case.
             assert_eq!(bob_userid_binding.certifications(),
                        &[ alice_certifies_bob.clone() ]);
 
             // Make sure the certification is correct.
-            assert_eq!(
-                alice_certifies_bob
-                    .verify_userid_binding(&alice.primary().clone(),
-                                           &bob.primary().clone(),
-                                           bob_userid_binding.userid())
-                    .unwrap(),
-                true);
+            alice_certifies_bob
+                .verify_userid_binding(alice.primary_key().key(),
+                                       bob.primary_key().key(),
+                                       bob_userid_binding.userid()).unwrap();
         }
    }
+
+    #[test]
+    fn decrypt_secrets() {
+        let (cert, _) = CertBuilder::new()
+            .add_transport_encryption_subkey()
+            .set_password(Some(String::from("streng geheim").into()))
+            .generate().unwrap();
+        assert_eq!(cert.keys().secret().count(), 2);
+        assert_eq!(cert.keys().unencrypted_secret().count(), 0);
+
+        let mut primary = cert.primary_key().key().clone()
+            .mark_parts_secret().unwrap();
+        let algo = primary.pk_algo();
+        primary.secret_mut()
+            .decrypt_in_place(algo, &"streng geheim".into()).unwrap();
+        let cert = cert.merge_packets(vec![
+            primary.mark_parts_secret().unwrap().mark_role_primary().into()
+        ]).unwrap();
+
+        assert_eq!(cert.keys().secret().count(), 2);
+        assert_eq!(cert.keys().unencrypted_secret().count(), 1);
+    }
+
+    /// Tests that Cert::into_packets() and Cert::serialize(..) agree.
+    #[test]
+    fn test_into_packets() -> Result<()> {
+        use crate::serialize::SerializeInto;
+
+        let dkg = Cert::from_bytes(crate::tests::key("dkg.gpg"))?;
+        let mut buf = Vec::new();
+        for p in dkg.clone().into_packets() {
+            p.serialize(&mut buf)?;
+        }
+        let dkg = dkg.to_vec()?;
+        if false && buf != dkg {
+            std::fs::write("/tmp/buf", &buf)?;
+            std::fs::write("/tmp/dkg", &dkg)?;
+        }
+        assert_eq!(buf, dkg);
+        Ok(())
+    }
+
+    #[test]
+    fn test_canonicalization() -> Result<()> {
+        let p = crate::policy::StandardPolicy::new();
+
+        let primary: Key<_, key::PrimaryRole> =
+            key::Key4::generate_ecc(true, Curve::Ed25519)?.into();
+        let mut primary_pair = primary.clone().into_keypair()?;
+        let cert = Cert::from_packet_pile(vec![primary.into()].into())?;
+
+        // We now add components without binding signatures.  They
+        // should be kept, be enumerable, but ignored if a policy is
+        // applied.
+
+        // Add a bare userid.
+        let uid = UserID::from("foo@example.org");
+        let cert = cert.merge_packets(vec![uid.into()])?;
+        assert_eq!(cert.userids().count(), 1);
+        assert_eq!(cert.userids().with_policy(&p, None).count(), 0);
+
+        // Add a bare user attribute.
+        use packet::user_attribute::{Subpacket, Image};
+        let ua = UserAttribute::new(&[
+            Subpacket::Image(
+                Image::Private(100, vec![0, 1, 2].into_boxed_slice())),
+        ])?;
+        let cert = cert.merge_packets(vec![ua.into()])?;
+        assert_eq!(cert.user_attributes().count(), 1);
+        assert_eq!(cert.user_attributes().with_policy(&p, None).count(), 0);
+
+        // Add a bare signing subkey.
+        let signing_subkey: Key<_, key::SubordinateRole> =
+            key::Key4::generate_ecc(true, Curve::Ed25519)?.into();
+        let _signing_subkey_pair = signing_subkey.clone().into_keypair()?;
+        let cert = cert.merge_packets(vec![signing_subkey.into()])?;
+        assert_eq!(cert.keys().subkeys().count(), 1);
+        assert_eq!(cert.keys().subkeys().with_policy(&p, None).count(), 0);
+
+        // Add a component that Sequoia doesn't understand.
+        let mut fake_key = packet::Unknown::new(
+            packet::Tag::PublicSubkey, anyhow::anyhow!("fake key"));
+        fake_key.set_body("fake key".into());
+        let fake_binding = signature::Builder::new(SignatureType::SubkeyBinding)
+            .set_issuer(primary_pair.public().keyid())?
+            .set_issuer_fingerprint(primary_pair.public().fingerprint())?
+            .sign_standalone(&mut primary_pair)?;
+        let cert = cert.merge_packets(vec![fake_key.into(),
+                                           fake_binding.clone().into()])?;
+        assert_eq!(cert.unknowns().count(), 1);
+        assert_eq!(cert.unknowns().nth(0).unwrap().unknown().tag(),
+                   packet::Tag::PublicSubkey);
+        assert_eq!(cert.unknowns().nth(0).unwrap().self_signatures(),
+                   &[fake_binding]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn canonicalize_with_v3_sig() -> Result<()> {
+        // This test relies on being able to validate SHA-1
+        // signatures.  The standard policy reject SHA-1.  So, use a
+        // custom policy.
+        let p = &P::new();
+        let sha1 = p.hash_cutoffs(HashAlgorithm::SHA1).0.unwrap();
+        let p = &P::at(sha1 - std::time::Duration::from_secs(1));
+
+        let cert = Cert::from_bytes(
+            crate::tests::key("eike-v3-v4.pgp"))?;
+        dbg!(&cert);
+        assert_eq!(cert.userids()
+                   .with_policy(p, None)
+                   .count(), 1);
+        Ok(())
+    }
+
+    /// Asserts that key expiration times on direct key signatures are
+    /// honored.
+    #[test]
+    fn issue_215() {
+        let p = &P::new();
+         let cert = Cert::from_bytes(crate::tests::key(
+            "issue-215-expiration-on-direct-key-sig.pgp")).unwrap();
+        assert_match!(
+            Error::Expired(_)
+                = cert.alive(p, None).unwrap_err().downcast().unwrap());
+        assert_match!(
+            Error::Expired(_)
+                = cert.primary_key().with_policy(p, None).unwrap()
+                    .alive().unwrap_err().downcast().unwrap());
+    }
+
+    /// Tests that secrets are kept when merging.
+    #[test]
+    fn merge_keeps_secrets() -> Result<()> {
+        let primary_sec: Key<_, key::PrimaryRole> =
+            key::Key4::generate_ecc(true, Curve::Ed25519)?.into();
+        let primary_pub = primary_sec.clone().take_secret().0;
+
+        let cert_p =
+            Cert::from_packet_pile(vec![primary_pub.clone().into()].into())?;
+        let cert_s =
+            Cert::from_packet_pile(vec![primary_sec.clone().into()].into())?;
+        let cert = cert_p.merge(cert_s)?;
+        assert!(cert.primary_key().has_secret());
+
+        let cert_p =
+            Cert::from_packet_pile(vec![primary_pub.clone().into()].into())?;
+        let cert_s =
+            Cert::from_packet_pile(vec![primary_sec.clone().into()].into())?;
+        let cert = cert_s.merge(cert_p)?;
+        assert!(cert.primary_key().has_secret());
+        Ok(())
+    }
+
+    /// Tests that secrets are kept when canonicalizing.
+    #[test]
+    fn canonicalizing_keeps_secrets() -> Result<()> {
+        let primary: Key<_, key::PrimaryRole> =
+            key::Key4::generate_ecc(true, Curve::Ed25519)?.into();
+        let mut primary_pair = primary.clone().into_keypair()?;
+        let cert = Cert::from_packet_pile(vec![primary.clone().into()].into())?;
+
+        let subkey_sec: Key<_, key::SubordinateRole> =
+            key::Key4::generate_ecc(false, Curve::Cv25519)?.into();
+        let subkey_pub = subkey_sec.clone().take_secret().0;
+        let builder = signature::Builder::new(SignatureType::SubkeyBinding)
+            .set_key_flags(&KeyFlags::default()
+                           .set_transport_encryption(true))?;
+        let binding = subkey_sec.bind(&mut primary_pair, &cert, builder)?;
+
+        let cert = Cert::from_packet_pile(vec![
+            primary.clone().into(),
+            subkey_pub.clone().into(),
+            binding.clone().into(),
+            subkey_sec.clone().into(),
+            binding.clone().into(),
+        ].into())?;
+        assert_eq!(cert.keys().subkeys().count(), 1);
+        assert_eq!(cert.keys().unencrypted_secret().subkeys().count(), 1);
+
+        let cert = Cert::from_packet_pile(vec![
+            primary.clone().into(),
+            subkey_sec.clone().into(),
+            binding.clone().into(),
+            subkey_pub.clone().into(),
+            binding.clone().into(),
+        ].into())?;
+        assert_eq!(cert.keys().subkeys().count(), 1);
+        assert_eq!(cert.keys().unencrypted_secret().subkeys().count(), 1);
+        Ok(())
+    }
+
+    /// Demonstrates that subkeys are kept if a userid is later added
+    /// without any keyflags.
+    #[test]
+    fn issue_361() -> Result<()> {
+        let (cert, _) = CertBuilder::new()
+            .add_transport_encryption_subkey()
+            .generate()?;
+        let p = &P::new();
+        let cert_at = cert.with_policy(p,
+                                       cert.primary_key().creation_time()
+                                       + time::Duration::new(60, 0))
+            .unwrap();
+        assert_eq!(cert_at.userids().count(), 0);
+        assert_eq!(cert_at.keys().count(), 2);
+
+        let mut primary_pair = cert.primary_key().key().clone()
+            .mark_parts_secret()?.into_keypair()?;
+        let uid: UserID = "foo@example.org".into();
+        let sig = uid.bind(
+            &mut primary_pair, &cert,
+            signature::Builder::new(SignatureType::PositiveCertification))?;
+        let cert = cert.merge_packets(vec![
+            uid.into(),
+            sig.into(),
+        ])?;
+
+        let cert_at = cert.with_policy(p,
+                                       cert.primary_key().creation_time()
+                                       + time::Duration::new(60, 0))
+            .unwrap();
+        assert_eq!(cert_at.userids().count(), 1);
+        assert_eq!(cert_at.keys().count(), 2);
+        Ok(())
+    }
+
+    /// Demonstrates that binding signatures are considered valid even
+    /// if the primary key is not marked as certification-capable.
+    #[test]
+    fn issue_321() -> Result<()> {
+        let cert = Cert::from_bytes(
+            crate::tests::file("contrib/pep/pEpkey-netpgp.asc"))?;
+        assert_eq!(cert.userids().count(), 1);
+        assert_eq!(cert.keys().count(), 1);
+
+        let mut p = P::new();
+        p.accept_hash(HashAlgorithm::SHA1);
+        let cert_at = cert.with_policy(&p, cert.primary_key().creation_time())
+            .unwrap();
+        assert_eq!(cert_at.userids().count(), 1);
+        assert_eq!(cert_at.keys().count(), 1);
+        Ok(())
+    }
 }

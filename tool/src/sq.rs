@@ -2,33 +2,36 @@
 
 extern crate clap;
 #[macro_use]
-extern crate failure;
-#[macro_use]
 extern crate prettytable;
 extern crate rpassword;
 extern crate tempfile;
-extern crate termsize;
+extern crate crossterm;
 extern crate itertools;
 extern crate tokio_core;
 
-use failure::ResultExt;
+use crossterm::terminal;
+use anyhow::Context as _;
 use prettytable::{Table, Cell, Row};
 use std::fs::{File, OpenOptions};
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::exit;
+use chrono::{DateTime, offset::Utc};
 
 extern crate sequoia_openpgp as openpgp;
 extern crate sequoia_core;
 extern crate sequoia_net;
 extern crate sequoia_store as store;
 
-use crate::openpgp::{armor, autocrypt, Fingerprint, Cert};
+use crate::openpgp::Result;
+use crate::openpgp::{armor, Fingerprint, Cert};
+use sequoia_autocrypt as autocrypt;
 use crate::openpgp::fmt::hex;
 use crate::openpgp::types::KeyFlags;
 use crate::openpgp::parse::Parse;
 use crate::openpgp::serialize::Serialize;
-use crate::openpgp::cert::CertParser;
+use crate::openpgp::cert::prelude::*;
+use crate::openpgp::policy::StandardPolicy as P;
 use sequoia_core::{Context, NetworkPolicy};
 use sequoia_net::{KeyServer, wkd};
 use store::{Mapping, LogIter};
@@ -37,7 +40,7 @@ mod sq_cli;
 mod commands;
 use commands::dump::Convert;
 
-fn open_or_stdin(f: Option<&str>) -> Result<Box<dyn io::Read>, failure::Error> {
+fn open_or_stdin(f: Option<&str>) -> Result<Box<dyn io::Read>> {
     match f {
         Some(f) => Ok(Box::new(File::open(f)
                                .context("Failed to open input file")?)),
@@ -46,7 +49,7 @@ fn open_or_stdin(f: Option<&str>) -> Result<Box<dyn io::Read>, failure::Error> {
 }
 
 fn create_or_stdout(f: Option<&str>, force: bool)
-    -> Result<Box<dyn io::Write>, failure::Error> {
+    -> Result<Box<dyn io::Write>> {
     match f {
         None => Ok(Box::new(io::stdout())),
         Some(p) if p == "-" => Ok(Box::new(io::stdout())),
@@ -60,11 +63,82 @@ fn create_or_stdout(f: Option<&str>, force: bool)
                             .open(f)
                             .context("Failed to create output file")?))
             } else {
-                Err(failure::err_msg(
+                Err(anyhow::anyhow!(
                     format!("File {:?} exists, use --force to overwrite", p)))
             }
         }
     }
+}
+
+// XXX: This is a candidate for inclusion in the library.
+enum Writer<T: Write> {
+    Binary {
+        inner: T,
+    },
+    Armored {
+        inner: openpgp::armor::Writer<T>,
+    },
+}
+
+impl<T: Write> From<T> for Writer<T> {
+    fn from(inner: T) -> Self {
+        Writer::Binary { inner }
+    }
+}
+
+impl<T: Write> From<openpgp::armor::Writer<T>> for Writer<T> {
+    fn from(inner: openpgp::armor::Writer<T>) -> Self {
+        Writer::Armored { inner }
+    }
+}
+
+impl<T: Write> Writer<T> {
+    pub fn armor(self, kind: openpgp::armor::Kind, headers: &[(&str, &str)])
+                 -> openpgp::Result<Self>
+    {
+        match self {
+            Writer::Binary { inner } =>
+                Ok(openpgp::armor::Writer::new(inner, kind, headers)?
+                   .into()),
+            Writer::Armored { .. } =>
+                Err(openpgp::Error::InvalidOperation("already armored".into())
+                    .into()),
+        }
+    }
+
+    pub fn finalize(self) -> std::io::Result<T> {
+        match self {
+            Writer::Binary { inner } => Ok(inner),
+            Writer::Armored { inner } => inner.finalize(),
+        }
+    }
+}
+
+impl<T: Write> Write for Writer<T> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            Writer::Binary { inner } => inner.write(buf),
+            Writer::Armored { inner } => inner.write(buf),
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            Writer::Binary { inner } => inner.flush(),
+            Writer::Armored { inner } => inner.flush(),
+        }
+    }
+}
+
+fn create_or_stdout_pgp(f: Option<&str>, force: bool,
+                        binary: bool, kind: armor::Kind)
+    -> Result<Writer<Box<dyn Write>>>
+{
+    let sink = create_or_stdout(f, force)?;
+    let mut sink = Writer::from(sink);
+    if ! binary {
+        sink = sink.armor(kind, &[])?;
+    }
+    Ok(sink)
 }
 
 fn load_certs<'a, I>(files: I) -> openpgp::Result<Vec<Cert>>
@@ -110,6 +184,7 @@ fn serialize_keyring(mut output: &mut dyn io::Write, certs: &[Cert], binary: boo
     for cert in certs {
         cert.serialize(&mut output)?;
     }
+    output.finalize()?;
     Ok(())
 }
 
@@ -136,10 +211,12 @@ fn help_warning(arg: &str) {
     }
 }
 
-fn real_main() -> Result<(), failure::Error> {
+fn main() -> Result<()> {
+    let policy = &P::new();
+
     let matches = sq_cli::build().get_matches();
 
-    let policy = match matches.value_of("policy") {
+    let network_policy = match matches.value_of("policy") {
         None => NetworkPolicy::Encrypted,
         Some("offline") => NetworkPolicy::Offline,
         Some("anonymized") => NetworkPolicy::Anonymized,
@@ -160,7 +237,7 @@ fn real_main() -> Result<(), failure::Error> {
         }
     };
     let mut builder = Context::configure()
-        .network_policy(policy);
+        .network_policy(network_policy);
     if let Some(dir) = matches.value_of("home") {
         builder = builder.home(dir);
     }
@@ -181,7 +258,7 @@ fn real_main() -> Result<(), failure::Error> {
                 .unwrap_or(Ok(vec![]))?;
             let mut mapping = Mapping::open(&ctx, realm_name, mapping_name)
                 .context("Failed to open the mapping")?;
-            commands::decrypt(&ctx, &mut mapping,
+            commands::decrypt(&ctx, policy, &mut mapping,
                               &mut input, &mut output,
                               signatures, certs, secrets,
                               m.is_present("dump-session-key"),
@@ -189,14 +266,10 @@ fn real_main() -> Result<(), failure::Error> {
         },
         ("encrypt",  Some(m)) => {
             let mut input = open_or_stdin(m.value_of("input"))?;
-            let mut output = create_or_stdout(m.value_of("output"), force)?;
-            let mut output = if ! m.is_present("binary") {
-                Box::new(armor::Writer::new(&mut output,
-                                            armor::Kind::Message,
-                                            &[])?)
-            } else {
-                output
-            };
+            let mut output =
+                create_or_stdout_pgp(m.value_of("output"), force,
+                                     m.is_present("binary"),
+                                     armor::Kind::Message)?;
             let mut mapping = Mapping::open(&ctx, realm_name, mapping_name)
                 .context("Failed to open the mapping")?;
             let recipients = m.values_of("recipient")
@@ -218,11 +291,20 @@ fn real_main() -> Result<(), failure::Error> {
                     .set_transport_encryption(true),
                 _ => unreachable!("uses possible_values"),
             };
-            commands::encrypt(&mut mapping, &mut input, &mut output,
+            let time = if let Some(time) = m.value_of("time") {
+                Some(parse_iso8601(time, chrono::NaiveTime::from_hms(0, 0, 0))
+                         .context(format!("Bad value passed to --time: {:?}",
+                                          time))?.into())
+            } else {
+                None
+            };
+            commands::encrypt(policy, &mut mapping, &mut input, &mut output,
                               m.occurrences_of("symmetric") as usize,
                               recipients, additional_certs, additional_secrets,
                               mode,
-                              m.value_of("compression").expect("has default"))?;
+                              m.value_of("compression").expect("has default"),
+                              time.into())?;
+            output.finalize()?;
         },
         ("sign",  Some(m)) => {
             let mut input = open_or_stdin(m.value_of("input"))?;
@@ -234,8 +316,15 @@ fn real_main() -> Result<(), failure::Error> {
             let secrets = m.values_of("secret-key-file")
                 .map(load_certs)
                 .unwrap_or(Ok(vec![]))?;
-            commands::sign(&mut input, output, secrets, detached, binary,
-                           append, notarize, force)?;
+            let time = if let Some(time) = m.value_of("time") {
+                Some(parse_iso8601(time, chrono::NaiveTime::from_hms(0, 0, 0))
+                         .context(format!("Bad value passed to --time: {:?}",
+                                          time))?.into())
+            } else {
+                None
+            };
+            commands::sign(policy, &mut input, output, secrets, detached, binary,
+                           append, notarize, time, force)?;
         },
         ("verify",  Some(m)) => {
             let mut input = open_or_stdin(m.value_of("input"))?;
@@ -252,17 +341,19 @@ fn real_main() -> Result<(), failure::Error> {
                 .unwrap_or(Ok(vec![]))?;
             let mut mapping = Mapping::open(&ctx, realm_name, mapping_name)
                 .context("Failed to open the mapping")?;
-            commands::verify(&ctx, &mut mapping, &mut input,
+            commands::verify(&ctx, policy, &mut mapping, &mut input,
                              detached.as_mut().map(|r| r as &mut dyn io::Read),
                              &mut output, signatures, certs)?;
         },
 
         ("enarmor",  Some(m)) => {
             let mut input = open_or_stdin(m.value_of("input"))?;
-            let mut output = create_or_stdout(m.value_of("output"), force)?;
-            let kind = parse_armor_kind(m.value_of("kind"));
-            let mut filter = armor::Writer::new(&mut output, kind, &[])?;
-            io::copy(&mut input, &mut filter)?;
+            let mut output =
+                create_or_stdout_pgp(m.value_of("output"), force,
+                                     false,
+                                     parse_armor_kind(m.value_of("kind")))?;
+            io::copy(&mut input, &mut output)?;
+            output.finalize()?;
         },
         ("dearmor",  Some(m)) => {
             let mut input = open_or_stdin(m.value_of("input"))?;
@@ -274,15 +365,17 @@ fn real_main() -> Result<(), failure::Error> {
             match m.subcommand() {
                 ("decode",  Some(m)) => {
                     let input = open_or_stdin(m.value_of("input"))?;
-                    let mut output = create_or_stdout(m.value_of("output"), force)?;
+                    let mut output =
+                        create_or_stdout_pgp(m.value_of("output"), force,
+                                             true,
+                                             armor::Kind::PublicKey)?;
                     let ac = autocrypt::AutocryptHeaders::from_reader(input)?;
                     for h in &ac.headers {
                         if let Some(ref cert) = h.key {
-                            let mut filter = armor::Writer::new(
-                                &mut output, armor::Kind::PublicKey, &[])?;
-                            cert.serialize(&mut filter)?;
+                            cert.serialize(&mut output)?;
                         }
                     }
+                    output.finalize()?;
                 },
                 ("encode-sender",  Some(m)) => {
                     let input = open_or_stdin(m.value_of("input"))?;
@@ -291,17 +384,13 @@ fn real_main() -> Result<(), failure::Error> {
                     let cert = Cert::from_reader(input)?;
                     let addr = m.value_of("address").map(|a| a.to_string())
                         .or_else(|| {
-                            if let Some(Ok(Some(a))) =
-                                cert.userids().nth(0).map(|u| u.userid().email())
-                            {
-                                Some(a)
-                            } else {
-                                None
-                            }
+                            cert.primary_userid(policy, None)
+                                .map(|ca| ca.userid().to_string())
                         });
                     let ac = autocrypt::AutocryptHeader::new_sender(
+                        policy,
                         &cert,
-                        &addr.ok_or(failure::err_msg(
+                        &addr.ok_or(anyhow::anyhow!(
                             "No well-formed primary userid found, use \
                              --address to specify one"))?,
                         m.value_of("prefer-encrypt").expect("has default"))?;
@@ -314,7 +403,7 @@ fn real_main() -> Result<(), failure::Error> {
 
         ("inspect",  Some(m)) => {
             let mut output = create_or_stdout(m.value_of("output"), force)?;
-            commands::inspect(m, &mut output)?;
+            commands::inspect(m, policy, &mut output)?;
         },
 
         ("packet", Some(m)) => match m.subcommand() {
@@ -327,11 +416,30 @@ fn real_main() -> Result<(), failure::Error> {
                     } else {
                         None
                     };
-                let width = termsize::get().map(|s| s.cols as usize);
+                let width = terminal::size().ok().map(|(cols, _)| cols as usize);
                 commands::dump(&mut input, &mut output,
                                m.is_present("mpis"), m.is_present("hex"),
                                session_key.as_ref(), width)?;
             },
+
+            ("decrypt",  Some(m)) => {
+                let mut input = open_or_stdin(m.value_of("input"))?;
+                let mut output =
+                    create_or_stdout_pgp(m.value_of("output"), force,
+                                         m.is_present("binary"),
+                                         armor::Kind::Message)?;
+                let secrets = m.values_of("secret-key-file")
+                    .map(load_certs)
+                    .unwrap_or(Ok(vec![]))?;
+                let mut mapping = Mapping::open(&ctx, realm_name, mapping_name)
+                    .context("Failed to open the mapping")?;
+                commands::decrypt::decrypt_unwrap(
+                    &ctx, policy, &mut mapping,
+                    &mut input, &mut output,
+                    secrets, m.is_present("dump-session-key"))?;
+                output.finalize()?;
+            },
+
             ("split",  Some(m)) => {
                 let mut input = open_or_stdin(m.value_of("input"))?;
                 let prefix =
@@ -351,14 +459,12 @@ fn real_main() -> Result<(), failure::Error> {
                 commands::split(&mut input, &prefix)?;
             },
             ("join",  Some(m)) => {
-                let output = create_or_stdout(m.value_of("output"), force)?;
-                let mut output = if ! m.is_present("binary") {
-                    let kind = parse_armor_kind(m.value_of("kind"));
-                    Box::new(armor::Writer::new(output, kind, &[])?)
-                } else {
-                    output
-                };
+                let mut output =
+                    create_or_stdout_pgp(m.value_of("output"), force,
+                                         m.is_present("binary"),
+                                         parse_armor_kind(m.value_of("kind")))?;
                 commands::join(m.values_of("input"), &mut output)?;
+                output.finalize()?;
             },
             _ => unreachable!(),
         },
@@ -574,7 +680,7 @@ fn real_main() -> Result<(), failure::Error> {
 }
 
 fn list_bindings(mapping: &Mapping, realm: &str, name: &str)
-                 -> Result<(), failure::Error> {
+                 -> Result<()> {
     if mapping.iter()?.count() == 0 {
         println!("No label-key bindings in the \"{}/{}\" mapping.",
                  realm, name);
@@ -616,15 +722,74 @@ fn print_log(iter: LogIter, with_slug: bool) {
     table.printstd();
 }
 
-fn main() {
-    if let Err(e) = real_main() {
-        let mut cause = e.as_fail();
-        eprint!("{}", cause);
-        while let Some(c) = cause.cause() {
-            eprint!(":\n  {}", c);
-            cause = c;
+/// Parses the given string depicting a ISO 8601 timestamp.
+fn parse_iso8601(s: &str, pad_date_with: chrono::NaiveTime)
+                 -> Result<DateTime<Utc>>
+{
+    // If you modify this function this function, synchronize the
+    // changes with the copy in sqv.rs!
+    for f in &[
+        "%Y-%m-%dT%H:%M:%S%#z",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M%#z",
+        "%Y-%m-%dT%H:%M",
+        "%Y-%m-%dT%H%#z",
+        "%Y-%m-%dT%H",
+        "%Y%m%dT%H%M%S%#z",
+        "%Y%m%dT%H%M%S",
+        "%Y%m%dT%H%M%#z",
+        "%Y%m%dT%H%M",
+        "%Y%m%dT%H%#z",
+        "%Y%m%dT%H",
+    ] {
+        if f.ends_with("%#z") {
+            if let Ok(d) = DateTime::parse_from_str(s, *f) {
+                return Ok(d.into());
+            }
+        } else {
+            if let Ok(d) = chrono::NaiveDateTime::parse_from_str(s, *f) {
+                return Ok(DateTime::from_utc(d, Utc));
+            }
         }
-        eprintln!();
-        exit(2);
     }
+    for f in &[
+        "%Y-%m-%d",
+        "%Y-%m",
+        "%Y-%j",
+        "%Y%m%d",
+        "%Y%m",
+        "%Y%j",
+        "%Y",
+    ] {
+        if let Ok(d) = chrono::NaiveDate::parse_from_str(s, *f) {
+            return Ok(DateTime::from_utc(d.and_time(pad_date_with), Utc));
+        }
+    }
+    Err(anyhow::anyhow!("Malformed ISO8601 timestamp: {}", s))
+}
+
+#[test]
+fn test_parse_iso8601() {
+    let z = chrono::NaiveTime::from_hms(0, 0, 0);
+    parse_iso8601("2017-03-04T13:25:35Z", z).unwrap();
+    parse_iso8601("2017-03-04T13:25:35+08:30", z).unwrap();
+    parse_iso8601("2017-03-04T13:25:35", z).unwrap();
+    parse_iso8601("2017-03-04T13:25Z", z).unwrap();
+    parse_iso8601("2017-03-04T13:25", z).unwrap();
+    // parse_iso8601("2017-03-04T13Z", z).unwrap(); // XXX: chrono doesn't like
+    // parse_iso8601("2017-03-04T13", z).unwrap(); // ditto
+    parse_iso8601("2017-03-04", z).unwrap();
+    // parse_iso8601("2017-03", z).unwrap(); // ditto
+    parse_iso8601("2017-031", z).unwrap();
+    parse_iso8601("20170304T132535Z", z).unwrap();
+    parse_iso8601("20170304T132535+0830", z).unwrap();
+    parse_iso8601("20170304T132535", z).unwrap();
+    parse_iso8601("20170304T1325Z", z).unwrap();
+    parse_iso8601("20170304T1325", z).unwrap();
+    // parse_iso8601("20170304T13Z", z).unwrap(); // ditto
+    // parse_iso8601("20170304T13", z).unwrap(); // ditto
+    parse_iso8601("20170304", z).unwrap();
+    // parse_iso8601("201703", z).unwrap(); // ditto
+    parse_iso8601("2017031", z).unwrap();
+    // parse_iso8601("2017", z).unwrap(); // ditto
 }

@@ -2,8 +2,8 @@
 //!
 //! Wraps [`sequoia-openpgp::Cert`] and [related functionality].
 //!
-//! [`sequoia-openpgp::Cert`]: ../../sequoia_openpgp/struct.Cert.html
-//! [related functionality]: ../../sequoia_openpgp/cert/index.html
+//! [`sequoia-openpgp::Cert`]: ../../../sequoia_openpgp/cert/struct.Cert.html
+//! [related functionality]: ../../../sequoia_openpgp/cert/index.html
 
 use std::ptr;
 use std::slice;
@@ -11,22 +11,13 @@ use libc::{c_char, c_int, size_t, time_t};
 
 extern crate sequoia_openpgp as openpgp;
 use self::openpgp::{
-    autocrypt::Autocrypt,
     crypto,
     types::ReasonForRevocation,
     parse::{
         PacketParserResult,
         Parse,
     },
-    cert::{
-        CipherSuite,
-        KeyIter,
-        CertBuilder,
-        CertParser,
-        CertRevocationBuilder,
-        UserIDBinding,
-        UserIDBindingIter,
-    },
+    cert::prelude::*,
 };
 
 use crate::error::Status;
@@ -37,6 +28,7 @@ use super::packet::signature::Signature;
 use super::packet_pile::PacketPile;
 use super::tsk::TSK;
 use super::revocation_status::RevocationStatus;
+use super::policy::Policy;
 
 use crate::Maybe;
 use crate::RefRaw;
@@ -139,7 +131,7 @@ fn pgp_cert_fingerprint(cert: *const Cert)
 ///
 /// This object writes out secret keys during serialization.
 ///
-/// [`TSK`]: cert/struct.TSK.html
+/// [`TSK`]: ../tsk/struct.TSK.html
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
 fn pgp_cert_as_tsk(cert: *const Cert) -> *mut TSK<'static> {
     cert.ref_raw().as_tsk().move_into_raw()
@@ -150,8 +142,8 @@ fn pgp_cert_as_tsk(cert: *const Cert) -> *mut TSK<'static> {
 /// The cert still owns the key.  The caller must not modify the key.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
 fn pgp_cert_primary_key(cert: *const Cert) -> *const Key {
-    let key : &self::openpgp::packet::key::UnspecifiedKey
-        = cert.ref_raw().primary().into();
+    let key = cert.ref_raw().primary_key().key()
+        .mark_parts_unspecified_ref().mark_role_unspecified_ref();
     key.move_into_raw()
 }
 
@@ -164,10 +156,13 @@ fn pgp_cert_primary_key(cert: *const Cert) -> *const Key {
 /// If `when` is 0, then returns the Cert's revocation status as of the
 /// time of the call.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
-fn pgp_cert_revoked(cert: *const Cert, when: time_t)
+fn pgp_cert_revoked(cert: *const Cert, policy: *const Policy, when: time_t)
     -> *mut RevocationStatus<'static>
 {
-    cert.ref_raw().revoked(maybe_time(when)).move_into_raw()
+    let policy = &**policy.ref_raw();
+    cert.ref_raw()
+        .revoked(policy, maybe_time(when))
+        .move_into_raw()
 }
 
 fn int_to_reason_for_revocation(code: c_int) -> ReasonForRevocation {
@@ -199,6 +194,7 @@ fn int_to_reason_for_revocation(code: c_int) -> ReasonForRevocation {
 /// pgp_key_t primary_key;
 /// pgp_key_pair_t primary_keypair;
 /// pgp_signer_t primary_signer;
+/// pgp_policy_t policy = pgp_standard_policy ();
 ///
 /// builder = pgp_cert_builder_new ();
 /// pgp_cert_builder_set_cipher_suite (&builder, PGP_CERT_CIPHER_SUITE_CV25519);
@@ -223,17 +219,17 @@ fn int_to_reason_for_revocation(code: c_int) -> ReasonForRevocation {
 /// cert = pgp_cert_merge_packets (NULL, cert, &packet, 1);
 /// assert (cert);
 ///
-/// pgp_revocation_status_t rs = pgp_cert_revoked (cert, 0);
+/// pgp_revocation_status_t rs = pgp_cert_revoked (cert, policy, 0);
 /// assert (pgp_revocation_status_variant (rs) == PGP_REVOCATION_STATUS_REVOKED);
 /// pgp_revocation_status_free (rs);
 ///
 /// pgp_cert_free (cert);
+/// pgp_policy_free (policy);
 /// ```
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
 fn pgp_cert_revoke(errp: Option<&mut *mut crate::error::Error>,
                   cert: *const Cert,
-                  primary_signer: *mut Box<dyn crypto::Signer<
-                          openpgp::packet::key::UnspecifiedRole>>,
+                  primary_signer: *mut Box<dyn crypto::Signer>,
                   code: c_int,
                   reason: Option<&c_char>)
                   -> Maybe<Signature>
@@ -270,6 +266,7 @@ fn pgp_cert_revoke(errp: Option<&mut *mut crate::error::Error>,
 /// pgp_key_t primary_key;
 /// pgp_key_pair_t primary_keypair;
 /// pgp_signer_t primary_signer;
+/// pgp_policy_t policy = pgp_standard_policy ();
 ///
 /// builder = pgp_cert_builder_new ();
 /// pgp_cert_builder_set_cipher_suite (&builder, PGP_CERT_CIPHER_SUITE_CV25519);
@@ -290,17 +287,17 @@ fn pgp_cert_revoke(errp: Option<&mut *mut crate::error::Error>,
 /// pgp_signer_free (primary_signer);
 /// pgp_key_pair_free (primary_keypair);
 ///
-/// pgp_revocation_status_t rs = pgp_cert_revoked (cert, 0);
+/// pgp_revocation_status_t rs = pgp_cert_revoked (cert, policy, 0);
 /// assert (pgp_revocation_status_variant (rs) == PGP_REVOCATION_STATUS_REVOKED);
 /// pgp_revocation_status_free (rs);
 ///
 /// pgp_cert_free (cert);
+/// pgp_policy_free (policy);
 /// ```
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
 fn pgp_cert_revoke_in_place(errp: Option<&mut *mut crate::error::Error>,
                            cert: *mut Cert,
-                           primary_signer: *mut Box<dyn crypto::Signer<
-                                   openpgp::packet::key::UnspecifiedRole>>,
+                           primary_signer: *mut Box<dyn crypto::Signer>,
                            code: c_int,
                            reason: Option<&c_char>)
                            -> Maybe<Cert>
@@ -317,40 +314,36 @@ fn pgp_cert_revoke_in_place(errp: Option<&mut *mut crate::error::Error>,
     cert.revoke_in_place(signer.as_mut(), code, reason).move_into_raw(errp)
 }
 
-/// Returns whether the Cert has expired.
-///
-/// If `when` is 0, then the current time is used.
-#[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
-fn pgp_cert_expired(cert: *const Cert, when: time_t) -> c_int {
-    cert.ref_raw().expired(maybe_time(when)) as c_int
-}
-
 /// Returns whether the Cert is alive at the specified time.
 ///
 /// If `when` is 0, then the current time is used.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
-fn pgp_cert_alive(cert: *const Cert, when: time_t)
-                    -> c_int {
-    cert.ref_raw().alive(maybe_time(when)) as c_int
+fn pgp_cert_alive(errp: Option<&mut *mut crate::error::Error>,
+                  cert: *const Cert, policy: *const Policy, when: time_t)
+    -> Status
+{
+    let policy = &**policy.ref_raw();
+    ffi_make_fry_from_errp!(errp);
+    ffi_try_status!(cert.ref_raw().alive(policy, maybe_time(when)))
 }
 
-/// Changes the Cert's expiration.
-///
-/// Expiry is when the key should expire in seconds relative to the
-/// key's creation (not the current time).
+/// Sets the key to expire at the given time.
 ///
 /// This function consumes `cert` and returns a new `Cert`.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
-fn pgp_cert_set_expiry(errp: Option<&mut *mut crate::error::Error>,
-                      cert: *mut Cert, primary_signer: *mut Box<dyn crypto::Signer<
-                              openpgp::packet::key::UnspecifiedRole>>,
-                      expiry: u32)
-                      -> Maybe<Cert> {
+fn pgp_cert_set_expiration_time(errp: Option<&mut *mut crate::error::Error>,
+                       cert: *mut Cert,
+                       policy: *const Policy,
+                       primary_signer: *mut Box<dyn crypto::Signer>,
+                       expiry: time_t)
+    -> Maybe<Cert>
+{
+    let policy = &**policy.ref_raw();
     let cert = cert.move_from_raw();
     let signer = ffi_param_ref_mut!(primary_signer);
 
-    cert.set_expiry(signer.as_mut(),
-                   Some(std::time::Duration::new(expiry as u64, 0)))
+    cert.set_expiration_time(policy, signer.as_mut(),
+                             maybe_time(expiry))
         .move_into_raw(errp)
 }
 
@@ -364,18 +357,20 @@ fn pgp_cert_is_tsk(cert: *const Cert)
 
 /// Returns an iterator over the Cert's user id bindings.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
-fn pgp_cert_primary_user_id(cert: *const Cert)
+fn pgp_cert_primary_user_id(cert: *const Cert, policy: *const Policy,
+                            when: time_t)
                            -> *mut c_char
 {
     let cert = cert.ref_raw();
-    if let Some(binding) = cert.userids().nth(0) {
+    let policy = &**policy.ref_raw();
+    if let Some(binding) = cert.primary_userid(policy, maybe_time(when)) {
         ffi_return_string!(binding.userid().value())
     } else {
         ptr::null_mut()
     }
 }
 
-/* UserIDBinding */
+/* UserIDBundle */
 
 /// Returns the user id.
 ///
@@ -385,8 +380,8 @@ fn pgp_cert_primary_user_id(cert: *const Cert)
 ///
 /// The caller must free the returned value.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle]
-pub extern "C" fn pgp_user_id_binding_user_id(
-    binding: *const UserIDBinding)
+pub extern "C" fn pgp_user_id_bundle_user_id(
+    binding: *const UserIDBundle)
     -> *mut c_char
 {
     let binding = ffi_param_ref!(binding);
@@ -396,39 +391,41 @@ pub extern "C" fn pgp_user_id_binding_user_id(
 
 /// Returns a reference to the self-signature, if any.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle]
-pub extern "C" fn pgp_user_id_binding_selfsig(
-    binding: *const UserIDBinding)
+pub extern "C" fn pgp_user_id_bundle_selfsig(
+    binding: *const UserIDBundle,
+    policy: *const Policy)
     -> Maybe<Signature>
 {
     let binding = ffi_param_ref!(binding);
-    binding.binding_signature(None).move_into_raw()
+    let policy = &**policy.ref_raw();
+    binding.binding_signature(policy, None).move_into_raw()
 }
 
 
-/* UserIDBindingIter */
+/* UserIDBundleIter */
 
-/// Returns an iterator over the Cert's user id bindings.
+/// Returns an iterator over the Cert's user id bundles.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle]
-pub extern "C" fn pgp_cert_user_id_binding_iter(cert: *const Cert)
-    -> *mut UserIDBindingIter<'static>
+pub extern "C" fn pgp_cert_user_id_bundle_iter(cert: *const Cert)
+    -> *mut UserIDBundleIter<'static>
 {
     let cert = cert.ref_raw();
-    box_raw!(cert.userids())
+    box_raw!(cert.userids().bundles())
 }
 
-/// Frees a pgp_user_id_binding_iter_t.
+/// Frees a pgp_user_id_bundle_iter_t.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle]
-pub extern "C" fn pgp_user_id_binding_iter_free(
-    iter: Option<&mut UserIDBindingIter>)
+pub extern "C" fn pgp_user_id_bundle_iter_free(
+    iter: Option<&mut UserIDBundleIter>)
 {
     ffi_free!(iter)
 }
 
-/// Returns the next `UserIDBinding`.
+/// Returns the next `UserIDBundle`.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle]
-pub extern "C" fn pgp_user_id_binding_iter_next<'a>(
-    iter: *mut UserIDBindingIter<'a>)
-    -> Option<&'a UserIDBinding>
+pub extern "C" fn pgp_user_id_bundle_iter_next<'a>(
+    iter: *mut UserIDBundleIter<'a>)
+    -> Option<&'a UserIDBundle>
 {
     let iter = ffi_param_ref_mut!(iter);
     iter.next()
@@ -439,50 +436,23 @@ pub extern "C" fn pgp_user_id_binding_iter_next<'a>(
 /// Wraps a KeyIter for export via the FFI.
 pub struct KeyIterWrapper<'a> {
     pub(crate) // For serialize.rs.
-    iter: KeyIter<'a, openpgp::packet::key::PublicParts,
-                  openpgp::packet::key::UnspecifiedRole>,
+    iter: Option<KeyIter<'a, openpgp::packet::key::PublicParts,
+                         openpgp::packet::key::UnspecifiedRole>>,
     // Whether next has been called.
     next_called: bool,
 }
 
-/// Returns an iterator over the Cert's live, non-revoked keys.
-///
-/// That is, this returns an iterator over the primary key and any
-/// subkeys, along with the corresponding signatures.
-///
-/// Note: since a primary key is different from a subkey, the iterator
-/// is over `Key`s and not `SubkeyBindings`.  Since the primary key
-/// has no binding signature, the signature carrying the primary key's
-/// key flags is returned (either a direct key signature, or the
-/// self-signature on the primary User ID).  There are corner cases
-/// where no such signature exists (e.g. partial Certs), therefore this
-/// iterator may return `None` for the primary key's signature.
-///
-/// A valid `Key` has at least one good self-signature.
-///
-/// To return all keys, use `pgp_cert_key_iter_all()`.
-#[::sequoia_ffi_macros::extern_fn] #[no_mangle]
-pub extern "C" fn pgp_cert_key_iter_valid(cert: *const Cert)
-    -> *mut KeyIterWrapper<'static>
-{
-    let cert = cert.ref_raw();
-    box_raw!(KeyIterWrapper {
-        iter: cert.keys_valid(),
-        next_called: false,
-    })
-}
-
 /// Returns an iterator over all `Key`s in a Cert.
 ///
-/// Compare with `pgp_cert_key_iter_valid`, which filters out expired
-/// and revoked keys by default.
+/// That is, this returns an iterator over the primary key and any
+/// subkeys.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle]
-pub extern "C" fn pgp_cert_key_iter_all(cert: *const Cert)
+pub extern "C" fn pgp_cert_key_iter(cert: *const Cert)
     -> *mut KeyIterWrapper<'static>
 {
     let cert = cert.ref_raw();
     box_raw!(KeyIterWrapper {
-        iter: cert.keys_all(),
+        iter: Some(cert.keys()),
         next_called: false,
     })
 }
@@ -493,158 +463,6 @@ pub extern "C" fn pgp_cert_key_iter_free(
     iter: Option<&mut KeyIterWrapper>)
 {
     ffi_free!(iter)
-}
-
-/// Changes the iterator to only return keys that are certification
-/// capable.
-///
-/// If you call this function and, e.g., the `for_signing`
-/// function, the *union* of the values is used.  That is, the
-/// iterator will return keys that are certification capable *or*
-/// signing capable.
-///
-/// Note: you may not call this function after starting to iterate.
-#[::sequoia_ffi_macros::extern_fn] #[no_mangle]
-pub extern "C" fn pgp_cert_key_iter_for_certification<'a>(
-    iter_wrapper: *mut KeyIterWrapper<'a>)
-{
-    let iter_wrapper = ffi_param_ref_mut!(iter_wrapper);
-    if iter_wrapper.next_called {
-        panic!("Can't change KeyIter filter after iterating.");
-    }
-
-    use std::mem;
-    let tmp = mem::replace(&mut iter_wrapper.iter, KeyIter::empty());
-    iter_wrapper.iter = tmp.for_certification();
-}
-
-/// Changes the iterator to only return keys that are certification
-/// capable.
-///
-/// If you call this function and, e.g., the `for_signing`
-/// function, the *union* of the values is used.  That is, the
-/// iterator will return keys that are certification capable *or*
-/// signing capable.
-///
-/// Note: you may not call this function after starting to iterate.
-#[::sequoia_ffi_macros::extern_fn] #[no_mangle]
-pub extern "C" fn pgp_cert_key_iter_for_signing<'a>(
-    iter_wrapper: *mut KeyIterWrapper<'a>)
-{
-    let iter_wrapper = ffi_param_ref_mut!(iter_wrapper);
-    if iter_wrapper.next_called {
-        panic!("Can't change KeyIter filter after iterating.");
-    }
-
-    use std::mem;
-    let tmp = mem::replace(&mut iter_wrapper.iter, KeyIter::empty());
-    iter_wrapper.iter = tmp.for_signing();
-}
-
-/// Changes the iterator to only return keys that are capable of
-/// encrypting data at rest.
-///
-/// If you call this function and, e.g., the `for_signing`
-/// function, the *union* of the values is used.  That is, the
-/// iterator will return keys that are certification capable *or*
-/// signing capable.
-///
-/// Note: you may not call this function after starting to iterate.
-#[::sequoia_ffi_macros::extern_fn] #[no_mangle]
-pub extern "C" fn pgp_cert_key_iter_for_storage_encryption<'a>(
-    iter_wrapper: *mut KeyIterWrapper<'a>)
-{
-    let iter_wrapper = ffi_param_ref_mut!(iter_wrapper);
-    if iter_wrapper.next_called {
-        panic!("Can't change KeyIter filter after iterating.");
-    }
-
-    let tmp = std::mem::replace(&mut iter_wrapper.iter, KeyIter::empty());
-    iter_wrapper.iter = tmp.for_storage_encryption();
-}
-
-/// Changes the iterator to only return keys that are capable of
-/// encrypting data for transport.
-///
-/// If you call this function and, e.g., the `for_signing`
-/// function, the *union* of the values is used.  That is, the
-/// iterator will return keys that are certification capable *or*
-/// signing capable.
-///
-/// Note: you may not call this function after starting to iterate.
-#[::sequoia_ffi_macros::extern_fn] #[no_mangle]
-pub extern "C" fn pgp_cert_key_iter_for_transport_encryption<'a>(
-    iter_wrapper: *mut KeyIterWrapper<'a>)
-{
-    let iter_wrapper = ffi_param_ref_mut!(iter_wrapper);
-    if iter_wrapper.next_called {
-        panic!("Can't change KeyIter filter after iterating.");
-    }
-
-    let tmp = std::mem::replace(&mut iter_wrapper.iter, KeyIter::empty());
-    iter_wrapper.iter = tmp.for_transport_encryption();
-}
-
-/// Changes the iterator to only return keys that are alive.
-///
-/// If you call this function (or `pgp_cert_key_iter_alive_at`), only
-/// the last value is used.
-///
-/// Note: you may not call this function after starting to iterate.
-#[::sequoia_ffi_macros::extern_fn] #[no_mangle]
-pub extern "C" fn pgp_cert_key_iter_alive<'a>(
-    iter_wrapper: *mut KeyIterWrapper<'a>)
-{
-    let iter_wrapper = ffi_param_ref_mut!(iter_wrapper);
-    if iter_wrapper.next_called {
-        panic!("Can't change KeyIter filter after iterating.");
-    }
-
-    use std::mem;
-    let tmp = mem::replace(&mut iter_wrapper.iter, KeyIter::empty());
-    iter_wrapper.iter = tmp.alive();
-}
-
-/// Changes the iterator to only return keys that are alive at the
-/// specified time.
-///
-/// If you call this function (or `pgp_cert_key_iter_alive`), only the
-/// last value is used.
-///
-/// Note: you may not call this function after starting to iterate.
-#[::sequoia_ffi_macros::extern_fn] #[no_mangle]
-pub extern "C" fn pgp_cert_key_iter_alive_at<'a>(
-    iter_wrapper: *mut KeyIterWrapper<'a>,
-    when: time_t)
-{
-    let iter_wrapper = ffi_param_ref_mut!(iter_wrapper);
-    if iter_wrapper.next_called {
-        panic!("Can't change KeyIter filter after iterating.");
-    }
-
-    use std::mem;
-    let tmp = mem::replace(&mut iter_wrapper.iter, KeyIter::empty());
-    iter_wrapper.iter =
-        tmp.alive_at(maybe_time(when).unwrap_or(std::time::UNIX_EPOCH));
-}
-
-/// Changes the iterator to only return keys whose revocation status
-/// matches `revoked`.
-///
-/// Note: you may not call this function after starting to iterate.
-#[::sequoia_ffi_macros::extern_fn] #[no_mangle]
-pub extern "C" fn pgp_cert_key_iter_revoked<'a>(
-    iter_wrapper: *mut KeyIterWrapper<'a>,
-    revoked: bool)
-{
-    let iter_wrapper = ffi_param_ref_mut!(iter_wrapper);
-    if iter_wrapper.next_called {
-        panic!("Can't change KeyIter filter after iterating.");
-    }
-
-    use std::mem;
-    let tmp = mem::replace(&mut iter_wrapper.iter, KeyIter::empty());
-    iter_wrapper.iter = tmp.revoked(Some(revoked));
 }
 
 /// Changes the iterator to only return keys that have secret keys.
@@ -659,9 +477,10 @@ pub extern "C" fn pgp_cert_key_iter_secret<'a>(
         panic!("Can't change KeyIter filter after iterating.");
     }
 
-    use std::mem;
-    let tmp = mem::replace(&mut iter_wrapper.iter, KeyIter::empty());
-    iter_wrapper.iter = unsafe { std::mem::transmute(tmp.secret()) };
+    use std::mem::transmute;
+    iter_wrapper.iter = Some(unsafe {
+        transmute(iter_wrapper.iter.take().unwrap().secret())
+    });
 }
 
 /// Changes the iterator to only return keys that have unencrypted
@@ -677,10 +496,37 @@ pub extern "C" fn pgp_cert_key_iter_unencrypted_secret<'a>(
         panic!("Can't change KeyIter filter after iterating.");
     }
 
-    use std::mem;
-    let tmp = mem::replace(&mut iter_wrapper.iter, KeyIter::empty());
-    iter_wrapper.iter =
-        unsafe { std::mem::transmute(tmp.unencrypted_secret()) };
+    use std::mem::transmute;
+    iter_wrapper.iter = Some(unsafe {
+        transmute(iter_wrapper.iter.take().unwrap().unencrypted_secret())
+    });
+}
+
+/// Changes the iterator to only return keys that are valid at time
+/// `t`.
+///
+/// Note: you may not call this function after starting to iterate.
+#[::sequoia_ffi_macros::extern_fn] #[no_mangle]
+pub extern "C" fn pgp_cert_key_iter_policy<'a>(
+    iter_wrapper: *mut KeyIterWrapper<'a>,
+    policy: *const Policy,
+    when: time_t)
+    -> *mut ValidKeyIterWrapper<'static>
+{
+    let policy = policy.ref_raw();
+    let iter_wrapper = ffi_param_ref_mut!(iter_wrapper);
+    if iter_wrapper.next_called {
+        panic!("Can't change KeyIter filter after iterating.");
+    }
+
+    use std::mem::transmute;
+    box_raw!(ValidKeyIterWrapper {
+        iter: Some(unsafe {
+            transmute(iter_wrapper.iter.take().unwrap()
+                      .with_policy(&**policy, maybe_time(when)))
+        }),
+        next_called: false,
+    })
 }
 
 /// Returns the next key.  Returns NULL if there are no more elements.
@@ -694,15 +540,239 @@ pub extern "C" fn pgp_cert_key_iter_unencrypted_secret<'a>(
 /// *rso.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle]
 pub extern "C" fn pgp_cert_key_iter_next<'a>(
-    iter_wrapper: *mut KeyIterWrapper<'a>,
-    sigo: Option<&mut Maybe<Signature>>,
+    iter_wrapper: *mut KeyIterWrapper<'a>)
+    -> Maybe<Key>
+{
+    let iter_wrapper = ffi_param_ref_mut!(iter_wrapper);
+    iter_wrapper.next_called = true;
+
+    if let Some(ka) = iter_wrapper.iter.as_mut().unwrap().next() {
+        Some(ka.key().mark_parts_unspecified_ref().mark_role_unspecified_ref())
+            .move_into_raw()
+    } else {
+        None
+    }
+}
+
+/// Wraps a ValidKeyIter for export via the FFI.
+pub struct ValidKeyIterWrapper<'a> {
+    pub(crate) // For serialize.rs.
+    iter: Option<ValidKeyIter<'a, openpgp::packet::key::PublicParts,
+                              openpgp::packet::key::UnspecifiedRole>>,
+    // Whether next has been called.
+    next_called: bool,
+}
+
+/// Returns an iterator over all valid `Key`s in a Cert.
+///
+/// That is, this returns an iterator over the primary key and any
+/// subkeys that are valid (i.e., have a self-signature at time
+/// `when`).
+#[::sequoia_ffi_macros::extern_fn] #[no_mangle]
+pub extern "C" fn pgp_cert_valid_key_iter(cert: *const Cert,
+                                          policy: *const Policy, when: time_t)
+    -> *mut ValidKeyIterWrapper<'static>
+{
+    let cert = cert.ref_raw();
+    let iter = box_raw!(KeyIterWrapper {
+        iter: Some(cert.keys()),
+        next_called: false,
+    });
+
+    pgp_cert_key_iter_policy(iter, policy, when)
+}
+
+/// Frees a pgp_cert_key_iter_t.
+#[::sequoia_ffi_macros::extern_fn] #[no_mangle]
+pub extern "C" fn pgp_cert_valid_key_iter_free(
+    iter: Option<&mut ValidKeyIterWrapper>)
+{
+    ffi_free!(iter)
+}
+
+/// Changes the iterator to only return keys that have secret keys.
+///
+/// Note: you may not call this function after starting to iterate.
+#[::sequoia_ffi_macros::extern_fn] #[no_mangle]
+pub extern "C" fn pgp_cert_valid_key_iter_secret<'a>(
+    iter_wrapper: *mut ValidKeyIterWrapper<'a>)
+{
+    let iter_wrapper = ffi_param_ref_mut!(iter_wrapper);
+    if iter_wrapper.next_called {
+        panic!("Can't change ValidKeyIter filter after iterating.");
+    }
+
+    use std::mem::transmute;
+    iter_wrapper.iter = Some(unsafe {
+        transmute(iter_wrapper.iter.take().unwrap().secret())
+    });
+}
+
+/// Changes the iterator to only return keys that have unencrypted
+/// secret keys.
+///
+/// Note: you may not call this function after starting to iterate.
+#[::sequoia_ffi_macros::extern_fn] #[no_mangle]
+pub extern "C" fn pgp_cert_valid_key_iter_unencrypted_secret<'a>(
+    iter_wrapper: *mut ValidKeyIterWrapper<'a>)
+{
+    let iter_wrapper = ffi_param_ref_mut!(iter_wrapper);
+    if iter_wrapper.next_called {
+        panic!("Can't change ValidKeyIter filter after iterating.");
+    }
+
+    use std::mem::transmute;
+    iter_wrapper.iter = Some(unsafe {
+        transmute(iter_wrapper.iter.take().unwrap().unencrypted_secret())
+    });
+}
+
+/// Changes the iterator to only return keys that are certification
+/// capable.
+///
+/// If you call this function and, e.g., the `for_signing`
+/// function, the *union* of the values is used.  That is, the
+/// iterator will return keys that are certification capable *or*
+/// signing capable.
+///
+/// Note: you may not call this function after starting to iterate.
+#[::sequoia_ffi_macros::extern_fn] #[no_mangle]
+pub extern "C" fn pgp_cert_valid_key_iter_for_certification<'a>(
+    iter_wrapper: *mut ValidKeyIterWrapper<'a>)
+{
+    let iter_wrapper = ffi_param_ref_mut!(iter_wrapper);
+    if iter_wrapper.next_called {
+        panic!("Can't change KeyIter filter after iterating.");
+    }
+
+    iter_wrapper.iter =
+        Some(iter_wrapper.iter.take().unwrap().for_certification());
+}
+
+/// Changes the iterator to only return keys that are certification
+/// capable.
+///
+/// If you call this function and, e.g., the `for_signing`
+/// function, the *union* of the values is used.  That is, the
+/// iterator will return keys that are certification capable *or*
+/// signing capable.
+///
+/// Note: you may not call this function after starting to iterate.
+#[::sequoia_ffi_macros::extern_fn] #[no_mangle]
+pub extern "C" fn pgp_cert_valid_key_iter_for_signing<'a>(
+    iter_wrapper: *mut ValidKeyIterWrapper<'a>)
+{
+    let iter_wrapper = ffi_param_ref_mut!(iter_wrapper);
+    if iter_wrapper.next_called {
+        panic!("Can't change KeyIter filter after iterating.");
+    }
+
+    iter_wrapper.iter =
+        Some(iter_wrapper.iter.take().unwrap().for_signing());
+}
+
+/// Changes the iterator to only return keys that are capable of
+/// encrypting data at rest.
+///
+/// If you call this function and, e.g., the `for_signing`
+/// function, the *union* of the values is used.  That is, the
+/// iterator will return keys that are certification capable *or*
+/// signing capable.
+///
+/// Note: you may not call this function after starting to iterate.
+#[::sequoia_ffi_macros::extern_fn] #[no_mangle]
+pub extern "C" fn pgp_cert_valid_key_iter_for_storage_encryption<'a>(
+    iter_wrapper: *mut ValidKeyIterWrapper<'a>)
+{
+    let iter_wrapper = ffi_param_ref_mut!(iter_wrapper);
+    if iter_wrapper.next_called {
+        panic!("Can't change KeyIter filter after iterating.");
+    }
+
+    iter_wrapper.iter =
+        Some(iter_wrapper.iter.take().unwrap().for_storage_encryption());
+}
+
+/// Changes the iterator to only return keys that are capable of
+/// encrypting data for transport.
+///
+/// If you call this function and, e.g., the `for_signing`
+/// function, the *union* of the values is used.  That is, the
+/// iterator will return keys that are certification capable *or*
+/// signing capable.
+///
+/// Note: you may not call this function after starting to iterate.
+#[::sequoia_ffi_macros::extern_fn] #[no_mangle]
+pub extern "C" fn pgp_cert_valid_key_iter_for_transport_encryption<'a>(
+    iter_wrapper: *mut ValidKeyIterWrapper<'a>)
+{
+    let iter_wrapper = ffi_param_ref_mut!(iter_wrapper);
+    if iter_wrapper.next_called {
+        panic!("Can't change KeyIter filter after iterating.");
+    }
+
+    iter_wrapper.iter =
+        Some(iter_wrapper.iter.take().unwrap().for_transport_encryption());
+}
+
+/// Changes the iterator to only return keys that are alive.
+///
+/// If you call this function (or `pgp_cert_valid_key_iter_alive_at`), only
+/// the last value is used.
+///
+/// Note: you may not call this function after starting to iterate.
+#[::sequoia_ffi_macros::extern_fn] #[no_mangle]
+pub extern "C" fn pgp_cert_valid_key_iter_alive<'a>(
+    iter_wrapper: *mut ValidKeyIterWrapper<'a>)
+{
+    let iter_wrapper = ffi_param_ref_mut!(iter_wrapper);
+    if iter_wrapper.next_called {
+        panic!("Can't change KeyIter filter after iterating.");
+    }
+
+    iter_wrapper.iter = Some(iter_wrapper.iter.take().unwrap().alive());
+}
+
+/// Changes the iterator to only return keys whose revocation status
+/// matches `revoked`.
+///
+/// Note: you may not call this function after starting to iterate.
+#[::sequoia_ffi_macros::extern_fn] #[no_mangle]
+pub extern "C" fn pgp_cert_valid_key_iter_revoked<'a>(
+    iter_wrapper: *mut ValidKeyIterWrapper<'a>,
+    revoked: bool)
+{
+    let iter_wrapper = ffi_param_ref_mut!(iter_wrapper);
+    if iter_wrapper.next_called {
+        panic!("Can't change KeyIter filter after iterating.");
+    }
+
+    iter_wrapper.iter =
+        Some(iter_wrapper.iter.take().unwrap().revoked(revoked));
+}
+
+/// Returns the next valid key.  Returns NULL if there are no more
+/// elements.
+///
+/// If sigo is not NULL, stores the current self-signature.
+///
+/// If rso is not NULL, this stores the key's revocation status in
+/// *rso.
+#[::sequoia_ffi_macros::extern_fn] #[no_mangle]
+pub extern "C" fn pgp_cert_valid_key_iter_next<'a>(
+    iter_wrapper: *mut ValidKeyIterWrapper<'a>,
+    sigo: Option<&mut *mut Signature>,
     rso: Option<&mut *mut RevocationStatus<'a>>)
     -> Maybe<Key>
 {
     let iter_wrapper = ffi_param_ref_mut!(iter_wrapper);
     iter_wrapper.next_called = true;
 
-    if let Some((sig, rs, key)) = iter_wrapper.iter.next() {
+    if let Some(ka) = iter_wrapper.iter.as_mut().unwrap().next() {
+        let sig = ka.binding_signature();
+        let rs = ka.revoked();
+        let key = ka.key();
+
         if let Some(ptr) = sigo {
             *ptr = sig.move_into_raw();
         }
@@ -711,8 +781,9 @@ pub extern "C" fn pgp_cert_key_iter_next<'a>(
             *ptr = rs.move_into_raw();
         }
 
-        let key : &self::openpgp::packet::key::UnspecifiedKey
-            = key.into();
+        let key
+            = key.mark_parts_unspecified_ref().mark_role_unspecified_ref();
+
         Some(key).move_into_raw()
     } else {
         None
@@ -830,29 +901,6 @@ pub extern "C" fn pgp_cert_builder_general_purpose(cs: c_int,
         Some(int_to_cipher_suite(cs)), uid))
 }
 
-/// Generates a key compliant to [Autocrypt Level 1].
-///
-/// Autocrypt requires a user id, however, if `uid` is NULL, a Cert is
-/// created without any user ids.  It is then the caller's
-/// responsibility to ensure that a user id is added later.
-///
-/// `uid` must contain valid UTF-8.  If it does not contain valid
-/// UTF-8, then the invalid code points are silently replaced with
-/// `U+FFFD REPLACEMENT CHARACTER`.
-///
-///   [Autocrypt Level 1]: https://autocrypt.org/level1.html
-#[::sequoia_ffi_macros::extern_fn] #[no_mangle]
-pub extern "C" fn pgp_cert_builder_autocrypt(uid: *const c_char)
-    -> *mut CertBuilder
-{
-    let uid = if uid.is_null() {
-        None
-    } else {
-        Some(ffi_param_cstr!(uid).to_string_lossy())
-    };
-    box_raw!(CertBuilder::autocrypt(Autocrypt::V1, uid))
-}
-
 /// Frees an `pgp_cert_builder_t`.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle]
 pub extern "C" fn pgp_cert_builder_free(certb: Option<&mut CertBuilder>)
@@ -959,7 +1007,7 @@ pub extern "C" fn pgp_cert_builder_generate
         },
         Err(e) => {
             *cert_out = None;
-            Err::<(), failure::Error>(e).move_into_raw(errp)
+            Err::<(), anyhow::Error>(e).move_into_raw(errp)
         },
     }
 }

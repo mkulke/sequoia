@@ -2,8 +2,11 @@
 
 extern crate sequoia_openpgp as openpgp;
 use crate::openpgp::parse::Parse;
+use crate::openpgp::policy::StandardPolicy as P;
 
 fn main() {
+    let p = &P::new();
+
     let cert =
         "-----BEGIN PGP PUBLIC KEY BLOCK-----
 
@@ -52,18 +55,18 @@ fn main() {
     println!("Fingerprint: {}", cert.fingerprint());
 
     // List userids.
-    for (i, u) in cert.userids().enumerate() {
+    for (i, ca) in cert.userids().with_policy(p, None).enumerate() {
         println!("{}: UID: {}, {} self-signature(s), {} certification(s)",
-                 i, u.userid(),
-                 u.self_signatures().len(),
-                 u.certifications().len());
+                 i, ca.userid(),
+                 ca.bundle().self_signatures().len(),
+                 ca.bundle().certifications().len());
     }
 
     // List subkeys.
-    for (i, s) in cert.subkeys().enumerate() {
+    for (i, ka) in cert.keys().with_policy(p, None).skip(1).enumerate() {
         println!("{}: Fingerprint: {}, {} self-signature(s), {} certification(s)",
-                 i, s.key().fingerprint(),
-                 s.self_signatures().len(),
-                 s.certifications().len());
+                 i, ka.key().fingerprint(),
+                 ka.bundle().self_signatures().len(),
+                 ka.bundle().certifications().len());
     }
 }

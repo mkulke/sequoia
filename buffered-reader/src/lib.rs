@@ -818,6 +818,13 @@ pub trait BufferedReader<C> : io::Read + fmt::Debug + fmt::Display {
         Ok(at_least_one_byte)
     }
 
+    /// Boxes the reader.
+    fn as_boxed<'a>(self) -> Box<dyn BufferedReader<C> + 'a>
+        where Self: 'a + Sized
+    {
+        Box::new(self)
+    }
+
     /// Returns the underlying reader, if any.
     ///
     /// To allow this to work with `BufferedReader` traits, it is
@@ -963,6 +970,12 @@ impl <'a, C> BufferedReader<C> for Box<dyn BufferedReader<C> + 'a> {
         self.as_ref().get_ref()
     }
 
+    fn as_boxed<'b>(self) -> Box<dyn BufferedReader<C> + 'b>
+        where Self: 'b
+    {
+        self
+    }
+
     fn into_inner<'b>(self: Box<Self>) -> Option<Box<dyn BufferedReader<C> + 'b>>
             where Self: 'b {
         // Strip the outer box.
@@ -1027,7 +1040,7 @@ mod test {
 
         // Try it again with a limitor.
         {
-            let bio = Box::new(Memory::new(data));
+            let bio = Memory::new(data);
             let mut bio2 = Limitor::new(
                 bio, (data.len() / 2) as u64);
             let amount = {

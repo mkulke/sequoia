@@ -12,14 +12,12 @@ use crate::packet::key;
 use crate::packet::Key;
 use crate::KeyID;
 use crate::crypto::Decryptor;
-use crate::crypto::mpis::{self, MPI, Ciphertext};
+use crate::crypto::mpis::Ciphertext;
 use crate::Packet;
 use crate::PublicKeyAlgorithm;
 use crate::Result;
 use crate::SymmetricAlgorithm;
 use crate::crypto::SessionKey;
-use crate::crypto::ecdh;
-use nettle::{rsa, Yarrow};
 use crate::packet;
 
 /// Holds an asymmetrically encrypted session key.
@@ -28,7 +26,7 @@ use crate::packet;
 /// [Section 5.1 of RFC 4880] for details.
 ///
 ///   [Section 5.1 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.1
-#[derive(PartialEq, Eq, Hash, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct PKESK3 {
     /// CTB header fields.
     pub(crate) common: packet::Common,
@@ -38,6 +36,24 @@ pub struct PKESK3 {
     pk_algo: PublicKeyAlgorithm,
     /// The encrypted session key.
     esk: Ciphertext,
+}
+
+impl PartialEq for PKESK3 {
+    fn eq(&self, other: &PKESK3) -> bool {
+        self.recipient == other.recipient
+            && self.pk_algo == other.pk_algo
+            && self.esk == other.esk
+    }
+}
+
+impl Eq for PKESK3 {}
+
+impl std::hash::Hash for PKESK3 {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(&self.recipient, state);
+        std::hash::Hash::hash(&self.pk_algo, state);
+        std::hash::Hash::hash(&self.esk, state);
+    }
 }
 
 impl PKESK3 {
@@ -57,15 +73,13 @@ impl PKESK3 {
     ///
     /// The given symmetric algorithm must match the algorithm that is
     /// used to encrypt the payload.
-    pub fn for_recipient<R>(algo: SymmetricAlgorithm,
-                            session_key: &SessionKey,
-                            recipient: &Key<key::PublicParts, R>)
+    pub fn for_recipient<P, R>(algo: SymmetricAlgorithm,
+                               session_key: &SessionKey,
+                               recipient: &Key<P, R>)
         -> Result<PKESK3>
-        where R: key::KeyRole
+        where P: key::KeyParts,
+              R: key::KeyRole,
     {
-        use crate::PublicKeyAlgorithm::*;
-        let mut rng = Yarrow::default();
-
         // We need to prefix the cipher specifier to the session key,
         // and a two-octet checksum.
         let mut psk = Vec::with_capacity(1 + session_key.len() + 2);
@@ -78,37 +92,7 @@ impl PKESK3 {
         psk.push((checksum >> 8) as u8);
         psk.push((checksum >> 0) as u8);
         let psk: SessionKey = psk.into();
-
-        #[allow(deprecated)]
-        let esk = match recipient.pk_algo() {
-            RSAEncryptSign | RSAEncrypt => {
-                // Extract the public recipient.
-                match recipient.mpis() {
-                    &mpis::PublicKey::RSA { ref e, ref n } => {
-                        // The ciphertext has the length of the modulus.
-                        let mut esk = vec![0u8; n.value().len()];
-
-                        let pk = rsa::PublicKey::new(n.value(), e.value())?;
-                        rsa::encrypt_pkcs1(&pk, &mut rng, &psk, &mut esk)?;
-                        Ciphertext::RSA {c: MPI::new(&esk)}
-                    }
-
-                    pk => {
-                        return Err(
-                            Error::MalformedPacket(
-                                format!(
-                                    "Key: Expected RSA public key, got {:?}",
-                                    pk)).into());
-                    }
-                }
-            },
-
-            ECDH => ecdh::encrypt(recipient, &psk)?,
-
-            algo =>
-                return Err(Error::UnsupportedPublicKeyAlgorithm(algo).into()),
-        };
-
+        let esk = recipient.encrypt(&psk)?;
         Ok(PKESK3{
             common: Default::default(),
             recipient: recipient.keyid(),
@@ -147,13 +131,25 @@ impl PKESK3 {
         ::std::mem::replace(&mut self.esk, esk)
     }
 
-    /// Decrypts the ESK and returns the session key and symmetric algorithm
-    /// used to encrypt the following payload.
-    pub fn decrypt<R>(&self, decryptor: &mut dyn Decryptor<R>)
+    /// Decrypts the encrypted session key.
+    ///
+    /// If the symmetric algorithm used to encrypt the message is
+    /// known in advance, it should be given as argument.  This allows
+    /// us to reduce the side-channel leakage of the decryption
+    /// operation for RSA.
+    ///
+    /// Returns the session key and symmetric algorithm used to
+    /// encrypt the following payload.
+    pub fn decrypt(&self, decryptor: &mut dyn Decryptor,
+                   sym_algo_hint: Option<SymmetricAlgorithm>)
         -> Result<(SymmetricAlgorithm, SessionKey)>
-        where R: key::KeyRole
     {
-        let plain = decryptor.decrypt(&self.esk)?;
+        let plaintext_len = if let Some(s) = sym_algo_hint {
+            Some(1 /* cipher octet */ + s.key_size()? + 2 /* chksum */)
+        } else {
+            None
+        };
+        let plain = decryptor.decrypt(&self.esk, plaintext_len)?;
         let key_rgn = 1..(plain.len() - 2);
         let sym_algo: SymmetricAlgorithm = plain[0].into();
         let mut key: SessionKey = vec![0u8; sym_algo.key_size()?].into();
@@ -211,7 +207,7 @@ mod tests {
     use crate::PacketPile;
     use crate::Packet;
     use crate::parse::Parse;
-    use crate::serialize::SerializeInto;
+    use crate::serialize::MarshalInto;
 
     quickcheck! {
         fn roundtrip(p: PKESK3) -> bool {
@@ -234,7 +230,11 @@ mod tests {
         let pkg = pile.descendants().skip(0).next().clone();
 
         if let Some(Packet::PKESK(ref pkesk)) = pkg {
-            let plain = pkesk.decrypt(&mut keypair).unwrap();
+            let plain = pkesk.decrypt(&mut keypair, None).unwrap();
+            let plain_ =
+                pkesk.decrypt(&mut keypair, Some(SymmetricAlgorithm::AES256))
+                .unwrap();
+            assert_eq!(plain, plain_);
 
             eprintln!("plain: {:?}", plain);
         } else {
@@ -255,7 +255,11 @@ mod tests {
         let pkg = pile.descendants().skip(0).next().clone();
 
         if let Some(Packet::PKESK(ref pkesk)) = pkg {
-            let plain = pkesk.decrypt(&mut keypair).unwrap();
+            let plain = pkesk.decrypt(&mut keypair, None).unwrap();
+            let plain_ =
+                pkesk.decrypt(&mut keypair, Some(SymmetricAlgorithm::AES256))
+                .unwrap();
+            assert_eq!(plain, plain_);
 
             eprintln!("plain: {:?}", plain);
         } else {
@@ -276,7 +280,11 @@ mod tests {
         let pkg = pile.descendants().skip(0).next().clone();
 
         if let Some(Packet::PKESK(ref pkesk)) = pkg {
-            let plain = pkesk.decrypt(&mut keypair).unwrap();
+            let plain = pkesk.decrypt(&mut keypair, None).unwrap();
+            let plain_ =
+                pkesk.decrypt(&mut keypair, Some(SymmetricAlgorithm::AES256))
+                .unwrap();
+            assert_eq!(plain, plain_);
 
             eprintln!("plain: {:?}", plain);
         } else {
@@ -297,7 +305,11 @@ mod tests {
         let pkg = pile.descendants().skip(0).next().clone();
 
         if let Some(Packet::PKESK(ref pkesk)) = pkg {
-            let plain = pkesk.decrypt(&mut keypair).unwrap();
+            let plain = pkesk.decrypt(&mut keypair, None).unwrap();
+            let plain_ =
+                pkesk.decrypt(&mut keypair, Some(SymmetricAlgorithm::AES256))
+                .unwrap();
+            assert_eq!(plain, plain_);
 
             eprintln!("plain: {:?}", plain);
         } else {
@@ -318,7 +330,11 @@ mod tests {
         let pkg = pile.descendants().skip(0).next().clone();
 
         if let Some(Packet::PKESK(ref pkesk)) = pkg {
-            let plain = pkesk.decrypt(&mut keypair).unwrap();
+            let plain = pkesk.decrypt(&mut keypair, None).unwrap();
+            let plain_ =
+                pkesk.decrypt(&mut keypair, Some(SymmetricAlgorithm::AES256))
+                .unwrap();
+            assert_eq!(plain, plain_);
 
             eprintln!("plain: {:?}", plain);
         } else {
@@ -360,17 +376,17 @@ mod tests {
         let private_mpis = mpis::SecretKeyMaterial::ECDH {
             scalar: MPI::new(&sec[..]).into(),
         };
-        let mut key: key::UnspecifiedPublic
+        let key: key::UnspecifiedPublic
             = Key4::new(std::time::SystemTime::now(),
                         PublicKeyAlgorithm::ECDH,
                         public_mpis)
                 .unwrap().into();
-        key.set_secret(Some(private_mpis.into()));
+        let key = key.add_secret(private_mpis.into()).0;
         let sess_key = SessionKey::new(32);
         let pkesk = PKESK3::for_recipient(SymmetricAlgorithm::AES256, &sess_key,
                                           &key).unwrap();
         let mut keypair =
             key.mark_parts_secret().unwrap().into_keypair().unwrap();
-        pkesk.decrypt(&mut keypair).unwrap();
+        pkesk.decrypt(&mut keypair, None).unwrap();
     }
 }

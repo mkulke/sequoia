@@ -1,7 +1,5 @@
-extern crate failure;
-use failure::{Fallible as Result, ResultExt};
+use anyhow::{Result, Context};
 extern crate filetime;
-extern crate nettle;
 
 use std::cmp::min;
 use std::env::{self, var_os};
@@ -15,7 +13,9 @@ use std::mem::replace;
 
 /// Hooks into Rust's test system to extract, compile and run c tests.
 #[test]
-fn c_doctests() {
+fn c_doctests() -> Result<()> {
+    let stderr = &mut io::stderr();
+
     // The location of this crate's (i.e., the ffi crate's) source.
     let manifest_dir = PathBuf::from(
         var_os("CARGO_MANIFEST_DIR")
@@ -52,30 +52,31 @@ fn c_doctests() {
     for_all_rs(&src, |path| {
         for_all_tests(path, |src, lineno, name, lines, run_it| {
             n += 1;
-            eprint!("  test {} ... ", name);
+            write!(stderr, "  test {} ... ", name)?;
             match build(&includes, &debug, &target, src, lineno, name, lines) {
                 Ok(_) if ! run_it => {
-                    eprintln!("ok");
+                    writeln!(stderr, "ok")?;
                     passed += 1;
                 },
                 Ok(exe) => match run(&debug, &exe) {
                     Ok(()) => {
-                        eprintln!("ok");
+                        writeln!(stderr, "ok")?;
                         passed += 1;
                     },
                     Err(e) =>
-                        eprintln!("{}", e),
+                        writeln!(stderr, "{}", e)?,
                 },
                 Err(e) =>
-                    eprintln!("{}", e),
+                    writeln!(stderr, "{}", e)?,
             }
             Ok(())
         })
     }).unwrap();
-    eprintln!("  test result: {} passed; {} failed", passed, n - passed);
+    writeln!(stderr, "  test result: {} passed; {} failed", passed, n - passed)?;
     if n != passed {
         panic!("ffi test failures");
     }
+    Ok(())
 }
 
 /// Builds the shared object.
@@ -230,9 +231,15 @@ fn build(include_dirs: &[PathBuf], ldpath: &Path, target_dir: &Path,
     let st = Command::new("make")
         .env("CFLAGS", &format!("-Wall -O0 -ggdb {} {}", includes,
                                 env::var("CFLAGS").unwrap_or("".into())))
-        .env("LDFLAGS", &format!("-L{:?} -lsequoia_ffi", ldpath))
+        .env("LDFLAGS", &format!("-L{:?}", ldpath))
+        .env("LDLIBS", "-lsequoia_ffi")
         .arg("-C").arg(&target_dir)
         .arg("--quiet")
+        // XXX: We don't track the header files as dependencies for
+        // the build.  The quick fix is to always rebuild the test,
+        // the more involved fix is to compute the maximum mtime of
+        // the rust source and all the header files.
+        .arg("--always-make")
         .arg(target.file_name().unwrap())
         .status()
         .context("Compiling the C-tests requires Make \

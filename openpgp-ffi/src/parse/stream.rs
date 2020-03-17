@@ -8,7 +8,7 @@
 //! Wraps the streaming parsing functions, see
 //! [`sequoia-openpgp::parse::stream`].
 //!
-//! [`sequoia-openpgp::parse::stream`]: ../../../sequoia_openpgp/parse/stream/index.html
+//! [`sequoia-openpgp::parse::stream`]: ../../../../sequoia_openpgp/parse/stream/index.html
 
 use std::ptr;
 use libc::{c_int, c_void, time_t};
@@ -16,6 +16,7 @@ use libc::{c_int, c_void, time_t};
 extern crate sequoia_openpgp as openpgp;
 
 use self::openpgp::{
+    cert::prelude::*,
     crypto::SessionKey,
     types::SymmetricAlgorithm,
     packet::{
@@ -41,7 +42,7 @@ use crate::RefMutRaw;
 use crate::maybe_time;
 
 use super::super::{
-    error::Status,
+    error::{Error, Status},
     crypto,
     io,
     keyid,
@@ -49,6 +50,7 @@ use super::super::{
     packet::signature::Signature,
     packet::key::Key,
     parse::PacketParser,
+    policy::Policy,
     revocation_status::RevocationStatus,
 };
 
@@ -167,12 +169,144 @@ pub struct VerificationResult<'a>(stream::VerificationResult<'a>);
 fn pgp_verification_result_variant(result: *const VerificationResult)
     -> c_int
 {
-    use self::stream::VerificationResult::*;
+    use self::stream::VerificationError::*;
     match result.ref_raw() {
-        GoodChecksum { .. } => 1,
-        MissingKey { .. } => 2,
-        BadChecksum { .. } => 3,
-        NotAlive { .. } => 4,
+        Ok(_) => 0,
+        Err(MalformedSignature { .. }) => 1,
+        Err(MissingKey { .. }) => 2,
+        Err(UnboundKey { .. }) => 3,
+        Err(BadKey { .. }) => 4,
+        Err(BadSignature { .. }) => 5,
+    }
+}
+
+/// Decomposes a `VerificationResult::Ok(GoodChecksum)`.
+///
+/// Returns `true` iff the given value is a
+/// `VerificationResult::Ok(GoodChecksum)`, and returns the variants
+/// members in `sig_r` and the like iff `sig_r != NULL`.
+#[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
+fn pgp_verification_result_good_checksum<'a>(
+    result: *const VerificationResult<'a>,
+    sig_r: Maybe<*mut Signature>,
+    cert_r: Maybe<*mut Cert>,
+    key_r: Maybe<*mut Key>,
+    binding_r: Maybe<*mut Signature>,
+    revocation_status_r:
+    Maybe<*mut RevocationStatus<'a>>)
+    -> bool
+{
+    use self::stream::GoodChecksum;
+    if let Ok(GoodChecksum { sig, ka }) = result.ref_raw() {
+        if let Some(mut p) = sig_r {
+            *unsafe { p.as_mut() } = sig.move_into_raw();
+        }
+        if let Some(mut p) = cert_r {
+            *unsafe { p.as_mut() } = ka.cert().move_into_raw();
+        }
+        if let Some(mut p) = key_r {
+            *unsafe { p.as_mut() } = {
+                let key = ka.key()
+                    .mark_parts_unspecified_ref()
+                    .mark_role_unspecified_ref();
+                key.move_into_raw()
+            };
+        }
+        if let Some(mut p) = binding_r {
+            *unsafe { p.as_mut() } =
+                ka.binding_signature().move_into_raw();
+        }
+        if let Some(mut p) = revocation_status_r {
+            *unsafe { p.as_mut() } = ka.revoked().move_into_raw();
+        }
+        true
+    } else {
+        false
+    }
+}
+
+/// Decomposes a
+/// `VerificationResult::Err(VerificationError::MalformedSignature {
+/// .. })`.
+///
+/// Returns `true` iff the given value is a
+/// `VerificationResult::Err(VerificationError::MalformedSignature {
+/// .. })`, and returns the variants members in `sig_r` and the like
+/// iff `sig_r != NULL`.
+#[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
+fn pgp_verification_result_malformed_signature<'a>(
+    result: *const VerificationResult<'a>,
+    sig_r: Maybe<*mut Signature>,
+    error_r: Maybe<*mut Error>)
+    -> bool
+{
+    use self::stream::VerificationError::*;
+    if let Err(MalformedSignature { sig, error }) = result.ref_raw() {
+        if let Some(mut p) = sig_r {
+            *unsafe { p.as_mut() } = sig.move_into_raw();
+        }
+        if let Some(mut p) = error_r {
+            *unsafe { p.as_mut() } = error.move_into_raw();
+        }
+        true
+    } else {
+        false
+    }
+}
+
+/// Decomposes a
+/// `VerificationResult::Err(VerificationError::MissingKey { .. })`.
+///
+/// Returns `true` iff the given value is a
+/// `VerificationResult::Err(VerificationError::MissingKey { .. })`,
+/// and returns the variants members in `sig_r` and the like iff
+/// `sig_r != NULL`.
+#[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
+fn pgp_verification_result_missing_key<'a>(
+    result: *const VerificationResult<'a>,
+    sig_r: Maybe<*mut Signature>)
+    -> bool
+{
+    use self::stream::VerificationError::*;
+    if let Err(MissingKey { sig }) = result.ref_raw() {
+        if let Some(mut p) = sig_r {
+            *unsafe { p.as_mut() } = sig.move_into_raw();
+        }
+        true
+    } else {
+        false
+    }
+}
+
+/// Decomposes a
+/// `VerificationResult::Err(VerificationError::UnboundKey { .. })`.
+///
+/// Returns `true` iff the given value is a
+/// `VerificationResult::Err(VerificationError::UnboundKey { .. })`,
+/// and returns the variants members in `sig_r` and the like iff
+/// `sig_r != NULL`.
+#[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
+fn pgp_verification_result_unbound_key<'a>(
+    result: *const VerificationResult<'a>,
+    sig_r: Maybe<*mut Signature>,
+    cert_r: Maybe<*mut Cert>,
+    error_r: Maybe<*mut Error>)
+    -> bool
+{
+    use self::stream::VerificationError::*;
+    if let Err(UnboundKey { sig, cert, error }) = result.ref_raw() {
+        if let Some(mut p) = sig_r {
+            *unsafe { p.as_mut() } = sig.move_into_raw();
+        }
+        if let Some(mut p) = cert_r {
+            *unsafe { p.as_mut() } = cert.move_into_raw();
+        }
+        if let Some(mut p) = error_r {
+            *unsafe { p.as_mut() } = error.move_into_raw();
+        }
+        true
+    } else {
+        false
     }
 }
 
@@ -184,31 +318,37 @@ fn $fn_name<'a>(
     sig_r: Maybe<*mut Signature>,
     cert_r: Maybe<*mut Cert>,
     key_r: Maybe<*mut Key>,
-    binding_r: Maybe<Maybe<Signature>>,
+    binding_r: Maybe<*mut Signature>,
     revocation_status_r:
-    Maybe<*mut RevocationStatus<'a>>)
+    Maybe<*mut RevocationStatus<'a>>,
+    error_r: Maybe<*mut Error>)
     -> bool
 {
-    use self::stream::VerificationResult::*;
-    if let $variant { sig, cert, key, binding, revoked } = result.ref_raw() {
+    use self::stream::VerificationError::*;
+    if let Err($variant { sig, ka, error }) = result.ref_raw() {
         if let Some(mut p) = sig_r {
             *unsafe { p.as_mut() } = sig.move_into_raw();
         }
         if let Some(mut p) = cert_r {
-            *unsafe { p.as_mut() } = cert.move_into_raw();
+            *unsafe { p.as_mut() } = ka.cert().move_into_raw();
         }
         if let Some(mut p) = key_r {
             *unsafe { p.as_mut() } = {
-                let key : &self::openpgp::packet::key::UnspecifiedKey
-                    = (*key).into();
+                let key = ka.key()
+                    .mark_parts_unspecified_ref()
+                    .mark_role_unspecified_ref();
                 key.move_into_raw()
             };
         }
         if let Some(mut p) = binding_r {
-            *unsafe { p.as_mut() } = binding.move_into_raw();
+            *unsafe { p.as_mut() } =
+                ka.binding_signature().move_into_raw();
         }
         if let Some(mut p) = revocation_status_r {
-            *unsafe { p.as_mut() } = revoked.move_into_raw();
+            *unsafe { p.as_mut() } = ka.revoked().move_into_raw();
+        }
+        if let Some(mut p) = error_r {
+            *unsafe { p.as_mut() } = error.move_into_raw();
         }
         true
     } else {
@@ -218,48 +358,23 @@ fn $fn_name<'a>(
     }
 }
 
-/// Decomposes a `VerificationResult::GoodChecksum`.
+/// Decomposes a
+/// `VerificationResult::Err(VerificationError::BadKey { .. })`.
 ///
 /// Returns `true` iff the given value is a
-/// `VerificationResult::GoodChecksum`, and returns the variants members
-/// in `sig_r` and the like iff `sig_r != NULL`.
-make_decomposition_fn!(pgp_verification_result_good_checksum, GoodChecksum);
+/// `VerificationResult::Err(VerificationError::BadKey { .. })`,
+/// and returns the variants members in `sig_r` and the like iff
+/// `sig_r != NULL`.
+make_decomposition_fn!(pgp_verification_result_bad_key, BadKey);
 
-/// Decomposes a `VerificationResult::NotAlive`.
+/// Decomposes a
+/// `VerificationResult::Err(VerificationError::BadSignature { .. })`.
 ///
 /// Returns `true` iff the given value is a
-/// `VerificationResult::NotAlive`, and returns the variant's members
-/// in `sig_r` and the like iff `sig_r != NULL`.
-make_decomposition_fn!(pgp_verification_result_not_alive, NotAlive);
-
-/// Decomposes a `VerificationResult::MissingKey`.
-///
-/// Returns `true` iff the given value is a
-/// `VerificationResult::MissingKey`, and returns the variants members
-/// in `sig_r` and the like iff `sig_r != NULL`.
-#[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
-fn pgp_verification_result_missing_key<'a>(
-    result: *const VerificationResult<'a>,
-    sig_r: Maybe<*mut Signature>)
-    -> bool
-{
-    use self::stream::VerificationResult::*;
-    if let MissingKey { sig, .. } = result.ref_raw() {
-        if let Some(mut p) = sig_r {
-            *unsafe { p.as_mut() } = sig.move_into_raw();
-        }
-        true
-    } else {
-        false
-    }
-}
-
-/// Decomposes a ``VerificationResult::BadChecksum`.
-///
-/// Returns `true` iff the given value is a
-/// `VerificationResult::BadChecksum`, and returns the variants
-/// members in `sig_r` and the like iff `sig_r != NULL`.
-make_decomposition_fn!(pgp_verification_result_bad_checksum, BadChecksum);
+/// `VerificationResult::Err(VerificationError::BadSignature { .. })`,
+/// and returns the variants members in `sig_r` and the like iff
+/// `sig_r != NULL`.
+make_decomposition_fn!(pgp_verification_result_bad_signature, BadSignature);
 
 /// Passed as the first argument to the callbacks used by pgp_verify
 /// and pgp_decrypt.
@@ -297,6 +412,7 @@ type InspectCallback = fn(*mut HelperCookie, *const PacketParser) -> Status;
 type DecryptCallback = fn(*mut HelperCookie,
                           *const *const PKESK, usize,
                           *const *const SKESK, usize,
+                          u8, // XXX SymmetricAlgorithm
                           extern "C" fn (*mut c_void, u8,
                                               *const crypto::SessionKey)
                                               -> Status,
@@ -335,7 +451,7 @@ impl VHelper {
 
 impl VerificationHelper for VHelper {
     fn get_public_keys(&mut self, ids: &[openpgp::KeyHandle])
-        -> Result<Vec<openpgp::Cert>, failure::Error>
+        -> Result<Vec<openpgp::Cert>, anyhow::Error>
     {
         // The size of ID is not known in C.  Convert to KeyID, and
         // move it to C.
@@ -379,8 +495,8 @@ impl VerificationHelper for VHelper {
         Ok(certs)
     }
 
-    fn check(&mut self, structure: &stream::MessageStructure)
-        -> Result<(), failure::Error>
+    fn check(&mut self, structure: stream::MessageStructure)
+        -> Result<(), anyhow::Error>
     {
         let result = (self.check_signatures_cb)(self.cookie,
                                                 structure.move_into_raw());
@@ -472,6 +588,7 @@ impl VerificationHelper for VHelper {
 ///   pgp_reader_t plaintext;
 ///   uint8_t buf[128];
 ///   ssize_t nread;
+///   pgp_policy_t policy = pgp_standard_policy ();
 ///
 ///   cert = pgp_cert_from_file (NULL, "../openpgp/tests/data/keys/testy.pgp");
 ///   assert(cert);
@@ -483,7 +600,7 @@ impl VerificationHelper for VHelper {
 ///   struct verify_cookie cookie = {
 ///     .key = cert,  /* Move.  */
 ///   };
-///   plaintext = pgp_verifier_new (NULL, source,
+///   plaintext = pgp_verifier_new (NULL, policy, source,
 ///                                 get_public_keys_cb, check_cb,
 ///                                 &cookie, 1554542219);
 ///   assert (source);
@@ -495,11 +612,13 @@ impl VerificationHelper for VHelper {
 ///
 ///   pgp_reader_free (plaintext);
 ///   pgp_reader_free (source);
+///   pgp_policy_free (policy);
 ///   return 0;
 /// }
 /// ```
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
 fn pgp_verifier_new<'a>(errp: Option<&mut *mut crate::error::Error>,
+                        policy: *const Policy,
                         input: *mut io::Reader,
                         get_public_keys: GetPublicKeysCallback,
                         check: CheckCallback,
@@ -507,9 +626,10 @@ fn pgp_verifier_new<'a>(errp: Option<&mut *mut crate::error::Error>,
                         time: time_t)
                         -> Maybe<io::Reader>
 {
+    let policy = policy.ref_raw().as_ref();
     let helper = VHelper::new(get_public_keys, check, cookie);
 
-    Verifier::from_reader(input.ref_mut_raw(), helper, maybe_time(time))
+    Verifier::from_reader(policy, input.ref_mut_raw(), helper, maybe_time(time))
         .map(|r| io::ReaderKind::Generic(Box::new(r)))
         .move_into_raw(errp)
 }
@@ -583,6 +703,7 @@ fn pgp_verifier_new<'a>(errp: Option<&mut *mut crate::error::Error>,
 ///   pgp_reader_t plaintext;
 ///   uint8_t buf[128];
 ///   ssize_t nread;
+///   pgp_policy_t policy = pgp_standard_policy ();
 ///
 ///   cert = pgp_cert_from_file (NULL,
 ///     "../openpgp/tests/data/keys/emmelie-dorothea-dina-samantha-awina-ed25519.pgp");
@@ -600,7 +721,7 @@ fn pgp_verifier_new<'a>(errp: Option<&mut *mut crate::error::Error>,
 ///   struct verify_cookie cookie = {
 ///     .key = cert,  /* Move.  */
 ///   };
-///   plaintext = pgp_detached_verifier_new (NULL, signature, source,
+///   plaintext = pgp_detached_verifier_new (NULL, policy, signature, source,
 ///     get_public_keys_cb, check_cb,
 ///     &cookie, 1554542219);
 ///   assert (source);
@@ -613,11 +734,13 @@ fn pgp_verifier_new<'a>(errp: Option<&mut *mut crate::error::Error>,
 ///   pgp_reader_free (plaintext);
 ///   pgp_reader_free (source);
 ///   pgp_reader_free (signature);
+///   pgp_policy_free (policy);
 ///   return 0;
 /// }
 /// ```
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
 fn pgp_detached_verifier_new<'a>(errp: Option<&mut *mut crate::error::Error>,
+                                 policy: *const Policy,
                                  signature_input: *mut io::Reader,
                                  input: *mut io::Reader,
                                  get_public_keys: GetPublicKeysCallback,
@@ -626,9 +749,11 @@ fn pgp_detached_verifier_new<'a>(errp: Option<&mut *mut crate::error::Error>,
                                  time: time_t)
                                  -> Maybe<io::Reader>
 {
+    let policy = policy.ref_raw().as_ref();
+
     let helper = VHelper::new(get_public_keys, check, cookie);
 
-    DetachedVerifier::from_reader(signature_input.ref_mut_raw(),
+    DetachedVerifier::from_reader(policy, signature_input.ref_mut_raw(),
                                   input.ref_mut_raw(), helper, maybe_time(time))
         .map(|r| io::ReaderKind::Generic(Box::new(r)))
         .move_into_raw(errp)
@@ -659,25 +784,25 @@ impl DHelper {
 
 impl VerificationHelper for DHelper {
     fn get_public_keys(&mut self, ids: &[openpgp::KeyHandle])
-        -> Result<Vec<openpgp::Cert>, failure::Error>
+        -> Result<Vec<openpgp::Cert>, anyhow::Error>
     {
         self.vhelper.get_public_keys(ids)
     }
 
-    fn check(&mut self, structure: &stream::MessageStructure)
-        -> Result<(), failure::Error>
+    fn check(&mut self, structure: stream::MessageStructure)
+        -> Result<(), anyhow::Error>
     {
         self.vhelper.check(structure)
     }
 }
 
 impl DecryptionHelper for DHelper {
-    fn inspect(&mut self, pp: &PacketParser) -> failure::Fallible<()> {
+    fn inspect(&mut self, pp: &PacketParser) -> openpgp::Result<()> {
         if let Some(cb) = self.inspect_cb {
             match cb(self.vhelper.cookie, pp) {
                 Status::Success => Ok(()),
                 // XXX: Convert the status to an error better.
-                status => Err(failure::format_err!(
+                status => Err(anyhow::anyhow!(
                     "Inspect Callback returned an error: {:?}", status).into()),
             }
         } else {
@@ -686,6 +811,7 @@ impl DecryptionHelper for DHelper {
     }
 
     fn decrypt<D>(&mut self, pkesks: &[PKESK], skesks: &[SKESK],
+                  sym_algo: Option<SymmetricAlgorithm>,
                   mut decrypt: D)
                   -> openpgp::Result<Option<openpgp::Fingerprint>>
         where D: FnMut(SymmetricAlgorithm, &SessionKey) -> openpgp::Result<()>
@@ -722,6 +848,7 @@ impl DecryptionHelper for DHelper {
         let result = (self.decrypt_cb)(
             self.vhelper.cookie,
             pkesks.as_ptr(), pkesks.len(), skesks.as_ptr(), skesks.len(),
+            sym_algo.map(|s| u8::from(s)).unwrap_or(0),
             trampoline::<D>,
             &mut decrypt as *mut _ as *mut c_void,
             &mut identity);
@@ -800,6 +927,7 @@ impl DecryptionHelper for DHelper {
 /// decrypt_cb (void *cookie_opaque,
 ///             pgp_pkesk_t *pkesks, size_t pkesk_count,
 ///             pgp_skesk_t *skesks, size_t skesk_count,
+///             uint8_t sym_algo_hint,
 ///             pgp_decryptor_do_decrypt_cb_t *decrypt,
 ///             void *decrypt_cookie,
 ///             pgp_fingerprint_t *identity_out)
@@ -815,9 +943,9 @@ impl DecryptionHelper for DHelper {
 ///     pgp_pkesk_t pkesk = pkesks[i];
 ///     pgp_keyid_t keyid = pgp_pkesk_recipient (pkesk);
 ///
-///     pgp_cert_key_iter_t key_iter = pgp_cert_key_iter_all (cookie->key);
+///     pgp_cert_key_iter_t key_iter = pgp_cert_key_iter (cookie->key);
 ///     pgp_key_t key;
-///     while ((key = pgp_cert_key_iter_next (key_iter, NULL, NULL))) {
+///     while ((key = pgp_cert_key_iter_next (key_iter))) {
 ///       pgp_keyid_t this_keyid = pgp_key_keyid (key);
 ///       int match = pgp_keyid_equal (this_keyid, keyid);
 ///       pgp_keyid_free (this_keyid);
@@ -860,6 +988,7 @@ impl DecryptionHelper for DHelper {
 ///   pgp_reader_t plaintext;
 ///   uint8_t buf[128];
 ///   ssize_t nread;
+///   pgp_policy_t policy = pgp_standard_policy ();
 ///
 ///   cert = pgp_cert_from_file (
 ///       NULL, "../openpgp/tests/data/keys/testy-private.pgp");
@@ -873,7 +1002,7 @@ impl DecryptionHelper for DHelper {
 ///     .key = cert,
 ///     .decrypt_called = 0,
 ///   };
-///   plaintext = pgp_decryptor_new (NULL, source,
+///   plaintext = pgp_decryptor_new (NULL, policy, source,
 ///                                  get_public_keys_cb, decrypt_cb,
 ///                                  check_cb, NULL, &cookie, 1554542219);
 ///   assert (plaintext);
@@ -886,11 +1015,13 @@ impl DecryptionHelper for DHelper {
 ///   pgp_reader_free (plaintext);
 ///   pgp_reader_free (source);
 ///   pgp_cert_free (cert);
+///   pgp_policy_free (policy);
 ///   return 0;
 /// }
 /// ```
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
 fn pgp_decryptor_new<'a>(errp: Option<&mut *mut crate::error::Error>,
+                         policy: *const Policy,
                          input: *mut io::Reader,
                          get_public_keys: GetPublicKeysCallback,
                          decrypt: DecryptCallback,
@@ -900,10 +1031,11 @@ fn pgp_decryptor_new<'a>(errp: Option<&mut *mut crate::error::Error>,
                          time: time_t)
                          -> Maybe<io::Reader>
 {
+    let policy = policy.ref_raw().as_ref();
     let helper = DHelper::new(
         get_public_keys, decrypt, check, inspect, cookie);
 
-    Decryptor::from_reader(input.ref_mut_raw(), helper, maybe_time(time))
+    Decryptor::from_reader(policy, input.ref_mut_raw(), helper, maybe_time(time))
         .map(|r| io::ReaderKind::Generic(Box::new(r)))
         .move_into_raw(errp)
 }

@@ -1,16 +1,17 @@
 //! Autocrypt.
 //!
-//! This module deals with Autocrypt encoded (see the [Autocrypt Spec]).
+//! This module deals with Autocrypt encoded data (see the [Autocrypt
+//! Spec]).
 //!
-//! [Autocrypt Spec]: https://autocrypt.org/level1.html#openpgp-based-key-data
+//!   [Autocrypt Spec]: https://autocrypt.org/level1.html#openpgp-based-key-data
 //!
 //! # Scope
 //!
-//! This implements encoding and decoding of Autocrypt headers.  Note:
-//! Autocrypt is more than just headers; it requires tight integration
-//! with the MUA.
+//! This implements low-level functionality like encoding and decoding
+//! of Autocrypt headers and setup messages.  Note: Autocrypt is more
+//! than just headers; it requires tight integration with the MUA.
 
-extern crate base64;
+use base64;
 
 use std::io;
 use std::io::prelude::*;
@@ -19,22 +20,28 @@ use std::path::Path;
 use std::fs::File;
 use std::str;
 
-use crate::armor;
-
-use crate::Error;
-use crate::Result;
-use crate::Packet;
-use crate::packet::SKESK;
-use crate::Cert;
-use crate::parse::{
+use sequoia_openpgp as openpgp;
+use openpgp::armor;
+use openpgp::Error;
+pub use openpgp::Result;
+use openpgp::Packet;
+use openpgp::packet::SKESK;
+use openpgp::cert::prelude::*;
+use openpgp::parse::{
     Parse,
     PacketParserResult, PacketParser,
 };
-use crate::serialize::Serialize;
-use crate::serialize::stream::{
+use openpgp::serialize::Serialize;
+use openpgp::serialize::stream::{
     Message, LiteralWriter, Encryptor,
 };
-use crate::crypto::Password;
+use openpgp::crypto::Password;
+use openpgp::policy::Policy;
+use openpgp::types::RevocationStatus;
+
+mod cert;
+pub use cert::cert_builder;
+mod serialize;
 
 /// Version of Autocrypt to use. `Autocrypt::default()` always returns the
 /// latest version.
@@ -96,43 +103,39 @@ impl AutocryptHeader {
     }
 
     /// Creates a new "Autocrypt" header.
-    pub fn new_sender<'a, P>(cert: &Cert, addr: &str, prefer_encrypt: P)
+    pub fn new_sender<'a, P>(policy: &dyn Policy,
+                             cert: &Cert, addr: &str, prefer_encrypt: P)
                              -> Result<Self>
         where P: Into<Option<&'a str>>
     {
-        use crate::packet::key;
-
         // Minimize Cert.
         let mut acc = Vec::new();
 
         // The primary key and the most recent selfsig.
-        acc.push(cert.primary().clone().into());
-        cert.direct_signatures().iter().take(1)
+        let primary = cert.primary_key().with_policy(policy, None)?;
+        acc.push(primary.key().clone().into());
+        primary.self_signatures().iter().take(1)
             .for_each(|s| acc.push(s.clone().into()));
 
         // The subkeys and the most recent selfsig.
-        for skb in cert.subkeys() {
+        for skb in cert.keys().with_policy(policy, None).subkeys() {
             // Skip if revoked.
-            if ! skb.self_revocations().is_empty()
-                || ! skb.other_revocations().is_empty()
-            {
+            if let RevocationStatus::Revoked(_) = skb.revoked() {
                 continue;
             }
 
-            let k : key::PublicSubkey = skb.key().clone();
+            let k = skb.key().clone();
             acc.push(k.into());
-            skb.self_signatures().iter().take(1)
-                .for_each(|s| acc.push(s.clone().into()));
+            acc.push(skb.binding_signature().clone().into());
         }
 
         // The UserIDs matching ADDR.
-        for uidb in cert.userids() {
+        for uidb in cert.userids().with_policy(policy, None) {
             // XXX: Fix match once we have the rfc2822-name-addr.
             if let Ok(Some(a)) = uidb.userid().email() {
                 if &a == addr {
                     acc.push(uidb.userid().clone().into());
-                    uidb.self_signatures().iter().take(1)
-                        .for_each(|s| acc.push(s.clone().into()));
+                    acc.push(uidb.binding_signature().clone().into());
                 } else {
                     // Address is not matching.
                     continue;
@@ -400,18 +403,18 @@ impl AutocryptSetupMessage {
 
     // Generates a new passcode in "numeric9x4" format.
     fn passcode_gen() -> Password {
+        use openpgp::crypto::mem;
         // Generate a random passcode.
 
         // The passcode consists of 36 digits, which encode
         // approximately 119 bits of information.  120 bits = 15
         // bytes.
-        let mut p_as_vec = vec![0; 15];
-        crate::crypto::random(&mut p_as_vec[..]);
-        let p = Password::from(p_as_vec);
+        let mut p_as_vec = mem::Protected::from(vec![0; 15]);
+        openpgp::crypto::random(&mut p_as_vec[..]);
 
         // Turn it into a 128-bit number.
         let mut p_as_u128 = 0u128;
-        for v in p.iter() {
+        for v in p_as_vec.iter() {
             p_as_u128 = (p_as_u128 << 8) + *v as u128;
         }
 
@@ -437,8 +440,9 @@ impl AutocryptSetupMessage {
 
         let passcode = Self::passcode_gen();
         self.passcode_format = Some("numeric9x4".into());
-        self.passcode_begin
-            = Some(str::from_utf8(&passcode[..2]).unwrap().into());
+        self.passcode_begin = passcode.map(|p| {
+            Some(str::from_utf8(&p[..2]).unwrap().into())
+        });
         self.passcode = Some(passcode);
     }
 
@@ -463,23 +467,27 @@ impl AutocryptSetupMessage {
                 (&"Passphrase-Begin"[..], &begin[..]));
         }
 
-        let w = armor::Writer::new(w, armor::Kind::Message, &headers[..])?;
+        let mut armor_writer =
+            armor::Writer::new(w, armor::Kind::Message, &headers[..])?;
 
-        // Passphrase-Format header with value numeric9x4
-        let m = Message::new(w);
-        let w = Encryptor::with_password(m, self.passcode.clone().unwrap())
-            .build()?;
+        {
+            // Passphrase-Format header with value numeric9x4
+            let m = Message::new(&mut armor_writer);
+            let w = Encryptor::with_password(m, self.passcode.clone().unwrap())
+                .build()?;
 
-        let mut w = LiteralWriter::new(w).build()?;
+            let mut w = LiteralWriter::new(w).build()?;
 
-        // The inner message is an ASCII-armored encoded Cert.
-        let mut w = armor::Writer::new(
-            &mut w, armor::Kind::SecretKey,
-            &[ (&"Autocrypt-Prefer-Encrypt"[..],
-                self.prefer_encrypt().unwrap_or(&"nopreference"[..])) ])?;
+            // The inner message is an ASCII-armored encoded Cert.
+            let mut w = armor::Writer::new(
+                &mut w, armor::Kind::SecretKey,
+                &[ (&"Autocrypt-Prefer-Encrypt"[..],
+                    self.prefer_encrypt().unwrap_or(&"nopreference"[..])) ])?;
 
-        self.cert.as_tsk().serialize(&mut w)?;
-        w.finalize()?;
+            self.cert.as_tsk().serialize(&mut w)?;
+            w.finalize()?;
+        }
+        armor_writer.finalize()?;
         Ok(())
     }
 
@@ -770,7 +778,8 @@ impl<'a> AutocryptSetupMessageParser<'a> {
 mod test {
     use super::*;
 
-    use crate::Fingerprint;
+    use openpgp::Fingerprint;
+    use openpgp::policy::StandardPolicy as P;
 
     #[test]
     fn decode_test() {
@@ -904,10 +913,10 @@ In the light of the Efail vulnerability I am asking myself if it's
 
         let cert = ac.headers[0].key.as_ref()
             .expect("Failed to parse key material.");
-        assert_eq!(cert.primary().fingerprint(),
+        assert_eq!(cert.fingerprint(),
                    Fingerprint::from_hex(
                        &"156962B0F3115069ACA970C68E3B03A279B772D6"[..]).unwrap());
-        assert_eq!(cert.userids().next().unwrap().userid().value(),
+        assert_eq!(cert.userids().next().unwrap().value(),
                    &b"holger krekel <holger@merlinux.eu>"[..]);
 
 
@@ -927,10 +936,10 @@ In the light of the Efail vulnerability I am asking myself if it's
 
         let cert = ac.headers[0].key.as_ref()
             .expect("Failed to parse key material.");
-        assert_eq!(cert.primary().fingerprint(),
+        assert_eq!(cert.fingerprint(),
                    Fingerprint::from_hex(
                        &"D4AB192964F76A7F8F8A9B357BD18320DEADFA11"[..]).unwrap());
-        assert_eq!(cert.userids().next().unwrap().userid().value(),
+        assert_eq!(cert.userids().next().unwrap().value(),
                    &b"Vincent Breitmoser <look@my.amazin.horse>"[..]);
 
 
@@ -950,10 +959,10 @@ In the light of the Efail vulnerability I am asking myself if it's
 
         let cert = ac.headers[0].key.as_ref()
             .expect("Failed to parse key material.");
-        assert_eq!(cert.primary().fingerprint(),
+        assert_eq!(cert.fingerprint(),
                    Fingerprint::from_hex(
                        &"4F9F89F5505AC1D1A260631CDB1187B9DD5F693B"[..]).unwrap());
-        assert_eq!(cert.userids().next().unwrap().userid().value(),
+        assert_eq!(cert.userids().next().unwrap().value(),
                    &b"Patrick Brunschwig <patrick@enigmail.net>"[..]);
 
         let ac2 = AutocryptHeaders::from_bytes(&PATRICK_UNFOLDED[..]).unwrap();
@@ -973,18 +982,20 @@ In the light of the Efail vulnerability I am asking myself if it's
 
         for _ in 0..samples {
             let p = AutocryptSetupMessage::passcode_gen();
-            assert_eq!(p.len(), passcode_len);
+            p.map(|p| {
+                assert_eq!(p.len(), passcode_len);
 
-            for c in p.iter() {
-                match *c as char {
-                    '0'|'1'|'2'|'3'|'4'|'5'|'6'|'7'|'8'|'9' => {
-                        let i = *c as usize - ('0' as usize);
-                        dist[i] = dist[i] + 1
-                    },
-                    '-' => (),
-                    _ => panic!("Unexpected character in passcode: {}", c),
+                for c in p.iter() {
+                    match *c as char {
+                        '0'|'1'|'2'|'3'|'4'|'5'|'6'|'7'|'8'|'9' => {
+                            let i = *c as usize - ('0' as usize);
+                            dist[i] = dist[i] + 1
+                        },
+                        '-' => (),
+                        _ => panic!("Unexpected character in passcode: {}", c),
+                    }
                 }
-            }
+            });
         }
 
         // Make sure the distribution is reasonable.  If this runs
@@ -1028,7 +1039,7 @@ In the light of the Efail vulnerability I am asking myself if it's
     fn autocrypt_setup_message() {
         // Try the example autocrypt setup message.
         let mut asm = AutocryptSetupMessage::from_bytes(
-            crate::tests::file("autocrypt/setup-message.txt")).unwrap();
+            &include_bytes!("../tests/data/setup-message.txt")[..]).unwrap();
 
         // A bad passcode.
         assert!(asm.decrypt(&"123".into()).is_err());
@@ -1048,7 +1059,8 @@ In the light of the Efail vulnerability I am asking myself if it's
         // Create an ASM for testy-private.  Then decrypt it and make
         // sure the Cert, etc. survived the round trip.
         let cert =
-            Cert::from_bytes(crate::tests::key("testy-private.pgp")).unwrap();
+            Cert::from_bytes(&include_bytes!("../tests/data/testy-private.pgp")[..])
+            .unwrap();
 
         let mut asm = AutocryptSetupMessage::new(cert)
             .set_prefer_encrypt("mutual");
@@ -1063,8 +1075,11 @@ In the light of the Efail vulnerability I am asking myself if it's
 
     #[test]
     fn autocrypt_header_new() {
-        let cert = Cert::from_bytes(crate::tests::key("testy.pgp")).unwrap();
-        let header = AutocryptHeader::new_sender(&cert, "testy@example.org",
+        let p = &P::new();
+
+        let cert = Cert::from_bytes(&include_bytes!("../tests/data/testy.pgp")[..])
+            .unwrap();
+        let header = AutocryptHeader::new_sender(p, &cert, "testy@example.org",
                                                  "mutual").unwrap();
         let mut buf = Vec::new();
         write!(&mut buf, "Autocrypt: ").unwrap();
@@ -1083,10 +1098,10 @@ In the light of the Efail vulnerability I am asking myself if it's
 
         let cert = ac.headers[0].key.as_ref()
             .expect("Failed to parse key material.");
-        assert_eq!(&cert.primary().fingerprint().to_string(),
+        assert_eq!(&cert.fingerprint().to_string(),
                    "3E88 77C8 7727 4692 9751  89F5 D03F 6F86 5226 FE8B");
         assert_eq!(cert.userids().len(), 1);
-        assert_eq!(cert.subkeys().len(), 1);
+        assert_eq!(cert.keys().subkeys().count(), 1);
         assert_eq!(cert.userids().next().unwrap().userid().value(),
                    &b"Testy McTestface <testy@example.org>"[..]);
     }

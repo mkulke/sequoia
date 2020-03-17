@@ -3,7 +3,7 @@
 //! Wraps the streaming packet serialization, see
 //! [`sequoia-openpgp::serialize::stream`].
 //!
-//! [`sequoia-openpgp::serialize::stream`]: ../../sequoia_openpgp/serialize/stream/index.html
+//! [`sequoia-openpgp::serialize::stream`]: ../../../sequoia_openpgp/serialize/stream/index.html
 
 use std::ptr;
 use std::slice;
@@ -38,14 +38,19 @@ use self::openpgp::serialize::{
 use super::keyid::KeyID;
 use super::packet::key::Key;
 use super::cert::KeyIterWrapper;
+use super::cert::ValidKeyIterWrapper;
 
 /// Streams an OpenPGP message.
+///
+/// The returned `writer::Stack` does not take ownership of the
+/// `Writer`; the caller must free it after destroying the
+/// `writer::Stack`.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle]
 pub extern "C" fn pgp_writer_stack_message
     (writer: *mut super::io::Writer)
      -> *mut writer::Stack<'static, Cookie>
 {
-    box_raw!(Message::new(writer.move_from_raw()))
+    box_raw!(Message::new(writer.ref_mut_raw()))
 }
 
 /// Writes up to `len` bytes of `buf` into `writer`.
@@ -62,7 +67,7 @@ pub extern "C" fn pgp_writer_stack_write
     let buf = unsafe {
         slice::from_raw_parts(buf, len as usize)
     };
-    ffi_try_or!(writer.write(buf).map_err(|e| ::failure::Error::from(e)), -1) as ssize_t
+    ffi_try_or!(writer.write(buf).map_err(|e| ::anyhow::Error::from(e)), -1) as ssize_t
 }
 
 /// Writes up to `len` bytes of `buf` into `writer`.
@@ -83,7 +88,7 @@ pub extern "C" fn pgp_writer_stack_write_all
     let buf = unsafe {
         slice::from_raw_parts(buf, len as usize)
     };
-    ffi_try_status!(writer.write_all(buf).map_err(|e| ::failure::Error::from(e)))
+    ffi_try_status!(writer.write_all(buf).map_err(|e| ::anyhow::Error::from(e)))
 }
 
 /// Finalizes this writer, returning the underlying writer.
@@ -150,8 +155,7 @@ pub extern "C" fn pgp_arbitrary_writer_new
 pub extern "C" fn pgp_signer_new
     (errp: Option<&mut *mut crate::error::Error>,
      inner: *mut writer::Stack<'static, Cookie>,
-     signers: *const *mut Box<dyn self::openpgp::crypto::Signer<
-             self::openpgp::packet::key::UnspecifiedRole>>,
+     signers: *const *mut Box<dyn self::openpgp::crypto::Signer>,
      signers_len: size_t,
      hash_algo: u8)
      -> *mut writer::Stack<'static, Cookie>
@@ -168,7 +172,7 @@ pub extern "C" fn pgp_signer_new
 
     let mut signer =
         Signer::new(*inner, ffi_try!(signers.pop().ok_or_else(|| {
-            failure::format_err!("signers is empty")
+            anyhow::anyhow!("signers is empty")
         })));
     for s in signers {
         signer = signer.add_signer(s);
@@ -188,8 +192,7 @@ pub extern "C" fn pgp_signer_new
 pub extern "C" fn pgp_signer_new_detached
     (errp: Option<&mut *mut crate::error::Error>,
      inner: *mut writer::Stack<'static, Cookie>,
-     signers: *const *mut Box<dyn self::openpgp::crypto::Signer<
-             self::openpgp::packet::key::UnspecifiedRole>>,
+     signers: *const *mut Box<dyn self::openpgp::crypto::Signer>,
      signers_len: size_t,
      hash_algo: u8)
      -> *mut writer::Stack<'static, Cookie>
@@ -206,7 +209,7 @@ pub extern "C" fn pgp_signer_new_detached
 
     let mut signer =
         Signer::new(*inner, ffi_try!(signers.pop().ok_or_else(|| {
-            failure::format_err!("signers is empty")
+            anyhow::anyhow!("signers is empty")
         })));
     for s in signers {
         signer = signer.add_signer(s);
@@ -238,7 +241,7 @@ pub extern "C" fn pgp_literal_writer_new
 ///
 /// Wraps [`sequoia-openpgp::serialize::stream::Recipient`].
 ///
-/// [`sequoia-openpgp::serialize::stream::Recipient`]: ../../sequoia_openpgp/serialize/stream/struct.Recipient.html
+/// [`sequoia-openpgp::serialize::stream::Recipient`]: ../../../sequoia_openpgp/serialize/stream/struct.Recipient.html
 #[crate::ffi_wrapper_type(prefix = "pgp_", derive = "Debug")]
 pub struct Recipient<'a>(openpgp::serialize::stream::Recipient<'a>);
 
@@ -252,7 +255,7 @@ fn pgp_recipient_new<'a>(keyid: *mut KeyID,
 {
     openpgp::serialize::stream::Recipient::new(
         keyid.move_from_raw(),
-        key.ref_raw().mark_parts_public_ref(),
+        key.ref_raw(),
     ).move_into_raw()
 }
 
@@ -280,11 +283,44 @@ fn pgp_recipients_from_key_iter<'a>(
     result_len: *mut size_t)
     -> *mut *mut Recipient<'a>
 {
-    let iter_wrapper = ffi_param_move!(iter_wrapper);
+    let mut iter_wrapper = ffi_param_move!(iter_wrapper);
     let result_len = ffi_param_ref_mut!(result_len);
     let recipients =
         iter_wrapper.iter
-        .map(|(_, _, key)| key.into())
+        .take().unwrap()
+        .map(|ka| ka.key().into())
+        .collect::<Vec<openpgp::serialize::stream::Recipient>>();
+
+    let result = unsafe {
+        libc::calloc(recipients.len(), std::mem::size_of::<* mut Recipient>())
+            as *mut *mut Recipient
+    };
+    let r = unsafe {
+        slice::from_raw_parts_mut(result,
+                                  recipients.len())
+    };
+    *result_len = recipients.len();
+    r.iter_mut().zip(recipients.into_iter())
+        .for_each(|(r, recipient)| *r = recipient.move_into_raw());
+    result
+}
+
+/// Collects recipients from a `pgp_cert_valid_key_iter_t`.
+///
+/// Consumes the iterator.  The returned buffer must be freed using
+/// libc's allocator.
+#[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
+fn pgp_recipients_from_valid_key_iter<'a>(
+    iter_wrapper: *mut ValidKeyIterWrapper<'a>,
+    result_len: *mut size_t)
+    -> *mut *mut Recipient<'a>
+{
+    let mut iter_wrapper = ffi_param_move!(iter_wrapper);
+    let result_len = ffi_param_ref_mut!(result_len);
+    let recipients =
+        iter_wrapper.iter
+        .take().unwrap()
+        .map(|ka| ka.key().into())
         .collect::<Vec<openpgp::serialize::stream::Recipient>>();
 
     let result = unsafe {
@@ -356,7 +392,7 @@ pub extern "C" fn pgp_encryptor_new<'a>
         Some(aead_algo.into())
     };
     if passwords_.len() + recipients_.len() == 0 {
-        ffi_try!(Err(failure::format_err!(
+        ffi_try!(Err(anyhow::anyhow!(
             "Neither recipient nor password given")));
     }
 

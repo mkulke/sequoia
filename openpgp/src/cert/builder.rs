@@ -9,11 +9,9 @@ use crate::packet::{
 use crate::Result;
 use crate::packet::Signature;
 use crate::packet::signature;
-use crate::Cert;
-use crate::cert::CertRevocationBuilder;
+use crate::cert::prelude::*;
 use crate::Error;
 use crate::crypto::Password;
-use crate::autocrypt::Autocrypt;
 use crate::types::{
     Features,
     HashAlgorithm,
@@ -101,7 +99,10 @@ impl CipherSuite {
 #[derive(Clone, Debug)]
 pub struct KeyBlueprint {
     flags: KeyFlags,
-    expiration: Option<time::Duration>,
+    expiration: Option<time::SystemTime>,
+    // If not None, uses the specified ciphersuite.  Otherwise, uses
+    // CertBuilder::ciphersuite.
+    ciphersuite: Option<CipherSuite>,
 }
 
 /// Simplifies generation of Keys.
@@ -109,6 +110,7 @@ pub struct KeyBlueprint {
 /// Builder to generate complex Cert hierarchies with multiple user IDs.
 #[derive(Clone, Debug)]
 pub struct CertBuilder {
+    creation_time: Option<std::time::SystemTime>,
     ciphersuite: CipherSuite,
     primary: KeyBlueprint,
     subkeys: Vec<KeyBlueprint>,
@@ -128,10 +130,12 @@ impl CertBuilder {
     /// ids (using `CertBuilder::add_userid`).
     pub fn new() -> Self {
         CertBuilder{
+            creation_time: None,
             ciphersuite: CipherSuite::default(),
             primary: KeyBlueprint{
                 flags: KeyFlags::default().set_certification(true),
                 expiration: None,
+                ciphersuite: None,
             },
             subkeys: vec![],
             userids: vec![],
@@ -149,13 +153,16 @@ impl CertBuilder {
               U: Into<packet::UserID>
     {
         CertBuilder {
+            creation_time: None,
             ciphersuite: ciphersuite.into().unwrap_or(Default::default()),
             primary: KeyBlueprint {
                 flags: KeyFlags::default()
                     .set_certification(true)
                     .set_signing(true),
                 expiration: Some(
-                    time::Duration::new(3 * 52 * 7 * 24 * 60 * 60, 0)),
+                    time::SystemTime::now()
+                        + time::Duration::new(3 * 52 * 7 * 24 * 60 * 60, 0)),
+                ciphersuite: None,
             },
             subkeys: vec![
                 KeyBlueprint {
@@ -163,6 +170,7 @@ impl CertBuilder {
                         .set_transport_encryption(true)
                         .set_storage_encryption(true),
                     expiration: None,
+                    ciphersuite: None,
                 }
             ],
             userids: userids.into_iter().map(|x| x.into()).collect(),
@@ -171,49 +179,12 @@ impl CertBuilder {
         }
     }
 
-    /// Generates a key compliant to
-    /// [Autocrypt](https://autocrypt.org/).
-    ///
-    /// If no version is given the latest one is used.
-    ///
-    /// The autocrypt specification requires a UserID.  However,
-    /// because it can be useful to add the UserID later, it is
-    /// permitted to be none.
-    pub fn autocrypt<'a, V, U>(version: V, userid: Option<U>)
-        -> Self
-        where V: Into<Option<Autocrypt>>,
-              U: Into<packet::UserID>
+    /// Sets the creation time.
+    pub fn set_creation_time<T>(mut self, creation_time: T) -> Self
+        where T: Into<std::time::SystemTime>,
     {
-        let builder = CertBuilder{
-            ciphersuite: match version.into().unwrap_or(Default::default()) {
-                Autocrypt::V1 => CipherSuite::RSA3k,
-                Autocrypt::V1_1 => CipherSuite::Cv25519,
-            },
-            primary: KeyBlueprint {
-                flags: KeyFlags::default()
-                    .set_certification(true)
-                    .set_signing(true),
-                expiration: Some(
-                    time::Duration::new(3 * 52 * 7 * 24 * 60 * 60, 0)),
-            },
-            subkeys: vec![
-                KeyBlueprint {
-                    flags: KeyFlags::default()
-                        .set_transport_encryption(true)
-                        .set_storage_encryption(true),
-                    expiration: None,
-                }
-            ],
-            userids: vec![],
-            user_attributes: vec![],
-            password: None,
-        };
-
-        if let Some(userid) = userid {
-            builder.add_userid(userid.into())
-        } else {
-            builder
-        }
+        self.creation_time = Some(creation_time.into());
+        self
     }
 
     /// Sets the encryption and signature algorithms for primary and all subkeys.
@@ -240,48 +211,51 @@ impl CertBuilder {
 
     /// Adds a signing capable subkey.
     pub fn add_signing_subkey(self) -> Self {
-        self.add_subkey(KeyFlags::default().set_signing(true), None)
+        self.add_subkey(KeyFlags::default().set_signing(true), None, None)
     }
 
     /// Adds a subkey suitable for transport encryption.
     pub fn add_transport_encryption_subkey(self) -> Self {
         self.add_subkey(KeyFlags::default().set_transport_encryption(true),
-                        None)
+                        None, None)
     }
 
     /// Adds a subkey suitable for storage encryption.
     pub fn add_storage_encryption_subkey(self) -> Self {
         self.add_subkey(KeyFlags::default().set_storage_encryption(true),
-                        None)
+                        None, None)
     }
 
     /// Adds an certification capable subkey.
     pub fn add_certification_subkey(self) -> Self {
-        self.add_subkey(KeyFlags::default().set_certification(true), None)
+        self.add_subkey(KeyFlags::default().set_certification(true), None, None)
     }
 
     /// Adds an authentication capable subkey.
     pub fn add_authentication_subkey(self) -> Self {
-        self.add_subkey(KeyFlags::default().set_authentication(true), None)
+        self.add_subkey(KeyFlags::default().set_authentication(true), None, None)
     }
 
     /// Adds a custom subkey.
     ///
     /// If `expiration` is `None`, the subkey uses the same expiration
     /// time as the primary key.
-    pub fn add_subkey<T>(mut self, flags: KeyFlags, expiration: T) -> Self
-        where T: Into<Option<time::Duration>>
+    pub fn add_subkey<T, C>(mut self, flags: KeyFlags, expiration: T, cs: C)
+        -> Self
+        where T: Into<Option<time::SystemTime>>,
+              C: Into<Option<CipherSuite>>,
     {
         self.subkeys.push(KeyBlueprint {
             flags: flags,
             expiration: expiration.into(),
+            ciphersuite: cs.into(),
         });
         self
     }
 
     /// Sets the capabilities of the primary key. The function automatically
     /// makes the primary key certification capable if subkeys are added.
-    pub fn primary_keyflags(mut self, flags: KeyFlags) -> Self {
+    pub fn set_primary_key_flags(mut self, flags: KeyFlags) -> Self {
         self.primary.flags = flags;
         self
     }
@@ -295,8 +269,8 @@ impl CertBuilder {
     /// Sets the expiration time.
     ///
     /// A value of None means never.
-    pub fn set_expiration<T>(mut self, expiration: T) -> Self
-        where T: Into<Option<time::Duration>>
+    pub fn set_expiration_time<T>(mut self, expiration: T) -> Self
+        where T: Into<Option<time::SystemTime>>
     {
         self.primary.expiration = expiration.into();
         self
@@ -306,6 +280,9 @@ impl CertBuilder {
     pub fn generate(mut self) -> Result<(Cert, Signature)> {
         use crate::{PacketPile, Packet};
         use crate::types::ReasonForRevocation;
+
+        let creation_time =
+            self.creation_time.unwrap_or_else(std::time::SystemTime::now);
 
         let mut packets = Vec::<Packet>::with_capacity(
             1 + 1 + self.subkeys.len() + self.userids.len()
@@ -317,14 +294,13 @@ impl CertBuilder {
         }
 
         // Generate & and self-sign primary key.
-        let (primary, sig) = self.primary_key()?;
-        let mut signer = primary.clone().mark_parts_secret().unwrap()
-            .into_keypair().unwrap();
+        let (primary, sig) = self.primary_key(creation_time)?;
+        let mut signer = primary.clone().into_keypair().unwrap();
 
-        packets.push(Packet::PublicKey({
+        packets.push(Packet::SecretKey({
             let mut primary = primary.clone();
             if let Some(ref password) = self.password {
-                primary.secret_mut().unwrap().encrypt_in_place(password)?;
+                primary.secret_mut().encrypt_in_place(password)?;
             }
             primary
         }));
@@ -336,35 +312,40 @@ impl CertBuilder {
         // Sign UserIDs.
         for uid in self.userids.into_iter() {
             let builder = signature::Builder::from(sig.clone())
-                .set_type(SignatureType::PositiveCertificate)
+                .set_type(SignatureType::PositiveCertification)
                 // GnuPG wants at least a 512-bit hash for P521 keys.
                 .set_hash_algo(HashAlgorithm::SHA512);
-            let signature = uid.bind(&mut signer, &cert, builder, None)?;
+            let signature = uid.bind(&mut signer, &cert, builder)?;
             cert = cert.merge_packets(vec![uid.into(), signature.into()])?;
         }
 
         // Sign UserAttributes.
         for ua in self.user_attributes.into_iter() {
             let builder = signature::Builder::from(sig.clone())
-                .set_type(SignatureType::PositiveCertificate)
+                .set_type(SignatureType::PositiveCertification)
             // GnuPG wants at least a 512-bit hash for P521 keys.
                 .set_hash_algo(HashAlgorithm::SHA512);
-            let signature = ua.bind(&mut signer, &cert, builder, None)?;
+            let signature = ua.bind(&mut signer, &cert, builder)?;
             cert = cert.merge_packets(vec![ua.into(), signature.into()])?;
         }
 
         // sign subkeys
         for blueprint in self.subkeys {
             let flags = &blueprint.flags;
-            let mut subkey = self.ciphersuite.generate_key(flags)?;
+            let mut subkey = blueprint.ciphersuite
+                .unwrap_or(self.ciphersuite)
+                .generate_key(flags)?;
+            subkey.set_creation_time(creation_time)?;
 
             let mut builder =
                 signature::Builder::new(SignatureType::SubkeyBinding)
+                .set_signature_creation_time(creation_time)?
                 // GnuPG wants at least a 512-bit hash for P521 keys.
                 .set_hash_algo(HashAlgorithm::SHA512)
                 .set_features(&Features::sequoia())?
                 .set_key_flags(flags)?
                 .set_key_expiration_time(
+                    &subkey,
                     blueprint.expiration.or(self.primary.expiration))?;
 
             if flags.for_transport_encryption() || flags.for_storage_encryption()
@@ -383,28 +364,29 @@ impl CertBuilder {
                 let mut subkey_signer = subkey.clone().into_keypair().unwrap();
                 let backsig =
                     signature::Builder::new(SignatureType::PrimaryKeyBinding)
+                    .set_signature_creation_time(creation_time)?
                     // GnuPG wants at least a 512-bit hash for P521 keys.
                     .set_hash_algo(HashAlgorithm::SHA512)
                     .set_signature_creation_time(
                         time::SystemTime::now())?
                     .set_issuer_fingerprint(subkey.fingerprint())?
                     .set_issuer(subkey.keyid())?
-                    .sign_subkey_binding(&mut subkey_signer, &primary,
-                                         &subkey.mark_parts_public_ref())?;
+                    .sign_primary_key_binding(&mut subkey_signer, &primary,
+                                              &subkey)?;
                 builder = builder.set_embedded_signature(backsig)?;
             }
 
-            let signature = subkey.mark_parts_public_ref()
-                .bind(&mut signer, &cert, builder, None)?;
+            let signature = subkey.bind(&mut signer, &cert, builder)?;
 
             if let Some(ref password) = self.password {
-                subkey.secret_mut().unwrap().encrypt_in_place(password)?;
+                subkey.secret_mut().encrypt_in_place(password)?;
             }
             cert = cert.merge_packets(vec![Packet::SecretSubkey(subkey),
                                          signature.into()])?;
         }
 
         let revocation = CertRevocationBuilder::new()
+            .set_signature_creation_time(creation_time)?
             .set_reason_for_revocation(
                 ReasonForRevocation::Unspecified, b"Unspecified")?
             .build(&mut signer, &cert, None)?;
@@ -416,28 +398,29 @@ impl CertBuilder {
         Ok((cert, revocation))
     }
 
-    fn primary_key(&self)
-        -> Result<(key::PublicKey, Signature)>
+    fn primary_key(&self, creation_time: std::time::SystemTime)
+        -> Result<(key::SecretKey, Signature)>
     {
-        let key = self.ciphersuite.generate_key(
-            &KeyFlags::default().set_certification(true))?;
+        let mut key = self.primary.ciphersuite
+            .unwrap_or(self.ciphersuite)
+            .generate_key(&KeyFlags::default().set_certification(true))?;
+        key.set_creation_time(creation_time)?;
         let sig = signature::Builder::new(SignatureType::DirectKey)
             // GnuPG wants at least a 512-bit hash for P521 keys.
             .set_hash_algo(HashAlgorithm::SHA512)
             .set_features(&Features::sequoia())?
             .set_key_flags(&self.primary.flags)?
-            .set_signature_creation_time(
-                time::SystemTime::now())?
-            .set_key_expiration_time(self.primary.expiration)?
+            .set_signature_creation_time(creation_time)?
+            .set_key_expiration_time(&key, self.primary.expiration)?
             .set_issuer_fingerprint(key.fingerprint())?
             .set_issuer(key.keyid())?
             .set_preferred_hash_algorithms(vec![HashAlgorithm::SHA512])?;
 
         let mut signer = key.clone().into_keypair()
             .expect("key generated above has a secret");
-        let sig = sig.sign_primary_key_binding(&mut signer)?;
+        let sig = sig.sign_direct_key(&mut signer)?;
 
-        Ok((key.mark_parts_public(), sig.into()))
+        Ok((key, sig.into()))
     }
 }
 
@@ -446,9 +429,12 @@ mod tests {
     use super::*;
     use crate::packet::signature::subpacket::{SubpacketTag, SubpacketValue};
     use crate::types::PublicKeyAlgorithm;
+    use crate::policy::StandardPolicy as P;
 
     #[test]
     fn all_opts() {
+        let p = &P::new();
+
         let (cert, _) = CertBuilder::new()
             .set_cipher_suite(CipherSuite::Cv25519)
             .add_userid("test1@example.com")
@@ -458,7 +444,7 @@ mod tests {
             .add_certification_subkey()
             .generate().unwrap();
 
-        let mut userids = cert.userids()
+        let mut userids = cert.userids().with_policy(p, None)
             .map(|u| String::from_utf8_lossy(u.userid().value()).into_owned())
             .collect::<Vec<String>>();
         userids.sort();
@@ -472,6 +458,8 @@ mod tests {
 
     #[test]
     fn direct_key_sig() {
+        let p = &P::new();
+
         let (cert, _) = CertBuilder::new()
             .set_cipher_suite(CipherSuite::Cv25519)
             .add_signing_subkey()
@@ -480,14 +468,11 @@ mod tests {
             .generate().unwrap();
 
         assert_eq!(cert.userids().count(), 0);
-        assert_eq!(cert.primary_key_signature(None).unwrap().typ(),
-                   crate::types::SignatureType::DirectKey);
         assert_eq!(cert.subkeys().count(), 3);
-        if let Some(sig) = cert.primary_key_signature(None) {
-            assert!(sig.features().supports_mdc());
-        } else {
-            panic!();
-        }
+        let sig =
+            cert.primary_key().with_policy(p, None).unwrap().binding_signature();
+        assert_eq!(sig.typ(), crate::types::SignatureType::DirectKey);
+        assert!(sig.features().unwrap().supports_mdc());
     }
 
     #[test]
@@ -497,14 +482,14 @@ mod tests {
             .set_cipher_suite(CipherSuite::RSA3k)
             .set_cipher_suite(CipherSuite::Cv25519)
             .generate().unwrap();
-        assert_eq!(cert1.primary().pk_algo(), PublicKeyAlgorithm::EdDSA);
+        assert_eq!(cert1.primary_key().pk_algo(), PublicKeyAlgorithm::EdDSA);
 
         let (cert2, _) = CertBuilder::new()
             .set_cipher_suite(CipherSuite::RSA3k)
             .add_userid("test2@example.com")
             .add_transport_encryption_subkey()
             .generate().unwrap();
-        assert_eq!(cert2.primary().pk_algo(),
+        assert_eq!(cert2.primary_key().pk_algo(),
                    PublicKeyAlgorithm::RSAEncryptSign);
         assert_eq!(cert2.subkeys().next().unwrap().key().pk_algo(),
                    PublicKeyAlgorithm::RSAEncryptSign);
@@ -512,70 +497,35 @@ mod tests {
 
     #[test]
     fn defaults() {
+        let p = &P::new();
         let (cert1, _) = CertBuilder::new()
             .add_userid("test2@example.com")
             .generate().unwrap();
-        assert_eq!(cert1.primary().pk_algo(),
+        assert_eq!(cert1.primary_key().pk_algo(),
                    PublicKeyAlgorithm::EdDSA);
         assert!(cert1.subkeys().next().is_none());
-        if let Some(sig) = cert1.primary_key_signature(None) {
-            assert!(sig.features().supports_mdc());
-        } else {
-            panic!();
-        }
-    }
-
-    #[test]
-    fn autocrypt_v1() {
-        let (cert1, _) = CertBuilder::autocrypt(Autocrypt::V1,
-                                              Some("Foo"))
-            .generate().unwrap();
-        assert_eq!(cert1.primary().pk_algo(),
-                   PublicKeyAlgorithm::RSAEncryptSign);
-        assert_eq!(cert1.subkeys().next().unwrap().key().pk_algo(),
-                   PublicKeyAlgorithm::RSAEncryptSign);
-        assert_eq!(cert1.userids().count(), 1);
-    }
-
-    #[test]
-    fn autocrypt_v1_1() {
-        let (cert1, _) = CertBuilder::autocrypt(Autocrypt::V1_1,
-                                              Some("Foo"))
-            .generate().unwrap();
-        assert_eq!(cert1.primary().pk_algo(),
-                   PublicKeyAlgorithm::EdDSA);
-        assert_eq!(cert1.subkeys().next().unwrap().key().pk_algo(),
-                   PublicKeyAlgorithm::ECDH);
-        assert_match!(
-            crate::crypto::mpis::PublicKey::ECDH {
-                curve: crate::types::Curve::Cv25519, ..
-            } = cert1.subkeys().next().unwrap().key().mpis());
-        assert_eq!(cert1.userids().count(), 1);
+        assert!(cert1.primary_userid(p, None).unwrap()
+                .binding_signature().features().unwrap().supports_mdc());
     }
 
     #[test]
     fn always_certify() {
+        let p = &P::new();
         let (cert1, _) = CertBuilder::new()
             .set_cipher_suite(CipherSuite::Cv25519)
-            .primary_keyflags(KeyFlags::default())
+            .set_primary_key_flags(KeyFlags::default())
             .add_transport_encryption_subkey()
             .generate().unwrap();
-        let sig_pkts = &cert1.primary_key_signature(None).unwrap().hashed_area();
-
-        match sig_pkts.lookup(SubpacketTag::KeyFlags).unwrap().value() {
-            SubpacketValue::KeyFlags(ref ks) => assert!(ks.for_certification()),
-            v => panic!("Unexpected subpacket: {:?}", v),
-        }
-
-        assert_eq!(cert1.subkeys().count(), 1);
+        assert!(cert1.primary_key().with_policy(p, None).unwrap().for_certification());
+        assert_eq!(cert1.keys().subkeys().count(), 1);
     }
 
     #[test]
     fn gen_wired_subkeys() {
         let (cert1, _) = CertBuilder::new()
             .set_cipher_suite(CipherSuite::Cv25519)
-            .primary_keyflags(KeyFlags::default())
-            .add_subkey(KeyFlags::default().set_certification(true), None)
+            .set_primary_key_flags(KeyFlags::default())
+            .add_subkey(KeyFlags::default().set_certification(true), None, None)
             .generate().unwrap();
         let sig_pkts = cert1.subkeys().next().unwrap().self_signatures[0].hashed_area();
 
@@ -589,15 +539,16 @@ mod tests {
 
     #[test]
     fn generate_revocation_certificate() {
-        use crate::RevocationStatus;
+        let p = &P::new();
+        use crate::types::RevocationStatus;
         let (cert, revocation) = CertBuilder::new()
             .set_cipher_suite(CipherSuite::Cv25519)
             .generate().unwrap();
-        assert_eq!(cert.revoked(None),
+        assert_eq!(cert.revoked(p, None),
                    RevocationStatus::NotAsFarAsWeKnow);
 
         let cert = cert.merge_packets(vec![revocation.clone().into()]).unwrap();
-        assert_eq!(cert.revoked(None),
+        assert_eq!(cert.revoked(p, None),
                    RevocationStatus::Revoked(vec![ &revocation ]));
     }
 
@@ -622,7 +573,7 @@ mod tests {
             .set_cipher_suite(CipherSuite::Cv25519)
             .set_password(Some(String::from("streng geheim").into()))
             .generate().unwrap();
-        assert!(cert.primary().secret().unwrap().is_encrypted());
+        assert!(cert.primary_key().optional_secret().unwrap().is_encrypted());
     }
 
     #[test]
@@ -637,33 +588,76 @@ mod tests {
     }
 
     #[test]
-    fn expiration_times() {
+    fn validity_periods() {
+        let p = &P::new();
+
+        let now = std::time::SystemTime::now();
         let s = std::time::Duration::new(1, 0);
+
         let (cert,_) = CertBuilder::new()
-            .set_expiration(600 * s)
+            .set_creation_time(now)
+            .set_expiration_time(now + 600 * s)
             .add_subkey(KeyFlags::default().set_signing(true),
-                        300 * s)
+                        now + 300 * s, None)
             .add_subkey(KeyFlags::default().set_authentication(true),
-                        None)
+                        None, None)
             .generate().unwrap();
 
-        let now = cert.primary().creation_time();
-        let key = cert.primary();
-        let sig = cert.primary_key_signature(None).unwrap();
-        assert!(sig.key_alive(key, now));
-        assert!(sig.key_alive(key, now + 599 * s));
-        assert!(! sig.key_alive(key, now + 601 * s));
+        let key = cert.primary_key().key();
+        let sig = &cert.primary_key().bundle().self_signatures()[0];
+        assert!(sig.key_alive(key, now).is_ok());
+        assert!(sig.key_alive(key, now + 590 * s).is_ok());
+        assert!(! sig.key_alive(key, now + 610 * s).is_ok());
 
-        let (sig, key) = cert.keys_valid().for_signing()
-            .nth(0).map(|(s, _, k)| (s.unwrap(), k)).unwrap();
-        assert!(sig.key_alive(key, now));
-        assert!(sig.key_alive(key, now + 299 * s));
-        assert!(! sig.key_alive(key, now + 301 * s));
+        let ka = cert.keys().with_policy(p, now).alive().revoked(false)
+            .for_signing()
+            .nth(0).unwrap();
+        assert!(ka.alive().is_ok());
+        assert!(ka.clone().with_policy(p, now + 290 * s).unwrap().alive().is_ok());
+        assert!(! ka.clone().with_policy(p, now + 310 * s).unwrap().alive().is_ok());
 
-        let (sig, key) = cert.keys_valid().for_authentication()
-            .nth(0).map(|(s, _, k)| (s.unwrap(), k)).unwrap();
-        assert!(sig.key_alive(key, now));
-        assert!(sig.key_alive(key, now + 599 * s));
-        assert!(! sig.key_alive(key, now + 601 * s));
+        let ka = cert.keys().with_policy(p, now).alive().revoked(false)
+            .for_authentication()
+            .nth(0).unwrap();
+        assert!(ka.alive().is_ok());
+        assert!(ka.clone().with_policy(p, now + 590 * s).unwrap().alive().is_ok());
+        assert!(! ka.clone().with_policy(p, now + 610 * s).unwrap().alive().is_ok());
+    }
+
+    #[test]
+    fn creation_time() {
+        let p = &P::new();
+
+        use std::time::UNIX_EPOCH;
+        let (cert, rev) = CertBuilder::new()
+            .set_creation_time(UNIX_EPOCH)
+            .set_cipher_suite(CipherSuite::Cv25519)
+            .add_userid("foo")
+            .add_signing_subkey()
+            .generate().unwrap();
+
+        assert_eq!(cert.primary_key().creation_time(), UNIX_EPOCH);
+        assert_eq!(cert.primary_key().with_policy(p, None).unwrap()
+                   .binding_signature()
+                   .signature_creation_time().unwrap(), UNIX_EPOCH);
+        assert_eq!(cert.primary_key().with_policy(p, None).unwrap()
+                   .direct_key_signature().unwrap()
+                   .signature_creation_time().unwrap(), UNIX_EPOCH);
+        assert_eq!(rev.signature_creation_time().unwrap(), UNIX_EPOCH);
+
+        // (Sub)Keys.
+        assert_eq!(cert.keys().with_policy(p, None).count(), 2);
+        for ka in cert.keys().with_policy(p, None) {
+            assert_eq!(ka.key().creation_time(), UNIX_EPOCH);
+            assert_eq!(ka.binding_signature()
+                       .signature_creation_time().unwrap(), UNIX_EPOCH);
+        }
+
+        // UserIDs.
+        assert_eq!(cert.userids().count(), 1);
+        for ui in cert.userids().with_policy(p, None) {
+            assert_eq!(ui.binding_signature()
+                       .signature_creation_time().unwrap(), UNIX_EPOCH);
+        }
     }
 }

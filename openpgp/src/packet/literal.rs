@@ -21,7 +21,7 @@ use crate::Result;
 /// See [Section 5.9 of RFC 4880] for details.
 ///
 ///   [Section 5.9 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.9
-#[derive(PartialEq, Eq, Hash, Clone)]
+#[derive(Clone)]
 pub struct Literal {
     /// CTB packet header fields.
     pub(crate) common: packet::Common,
@@ -36,6 +36,32 @@ pub struct Literal {
     /// A four-octet number that indicates a date associated with the
     /// literal data.
     date: Option<Timestamp>,
+    /// The literal data packet is a container packet, but cannot
+    /// store packets.
+    ///
+    /// This is written when serialized, and set by the packet parser
+    /// if `buffer_unread_content` is used.
+    container: packet::Container,
+}
+
+impl PartialEq for Literal {
+    fn eq(&self, other: &Literal) -> bool {
+        self.format == other.format
+            && self.filename == other.filename
+            && self.date == other.date
+            && self.container == other.container
+    }
+}
+
+impl Eq for Literal {}
+
+impl std::hash::Hash for Literal {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(&self.format, state);
+        std::hash::Hash::hash(&self.filename, state);
+        std::hash::Hash::hash(&self.date, state);
+        std::hash::Hash::hash(&self.container, state);
+    }
 }
 
 impl fmt::Debug for Literal {
@@ -46,13 +72,8 @@ impl fmt::Debug for Literal {
             None
         };
 
-        let body = if let Some(ref body) = self.common.body {
-            &body[..]
-        } else {
-            &b""[..]
-        };
-
         let threshold = 36;
+        let body = self.body();
         let prefix = &body[..cmp::min(threshold, body.len())];
         let mut prefix_fmt = String::from_utf8_lossy(prefix).into_owned();
         if body.len() > threshold {
@@ -65,6 +86,7 @@ impl fmt::Debug for Literal {
             .field("filename", &filename)
             .field("date", &self.date)
             .field("body", &prefix_fmt)
+            .field("body_digest", &self.container.body_digest())
             .finish()
     }
 }
@@ -77,17 +99,8 @@ impl Literal {
             format: format,
             filename: None,
             date: None,
+            container: Default::default(),
         }
-    }
-
-    /// Gets the Literal packet's body.
-    pub fn body(&self) -> Option<&[u8]> {
-        self.common.body.as_ref().map(|b| b.as_slice())
-    }
-
-    /// Sets the Literal packet's body to the provided byte string.
-    pub fn set_body(&mut self, data: Vec<u8>) -> Vec<u8> {
-        self.common.set_body(data)
     }
 
     /// Gets the Literal packet's content disposition.
@@ -163,6 +176,8 @@ impl Literal {
     }
 }
 
+impl_body_forwards!(Literal);
+
 impl From<Literal> for Packet {
     fn from(s: Literal) -> Self {
         Packet::Literal(s)
@@ -185,7 +200,7 @@ impl Arbitrary for Literal {
 mod tests {
     use super::*;
     use crate::parse::Parse;
-    use crate::serialize::SerializeInto;
+    use crate::serialize::MarshalInto;
 
     quickcheck! {
         fn roundtrip(p: Literal) -> bool {

@@ -366,17 +366,22 @@ typedef struct pgp_packet_pile *pgp_packet_pile_t;
 /*/
 /// A `UserIDBinding`.
 /*/
-typedef struct pgp_user_id_binding *pgp_user_id_binding_t;
+typedef struct pgp_user_id_bundle *pgp_user_id_bundle_t;
 
 /*/
 /// An iterator over `UserIDBinding`s.
 /*/
-typedef struct pgp_user_id_binding_iter *pgp_user_id_binding_iter_t;
+typedef struct pgp_user_id_bundle_iter *pgp_user_id_bundle_iter_t;
 
 /*/
 /// An iterator over keys in a Cert.
 /*/
 typedef struct pgp_cert_key_iter *pgp_cert_key_iter_t;
+
+/*/
+/// An iterator over valid keys in a Cert.
+/*/
+typedef struct pgp_cert_valid_key_iter *pgp_cert_valid_key_iter_t;
 
 /*/
 /// An OpenPGP Certificate.
@@ -482,10 +487,12 @@ typedef struct pgp_verification_result *pgp_verification_result_t;
 typedef struct pgp_verification_result_iter *pgp_verification_result_iter_t;
 
 typedef enum pgp_verification_result_variant {
-  PGP_VERIFICATION_RESULT_GOOD_CHECKSUM = 1,
+  PGP_VERIFICATION_RESULT_GOOD_CHECKSUM = 0,
+  PGP_VERIFICATION_RESULT_MALFORMED_SIGNATURE = 1,
   PGP_VERIFICATION_RESULT_MISSING_KEY = 2,
-  PGP_VERIFICATION_RESULT_BAD_CHECKSUM = 3,
-  PGP_VERIFICATION_RESULT_NOT_ALIVE = 4,
+  PGP_VERIFICATION_RESULT_UNBOUND_KEY = 3,
+  PGP_VERIFICATION_RESULT_BAD_KEY = 4,
+  PGP_VERIFICATION_RESULT_BAD_SIGNATURE = 5,
 
   /* Dummy value to make sure the enumeration has a defined size.  Do
      not use this value.  */
@@ -505,6 +512,7 @@ typedef pgp_status_t (pgp_decryptor_do_decrypt_cb_t) (
 typedef pgp_status_t (*pgp_decryptor_decrypt_cb_t) (void *,
     pgp_pkesk_t *, size_t,
     pgp_skesk_t *, size_t,
+    uint8_t, /* XXX: SymmetricAlgorithm */
     pgp_decryptor_do_decrypt_cb_t *,
     void *,
     pgp_fingerprint_t *);
@@ -514,5 +522,20 @@ typedef pgp_status_t (*pgp_decryptor_check_cb_t) (void *,
 
 typedef pgp_status_t (*pgp_decryptor_inspect_cb_t) (void *,
     pgp_packet_parser_t);
+
+/*/
+/// An OpenPGP policy.
+/*/
+typedef struct pgp_policy *pgp_policy_t;
+
+/*/
+/// A standard OpenPGP policy.
+/*/
+typedef struct pgp_standard_policy *pgp_standard_policy_t;
+
+/*/
+/// A Null OpenPGP policy.
+/*/
+typedef struct pgp_null_policy *pgp_null_policy_t;
 
 #endif

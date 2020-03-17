@@ -11,7 +11,7 @@
 
 use std::fmt;
 use std::io::{self, Write};
-use std::time;
+use std::time::SystemTime;
 
 use crate::{
     crypto,
@@ -28,13 +28,13 @@ use crate::{
         PublicParts,
         UnspecifiedRole,
     },
-    Cert,
+    cert::prelude::*,
 };
 use crate::packet::header::CTB;
 use crate::packet::header::BodyLength;
 use super::{
     PartialBodyFilter,
-    Serialize,
+    Marshal,
     writer,
 };
 use crate::types::{
@@ -203,9 +203,10 @@ pub struct Signer<'a> {
     // take our inner reader.  If that happens, we only update the
     // digests.
     inner: Option<writer::BoxStack<'a, Cookie>>,
-    signers: Vec<Box<dyn crypto::Signer<key::UnspecifiedRole> + 'a>>,
+    signers: Vec<Box<dyn crypto::Signer + 'a>>,
     intended_recipients: Vec<Fingerprint>,
     detached: bool,
+    creation_time: Option<SystemTime>,
     hash: crypto::hash::Context,
     cookie: Cookie,
     position: u64,
@@ -220,19 +221,25 @@ impl<'a> Signer<'a> {
     /// extern crate sequoia_openpgp as openpgp;
     /// use std::io::{Read, Write};
     /// use openpgp::serialize::stream::{Message, Signer, LiteralWriter};
+    /// use openpgp::policy::StandardPolicy;
     /// # use openpgp::{Result, Cert};
     /// # use openpgp::packet::prelude::*;
     /// # use openpgp::crypto::KeyPair;
     /// # use openpgp::parse::Parse;
     /// # use openpgp::parse::stream::*;
+    ///
+    /// let p = &StandardPolicy::new();
+    ///
     /// # let tsk = Cert::from_bytes(&include_bytes!(
     /// #     "../../tests/data/keys/testy-new-private.pgp")[..])
     /// #     .unwrap();
-    /// # let keypair = tsk.keys_valid().for_signing().nth(0).unwrap().2
-    /// #     .clone().mark_parts_secret().unwrap().into_keypair().unwrap();
+    /// # let keypair = tsk.keys().with_policy(p, None).alive().revoked(false).for_signing()
+    /// #     .nth(0).unwrap()
+    /// #     .key().clone().mark_parts_secret().unwrap().into_keypair().unwrap();
     /// # f(tsk, keypair).unwrap();
-    /// # fn f(cert: Cert, mut signing_keypair: KeyPair<key::UnspecifiedRole>)
+    /// # fn f(cert: Cert, mut signing_keypair: KeyPair)
     /// #      -> Result<()> {
+    /// let p = &StandardPolicy::new();
     ///
     /// let mut o = vec![];
     /// {
@@ -251,19 +258,18 @@ impl<'a> Signer<'a> {
     ///         Ok(vec![self.0.clone()])
     ///     }
     ///
-    ///     fn check(&mut self, structure: &MessageStructure)
+    ///     fn check(&mut self, structure: MessageStructure)
     ///              -> openpgp::Result<()> {
     ///         if let MessageLayer::SignatureGroup { ref results } =
     ///             structure.iter().nth(0).unwrap()
     ///         {
-    ///             if let VerificationResult::GoodChecksum { .. } =
-    ///                 results.get(0).unwrap()
-    ///             { Ok(()) /* good */ } else { panic!() }
+    ///             results.get(0).unwrap().as_ref().unwrap();
+    ///             Ok(())
     ///         } else { panic!() }
     ///     }
     /// }
     ///
-    /// let mut verifier = Verifier::from_bytes(&o, Helper(&cert), None)?;
+    /// let mut verifier = Verifier::from_bytes(p, &o, Helper(&cert), None)?;
     ///
     /// let mut message = String::new();
     /// verifier.read_to_string(&mut message)?;
@@ -272,7 +278,7 @@ impl<'a> Signer<'a> {
     /// # }
     /// ```
     pub fn new<S>(inner: writer::Stack<'a, Cookie>, signer: S) -> Self
-        where S: crypto::Signer<key::UnspecifiedRole> + 'a
+        where S: crypto::Signer + 'a
     {
         let inner = writer::BoxStack::from(inner);
         let level = inner.cookie_ref().level + 1;
@@ -281,6 +287,7 @@ impl<'a> Signer<'a> {
             signers: vec![Box::new(signer)],
             intended_recipients: Vec::new(),
             detached: false,
+            creation_time: None,
             hash: HashAlgorithm::default().context().unwrap(),
             cookie: Cookie {
                 level: level,
@@ -298,7 +305,7 @@ impl<'a> Signer<'a> {
 
     /// Adds an additional signer.
     pub fn add_signer<S>(mut self, signer: S) -> Self
-        where S: crypto::Signer<key::UnspecifiedRole> + 'a
+        where S: crypto::Signer + 'a
     {
         self.signers.push(Box::new(signer));
         self
@@ -323,19 +330,26 @@ impl<'a> Signer<'a> {
     /// extern crate sequoia_openpgp as openpgp;
     /// use std::io::{Read, Write};
     /// use openpgp::serialize::stream::{Message, Signer, LiteralWriter};
+    /// use sequoia_openpgp::policy::StandardPolicy;
     /// # use openpgp::{Result, Cert};
     /// # use openpgp::packet::prelude::*;
     /// # use openpgp::crypto::KeyPair;
     /// # use openpgp::parse::Parse;
     /// # use openpgp::parse::stream::*;
+    ///
+    /// # let p = &StandardPolicy::new();
     /// # let tsk = Cert::from_bytes(&include_bytes!(
     /// #     "../../tests/data/keys/testy-new-private.pgp")[..])
     /// #     .unwrap();
-    /// # let keypair = tsk.keys_valid().for_signing().nth(0).unwrap().2
-    /// #     .clone().mark_parts_secret().unwrap().into_keypair().unwrap();
+    /// # let keypair
+    /// #     = tsk.keys().with_policy(p, None).alive().revoked(false).for_signing()
+    /// #           .nth(0).unwrap()
+    /// #           .key().clone().mark_parts_secret().unwrap().into_keypair()
+    /// #           .unwrap();
     /// # f(tsk, keypair).unwrap();
-    /// # fn f(cert: Cert, mut signing_keypair: KeyPair<key::UnspecifiedRole>)
+    /// # fn f(cert: Cert, mut signing_keypair: KeyPair)
     /// #      -> Result<()> {
+    /// let p = &StandardPolicy::new();
     ///
     /// let mut o = vec![];
     /// {
@@ -355,20 +369,19 @@ impl<'a> Signer<'a> {
     ///         Ok(vec![self.0.clone()])
     ///     }
     ///
-    ///     fn check(&mut self, structure: &MessageStructure)
+    ///     fn check(&mut self, structure: MessageStructure)
     ///              -> openpgp::Result<()> {
     ///         if let MessageLayer::SignatureGroup { ref results } =
     ///             structure.iter().nth(0).unwrap()
     ///         {
-    ///             if let VerificationResult::GoodChecksum { .. } =
-    ///                 results.get(0).unwrap()
-    ///             { Ok(()) /* good */ } else { panic!() }
+    ///             results.get(0).unwrap().as_ref().unwrap();
+    ///             Ok(())
     ///         } else { panic!() }
     ///     }
     /// }
     ///
     /// let mut verifier =
-    ///     DetachedVerifier::from_bytes(&o, b"Make it so, number one!",
+    ///     DetachedVerifier::from_bytes(p, &o, b"Make it so, number one!",
     ///                                  Helper(&cert), None)?;
     ///
     /// let mut message = String::new();
@@ -379,6 +392,15 @@ impl<'a> Signer<'a> {
     /// ```
     pub fn detached(mut self) -> Self {
         self.detached = true;
+        self
+    }
+
+    /// Sets the signature's creation time to `time`.
+    ///
+    /// Note: it is up to the caller to make sure the signing keys are
+    /// actually valid as of `time`.
+    pub fn creation_time(mut self, creation_time: SystemTime) -> Self {
+        self.creation_time = Some(creation_time);
         self
     }
 
@@ -419,7 +441,8 @@ impl<'a> Signer<'a> {
                 // Make and hash a signature packet.
                 let mut sig = signature::Builder::new(SignatureType::Binary)
                     .set_signature_creation_time(
-                        std::time::SystemTime::now())?
+                        self.creation_time
+                            .unwrap_or_else(SystemTime::now))?
                     .set_issuer_fingerprint(signer.public().fingerprint())?
                     // GnuPG up to (and including) 2.2.8 requires the
                     // Issuer subpacket to be present.
@@ -583,7 +606,7 @@ impl<'a> LiteralWriter<'a> {
     }
 
     /// Sets the data format.
-    pub fn date(mut self, timestamp: time::SystemTime) -> Result<Self>
+    pub fn date(mut self, timestamp: SystemTime) -> Result<Self>
     {
         self.template.set_date(Some(timestamp))?;
         Ok(self)
@@ -890,9 +913,14 @@ impl<'a> From<&'a Key<PublicParts, UnspecifiedRole>> for Recipient<'a> {
 
 impl<'a> Recipient<'a> {
     /// Creates a new recipient with an explicit recipient keyid.
-    pub fn new(keyid: KeyID, key: &'a Key<PublicParts, UnspecifiedRole>)
-               -> Recipient<'a> {
-        Recipient { keyid, key }
+    pub fn new<P, R>(keyid: KeyID, key: &'a Key<P, R>) -> Recipient<'a>
+        where P: key::KeyParts,
+              R: key::KeyRole,
+    {
+        Recipient {
+            keyid,
+            key: key.mark_parts_public_ref().mark_role_unspecified_ref(),
+        }
     }
 
     /// Gets the KeyID.
@@ -935,15 +963,19 @@ impl<'a> Encryptor<'a> {
     /// ```
     /// use std::io::Write;
     /// extern crate sequoia_openpgp as openpgp;
+    /// use openpgp::cert::prelude::*;
     /// use openpgp::types::KeyFlags;
     /// use openpgp::serialize::stream::{
     ///     Message, Encryptor, LiteralWriter,
     /// };
+    /// use openpgp::policy::StandardPolicy;
     /// # use openpgp::Result;
     /// # use openpgp::parse::Parse;
     /// # fn main() { f().unwrap(); }
     /// # fn f() -> Result<()> {
-    /// let cert = openpgp::Cert::from_bytes(
+    /// let p = &StandardPolicy::new();
+    ///
+    /// let cert = Cert::from_bytes(
     /// #   // We do some acrobatics here to abbreviate the Cert.
     ///     "-----BEGIN PGP PUBLIC KEY BLOCK-----
     ///
@@ -983,11 +1015,10 @@ impl<'a> Encryptor<'a> {
     ///
     /// // Build a vector of recipients to hand to Encryptor.
     /// let recipient =
-    ///     cert.keys_valid()
-    ///     .key_flags(KeyFlags::default()
-    ///                .set_storage_encryption(true)
-    ///                .set_transport_encryption(true))
-    ///     .map(|(_, _, key)| key.into())
+    ///     cert.keys().with_policy(p, None).alive().revoked(false)
+    ///     // Or `for_storage_encryption()`, for data at rest.
+    ///     .for_transport_encryption()
+    ///     .map(|ka| ka.key().into())
     ///     .nth(0).unwrap();
     ///
     /// let mut o = vec![];
@@ -1082,6 +1113,8 @@ impl<'a> Encryptor<'a> {
     }
 
     /// Enables AEAD and sets the AEAD algorithm to use.
+    ///
+    /// This feature is [experimental](../../index.html#experimental-features).
     pub fn aead_algo(mut self, algo: AEADAlgorithm) -> Self {
         self.aead_algo = Some(algo);
         self
@@ -1293,6 +1326,8 @@ mod test {
     use crate::parse::{Parse, PacketParserResult, PacketParser};
     use super::*;
     use crate::types::DataFormat::Text as T;
+    use crate::policy::Policy;
+    use crate::policy::StandardPolicy as P;
 
     #[test]
     fn arbitrary() {
@@ -1459,6 +1494,7 @@ mod test {
 
     #[test]
     fn signature() {
+        let p = &P::new();
         use crate::crypto::KeyPair;
         use std::collections::HashMap;
         use crate::Fingerprint;
@@ -1468,7 +1504,8 @@ mod test {
             Cert::from_bytes(crate::tests::key("testy-private.pgp")).unwrap(),
             Cert::from_bytes(crate::tests::key("testy-new-private.pgp")).unwrap(),
         ] {
-            for key in tsk.keys_all().for_signing().map(|x| x.2)
+            for key in tsk.keys().with_policy(p, crate::frozen_time())
+                .for_signing().map(|ka| ka.key())
             {
                 keys.insert(key.fingerprint(), key.clone());
             }
@@ -1479,7 +1516,7 @@ mod test {
             let mut signers = keys.iter().map(|(_, key)| {
                 key.clone().mark_parts_secret().unwrap().into_keypair()
                     .expect("expected unencrypted secret key")
-            }).collect::<Vec<KeyPair<_>>>();
+            }).collect::<Vec<KeyPair>>();
 
             let m = Message::new(&mut o);
             let mut signer = Signer::new(m, signers.pop().unwrap());
@@ -1489,8 +1526,7 @@ mod test {
             let signer = signer.build().unwrap();
             let mut ls = LiteralWriter::new(signer).build().unwrap();
             ls.write_all(b"Tis, tis, tis.  Tis is important.").unwrap();
-            let signer = ls.finalize_one().unwrap().unwrap();
-            let _ = signer.finalize_one().unwrap().unwrap();
+            let _ = ls.finalize().unwrap();
         }
 
         let mut ppr = PacketParser::from_bytes(&o).unwrap();
@@ -1499,8 +1535,7 @@ mod test {
             if let Packet::Signature(ref sig) = pp.packet {
                 let key = keys.get(&sig.issuer_fingerprint().unwrap())
                     .unwrap();
-                let result = sig.verify(key).unwrap();
-                assert!(result);
+                sig.verify(key).unwrap();
                 good += 1;
             }
 
@@ -1599,7 +1634,7 @@ mod test {
                     // Look for the MDC packet.
                     State::MDC =>
                         if let Packet::MDC(ref mdc) = pp.packet {
-                            assert_eq!(mdc.hash(), mdc.computed_hash());
+                            assert_eq!(mdc.digest(), mdc.computed_digest());
                             State::Done
                         } else {
                             panic!("Unexpected packet: {:?}", pp.packet)
@@ -1639,7 +1674,6 @@ mod test {
 
         use std::cmp;
 
-        use crate::types::KeyFlags;
         use crate::parse::{
             stream::{
                 Decryptor,
@@ -1648,7 +1682,7 @@ mod test {
                 MessageStructure,
             },
         };
-        use crate::cert::{CertBuilder, CipherSuite};
+        use crate::cert::prelude::*;
         use crate::serialize::stream::{LiteralWriter, Message};
 
         let (tsk, _) = CertBuilder::new()
@@ -1657,6 +1691,7 @@ mod test {
             .generate().unwrap();
 
         struct Helper<'a> {
+            policy: &'a dyn Policy,
             tsk: &'a Cert,
         };
         impl<'a> VerificationHelper for Helper<'a> {
@@ -1664,27 +1699,28 @@ mod test {
                                -> Result<Vec<Cert>> {
                 Ok(Vec::new())
             }
-            fn check(&mut self, _structure: &MessageStructure) -> Result<()> {
+            fn check(&mut self, _structure: MessageStructure) -> Result<()> {
                 Ok(())
             }
         }
         impl<'a> DecryptionHelper for Helper<'a> {
             fn decrypt<D>(&mut self, pkesks: &[PKESK], _skesks: &[SKESK],
+                          sym_algo: Option<SymmetricAlgorithm>,
                           mut decrypt: D) -> Result<Option<crate::Fingerprint>>
                 where D: FnMut(SymmetricAlgorithm, &SessionKey) -> Result<()>
             {
-                let mut keypair = self.tsk.keys_all()
-                    .key_flags(
-                        KeyFlags::default()
-                            .set_transport_encryption(true))
-                    .map(|(_, _, key)| key).next().unwrap()
+                let mut keypair = self.tsk.keys().with_policy(self.policy, None)
+                    .for_transport_encryption()
+                    .map(|ka| ka.key()).next().unwrap()
                     .clone().mark_parts_secret().unwrap()
                     .into_keypair().unwrap();
-                pkesks[0].decrypt(&mut keypair)
+                pkesks[0].decrypt(&mut keypair, sym_algo)
                     .and_then(|(algo, session_key)| decrypt(algo, &session_key))
                     .map(|_| None)
             }
         }
+
+        let p = &P::new();
 
         for chunks in 0..3 {
             for msg_len in
@@ -1701,13 +1737,10 @@ mod test {
                 let mut msg = vec![];
                 {
                     let m = Message::new(&mut msg);
-                    let recipient =
-                        tsk.keys_all()
-                        .key_flags(KeyFlags::default()
-                                   .set_storage_encryption(true)
-                                   .set_transport_encryption(true))
-                        .map(|(_, _, key)| key.into())
-                        .nth(0).unwrap();
+                    let recipient = tsk
+                        .keys().with_policy(p, None)
+                        .for_storage_encryption().for_transport_encryption()
+                        .nth(0).unwrap().key().into();
                     let encryptor = Encryptor::for_recipient(m, recipient)
                         .aead_algo(AEADAlgorithm::EAX)
                         .build().unwrap();
@@ -1717,13 +1750,13 @@ mod test {
                     // literal.finalize().unwrap();
                 }
 
-                for &read_len in [
+                for &read_len in &[
                     37,
                     Encryptor::AEAD_CHUNK_SIZE - 1,
                     Encryptor::AEAD_CHUNK_SIZE,
                     100 * Encryptor::AEAD_CHUNK_SIZE
-                ].into_iter() {
-                    for &do_err in [ false, true ].into_iter() {
+                ] {
+                    for &do_err in &[ false, true ] {
                         let mut msg = msg.clone();
                         if do_err {
                             let l = msg.len() - 1;
@@ -1734,10 +1767,10 @@ mod test {
                             }
                         }
 
-                        let h = Helper { tsk: &tsk };
+                        let h = Helper { policy: p, tsk: &tsk };
                         // Note: a corrupted message is only guaranteed
                         // to error out before it returns EOF.
-                        let mut v = match Decryptor::from_bytes(&msg, h, None) {
+                        let mut v = match Decryptor::from_bytes(p, &msg, h, None) {
                             Ok(v) => v,
                             Err(_) if do_err => continue,
                             Err(err) => panic!("Decrypting message: {}", err),
@@ -1777,5 +1810,60 @@ mod test {
                 }
             }
         }
+    }
+
+    #[test]
+    fn signature_at_time() {
+        // Generates a signature with a specific Signature Creation
+        // Time.
+        use crate::cert::prelude::*;
+        use crate::serialize::stream::{LiteralWriter, Message};
+        use crate::crypto::KeyPair;
+
+        let p = &P::new();
+
+        let (cert, _) = CertBuilder::new()
+            .add_signing_subkey()
+            .set_cipher_suite(CipherSuite::Cv25519)
+            .generate().unwrap();
+
+        // What we're going to sign with.
+        let ka = cert.keys().with_policy(p, None).for_signing().nth(0).unwrap();
+
+        // A timestamp later than the key's creation.
+        let timestamp = ka.key().creation_time()
+            + std::time::Duration::from_secs(14 * 24 * 60 * 60);
+        assert!(ka.key().creation_time() < timestamp);
+
+        let mut o = vec![];
+        {
+            let signer_keypair : KeyPair =
+                ka.key().clone().mark_parts_secret().unwrap().into_keypair()
+                    .expect("expected unencrypted secret key");
+
+            let m = Message::new(&mut o);
+            let signer = Signer::new(m, signer_keypair);
+            let signer = signer.creation_time(timestamp);
+            let signer = signer.build().unwrap();
+
+            let mut ls = LiteralWriter::new(signer).build().unwrap();
+            ls.write_all(b"Tis, tis, tis.  Tis is important.").unwrap();
+            let signer = ls.finalize_one().unwrap().unwrap();
+            let _ = signer.finalize_one().unwrap().unwrap();
+        }
+
+        let mut ppr = PacketParser::from_bytes(&o).unwrap();
+        let mut good = 0;
+        while let PacketParserResult::Some(pp) = ppr {
+            if let Packet::Signature(ref sig) = pp.packet {
+                assert_eq!(sig.signature_creation_time(), Some(timestamp));
+                sig.verify(ka.key()).unwrap();
+                good += 1;
+            }
+
+            // Get the next packet.
+            ppr = pp.recurse().unwrap().1;
+        }
+        assert_eq!(good, 1);
     }
 }

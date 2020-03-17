@@ -1,6 +1,5 @@
 //! Asymmetrically encrypted session keys.
 
-use failure;
 use libc::size_t;
 
 extern crate sequoia_openpgp as openpgp;
@@ -48,7 +47,7 @@ pub extern "C" fn pgp_pkesk_decrypt(errp: Option<&mut *mut crate::error::Error>,
         .into_keypair()
     {
         Ok(mut keypair) => {
-            match pkesk.decrypt(&mut keypair) {
+            match pkesk.decrypt(&mut keypair, None /* XXX */) {
                 Ok((a, k)) => {
                     *algo = a.into();
                     if !key.is_null() && *key_len >= k.len() {
@@ -61,7 +60,7 @@ pub extern "C" fn pgp_pkesk_decrypt(errp: Option<&mut *mut crate::error::Error>,
                     *key_len = k.len();
                     Status::Success
                 },
-                Err(e) => ffi_try_status!(Err::<(), failure::Error>(e)),
+                Err(e) => ffi_try_status!(Err::<(), anyhow::Error>(e)),
             }
         },
         Err(e) => {

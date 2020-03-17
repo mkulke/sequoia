@@ -1,6 +1,5 @@
 //! Maps various errors to status codes.
 
-use failure;
 use std::io;
 use libc::c_char;
 
@@ -11,14 +10,14 @@ use crate::RefRaw;
 
 /// Complex errors.
 ///
-/// This wraps [`failure::Error`]s.
+/// This wraps [`anyhow::Error`]s.
 ///
-/// [`failure::Error`]: https://docs.rs/failure/0.1.5/failure/struct.Error.html
+/// [`anyhow::Error`]: https://docs.rs/failure/0.1.5/failure/struct.Error.html
 #[crate::ffi_wrapper_type(prefix = "pgp_", derive = "Display")]
-pub struct Error(failure::Error);
+pub struct Error(anyhow::Error);
 
-impl<T> From<failure::Fallible<T>> for Status {
-    fn from(f: failure::Fallible<T>) -> crate::error::Status {
+impl<T> From<anyhow::Result<T>> for Status {
+    fn from(f: anyhow::Result<T>) -> crate::error::Status {
         match f {
             Ok(_) =>  crate::error::Status::Success,
             Err(e) => crate::error::Status::from(&e),
@@ -26,7 +25,7 @@ impl<T> From<failure::Fallible<T>> for Status {
     }
 }
 
-impl crate::MoveResultIntoRaw<crate::error::Status> for ::failure::Fallible<()>
+impl crate::MoveResultIntoRaw<crate::error::Status> for ::anyhow::Result<()>
 {
     fn move_into_raw(self, errp: Option<&mut *mut crate::error::Error>)
                      -> crate::error::Status {
@@ -147,6 +146,21 @@ pub enum Status {
     // XXX: Skipping MissingSessionKey = -27
     // XXX: Skipping UnsupportedCompressionAlgorithm = -28
     // XXX: Skipping PacketTooLarge = -29
+
+    /// Expired.
+    Expired = -30,
+
+    /// Not yet live.
+    NotYetLive = -31,
+
+    /// No binding signature.
+    NoBindingSignature = -32,
+
+    /// Invalid key.
+    InvalidKey = -33,
+
+    /// Policy violation.
+    PolicyViolation = -34,
 }
 
 /// Returns the error message.
@@ -187,11 +201,16 @@ pub extern "C" fn pgp_status_to_string(status: Status) -> *const c_char {
         MalformedMessage => "Malformed message\x00",
         IndexOutOfRange => "Index out of range\x00",
         UnsupportedCert => "Cert not supported\x00",
+        Expired => "Expired\x00",
+        NotYetLive => "Not yet live\x00",
+        NoBindingSignature => "No binding signature\x00",
+        InvalidKey => "Invalid key\x00",
+        PolicyViolation => "Policy violation\x00",
     }.as_bytes().as_ptr() as *const c_char
 }
 
-impl<'a> From<&'a failure::Error> for Status {
-    fn from(e: &'a failure::Error) -> Self {
+impl<'a> From<&'a anyhow::Error> for Status {
+    fn from(e: &'a anyhow::Error) -> Self {
         if let Some(e) = e.downcast_ref::<openpgp::Error>() {
             return match e {
                 &openpgp::Error::InvalidArgument(_) =>
@@ -238,6 +257,17 @@ impl<'a> From<&'a failure::Error> for Status {
                     Status::IndexOutOfRange,
                 &openpgp::Error::UnsupportedCert(_) =>
                     Status::UnsupportedCert,
+                &openpgp::Error::Expired(_) =>
+                    Status::Expired,
+                &openpgp::Error::NotYetLive(_) =>
+                    Status::NotYetLive,
+                &openpgp::Error::NoBindingSignature(_) =>
+                    Status::NoBindingSignature,
+                &openpgp::Error::InvalidKey(_) =>
+                    Status::InvalidKey,
+                &openpgp::Error::PolicyViolation(_, _) =>
+                    Status::PolicyViolation,
+                openpgp::Error::__Nonexhaustive => unreachable!(),
             }
         }
 

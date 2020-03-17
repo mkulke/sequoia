@@ -20,7 +20,7 @@ use crate::utils::{
 use crate::crypto::SessionKey;
 use crate::crypto::mem::Protected;
 use crate::crypto::mpis::{MPI, PublicKey, SecretKeyMaterial, Ciphertext};
-use nettle::{cipher, curve25519, mode, Mode, ecc, ecdh, Yarrow};
+use nettle::{cipher, curve25519, mode, mode::Mode, ecc, ecdh, random::Yarrow};
 
 /// Wraps a session key using Elliptic Curve Diffie-Hellman.
 #[allow(non_snake_case)]
@@ -122,6 +122,8 @@ pub fn encrypt<R>(recipient: &Key<key::PublicParts, R>,
             // N/A
             Curve::Unknown(_) | Curve::Ed25519 =>
                 Err(Error::UnsupportedEllipticCurve(curve.clone()).into()),
+
+            Curve::__Nonexhaustive => unreachable!(),
         }
     } else {
         Err(Error::InvalidArgument("Expected an ECDHPublicKey".into()).into())

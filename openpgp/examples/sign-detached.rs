@@ -8,8 +8,10 @@ extern crate sequoia_openpgp as openpgp;
 use crate::openpgp::armor;
 use crate::openpgp::parse::Parse;
 use crate::openpgp::serialize::stream::{Message, Signer};
+use crate::openpgp::policy::StandardPolicy as P;
 
 fn main() {
+    let p = &P::new();
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         panic!("A simple filter creating a detached signature.\n\n\
@@ -24,15 +26,18 @@ fn main() {
             .expect("Failed to read key");
         let mut n = 0;
 
-        for (_, _, key) in tsk.keys_valid().for_signing().secret() {
+        for key in tsk
+            .keys().with_policy(p, None).alive().revoked(false).for_signing().secret()
+            .map(|ka| ka.key())
+        {
             keys.push({
                 let mut key = key.clone();
-                if key.secret().expect("filtered").is_encrypted() {
+                if key.secret().is_encrypted() {
                     let password = rpassword::read_password_from_tty(
                         Some(&format!("Please enter password to decrypt \
                                        {}/{}: ",tsk, key))).unwrap();
                     let algo = key.pk_algo();
-                    key.secret_mut().expect("filtered")
+                    key.secret_mut()
                         .decrypt_in_place(algo, &password.into())
                         .expect("decryption failed");
                 }
@@ -49,11 +54,11 @@ fn main() {
     // Compose a writer stack corresponding to the output format and
     // packet structure we want.  First, we want the output to be
     // ASCII armored.
-    let sink = armor::Writer::new(io::stdout(), armor::Kind::Signature, &[])
+    let mut sink = armor::Writer::new(io::stdout(), armor::Kind::Signature, &[])
         .expect("Failed to create armored writer.");
 
     // Stream an OpenPGP message.
-    let message = Message::new(sink);
+    let message = Message::new(&mut sink);
 
     // Now, create a signer that emits the detached signature(s).
     let mut signer =
@@ -70,5 +75,9 @@ fn main() {
 
     // Finally, teardown the stack to ensure all the data is written.
     signer.finalize()
+        .expect("Failed to write data");
+
+    // Finalize the armor writer.
+    sink.finalize()
         .expect("Failed to write data");
 }

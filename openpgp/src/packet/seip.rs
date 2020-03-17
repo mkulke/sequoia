@@ -5,8 +5,7 @@
 //!
 //! [Section 5.13 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.13
 
-use std::ops::{Deref, DerefMut};
-use crate::packet::{self, Common};
+use crate::packet;
 use crate::Packet;
 
 /// Holds an encrypted data packet.
@@ -15,10 +14,27 @@ use crate::Packet;
 /// 4880] for details.
 ///
 /// [Section 5.13 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.13
-#[derive(PartialEq, Eq, Hash, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct SEIP1 {
     /// CTB packet header fields.
     pub(crate) common: packet::Common,
+
+    /// This is a container packet.
+    container: packet::Container,
+}
+
+impl PartialEq for SEIP1 {
+    fn eq(&self, other: &SEIP1) -> bool {
+        self.container == other.container
+    }
+}
+
+impl Eq for SEIP1 {}
+
+impl std::hash::Hash for SEIP1 {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(&self.container, state);
+    }
 }
 
 impl SEIP1 {
@@ -26,9 +42,12 @@ impl SEIP1 {
     pub fn new() -> Self {
         Self {
             common: Default::default(),
+            container: Default::default(),
         }
     }
 }
+
+impl_container_forwards!(SEIP1);
 
 impl From<SEIP1> for super::SEIP {
     fn from(p: SEIP1) -> Self {
@@ -42,33 +61,15 @@ impl From<SEIP1> for Packet {
     }
 }
 
-// Allow transparent access of common fields.
-impl<'a> Deref for SEIP1 {
-    type Target = Common;
-
-    fn deref(&self) -> &Self::Target {
-        &self.common
-    }
-}
-
-// Allow transparent access of common fields.
-impl<'a> DerefMut for SEIP1 {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.common
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn deref() {
-        let mut s = SEIP1 {
-            common: Default::default(),
-        };
-        assert_eq!(s.body(), None);
+        let mut s = SEIP1::new();
+        assert_eq!(s.body(), &[]);
         s.set_body(vec![0, 1, 2]);
-        assert_eq!(s.body(), Some(&[0, 1, 2][..]));
+        assert_eq!(s.body(), &[0, 1, 2]);
     }
 }

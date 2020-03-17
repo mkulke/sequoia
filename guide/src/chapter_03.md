@@ -6,7 +6,7 @@ will cover some of them, starting from a high level parser, the
 down to the actual OpenPGP [`PacketParser`].
 
 [`CertParser`]: ../../sequoia_openpgp/cert/struct.CertParser.html
-[`Cert`]: ../../sequoia_openpgp/struct.Cert.html
+[`Cert`]: ../../sequoia_openpgp/cert/struct.Cert.html
 [`PacketParser`]: ../../sequoia_openpgp/parse/struct.PacketParser.html
 
 # Parsing Certs
@@ -48,14 +48,13 @@ fn main() {
 
     // Iterate over UserIDs.
     assert_eq!(cert.userids().count(), 1);
-    assert_eq!(cert.userids().nth(0).unwrap().userid(),
-               &"Ἀριστοτέλης".into());
+    assert_eq!(cert.userids().nth(0).unwrap().to_string(), "Ἀριστοτέλης");
 
     // Iterate over subkeys.
-    assert_eq!(cert.subkeys().count(), 2);
-    assert_eq!(cert.subkeys().nth(0).unwrap().key().fingerprint().to_string(),
+    assert_eq!(cert.keys().subkeys().count(), 2);
+    assert_eq!(cert.keys().subkeys().nth(0).unwrap().key().fingerprint().to_string(),
                "67A4 8753 A380 A6B3 B7DF  7DC5 E6C6 897A 4CEF 8924");
-    assert_eq!(cert.subkeys().nth(1).unwrap().key().fingerprint().to_string(),
+    assert_eq!(cert.keys().subkeys().nth(1).unwrap().key().fingerprint().to_string(),
                "185C DAA1 2723 0423 19E4  7F67 108F 2CAF 9034 356D");
 }
 ```
@@ -87,8 +86,7 @@ const MESSAGE: &str =
 fn main() {
     let message = openpgp::Message::from_bytes(MESSAGE.as_bytes()).unwrap();
 
-    assert_eq!(message.body().and_then(|literal| literal.body()),
-               Some("صداقة".as_bytes()));
+    assert_eq!(message.body().unwrap().body(), "صداقة".as_bytes());
 }
 ```
 
@@ -102,7 +100,7 @@ turned into a vector of [`Packet`]s:
 
 [`PacketPile`]: ../../sequoia_openpgp/struct.PacketPile.html
 [`Packet`]: ../../sequoia_openpgp/enum.Packet.html
-[`Cert::from_packet_pile`]: ../../sequoia_openpgp/struct.Cert.html#method.from_packet_pile
+[`Cert::from_packet_pile`]: ../../sequoia_openpgp/cert/struct.Cert.html#method.from_packet_pile
 [`Message::from_packet_pile`]: ../../sequoia_openpgp/struct.Message.html#method.from_packet_pile
 
 ```rust
@@ -137,7 +135,7 @@ fn main() {
 
     // The second packet is the literal data packet.
     if let openpgp::Packet::Literal(ref literal) = packets[1] {
-        assert_eq!(literal.body(), Some("صداقة".as_bytes()));
+        assert_eq!(literal.body(), "صداقة".as_bytes());
     } else {
         panic!("expected literal data packet");
     }

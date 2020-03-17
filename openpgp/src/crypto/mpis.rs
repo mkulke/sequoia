@@ -14,13 +14,13 @@ use crate::types::{
 };
 use crate::crypto::hash::{self, Hash};
 use crate::crypto::mem::{secure_cmp, Protected};
-use crate::serialize::Serialize;
+use crate::serialize::Marshal;
 
 use crate::Error;
 use crate::Result;
 
 /// Holds a single MPI.
-#[derive(Clone, Hash)]
+#[derive(Clone)]
 pub struct MPI {
     /// Integer value as big-endian.
     value: Box<[u8]>,
@@ -216,10 +216,16 @@ impl PartialEq for MPI {
 
 impl Eq for MPI {}
 
+impl std::hash::Hash for MPI {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.value.hash(state);
+    }
+}
+
 /// Holds a single MPI containing secrets.
 ///
 /// The memory will be cleared when the object is dropped.
-#[derive(Clone, Hash)]
+#[derive(Clone)]
 pub struct ProtectedMPI {
     /// Integer value as big-endian.
     value: Protected,
@@ -242,6 +248,12 @@ impl From<MPI> for ProtectedMPI {
         ProtectedMPI {
             value: m.value.into(),
         }
+    }
+}
+
+impl std::hash::Hash for ProtectedMPI {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.value.hash(state);
     }
 }
 
@@ -297,8 +309,8 @@ pub enum PublicKey {
         y: MPI,
     },
 
-    /// Elgamal public key.
-    Elgamal {
+    /// ElGamal public key.
+    ElGamal {
         /// Prime of the ring Zp.
         p: MPI,
         /// Generator of Zp.
@@ -323,7 +335,7 @@ pub enum PublicKey {
         q: MPI,
     },
 
-    /// Elliptic curve Elgamal public key.
+    /// Elliptic curve ElGamal public key.
     ECDH {
         /// Curve we're using.
         curve: Curve,
@@ -342,51 +354,13 @@ pub enum PublicKey {
         /// Any data that failed to parse.
         rest: Box<[u8]>,
     },
+
+    /// This marks this enum as non-exhaustive.  Do not use this
+    /// variant.
+    #[doc(hidden)] __Nonexhaustive,
 }
 
 impl PublicKey {
-    /// Number of octets all MPIs of this instance occupy when serialized.
-    pub fn serialized_len(&self) -> usize {
-        use self::PublicKey::*;
-
-        // Fields are mostly MPIs that consist of two octets length
-        // plus the big endian value itself. All other field types are
-        // commented.
-        match self {
-            &RSA { ref e, ref n } =>
-                2 + e.value.len() + 2 + n.value.len(),
-
-            &DSA { ref p, ref q, ref g, ref y } =>
-                2 + p.value.len() + 2 + q.value.len() +
-                2 + g.value.len() + 2 + y.value.len(),
-
-            &Elgamal { ref p, ref g, ref y } =>
-                2 + p.value.len() +
-                2 + g.value.len() + 2 + y.value.len(),
-
-            &EdDSA { ref curve, ref q } =>
-                2 + q.value.len() +
-                // one length octet plus the ASN.1 OID
-                1 + curve.oid().len(),
-
-            &ECDSA { ref curve, ref q } =>
-                2 + q.value.len() +
-                // one length octet plus the ASN.1 OID
-                1 + curve.oid().len(),
-
-            &ECDH { ref curve, ref q, .. } =>
-                // one length octet plus the ASN.1 OID
-                1 + curve.oid().len() +
-                2 + q.value.len() +
-                // one octet length, one reserved and two algorithm identifier.
-                4,
-
-            &Unknown { ref mpis, ref rest } =>
-                mpis.iter().map(|m| 2 + m.value.len()).sum::<usize>()
-                + rest.len(),
-        }
-    }
-
     /// Returns the length of the public key in bits.
     ///
     /// For finite field crypto this returns the size of the field we
@@ -402,11 +376,12 @@ impl PublicKey {
         match self {
             &RSA { ref n,.. } => Some(n.bits()),
             &DSA { ref p,.. } => Some(p.bits()),
-            &Elgamal { ref p,.. } => Some(p.bits()),
+            &ElGamal { ref p,.. } => Some(p.bits()),
             &EdDSA { ref curve,.. } => curve.bits(),
             &ECDSA { ref curve,.. } => curve.bits(),
             &ECDH { ref curve,.. } => curve.bits(),
             &Unknown { .. } => None,
+            __Nonexhaustive => unreachable!(),
         }
     }
 
@@ -417,11 +392,12 @@ impl PublicKey {
         match self {
             RSA { .. } => Some(PublicKeyAlgorithm::RSAEncryptSign),
             DSA { .. } => Some(PublicKeyAlgorithm::DSA),
-            Elgamal { .. } => Some(PublicKeyAlgorithm::ElgamalEncrypt),
+            ElGamal { .. } => Some(PublicKeyAlgorithm::ElGamalEncrypt),
             EdDSA { .. } => Some(PublicKeyAlgorithm::EdDSA),
             ECDSA { .. } => Some(PublicKeyAlgorithm::ECDSA),
             ECDH { .. } => Some(PublicKeyAlgorithm::ECDH),
             Unknown { .. } => None,
+            __Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -449,7 +425,7 @@ impl Arbitrary for PublicKey {
                 y: MPI::arbitrary(g),
             },
 
-            2 => Elgamal {
+            2 => ElGamal {
                 p: MPI::arbitrary(g),
                 g: MPI::arbitrary(g),
                 y: MPI::arbitrary(g),
@@ -481,6 +457,8 @@ impl Arbitrary for PublicKey {
 ///
 /// Provides a typed and structured way of storing multiple MPIs in
 /// packets.
+// Deriving Hash here is okay: PartialEq is manually implemented to
+// ensure that secrets are compared in constant-time.
 #[derive(Clone, Hash)]
 pub enum SecretKeyMaterial {
     /// RSA secret key.
@@ -501,8 +479,8 @@ pub enum SecretKeyMaterial {
         x: ProtectedMPI,
     },
 
-    /// Elgamal secret key.
-    Elgamal {
+    /// ElGamal secret key.
+    ElGamal {
         /// Secret key log_g(y) in Zp.
         x: ProtectedMPI,
     },
@@ -519,7 +497,7 @@ pub enum SecretKeyMaterial {
         scalar: ProtectedMPI,
     },
 
-    /// Elliptic curve Elgamal secret key.
+    /// Elliptic curve ElGamal secret key.
     ECDH {
         /// Secret scalar.
         scalar: ProtectedMPI,
@@ -532,6 +510,10 @@ pub enum SecretKeyMaterial {
         /// Any data that failed to parse.
         rest: Protected,
     },
+
+    /// This marks this enum as non-exhaustive.  Do not use this
+    /// variant.
+    #[doc(hidden)] __Nonexhaustive,
 }
 
 impl fmt::Debug for SecretKeyMaterial {
@@ -542,8 +524,8 @@ impl fmt::Debug for SecretKeyMaterial {
                     write!(f, "RSA {{ d: {:?}, p: {:?}, q: {:?}, u: {:?} }}", d, p, q, u),
                 &SecretKeyMaterial::DSA{ ref x } =>
                     write!(f, "DSA {{ x: {:?} }}", x),
-                &SecretKeyMaterial::Elgamal{ ref x } =>
-                    write!(f, "Elgamal {{ x: {:?} }}", x),
+                &SecretKeyMaterial::ElGamal{ ref x } =>
+                    write!(f, "ElGamal {{ x: {:?} }}", x),
                 &SecretKeyMaterial::EdDSA{ ref scalar } =>
                     write!(f, "EdDSA {{ scalar: {:?} }}", scalar),
                 &SecretKeyMaterial::ECDSA{ ref scalar } =>
@@ -552,6 +534,7 @@ impl fmt::Debug for SecretKeyMaterial {
                     write!(f, "ECDH {{ scalar: {:?} }}", scalar),
                 &SecretKeyMaterial::Unknown{ ref mpis, ref rest } =>
                     write!(f, "Unknown {{ mips: {:?}, rest: {:?} }}", mpis, rest),
+                SecretKeyMaterial::__Nonexhaustive => unreachable!(),
             }
         } else {
             match self {
@@ -559,8 +542,8 @@ impl fmt::Debug for SecretKeyMaterial {
                     f.write_str("RSA { <Redacted> }"),
                 &SecretKeyMaterial::DSA{ .. } =>
                     f.write_str("DSA { <Redacted> }"),
-                &SecretKeyMaterial::Elgamal{ .. } =>
-                    f.write_str("Elgamal { <Redacted> }"),
+                &SecretKeyMaterial::ElGamal{ .. } =>
+                    f.write_str("ElGamal { <Redacted> }"),
                 &SecretKeyMaterial::EdDSA{ .. } =>
                     f.write_str("EdDSA { <Redacted> }"),
                 &SecretKeyMaterial::ECDSA{ .. } =>
@@ -569,6 +552,7 @@ impl fmt::Debug for SecretKeyMaterial {
                     f.write_str("ECDH { <Redacted> }"),
                 &SecretKeyMaterial::Unknown{ .. } =>
                     f.write_str("Unknown { <Redacted> }"),
+                SecretKeyMaterial::__Nonexhaustive => unreachable!(),
             }
         }
     }
@@ -589,11 +573,12 @@ impl PartialOrd for SecretKeyMaterial {
             match sk {
                 &SecretKeyMaterial::RSA{ .. } => 0,
                 &SecretKeyMaterial::DSA{ .. } => 1,
-                &SecretKeyMaterial::Elgamal{ .. } => 2,
+                &SecretKeyMaterial::ElGamal{ .. } => 2,
                 &SecretKeyMaterial::EdDSA{ .. } => 3,
                 &SecretKeyMaterial::ECDSA{ .. } => 4,
                 &SecretKeyMaterial::ECDH{ .. } => 5,
                 &SecretKeyMaterial::Unknown{ .. } => 6,
+                SecretKeyMaterial::__Nonexhaustive => unreachable!(),
             }
         }
 
@@ -614,8 +599,8 @@ impl PartialOrd for SecretKeyMaterial {
             ,&SecretKeyMaterial::DSA{ x: ref x2 }) => {
                 secure_mpi_cmp(x1, x2)
             }
-            (&SecretKeyMaterial::Elgamal{ x: ref x1 }
-            ,&SecretKeyMaterial::Elgamal{ x: ref x2 }) => {
+            (&SecretKeyMaterial::ElGamal{ x: ref x1 }
+            ,&SecretKeyMaterial::ElGamal{ x: ref x2 }) => {
                 secure_mpi_cmp(x1, x2)
             }
             (&SecretKeyMaterial::EdDSA{ scalar: ref scalar1 }
@@ -669,34 +654,6 @@ impl PartialEq for SecretKeyMaterial {
 impl Eq for SecretKeyMaterial {}
 
 impl SecretKeyMaterial {
-    /// Number of octets all MPIs of this instance occupy when serialized.
-    pub fn serialized_len(&self) -> usize {
-        use self::SecretKeyMaterial::*;
-
-        // Fields are mostly MPIs that consist of two octets length
-        // plus the big endian value itself. All other field types are
-        // commented.
-        match self {
-            &RSA { ref d, ref p, ref q, ref u } =>
-                2 + d.value.len() + 2 + q.value.len() +
-                2 + p.value.len() + 2 + u.value.len(),
-
-            &DSA { ref x } => 2 + x.value.len(),
-
-            &Elgamal { ref x } => 2 + x.value.len(),
-
-            &EdDSA { ref scalar } => 2 + scalar.value.len(),
-
-            &ECDSA { ref scalar } => 2 + scalar.value.len(),
-
-            &ECDH { ref scalar } => 2 + scalar.value.len(),
-
-            &Unknown { ref mpis, ref rest } =>
-                mpis.iter().map(|m| 2 + m.value.len()).sum::<usize>()
-                + rest.len(),
-        }
-    }
-
     /// Returns, if known, the public-key algorithm for this secret
     /// key.
     pub fn algo(&self) -> Option<PublicKeyAlgorithm> {
@@ -704,11 +661,12 @@ impl SecretKeyMaterial {
         match self {
             RSA { .. } => Some(PublicKeyAlgorithm::RSAEncryptSign),
             DSA { .. } => Some(PublicKeyAlgorithm::DSA),
-            Elgamal { .. } => Some(PublicKeyAlgorithm::ElgamalEncrypt),
+            ElGamal { .. } => Some(PublicKeyAlgorithm::ElGamalEncrypt),
             EdDSA { .. } => Some(PublicKeyAlgorithm::EdDSA),
             ECDSA { .. } => Some(PublicKeyAlgorithm::ECDSA),
             ECDH { .. } => Some(PublicKeyAlgorithm::ECDH),
             Unknown { .. } => None,
+            __Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -734,7 +692,7 @@ impl Arbitrary for SecretKeyMaterial {
                 x: MPI::arbitrary(g).into(),
             },
 
-            2 => SecretKeyMaterial::Elgamal {
+            2 => SecretKeyMaterial::ElGamal {
                 x: MPI::arbitrary(g).into(),
             },
 
@@ -767,15 +725,15 @@ pub enum Ciphertext {
         c: MPI,
     },
 
-    /// Elgamal ciphertext
-    Elgamal {
+    /// ElGamal ciphertext
+    ElGamal {
         /// Ephemeral key.
         e: MPI,
         /// .
         c: MPI,
     },
 
-    /// Elliptic curve Elgamal public key.
+    /// Elliptic curve ElGamal public key.
     ECDH {
         /// Ephemeral key.
         e: MPI,
@@ -790,34 +748,13 @@ pub enum Ciphertext {
         /// Any data that failed to parse.
         rest: Box<[u8]>,
     },
+
+    /// This marks this enum as non-exhaustive.  Do not use this
+    /// variant.
+    #[doc(hidden)] __Nonexhaustive,
 }
 
 impl Ciphertext {
-    /// Number of octets all MPIs of this instance occupy when serialized.
-    pub fn serialized_len(&self) -> usize {
-        use self::Ciphertext::*;
-
-        // Fields are mostly MPIs that consist of two octets length
-        // plus the big endian value itself. All other field types are
-        // commented.
-        match self {
-            &RSA { ref c } =>
-                2 + c.value.len(),
-
-            &Elgamal { ref e, ref c } =>
-                2 + e.value.len() + 2 + c.value.len(),
-
-            &ECDH { ref e, ref key } =>
-                2 + e.value.len() +
-                // one length octet plus ephemeral key
-                1 + key.len(),
-
-            &Unknown { ref mpis, ref rest } =>
-                mpis.iter().map(|m| 2 + m.value.len()).sum::<usize>()
-                + rest.len(),
-        }
-    }
-
     /// Returns, if known, the public-key algorithm for this
     /// ciphertext.
     pub fn pk_algo(&self) -> Option<PublicKeyAlgorithm> {
@@ -828,9 +765,10 @@ impl Ciphertext {
         // commented.
         match self {
             &RSA { .. } => Some(PublicKeyAlgorithm::RSAEncryptSign),
-            &Elgamal { .. } => Some(PublicKeyAlgorithm::ElgamalEncrypt),
+            &ElGamal { .. } => Some(PublicKeyAlgorithm::ElGamalEncrypt),
             &ECDH { .. } => Some(PublicKeyAlgorithm::ECDH),
             &Unknown { .. } => None,
+            __Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -849,7 +787,7 @@ impl Arbitrary for Ciphertext {
                 c: MPI::arbitrary(g),
             },
 
-            1 => Ciphertext::Elgamal {
+            1 => Ciphertext::ElGamal {
                 e: MPI::arbitrary(g),
                 c: MPI::arbitrary(g)
             },
@@ -883,8 +821,8 @@ pub enum Signature {
         s: MPI,
     },
 
-    /// Elgamal signature.
-    Elgamal {
+    /// ElGamal signature.
+    ElGamal {
         /// `r` value.
         r: MPI,
         /// `s` value.
@@ -914,37 +852,10 @@ pub enum Signature {
         /// Any data that failed to parse.
         rest: Box<[u8]>,
     },
-}
 
-impl Signature {
-    /// Number of octets all MPIs of this instance occupy when serialized.
-    pub fn serialized_len(&self) -> usize {
-        use self::Signature::*;
-
-        // Fields are mostly MPIs that consist of two octets length
-        // plus the big endian value itself. All other field types are
-        // commented.
-        match self {
-            &RSA { ref s } =>
-                2 + s.value.len(),
-
-            &DSA { ref r, ref s } =>
-                2 + r.value.len() + 2 + s.value.len(),
-
-            &Elgamal { ref r, ref s } =>
-                2 + r.value.len() + 2 + s.value.len(),
-
-            &EdDSA { ref r, ref s } =>
-                2 + r.value.len() + 2 + s.value.len(),
-
-            &ECDSA { ref r, ref s } =>
-                2 + r.value.len() + 2 + s.value.len(),
-
-            &Unknown { ref mpis, ref rest } =>
-                mpis.iter().map(|m| 2 + m.value.len()).sum::<usize>()
-                + rest.len(),
-        }
-    }
+    /// This marks this enum as non-exhaustive.  Do not use this
+    /// variant.
+    #[doc(hidden)] __Nonexhaustive,
 }
 
 impl Hash for Signature {
@@ -985,7 +896,6 @@ impl Arbitrary for Signature {
 mod tests {
     use super::*;
     use crate::parse::Parse;
-    use crate::serialize::Serialize;
 
     quickcheck! {
         fn mpi_roundtrip(mpi: MPI) -> bool {
@@ -999,7 +909,6 @@ mod tests {
         fn pk_roundtrip(pk: PublicKey) -> bool {
             use std::io::Cursor;
             use crate::PublicKeyAlgorithm::*;
-            use crate::serialize::Serialize;
 
             let buf = Vec::<u8>::default();
             let mut cur = Cursor::new(buf);
@@ -1014,9 +923,9 @@ mod tests {
                 PublicKey::DSA { .. } =>
                     PublicKey::parse(
                         DSA, cur.into_inner()).unwrap(),
-                PublicKey::Elgamal { .. } =>
+                PublicKey::ElGamal { .. } =>
                     PublicKey::parse(
-                        ElgamalEncrypt, cur.into_inner()).unwrap(),
+                        ElGamalEncrypt, cur.into_inner()).unwrap(),
                 PublicKey::EdDSA { .. } =>
                     PublicKey::parse(
                         EdDSA, cur.into_inner()).unwrap(),
@@ -1028,6 +937,7 @@ mod tests {
                         ECDH, cur.into_inner()).unwrap(),
 
                 PublicKey::Unknown { .. } => unreachable!(),
+                PublicKey::__Nonexhaustive => unreachable!(),
             };
 
             pk == pk_
@@ -1047,8 +957,8 @@ mod tests {
             ("erika-corinna-daniela-simone-antonia-nistp521.pgp", 0, 521),
         ] {
             let cert = crate::Cert::from_bytes(crate::tests::key(name)).unwrap();
-            let key = cert.keys_all().nth(*key_no).unwrap().2;
-            assert_eq!(key.mpis().bits().unwrap(), *bits,
+            let ka = cert.keys().nth(*key_no).unwrap();
+            assert_eq!(ka.key().mpis().bits().unwrap(), *bits,
                        "Cert {}, key no {}", name, *key_no);
         }
     }
@@ -1057,7 +967,6 @@ mod tests {
         fn sk_roundtrip(sk: SecretKeyMaterial) -> bool {
             use std::io::Cursor;
             use crate::PublicKeyAlgorithm::*;
-            use crate::serialize::Serialize;
 
             let buf = Vec::<u8>::default();
             let mut cur = Cursor::new(buf);
@@ -1081,11 +990,12 @@ mod tests {
                 SecretKeyMaterial::ECDH { .. } =>
                     SecretKeyMaterial::parse(
                         ECDH, cur.into_inner()).unwrap(),
-                SecretKeyMaterial::Elgamal { .. } =>
+                SecretKeyMaterial::ElGamal { .. } =>
                     SecretKeyMaterial::parse(
-                        ElgamalEncrypt, cur.into_inner()).unwrap(),
+                        ElGamalEncrypt, cur.into_inner()).unwrap(),
 
                 SecretKeyMaterial::Unknown { .. } => unreachable!(),
+                SecretKeyMaterial::__Nonexhaustive => unreachable!(),
             };
 
             sk == sk_
@@ -1096,7 +1006,6 @@ mod tests {
         fn ct_roundtrip(ct: Ciphertext) -> bool {
             use std::io::Cursor;
             use crate::PublicKeyAlgorithm::*;
-            use crate::serialize::Serialize;
 
             let buf = Vec::<u8>::default();
             let mut cur = Cursor::new(buf);
@@ -1108,14 +1017,15 @@ mod tests {
                 Ciphertext::RSA { .. } =>
                     Ciphertext::parse(
                         RSAEncryptSign, cur.into_inner()).unwrap(),
-                Ciphertext::Elgamal { .. } =>
+                Ciphertext::ElGamal { .. } =>
                     Ciphertext::parse(
-                        ElgamalEncrypt, cur.into_inner()).unwrap(),
+                        ElGamalEncrypt, cur.into_inner()).unwrap(),
                 Ciphertext::ECDH { .. } =>
                     Ciphertext::parse(
                         ECDH, cur.into_inner()).unwrap(),
 
                 Ciphertext::Unknown { .. } => unreachable!(),
+                Ciphertext::__Nonexhaustive => unreachable!(),
             };
 
             ct == ct_
@@ -1126,7 +1036,6 @@ mod tests {
         fn signature_roundtrip(sig: Signature) -> bool {
             use std::io::Cursor;
             use crate::PublicKeyAlgorithm::*;
-            use crate::serialize::Serialize;
 
             let buf = Vec::<u8>::default();
             let mut cur = Cursor::new(buf);
@@ -1141,9 +1050,9 @@ mod tests {
                 Signature::DSA { .. } =>
                     Signature::parse(
                         DSA, cur.into_inner()).unwrap(),
-                Signature::Elgamal { .. } =>
+                Signature::ElGamal { .. } =>
                     Signature::parse(
-                        ElgamalEncryptSign, cur.into_inner()).unwrap(),
+                        ElGamalEncryptSign, cur.into_inner()).unwrap(),
                 Signature::EdDSA { .. } =>
                     Signature::parse(
                         EdDSA, cur.into_inner()).unwrap(),
@@ -1152,6 +1061,7 @@ mod tests {
                         ECDSA, cur.into_inner()).unwrap(),
 
                 Signature::Unknown { .. } => unreachable!(),
+                Signature::__Nonexhaustive => unreachable!(),
             };
 
             sig == sig_

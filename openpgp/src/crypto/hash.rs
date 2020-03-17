@@ -14,9 +14,6 @@ use crate::Error;
 use crate::Result;
 use crate::types::Timestamp;
 
-use nettle;
-use nettle::Hash as NettleHash;
-
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 
@@ -28,7 +25,7 @@ const DUMP_HASHED_VALUES: Option<&str> = None;
 #[derive(Clone)]
 pub struct Context {
     algo: HashAlgorithm,
-    ctx: Box<dyn nettle::Hash>,
+    ctx: Box<dyn nettle::hash::Hash>,
 }
 
 impl Context {
@@ -79,10 +76,11 @@ impl HashAlgorithm {
             HashAlgorithm::SHA256 => true,
             HashAlgorithm::SHA384 => true,
             HashAlgorithm::SHA512 => true,
-            HashAlgorithm::RipeMD => false,
-            HashAlgorithm::MD5 => false,
+            HashAlgorithm::RipeMD => true,
+            HashAlgorithm::MD5 => true,
             HashAlgorithm::Private(_) => false,
             HashAlgorithm::Unknown(_) => false,
+            HashAlgorithm::__Nonexhaustive => unreachable!(),
         }
     }
 
@@ -96,23 +94,28 @@ impl HashAlgorithm {
     ///
     ///   [`HashAlgorithm::is_supported`]: #method.is_supported
     pub fn context(self) -> Result<Context> {
-        use nettle::hash::*;
-        use nettle::hash::insecure_do_not_use::Sha1;
+        use nettle::hash::{Sha224, Sha256, Sha384, Sha512};
+        use nettle::hash::insecure_do_not_use::{
+            Sha1,
+            Md5,
+            Ripemd160,
+        };
 
-        let c: Result<Box<dyn nettle::Hash>> = match self {
+        let c: Result<Box<dyn nettle::hash::Hash>> = match self {
             HashAlgorithm::SHA1 => Ok(Box::new(Sha1::default())),
             HashAlgorithm::SHA224 => Ok(Box::new(Sha224::default())),
             HashAlgorithm::SHA256 => Ok(Box::new(Sha256::default())),
             HashAlgorithm::SHA384 => Ok(Box::new(Sha384::default())),
             HashAlgorithm::SHA512 => Ok(Box::new(Sha512::default())),
-            HashAlgorithm::MD5 | HashAlgorithm::RipeMD =>
-                Err(Error::UnsupportedHashAlgorithm(self).into()),
+            HashAlgorithm::MD5 => Ok(Box::new(Md5::default())),
+            HashAlgorithm::RipeMD => Ok(Box::new(Ripemd160::default())),
             HashAlgorithm::Private(_) | HashAlgorithm::Unknown(_) =>
                 Err(Error::UnsupportedHashAlgorithm(self).into()),
+            HashAlgorithm::__Nonexhaustive => unreachable!(),
         };
 
         if let Some(prefix) = DUMP_HASHED_VALUES {
-            c.map(|c: Box<dyn nettle::Hash>| {
+            c.map(|c: Box<dyn nettle::hash::Hash>| {
                 Context {
                     algo: self,
                     ctx: Box::new(HashDumper::new(c, prefix)),
@@ -133,23 +136,24 @@ impl HashAlgorithm {
             HashAlgorithm::SHA256 => Ok(rsa::ASN1_OID_SHA256),
             HashAlgorithm::SHA384 => Ok(rsa::ASN1_OID_SHA384),
             HashAlgorithm::SHA512 => Ok(rsa::ASN1_OID_SHA512),
-            HashAlgorithm::MD5 | HashAlgorithm::RipeMD =>
-                Err(Error::UnsupportedHashAlgorithm(self.into()).into()),
+            HashAlgorithm::MD5 => Ok(rsa::ASN1_OID_MD5),
+            HashAlgorithm::RipeMD => Ok(rsa::ASN1_OID_RIPEMD160),
             HashAlgorithm::Private(_) | HashAlgorithm::Unknown(_) =>
                 Err(Error::UnsupportedHashAlgorithm(self).into()),
+            HashAlgorithm::__Nonexhaustive => unreachable!(),
         }
     }
 }
 
 struct HashDumper {
-    h: Box<dyn nettle::Hash>,
+    h: Box<dyn nettle::hash::Hash>,
     sink: File,
     filename: String,
     written: usize,
 }
 
 impl HashDumper {
-    fn new(h: Box<dyn nettle::Hash>, prefix: &str) -> Self {
+    fn new(h: Box<dyn nettle::hash::Hash>, prefix: &str) -> Self {
         let mut n = 0;
         let mut filename;
         let sink = loop {
@@ -178,7 +182,7 @@ impl Drop for HashDumper {
     }
 }
 
-impl nettle::Hash for HashDumper {
+impl nettle::hash::Hash for HashDumper {
     fn digest_size(&self) -> usize {
         self.h.digest_size()
     }
@@ -190,7 +194,7 @@ impl nettle::Hash for HashDumper {
     fn digest(&mut self, digest: &mut [u8]) {
         self.h.digest(digest);
     }
-    fn box_clone(&self) -> Box<dyn nettle::Hash> {
+    fn box_clone(&self) -> Box<dyn nettle::hash::Hash> {
         Box::new(Self::new(self.h.box_clone(), &DUMP_HASHED_VALUES.unwrap()))
     }
 }
@@ -241,6 +245,8 @@ impl<P, R> Hash for Key4<P, R>
 {
     /// Update the Hash with a hash of the key.
     fn hash(&self, hash: &mut Context) {
+        use crate::serialize::MarshalInto;
+
         // We hash 8 bytes plus the MPIs.  But, the len doesn't
         // include the tag (1 byte) or the length (2 bytes).
         let len = (9 - 3) + self.mpis().serialized_len();
@@ -282,6 +288,7 @@ impl Hash for Signature {
     fn hash(&self, hash: &mut Context) {
         match self {
             Signature::V4(sig) => sig.hash(hash),
+            Signature::__Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -296,6 +303,13 @@ impl Hash for Signature4 {
 impl Hash for signature::Builder {
     /// Adds the `Signature` to the provided hash context.
     fn hash(&self, hash: &mut Context) {
+        use crate::serialize::MarshalInto;
+
+        // XXX: Annoyingly, we have no proper way of handling errors
+        // here.
+        let hashed_area = self.hashed_area().to_vec()
+            .unwrap_or_else(|_| Vec::new());
+
         // A version 4 signature packet is laid out as follows:
         //
         //   version - 1 byte                    \
@@ -315,13 +329,12 @@ impl Hash for signature::Builder {
         header[3] = self.hash_algo().into();
 
         // The length of the hashed area, as a 16-bit endian number.
-        let len = self.hashed_area().data.len();
+        let len = hashed_area.len();
         header[4] = (len >> 8) as u8;
         header[5] = len as u8;
 
         hash.update(&header[..]);
-
-        hash.update(&self.hashed_area().data[..]);
+        hash.update(&hashed_area);
 
         // A version 4 signature trailer is:
         //
@@ -340,7 +353,7 @@ impl Hash for signature::Builder {
         trailer[1] = 0xff;
         // The signature packet's length, not including the previous
         // two bytes and the length.
-        let len = header.len() + self.hashed_area().data.len();
+        let len = header.len() + hashed_area.len();
         trailer[2] = (len >> 24) as u8;
         trailer[3] = (len >> 16) as u8;
         trailer[4] = (len >> 8) as u8;
@@ -353,7 +366,7 @@ impl Hash for signature::Builder {
 /// Hashing-related functionality.
 impl Signature {
     /// Computes the message digest of standalone signatures.
-    pub fn standalone_hash<'a, S>(sig: S) -> Result<Vec<u8>>
+    pub fn hash_standalone<'a, S>(sig: S) -> Result<Vec<u8>>
         where S: Into<&'a signature::Builder>
     {
         let sig = sig.into();
@@ -367,17 +380,18 @@ impl Signature {
     }
 
     /// Computes the message digest of timestamp signatures.
-    pub fn timestamp_hash<'a, S>(sig: S) -> Result<Vec<u8>>
+    pub fn hash_timestamp<'a, S>(sig: S) -> Result<Vec<u8>>
         where S: Into<&'a signature::Builder>
     {
-        Self::standalone_hash(sig)
+        Self::hash_standalone(sig)
     }
 
-    /// Returns the message digest of the primary key binding over the
-    /// specified primary key.
-    pub fn primary_key_binding_hash<'a, S>(sig: S, key: &key::PublicKey)
+    /// Returns the message digest of the direct key signature over
+    /// the specified primary key.
+    pub fn hash_direct_key<'a, P, S>(sig: S, key: &Key<P, key::PrimaryRole>)
         -> Result<Vec<u8>>
-        where S: Into<&'a signature::Builder>
+        where P: key::KeyParts,
+              S: Into<&'a signature::Builder>,
     {
 
         let sig = sig.into();
@@ -393,11 +407,13 @@ impl Signature {
 
     /// Returns the message digest of the subkey binding over the
     /// specified primary key and subkey.
-    pub fn subkey_binding_hash<'a, P, S>(sig: S,
-                                         key: &key::PublicKey,
-                                         subkey: &Key<P, key::SubordinateRole>)
+    pub fn hash_subkey_binding<'a, P, Q, S>(
+        sig: S,
+        key: &Key<P, key::PrimaryRole>,
+        subkey: &Key<Q, key::SubordinateRole>)
         -> Result<Vec<u8>>
         where P: key::KeyParts,
+              Q: key::KeyParts,
               S: Into<&'a signature::Builder>
     {
 
@@ -413,13 +429,28 @@ impl Signature {
         Ok(digest)
     }
 
+    /// Returns the message digest of the primary key binding over the
+    /// specified primary key and subkey.
+    pub fn hash_primary_key_binding<'a, P, Q, S>(
+        sig: S,
+        key: &Key<P, key::PrimaryRole>,
+        subkey: &Key<Q, key::SubordinateRole>)
+        -> Result<Vec<u8>>
+        where P: key::KeyParts,
+              Q: key::KeyParts,
+              S: Into<&'a signature::Builder>
+    {
+        Self::hash_subkey_binding(sig.into(), key, subkey)
+    }
+
     /// Returns the message digest of the user ID binding over the
     /// specified primary key, user ID, and signature.
-    pub fn userid_binding_hash<'a, S>(sig: S,
-                                      key: &key::PublicKey,
-                                      userid: &UserID)
+    pub fn hash_userid_binding<'a, P, S>(sig: S,
+                                         key: &Key<P, key::PrimaryRole>,
+                                         userid: &UserID)
         -> Result<Vec<u8>>
-        where S: Into<&'a signature::Builder>
+        where P: key::KeyParts,
+              S: Into<&'a signature::Builder>
     {
         let sig = sig.into();
         let mut h = sig.hash_algo().context()?;
@@ -435,11 +466,13 @@ impl Signature {
 
     /// Returns the message digest of the user attribute binding over
     /// the specified primary key, user attribute, and signature.
-    pub fn user_attribute_binding_hash<'a, S>(sig: S,
-                                              key: &key::PublicKey,
-                                              ua: &UserAttribute)
+    pub fn hash_user_attribute_binding<'a, P, S>(
+        sig: S,
+        key: &Key<P, key::PrimaryRole>,
+        ua: &UserAttribute)
         -> Result<Vec<u8>>
-        where S: Into<&'a signature::Builder>
+        where P: key::KeyParts,
+              S: Into<&'a signature::Builder>,
     {
 
         let sig = sig.into();
@@ -467,48 +500,49 @@ mod test {
             let mut userid_sigs = 0;
             for (i, binding) in cert.userids().enumerate() {
                 for selfsig in binding.self_signatures() {
-                    let h = Signature::userid_binding_hash(
+                    let h = Signature::hash_userid_binding(
                         selfsig,
-                        cert.primary(),
+                        cert.primary_key().key(),
                         binding.userid()).unwrap();
-                    if &h[..2] != selfsig.hash_prefix() {
+                    if &h[..2] != selfsig.digest_prefix() {
                         eprintln!("{:?}: {:?} / {:?}",
                                   i, binding.userid(), selfsig);
                         eprintln!("  Hash: {:?}", h);
                     }
-                    assert_eq!(&h[..2], selfsig.hash_prefix());
+                    assert_eq!(&h[..2], selfsig.digest_prefix());
                     userid_sigs += 1;
                 }
             }
             let mut ua_sigs = 0;
-            for (i, binding) in cert.user_attributes().enumerate() {
-                for selfsig in binding.self_signatures() {
-                    let h = Signature::user_attribute_binding_hash(
+            for (i, a) in cert.user_attributes().enumerate()
+            {
+                for selfsig in a.self_signatures() {
+                    let h = Signature::hash_user_attribute_binding(
                         selfsig,
-                        cert.primary(),
-                        binding.user_attribute()).unwrap();
-                    if &h[..2] != selfsig.hash_prefix() {
+                        cert.primary_key().key(),
+                        a.user_attribute()).unwrap();
+                    if &h[..2] != selfsig.digest_prefix() {
                         eprintln!("{:?}: {:?} / {:?}",
-                                  i, binding.user_attribute(), selfsig);
+                                  i, a.user_attribute(), selfsig);
                         eprintln!("  Hash: {:?}", h);
                     }
-                    assert_eq!(&h[..2], selfsig.hash_prefix());
+                    assert_eq!(&h[..2], selfsig.digest_prefix());
                     ua_sigs += 1;
                 }
             }
             let mut subkey_sigs = 0;
             for (i, binding) in cert.subkeys().enumerate() {
                 for selfsig in binding.self_signatures() {
-                    let h = Signature::subkey_binding_hash(
+                    let h = Signature::hash_subkey_binding(
                         selfsig,
-                        cert.primary(),
+                        cert.primary_key().key(),
                         binding.key()).unwrap();
-                    if &h[..2] != selfsig.hash_prefix() {
+                    if &h[..2] != selfsig.digest_prefix() {
                         eprintln!("{:?}: {:?}", i, binding);
                         eprintln!("  Hash: {:?}", h);
                     }
-                    assert_eq!(h[0], selfsig.hash_prefix()[0]);
-                    assert_eq!(h[1], selfsig.hash_prefix()[1]);
+                    assert_eq!(h[0], selfsig.digest_prefix()[0]);
+                    assert_eq!(h[1], selfsig.digest_prefix()[1]);
                     subkey_sigs += 1;
                 }
             }
@@ -516,6 +550,9 @@ mod test {
             (userid_sigs, ua_sigs, subkey_sigs)
         }
 
+        check(Cert::from_bytes(crate::tests::key("hash-algos/MD5.gpg")).unwrap());
+        check(Cert::from_bytes(crate::tests::key("hash-algos/RipeMD160.gpg")).unwrap());
+        check(Cert::from_bytes(crate::tests::key("hash-algos/SHA1.gpg")).unwrap());
         check(Cert::from_bytes(crate::tests::key("hash-algos/SHA224.gpg")).unwrap());
         check(Cert::from_bytes(crate::tests::key("hash-algos/SHA256.gpg")).unwrap());
         check(Cert::from_bytes(crate::tests::key("hash-algos/SHA384.gpg")).unwrap());

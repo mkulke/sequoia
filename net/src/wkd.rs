@@ -8,7 +8,7 @@
 //! See the [get example].
 //!
 //! [draft-koch]: https://datatracker.ietf.org/doc/html/draft-koch-openpgp-webkey-service/#section-3.1
-//! [get example]: get#example
+//! [get example]: fn.get.html#example
 //!
 
 
@@ -22,16 +22,10 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use failure::ResultExt;
+use anyhow::Context;
 use futures::{future, Future, Stream};
 use hyper::{Uri, Client};
 use hyper_tls::HttpsConnector;
-// Hash implements the traits for Sha1
-// Sha1 is used to obtain a 20 bytes digest that after zbase32 encoding can
-// be used as file name
-use nettle::{
-    Hash, hash::insecure_do_not_use::Sha1,
-};
 use url;
 
 use crate::openpgp::{
@@ -39,8 +33,9 @@ use crate::openpgp::{
     Cert,
 };
 use crate::openpgp::parse::Parse;
-use crate::openpgp::serialize::Serialize;
-use crate::openpgp::cert::CertParser;
+use crate::openpgp::serialize::Marshal;
+use crate::openpgp::types::HashAlgorithm;
+use crate::openpgp::cert::prelude::*;
 
 use super::{Result, Error};
 
@@ -178,20 +173,7 @@ impl Url {
         // Create the directories string.
         let variant = variant.into().unwrap_or_default();
         let url = self.to_url(variant)?;
-        // Can not create path_buf as:
-        // let path_buf: PathBuf = [url.domain().unwrap(), url.path()]
-        //    .iter().collect();
-        // or:
-        // let mut path_buf = PathBuf::new();
-        // path_buf.push(url.domain().unwrap());
-        // path_buf.push(url.path());
-        // Because the domain part will disappear, dunno why.
-        // url.to_file_path() would not create the directory with the domain,
-        // but expect the hostname to match the domain.
-        // Ignore the query part of the url, take only the domain and path.
-        let string = format!("{}{}", url.domain().unwrap(), url.path());
-        let path_buf = PathBuf::from(string);
-        Ok(path_buf)
+        Ok(PathBuf::from(url.path()).strip_prefix("/")?.into())
     }
 }
 
@@ -204,13 +186,15 @@ impl Url {
 ///     described in [RFC6189], section 5.1.6. The resulting string has a
 ///     fixed length of 32 octets.
 fn encode_local_part<S: AsRef<str>>(local_part: S) -> String {
-    let mut hasher = Sha1::default();
-    hasher.update(local_part.as_ref().as_bytes());
-    // Declare and assign a 20 bytes length vector to use in hasher.result
-    let mut local_hash = vec![0; 20];
-    hasher.digest(&mut local_hash);
+    let local_part = local_part.as_ref();
+
+    let mut digest = vec![0; 20];
+    let mut ctx = HashAlgorithm::SHA1.context().expect("must be implemented");
+    ctx.update(local_part.as_bytes());
+    ctx.digest(&mut digest);
+
     // After z-base-32 encoding 20 bytes, it will be 32 bytes long.
-    zbase32::encode_full_bytes(&local_hash[..])
+    zbase32::encode_full_bytes(&digest[..])
 }
 
 
@@ -255,8 +239,6 @@ fn parse_body<S: AsRef<str>>(body: &[u8], email_address: S)
 /// Retrieves the Certs that contain userids with a given email address
 /// from a Web Key Directory URL.
 ///
-/// This function is call by [net::wkd::get](../../wkd/fn.get.html).
-///
 /// From [draft-koch]:
 ///
 /// ```text
@@ -296,7 +278,7 @@ fn parse_body<S: AsRef<str>>(body: &[u8], email_address: S)
 // XXX: Maybe the direct method should be tried on other errors too.
 // https://mailarchive.ietf.org/arch/msg/openpgp/6TxZc2dQFLKXtS0Hzmrk963EteE
 pub fn get<S: AsRef<str>>(email_address: S)
-                          -> impl Future<Item=Vec<Cert>, Error=failure::Error> {
+                          -> impl Future<Item=Vec<Cert>, Error=anyhow::Error> {
     let email = email_address.as_ref().to_string();
     future::lazy(move || -> Result<_> {
         // First, prepare URIs and client.
@@ -369,6 +351,7 @@ pub fn insert<P, S, V>(base_path: P, domain: S, variant: V,
     }
 
     // Finally, create the files.
+    let mut well_known = None;
     for address in addresses.into_iter() {
         let path = base_path.join(address.to_file_path(variant)?);
         fs::create_dir_all(path.parent().expect("by construction"))?;
@@ -384,6 +367,20 @@ pub fn insert<P, S, V>(base_path: P, domain: S, variant: V,
         keyring.insert(cert.clone())?;
         let mut file = fs::File::create(&path)?;
         keyring.export(&mut file)?;
+
+        // Keep track of the WELL_KNOWN base path.
+        well_known = Some(path
+                          .parent().expect("by construction")
+                          .parent().expect("by construction")
+                          .to_path_buf());
+    }
+
+    // Create policy file if it does not exist.
+    match std::fs::OpenOptions::new().write(true).create_new(true)
+        .open(well_known.expect("at least one address").join("policy"))
+    {
+        Err(ref e) if e.kind() == std::io::ErrorKind::AlreadyExists => (),
+        r @ _ => drop(r?),
     }
 
     Ok(())
@@ -409,15 +406,17 @@ impl KeyRing {
     }
 }
 
-impl Serialize for KeyRing {
-    fn serialize(&self, o: &mut dyn std::io::Write) -> Result<()> {
+impl crate::openpgp::serialize::Serialize for KeyRing {}
+
+impl Marshal for KeyRing {
+    fn serialize(&self, o: &mut dyn std::io::Write) -> openpgp::Result<()> {
         for cert in self.0.values() {
             cert.serialize(o)?;
         }
         Ok(())
     }
 
-    fn export(&self, o: &mut dyn std::io::Write) -> Result<()> {
+    fn export(&self, o: &mut dyn std::io::Write) -> openpgp::Result<()> {
         for cert in self.0.values() {
             cert.export(o)?;
         }
@@ -428,9 +427,6 @@ impl Serialize for KeyRing {
 
 #[cfg(test)]
 mod tests {
-    use crate::openpgp::serialize::Serialize;
-    use crate::openpgp::cert::CertBuilder;
-
     use super::*;
     use self::Variant::*;
 
@@ -480,8 +476,7 @@ mod tests {
     fn url_to_file_path() {
         // Advanced method
         let expected_path =
-            "openpgpkey.example.com/\
-             .well-known/openpgpkey/example.com/hu/\
+            ".well-known/openpgpkey/example.com/hu/\
              stnkabub89rpcphiz4ppbxixkwyt1pic";
         let wkd_url = Url::from("test1@example.com").unwrap();
         assert_eq!(expected_path,
@@ -489,8 +484,7 @@ mod tests {
 
         // Direct method
         let expected_path =
-            "example.com/\
-             .well-known/openpgpkey/hu/\
+            ".well-known/openpgpkey/hu/\
              stnkabub89rpcphiz4ppbxixkwyt1pic";
         assert_eq!(expected_path,
             wkd_url.to_file_path(Direct).unwrap().to_str().unwrap());
@@ -540,21 +534,18 @@ mod tests {
 
         // justus and juga files will be generated, but not test one.
         let path = dir_path.join(
-            "openpgpkey.sequoia-pgp.org/\
-             .well-known/openpgpkey/sequoia-pgp.org/hu\
+            ".well-known/openpgpkey/sequoia-pgp.org/hu\
              /jwp7xjqkdujgz5op6bpsoypg34pnrgmq");
         // Check that justus file was created
         assert!(path.is_file());
         let path = dir_path.join(
-            "openpgpkey.sequoia-pgp.org/\
-             .well-known/openpgpkey/sequoia-pgp.org/hu\
+            ".well-known/openpgpkey/sequoia-pgp.org/hu\
              /7t1uqk9cwh1955776rc4z1gqf388566j");
         // Check that juga file was created.
         assert!(path.is_file());
         // Check that the file for test uid is not created.
         let path = dir_path.join(
-            "openpgpkey.example.com/\
-             .well-known/openpgpkey/example.com/hu/\
+            ".well-known/openpgpkey/example.com/hu/\
              stnkabub89rpcphiz4ppbxixkwyt1pic");
         assert!(!path.is_file());
     }

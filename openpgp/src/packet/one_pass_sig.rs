@@ -5,6 +5,7 @@
 //!   [Section 5.4 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.4
 
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use quickcheck::{Arbitrary, Gen};
 
 use crate::Error;
@@ -16,14 +17,13 @@ use crate::KeyID;
 use crate::HashAlgorithm;
 use crate::PublicKeyAlgorithm;
 use crate::SignatureType;
-use crate::serialize::SerializeInto;
 
 /// Holds a one-pass signature packet.
 ///
 /// See [Section 5.4 of RFC 4880] for details.
 ///
 ///   [Section 5.4 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.4
-#[derive(Eq, Hash, Clone)]
+#[derive(Clone)]
 pub struct OnePassSig3 {
     /// CTB packet header fields.
     pub(crate) common: packet::Common,
@@ -54,14 +54,23 @@ impl fmt::Debug for OnePassSig3 {
 
 impl PartialEq for OnePassSig3 {
     fn eq(&self, other: &OnePassSig3) -> bool {
-        // Comparing the relevant fields is error prone in case we add
-        // a field at some point.  Instead, we compare the serialized
-        // versions.
-        if let (Ok(a), Ok(b)) = (self.to_vec(), other.to_vec()) {
-            a == b
-        } else {
-            false
-        }
+        self.typ == other.typ
+            && self.hash_algo == other.hash_algo
+            && self.pk_algo == other.pk_algo
+            && self.issuer == other.issuer
+            && self.last == other.last
+    }
+}
+
+impl Eq for OnePassSig3 {}
+
+impl Hash for OnePassSig3 {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.typ.hash(state);
+        self.hash_algo.hash(state);
+        self.pk_algo.hash(state);
+        self.issuer.hash(state);
+        self.last.hash(state);
     }
 }
 
@@ -152,11 +161,11 @@ impl From<OnePassSig3> for Packet {
 }
 
 impl<'a> std::convert::TryFrom<&'a Signature> for OnePassSig3 {
-    type Error = failure::Error;
+    type Error = anyhow::Error;
 
     fn try_from(s: &'a Signature) -> Result<Self> {
         let issuer = match s.issuer() {
-            Some(i) => i,
+            Some(i) => i.clone(),
             None =>
                 return Err(Error::InvalidArgument(
                     "Signature has no issuer".into()).into()),
@@ -188,7 +197,7 @@ impl Arbitrary for OnePassSig3 {
 mod tests {
     use super::*;
     use crate::parse::Parse;
-    use crate::serialize::SerializeInto;
+    use crate::serialize::MarshalInto;
 
     quickcheck! {
         fn roundtrip(p: OnePassSig3) -> bool {

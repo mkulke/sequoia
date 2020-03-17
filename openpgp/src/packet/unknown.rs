@@ -1,8 +1,6 @@
 use std::hash::{Hash, Hasher};
 use std::cmp::Ordering;
 
-use failure;
-
 use crate::packet::Tag;
 use crate::packet;
 use crate::Packet;
@@ -20,42 +18,28 @@ pub struct Unknown {
     /// Packet tag.
     tag: Tag,
     /// Error that caused parsing or processing to abort.
-    error: failure::Error,
+    error: anyhow::Error,
+    /// The unknown data packet is a container packet, but cannot
+    /// store packets.
+    ///
+    /// This is written when serialized, and set by the packet parser
+    /// if `buffer_unread_content` is used.
+    container: packet::Container,
 }
-
-impl Eq for Unknown {}
 
 impl PartialEq for Unknown {
     fn eq(&self, other: &Unknown) -> bool {
-        self.cmp(other) == Ordering::Equal
+        self.tag == other.tag
+            && self.container == other.container
     }
 }
 
-impl PartialOrd for Unknown
-{
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for Unknown
-{
-    fn cmp(&self, other: &Unknown) -> Ordering {
-        // An unknown packet cannot have children.
-        assert!(self.common.children.is_none());
-        assert!(other.common.children.is_none());
-
-        match self.tag.cmp(&other.tag) {
-            Ordering::Equal => self.common.body().cmp(&other.common.body()),
-            o => o,
-        }
-    }
-}
+impl Eq for Unknown { }
 
 impl Hash for Unknown {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.common.hash(state);
         self.tag.hash(state);
+        self.container.hash(state);
     }
 }
 
@@ -64,7 +48,8 @@ impl Clone for Unknown {
         Unknown {
             common: self.common.clone(),
             tag: self.tag,
-            error: failure::err_msg(format!("{}", self.error)),
+            error: anyhow::anyhow!("{}", self.error),
+            container: self.container.clone(),
         }
     }
 }
@@ -72,11 +57,12 @@ impl Clone for Unknown {
 
 impl Unknown {
     /// Returns a new `Unknown` packet.
-    pub fn new(tag: Tag, error: failure::Error) -> Self {
+    pub fn new(tag: Tag, error: anyhow::Error) -> Self {
         Unknown {
             common: Default::default(),
             tag: tag,
             error: error,
+            container: Default::default(),
         }
     }
 
@@ -93,35 +79,30 @@ impl Unknown {
     /// Gets the unknown packet's error.
     ///
     /// This is the error that caused parsing or processing to abort.
-    pub fn error(&self) -> &failure::Error {
+    pub fn error(&self) -> &anyhow::Error {
         &self.error
     }
 
     /// Sets the unknown packet's error.
     ///
     /// This is the error that caused parsing or processing to abort.
-    pub fn set_error(&mut self, error: failure::Error) -> failure::Error {
+    pub fn set_error(&mut self, error: anyhow::Error) -> anyhow::Error {
         ::std::mem::replace(&mut self.error, error)
     }
 
-    /// Sets the packet's contents.
+    /// Best effort Ord implementation.
     ///
-    /// This is the raw packet content not include the CTB and length
-    /// information, and not encoded using something like OpenPGP's
-    /// partial body encoding.
-    pub fn body(&self) -> Option<&[u8]> {
-        self.common.body.as_ref().map(|b| b.as_slice())
-    }
-
-    /// Sets the packet's contents.
-    ///
-    /// This is the raw packet content not include the CTB and length
-    /// information, and not encoded using something like OpenPGP's
-    /// partial body encoding.
-    pub fn set_body(&mut self, data: Vec<u8>) -> Option<Vec<u8>> {
-        ::std::mem::replace(&mut self.common.body, Some(data))
+    /// The Cert canonicalization needs to order Unknown packets.
+    /// However, due to potential streaming, Unknown cannot implement
+    /// Eq.  This is cheating a little, we simply ignore the streaming
+    /// case.
+    pub(crate) // For cert/mod.rs
+    fn best_effort_cmp(&self, other: &Unknown) -> Ordering {
+        self.tag.cmp(&other.tag).then_with(|| self.body().cmp(&other.body()))
     }
 }
+
+impl_body_forwards!(Unknown);
 
 impl From<Unknown> for Packet {
     fn from(s: Unknown) -> Self {

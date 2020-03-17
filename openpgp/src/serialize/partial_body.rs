@@ -8,7 +8,7 @@ use std::cmp;
 use crate::Error;
 use crate::Result;
 use crate::packet::header::BodyLength;
-use super::{writer, write_byte, Serialize};
+use super::{writer, write_byte, Marshal};
 
 pub struct PartialBodyFilter<'a, C: 'a> {
     // The underlying writer.
@@ -107,9 +107,8 @@ impl<'a, C: 'a> PartialBodyFilter<'a, C> {
                 |e| match e.downcast::<io::Error>() {
                         // An io::Error.  Pass as-is.
                         Ok(err) => err,
-                        // A failure.  Create a compat object and wrap it.
-                        Err(e) => io::Error::new(io::ErrorKind::Other,
-                                                 e.compat()),
+                        // A failure.  Wrap it.
+                        Err(e) => io::Error::new(io::ErrorKind::Other, e),
                     })?;
 
             // Write the body.
@@ -138,7 +137,7 @@ impl<'a, C: 'a> PartialBodyFilter<'a, C> {
                 // ... from our buffer first...
                 let l = cmp::min(self.buffer.len(), chunk_size);
                 inner.write_all(&self.buffer[..l])?;
-                self.buffer.drain(..l);
+                crate::vec_drain_prefix(&mut self.buffer, l);
 
                 // ... then from other.
                 if chunk_size > l {

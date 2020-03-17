@@ -12,32 +12,36 @@ fragments yields the [`openpgp/examples/generate-sign-verify.rs`].
 use std::io::{self, Write};
 use std::convert::TryInto;
 
-extern crate failure;
 extern crate sequoia_openpgp as openpgp;
+use openpgp::cert::prelude::*;
 use openpgp::serialize::stream::*;
 use openpgp::packet::prelude::*;
 use openpgp::parse::stream::*;
+use openpgp::policy::Policy;
+use openpgp::policy::StandardPolicy as P;
 
 const MESSAGE: &'static str = "дружба";
 
 fn main() {
+    let p = &P::new();
+
     // Generate a key.
     let key = generate().unwrap();
 
     // Sign the message.
     let mut signed_message = Vec::new();
-    sign(&mut signed_message, MESSAGE, &key).unwrap();
+    sign(p, &mut signed_message, MESSAGE, &key).unwrap();
 
     // Verify the message.
     let mut plaintext = Vec::new();
-    verify(&mut plaintext, &signed_message, &key).unwrap();
+    verify(p, &mut plaintext, &signed_message, &key).unwrap();
 
     assert_eq!(MESSAGE.as_bytes(), &plaintext[..]);
 }
 #
 # /// Generates an signing-capable key.
 # fn generate() -> openpgp::Result<openpgp::Cert> {
-#     let (cert, _revocation) = openpgp::cert::CertBuilder::new()
+#     let (cert, _revocation) = CertBuilder::new()
 #         .add_userid("someone@example.org")
 #         .add_signing_subkey()
 #         .generate()?;
@@ -48,12 +52,15 @@ fn main() {
 # }
 #
 # /// Signs the given message.
-# fn sign(sink: &mut Write, plaintext: &str, tsk: &openpgp::Cert)
-#            -> openpgp::Result<()> {
+# fn sign(policy: &dyn Policy,
+#         sink: &mut Write, plaintext: &str, tsk: &openpgp::Cert)
+#     -> openpgp::Result<()>
+# {
 #     // Get the keypair to do the signing from the Cert.
-#     let key : key::UnspecifiedSecret
-#         = tsk.keys_valid().for_signing().nth(0).unwrap().2.clone().try_into()?;
-#     let keypair = key.into_keypair()?;
+#     let keypair = tsk
+#         .keys().unencrypted_secret()
+#         .with_policy(policy, None).alive().revoked(false).for_signing()
+#         .nth(0).unwrap().key().clone().into_keypair()?;
 #
 #     // Start streaming an OpenPGP message.
 #     let message = Message::new(sink);
@@ -75,7 +82,8 @@ fn main() {
 # }
 #
 # /// Verifies the given message.
-# fn verify(sink: &mut Write, signed_message: &[u8], sender: &openpgp::Cert)
+# fn verify(policy: &dyn Policy,
+#           sink: &mut Write, signed_message: &[u8], sender: &openpgp::Cert)
 #           -> openpgp::Result<()> {
 #     // Make a helper that that feeds the sender's public key to the
 #     // verifier.
@@ -84,7 +92,7 @@ fn main() {
 #     };
 #
 #     // Now, create a verifier with a helper using the given Certs.
-#     let mut verifier = Verifier::from_bytes(signed_message, helper, None)?;
+#     let mut verifier = Verifier::from_bytes(policy, signed_message, helper, None)?;
 #
 #     // Verify the data.
 #     io::copy(&mut verifier, sink)?;
@@ -103,36 +111,30 @@ fn main() {
 #         Ok(vec![self.cert.clone()])
 #     }
 #
-#     fn check(&mut self, structure: &MessageStructure)
+#     fn check(&mut self, structure: MessageStructure)
 #              -> openpgp::Result<()> {
 #         // In this function, we implement our signature verification
 #         // policy.
 #
 #         let mut good = false;
-#         for (i, layer) in structure.iter().enumerate() {
+#         for (i, layer) in structure.into_iter().enumerate() {
 #             match (i, layer) {
 #                 // First, we are interested in signatures over the
 #                 // data, i.e. level 0 signatures.
-#                 (0, MessageLayer::SignatureGroup { ref results }) => {
+#                 (0, MessageLayer::SignatureGroup { results }) => {
 #                     // Finally, given a VerificationResult, which only says
 #                     // whether the signature checks out mathematically, we apply
 #                     // our policy.
-#                     match results.get(0) {
-#                         Some(VerificationResult::GoodChecksum { .. }) =>
+#                     match results.into_iter().next() {
+#                         Some(Ok(_)) =>
 #                             good = true,
-#                         Some(VerificationResult::NotAlive { .. }) =>
-#                             return Err(failure::err_msg(
-#                                 "Good, but not alive signature")),
-#                         Some(VerificationResult::MissingKey { .. }) =>
-#                             return Err(failure::err_msg(
-#                                 "Missing key to verify signature")),
-#                         Some(VerificationResult::BadChecksum { .. }) =>
-#                             return Err(failure::err_msg("Bad signature")),
+#                         Some(Err(e)) =>
+#                             return Err(openpgp::Error::from(e).into()),
 #                         None =>
-#                             return Err(failure::err_msg("No signature")),
+#                             return Err(anyhow::anyhow!("No signature")),
 #                     }
 #                 },
-#                 _ => return Err(failure::err_msg(
+#                 _ => return Err(anyhow::anyhow!(
 #                     "Unexpected message structure")),
 #             }
 #         }
@@ -140,7 +142,7 @@ fn main() {
 #         if good {
 #             Ok(()) // Good signature.
 #         } else {
-#             Err(failure::err_msg("Signature verification failed"))
+#             Err(anyhow::anyhow!("Signature verification failed"))
 #         }
 #     }
 # }
@@ -158,32 +160,36 @@ create it:
 # use std::io::{self, Write};
 # use std::convert::TryInto;
 #
-# extern crate failure;
 # extern crate sequoia_openpgp as openpgp;
+# use openpgp::cert::prelude::*;
 # use openpgp::serialize::stream::*;
-# use openpgp::parse::stream::*;
 # use openpgp::packet::prelude::*;
+# use openpgp::parse::stream::*;
+# use openpgp::policy::Policy;
+# use openpgp::policy::StandardPolicy as P;
 #
 # const MESSAGE: &'static str = "дружба";
 #
 # fn main() {
+#     let p = &P::new();
+#
 #     // Generate a key.
 #     let key = generate().unwrap();
 #
 #     // Sign the message.
 #     let mut signed_message = Vec::new();
-#     sign(&mut signed_message, MESSAGE, &key).unwrap();
+#     sign(p, &mut signed_message, MESSAGE, &key).unwrap();
 #
 #     // Verify the message.
 #     let mut plaintext = Vec::new();
-#     verify(&mut plaintext, &signed_message, &key).unwrap();
+#     verify(p, &mut plaintext, &signed_message, &key).unwrap();
 #
 #     assert_eq!(MESSAGE.as_bytes(), &plaintext[..]);
 # }
 #
 /// Generates an signing-capable key.
 fn generate() -> openpgp::Result<openpgp::Cert> {
-    let (cert, _revocation) = openpgp::cert::CertBuilder::new()
+    let (cert, _revocation) = CertBuilder::new()
         .add_userid("someone@example.org")
         .add_signing_subkey()
         .generate()?;
@@ -194,12 +200,15 @@ fn generate() -> openpgp::Result<openpgp::Cert> {
 }
 #
 # /// Signs the given message.
-# fn sign(sink: &mut Write, plaintext: &str, tsk: &openpgp::Cert)
-#            -> openpgp::Result<()> {
+# fn sign(policy: &dyn Policy,
+#         sink: &mut Write, plaintext: &str, tsk: &openpgp::Cert)
+#     -> openpgp::Result<()>
+# {
 #     // Get the keypair to do the signing from the Cert.
-#     let key : key::UnspecifiedSecret
-#         = tsk.keys_valid().for_signing().nth(0).unwrap().2.clone().try_into()?;
-#     let keypair = key.into_keypair()?;
+#     let keypair = tsk
+#         .keys().unencrypted_secret()
+#         .with_policy(policy, None).alive().revoked(false).for_signing()
+#         .nth(0).unwrap().key().clone().into_keypair()?;
 #
 #     // Start streaming an OpenPGP message.
 #     let message = Message::new(sink);
@@ -221,7 +230,8 @@ fn generate() -> openpgp::Result<openpgp::Cert> {
 # }
 #
 # /// Verifies the given message.
-# fn verify(sink: &mut Write, signed_message: &[u8], sender: &openpgp::Cert)
+# fn verify(policy: &dyn Policy,
+#           sink: &mut Write, signed_message: &[u8], sender: &openpgp::Cert)
 #           -> openpgp::Result<()> {
 #     // Make a helper that that feeds the sender's public key to the
 #     // verifier.
@@ -230,7 +240,7 @@ fn generate() -> openpgp::Result<openpgp::Cert> {
 #     };
 #
 #     // Now, create a verifier with a helper using the given Certs.
-#     let mut verifier = Verifier::from_bytes(signed_message, helper, None)?;
+#     let mut verifier = Verifier::from_bytes(policy, signed_message, helper, None)?;
 #
 #     // Verify the data.
 #     io::copy(&mut verifier, sink)?;
@@ -249,36 +259,30 @@ fn generate() -> openpgp::Result<openpgp::Cert> {
 #         Ok(vec![self.cert.clone()])
 #     }
 #
-#     fn check(&mut self, structure: &MessageStructure)
+#     fn check(&mut self, structure: MessageStructure)
 #              -> openpgp::Result<()> {
 #         // In this function, we implement our signature verification
 #         // policy.
 #
 #         let mut good = false;
-#         for (i, layer) in structure.iter().enumerate() {
+#         for (i, layer) in structure.into_iter().enumerate() {
 #             match (i, layer) {
 #                 // First, we are interested in signatures over the
 #                 // data, i.e. level 0 signatures.
-#                 (0, MessageLayer::SignatureGroup { ref results }) => {
+#                 (0, MessageLayer::SignatureGroup { results }) => {
 #                     // Finally, given a VerificationResult, which only says
 #                     // whether the signature checks out mathematically, we apply
 #                     // our policy.
-#                     match results.get(0) {
-#                         Some(VerificationResult::GoodChecksum { .. }) =>
+#                     match results.into_iter().next() {
+#                         Some(Ok(_)) =>
 #                             good = true,
-#                         Some(VerificationResult::NotAlive { .. }) =>
-#                             return Err(failure::err_msg(
-#                                 "Good, but not alive signature")),
-#                         Some(VerificationResult::MissingKey { .. }) =>
-#                             return Err(failure::err_msg(
-#                                 "Missing key to verify signature")),
-#                         Some(VerificationResult::BadChecksum { .. }) =>
-#                             return Err(failure::err_msg("Bad signature")),
+#                         Some(Err(e)) =>
+#                             return Err(openpgp::Error::from(e).into()),
 #                         None =>
-#                             return Err(failure::err_msg("No signature")),
+#                             return Err(anyhow::anyhow!("No signature")),
 #                     }
 #                 },
-#                 _ => return Err(failure::err_msg(
+#                 _ => return Err(anyhow::anyhow!(
 #                     "Unexpected message structure")),
 #             }
 #         }
@@ -286,7 +290,7 @@ fn generate() -> openpgp::Result<openpgp::Cert> {
 #         if good {
 #             Ok(()) // Good signature.
 #         } else {
-#             Err(failure::err_msg("Signature verification failed"))
+#             Err(anyhow::anyhow!("Signature verification failed"))
 #         }
 #     }
 # }
@@ -304,32 +308,36 @@ implements [`io::Write`], and we simply write the plaintext to it.
 # use std::io::{self, Write};
 # use std::convert::TryInto;
 #
-# extern crate failure;
 # extern crate sequoia_openpgp as openpgp;
+# use openpgp::cert::prelude::*;
 # use openpgp::serialize::stream::*;
 # use openpgp::packet::prelude::*;
 # use openpgp::parse::stream::*;
+# use openpgp::policy::Policy;
+# use openpgp::policy::StandardPolicy as P;
 #
 # const MESSAGE: &'static str = "дружба";
 #
 # fn main() {
+#     let p = &P::new();
+#
 #     // Generate a key.
 #     let key = generate().unwrap();
 #
 #     // Sign the message.
 #     let mut signed_message = Vec::new();
-#     sign(&mut signed_message, MESSAGE, &key).unwrap();
+#     sign(p, &mut signed_message, MESSAGE, &key).unwrap();
 #
 #     // Verify the message.
 #     let mut plaintext = Vec::new();
-#     verify(&mut plaintext, &signed_message, &key).unwrap();
+#     verify(p, &mut plaintext, &signed_message, &key).unwrap();
 #
 #     assert_eq!(MESSAGE.as_bytes(), &plaintext[..]);
 # }
 #
 # /// Generates an signing-capable key.
 # fn generate() -> openpgp::Result<openpgp::Cert> {
-#     let (cert, _revocation) = openpgp::cert::CertBuilder::new()
+#     let (cert, _revocation) = CertBuilder::new()
 #         .add_userid("someone@example.org")
 #         .add_signing_subkey()
 #         .generate()?;
@@ -340,12 +348,15 @@ implements [`io::Write`], and we simply write the plaintext to it.
 # }
 #
 /// Signs the given message.
-fn sign(sink: &mut Write, plaintext: &str, tsk: &openpgp::Cert)
-           -> openpgp::Result<()> {
+fn sign(policy: &dyn Policy,
+        sink: &mut Write, plaintext: &str, tsk: &openpgp::Cert)
+    -> openpgp::Result<()>
+{
     // Get the keypair to do the signing from the Cert.
-    let key : key::UnspecifiedSecret
-        = tsk.keys_valid().for_signing().nth(0).unwrap().2.clone().try_into()?;
-    let keypair = key.into_keypair()?;
+    let keypair = tsk
+        .keys().unencrypted_secret()
+        .with_policy(policy, None).alive().revoked(false).for_signing()
+        .nth(0).unwrap().key().clone().into_keypair()?;
 
     // Start streaming an OpenPGP message.
     let message = Message::new(sink);
@@ -367,7 +378,8 @@ fn sign(sink: &mut Write, plaintext: &str, tsk: &openpgp::Cert)
 }
 #
 # /// Verifies the given message.
-# fn verify(sink: &mut Write, signed_message: &[u8], sender: &openpgp::Cert)
+# fn verify(policy: &dyn Policy,
+#           sink: &mut Write, signed_message: &[u8], sender: &openpgp::Cert)
 #           -> openpgp::Result<()> {
 #     // Make a helper that that feeds the sender's public key to the
 #     // verifier.
@@ -376,7 +388,7 @@ fn sign(sink: &mut Write, plaintext: &str, tsk: &openpgp::Cert)
 #     };
 #
 #     // Now, create a verifier with a helper using the given Certs.
-#     let mut verifier = Verifier::from_bytes(signed_message, helper, None)?;
+#     let mut verifier = Verifier::from_bytes(policy, signed_message, helper, None)?;
 #
 #     // Verify the data.
 #     io::copy(&mut verifier, sink)?;
@@ -395,36 +407,30 @@ fn sign(sink: &mut Write, plaintext: &str, tsk: &openpgp::Cert)
 #         Ok(vec![self.cert.clone()])
 #     }
 #
-#     fn check(&mut self, structure: &MessageStructure)
+#     fn check(&mut self, structure: MessageStructure)
 #              -> openpgp::Result<()> {
 #         // In this function, we implement our signature verification
 #         // policy.
 #
 #         let mut good = false;
-#         for (i, layer) in structure.iter().enumerate() {
+#         for (i, layer) in structure.into_iter().enumerate() {
 #             match (i, layer) {
 #                 // First, we are interested in signatures over the
 #                 // data, i.e. level 0 signatures.
-#                 (0, MessageLayer::SignatureGroup { ref results }) => {
+#                 (0, MessageLayer::SignatureGroup { results }) => {
 #                     // Finally, given a VerificationResult, which only says
 #                     // whether the signature checks out mathematically, we apply
 #                     // our policy.
-#                     match results.get(0) {
-#                         Some(VerificationResult::GoodChecksum { .. }) =>
+#                     match results.into_iter().next() {
+#                         Some(Ok(_)) =>
 #                             good = true,
-#                         Some(VerificationResult::NotAlive { .. }) =>
-#                             return Err(failure::err_msg(
-#                                 "Good, but not alive signature")),
-#                         Some(VerificationResult::MissingKey { .. }) =>
-#                             return Err(failure::err_msg(
-#                                 "Missing key to verify signature")),
-#                         Some(VerificationResult::BadChecksum { .. }) =>
-#                             return Err(failure::err_msg("Bad signature")),
+#                         Some(Err(e)) =>
+#                             return Err(openpgp::Error::from(e).into()),
 #                         None =>
-#                             return Err(failure::err_msg("No signature")),
+#                             return Err(anyhow::anyhow!("No signature")),
 #                     }
 #                 },
-#                 _ => return Err(failure::err_msg(
+#                 _ => return Err(anyhow::anyhow!(
 #                     "Unexpected message structure")),
 #             }
 #         }
@@ -432,7 +438,7 @@ fn sign(sink: &mut Write, plaintext: &str, tsk: &openpgp::Cert)
 #         if good {
 #             Ok(()) // Good signature.
 #         } else {
-#             Err(failure::err_msg("Signature verification failed"))
+#             Err(anyhow::anyhow!("Signature verification failed"))
 #         }
 #     }
 # }
@@ -461,32 +467,36 @@ Verified data can be read from this using [`io::Read`].
 # use std::io::{self, Write};
 # use std::convert::TryInto;
 #
-# extern crate failure;
 # extern crate sequoia_openpgp as openpgp;
+# use openpgp::cert::prelude::*;
 # use openpgp::serialize::stream::*;
 # use openpgp::packet::prelude::*;
 # use openpgp::parse::stream::*;
+# use openpgp::policy::Policy;
+# use openpgp::policy::StandardPolicy as P;
 # 
 # const MESSAGE: &'static str = "дружба";
 # 
 # fn main() {
+#     let p = &P::new();
+#
 #     // Generate a key.
 #     let key = generate().unwrap();
 # 
 #     // Sign the message.
 #     let mut signed_message = Vec::new();
-#     sign(&mut signed_message, MESSAGE, &key).unwrap();
+#     sign(p, &mut signed_message, MESSAGE, &key).unwrap();
 # 
 #     // Verify the message.
 #     let mut plaintext = Vec::new();
-#     verify(&mut plaintext, &signed_message, &key).unwrap();
+#     verify(p, &mut plaintext, &signed_message, &key).unwrap();
 # 
 #     assert_eq!(MESSAGE.as_bytes(), &plaintext[..]);
 # }
 # 
 # /// Generates an signing-capable key.
 # fn generate() -> openpgp::Result<openpgp::Cert> {
-#     let (cert, _revocation) = openpgp::cert::CertBuilder::new()
+#     let (cert, _revocation) = CertBuilder::new()
 #         .add_userid("someone@example.org")
 #         .add_signing_subkey()
 #         .generate()?;
@@ -497,12 +507,15 @@ Verified data can be read from this using [`io::Read`].
 # }
 # 
 # /// Signs the given message.
-# fn sign(sink: &mut Write, plaintext: &str, tsk: &openpgp::Cert)
-#            -> openpgp::Result<()> {
+# fn sign(policy: &dyn Policy,
+#         sink: &mut Write, plaintext: &str, tsk: &openpgp::Cert)
+#     -> openpgp::Result<()>
+# {
 #     // Get the keypair to do the signing from the Cert.
-#     let key : key::UnspecifiedSecret
-#         = tsk.keys_valid().for_signing().nth(0).unwrap().2.clone().try_into()?;
-#     let keypair = key.into_keypair()?;
+#     let keypair = tsk
+#         .keys().unencrypted_secret()
+#         .with_policy(policy, None).alive().revoked(false).for_signing()
+#         .nth(0).unwrap().key().clone().into_keypair()?;
 # 
 #     // Start streaming an OpenPGP message.
 #     let message = Message::new(sink);
@@ -524,7 +537,8 @@ Verified data can be read from this using [`io::Read`].
 # }
 # 
 /// Verifies the given message.
-fn verify(sink: &mut Write, signed_message: &[u8], sender: &openpgp::Cert)
+fn verify(policy: &dyn Policy,
+          sink: &mut Write, signed_message: &[u8], sender: &openpgp::Cert)
           -> openpgp::Result<()> {
     // Make a helper that that feeds the sender's public key to the
     // verifier.
@@ -533,7 +547,7 @@ fn verify(sink: &mut Write, signed_message: &[u8], sender: &openpgp::Cert)
     };
 
     // Now, create a verifier with a helper using the given Certs.
-    let mut verifier = Verifier::from_bytes(signed_message, helper, None)?;
+    let mut verifier = Verifier::from_bytes(policy, signed_message, helper, None)?;
 
     // Verify the data.
     io::copy(&mut verifier, sink)?;
@@ -552,36 +566,30 @@ impl<'a> VerificationHelper for Helper<'a> {
         Ok(vec![self.cert.clone()])
     }
 
-    fn check(&mut self, structure: &MessageStructure)
+    fn check(&mut self, structure: MessageStructure)
              -> openpgp::Result<()> {
         // In this function, we implement our signature verification
         // policy.
 
         let mut good = false;
-        for (i, layer) in structure.iter().enumerate() {
+        for (i, layer) in structure.into_iter().enumerate() {
             match (i, layer) {
                 // First, we are interested in signatures over the
                 // data, i.e. level 0 signatures.
-                (0, MessageLayer::SignatureGroup { ref results }) => {
+                (0, MessageLayer::SignatureGroup { results }) => {
                     // Finally, given a VerificationResult, which only says
                     // whether the signature checks out mathematically, we apply
                     // our policy.
-                    match results.get(0) {
-                        Some(VerificationResult::GoodChecksum { .. }) =>
+                    match results.into_iter().next() {
+                        Some(Ok(_)) =>
                             good = true,
-                        Some(VerificationResult::NotAlive { .. }) =>
-                            return Err(failure::err_msg(
-                                "Good, but not alive signature")),
-                        Some(VerificationResult::MissingKey { .. }) =>
-                            return Err(failure::err_msg(
-                                "Missing key to verify signature")),
-                        Some(VerificationResult::BadChecksum { .. }) =>
-                            return Err(failure::err_msg("Bad signature")),
+                        Some(Err(e)) =>
+                            return Err(openpgp::Error::from(e).into()),
                         None =>
-                            return Err(failure::err_msg("No signature")),
+                            return Err(anyhow::anyhow!("No signature")),
                     }
                 },
-                _ => return Err(failure::err_msg(
+                _ => return Err(anyhow::anyhow!(
                     "Unexpected message structure")),
             }
         }
@@ -589,7 +597,7 @@ impl<'a> VerificationHelper for Helper<'a> {
         if good {
             Ok(()) // Good signature.
         } else {
-            Err(failure::err_msg("Signature verification failed"))
+            Err(anyhow::anyhow!("Signature verification failed"))
         }
     }
 }

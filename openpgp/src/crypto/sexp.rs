@@ -53,7 +53,7 @@ impl Sexp {
                             Sexp::String("a".into()),
                             Sexp::String(c.value().into())])])])),
 
-            &Elgamal { ref e, ref c } =>
+            &ElGamal { ref e, ref c } =>
                 Ok(Sexp::List(vec![
                     Sexp::String("enc-val".into()),
                     Sexp::List(vec![
@@ -81,6 +81,8 @@ impl Sexp {
                 Err(Error::InvalidArgument(
                     format!("Don't know how to convert {:?}", ciphertext))
                     .into()),
+
+            __Nonexhaustive => unreachable!(),
         }
     }
 
@@ -99,7 +101,7 @@ impl Sexp {
         where R: crate::packet::key::KeyRole
     {
         use crate::crypto::mpis::PublicKey;
-        let not_a_session_key = || -> failure::Error {
+        let not_a_session_key = || -> anyhow::Error {
             Error::MalformedMPI(
                 format!("Not a session key: {:?}", self)).into()
         };
@@ -109,7 +111,7 @@ impl Sexp {
 
         match value {
             Sexp::String(ref s) => match recipient.mpis() {
-                PublicKey::RSA { .. } | PublicKey::Elgamal { .. } if padding =>
+                PublicKey::RSA { .. } | PublicKey::ElGamal { .. } if padding =>
                 {
                     // The session key is padded.  The format is
                     // described in g10/pubkey-enc.c (note that we,
@@ -154,7 +156,7 @@ impl Sexp {
                     Ok(s.to_vec().into())
                 },
 
-                PublicKey::RSA { .. } | PublicKey::Elgamal { .. } => {
+                PublicKey::RSA { .. } | PublicKey::ElGamal { .. } => {
                     // The session key is not padded.  Currently, this
                     // happens if the session key is decrypted using
                     // scdaemon.
@@ -188,7 +190,7 @@ impl Sexp {
     /// Such an expression is returned from gpg-agent's `PKSIGN`
     /// command.
     pub fn to_signature(&self) -> Result<mpis::Signature> {
-        let not_a_signature = || -> failure::Error {
+        let not_a_signature = || -> anyhow::Error {
             Error::MalformedMPI(
                 format!("Not a signature: {:?}", self)).into()
         };

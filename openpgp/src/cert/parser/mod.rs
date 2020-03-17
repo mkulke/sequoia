@@ -7,10 +7,8 @@ use lalrpop_util::ParseError;
 
 use crate::{
     Error,
-    Fingerprint,
-    KeyID,
+    KeyHandle,
     packet::Tag,
-    packet::Signature,
     Packet,
     parse::{
         Parse,
@@ -18,7 +16,7 @@ use crate::{
         PacketParser
     },
     Result,
-    cert::ComponentBinding,
+    cert::components::ComponentBundle,
     Cert,
 };
 
@@ -41,7 +39,7 @@ pub enum KeyringValidity {
     /// The packet sequence is a valid key ring prefix.
     KeyringPrefix,
     /// The packet sequence is definitely not a key ring.
-    Error(failure::Error),
+    Error(anyhow::Error),
 }
 
 impl KeyringValidity {
@@ -185,7 +183,7 @@ impl KeyringValidator {
         self.push_token(token)
     }
 
-    /// Note that the entire message has been seen.
+    /// Notes that the entire message has been seen.
     ///
     /// This function may only be called once.
     ///
@@ -200,16 +198,18 @@ impl KeyringValidator {
     /// keyring.
     ///
     /// This returns a tri-state: if the packet sequence is a valid
-    /// Keyring, it returns KeyringValidity::Keyring, if the packet sequence is
-    /// invalid, then it returns KeyringValidity::Error.  If the packet
-    /// sequence could be valid, then it returns
-    /// KeyringValidity::KeyringPrefix.
+    /// Keyring, it returns `KeyringValidity::Keyring`, if the packet
+    /// sequence is invalid, then it returns `KeyringValidity::Error`.
+    /// If the packet sequence that has been processed so far is a
+    /// valid prefix, then it returns
+    /// `KeyringValidity::KeyringPrefix`.
     ///
-    /// Note: if KeyringValidator::finish() *hasn't* been called, then
-    /// this function will only ever return either
-    /// KeyringValidity::KeyringPrefix or KeyringValidity::Error.  Once
-    /// KeyringValidity::finish() has been called, then only
-    /// KeyringValidity::Keyring or KeyringValidity::Bad will be called.
+    /// Note: if `KeyringValidator::finish()` *hasn't* been called,
+    /// then this function will only ever return either
+    /// `KeyringValidity::KeyringPrefix` or `KeyringValidity::Error`.
+    /// Once `KeyringValidity::finish()` has been called, then it will
+    /// only return either `KeyringValidity::Keyring` or
+    /// `KeyringValidity::Error`.
     pub fn check(&self) -> KeyringValidity {
         if let Some(ref err) = self.error {
             return KeyringValidity::Error((*err).clone().into());
@@ -246,7 +246,7 @@ pub enum CertValidity {
     /// The packet sequence is a valid Cert prefix.
     CertPrefix,
     /// The packet sequence is definitely not a Cert.
-    Error(failure::Error),
+    Error(anyhow::Error),
 }
 
 impl CertValidity {
@@ -348,16 +348,16 @@ impl CertValidator {
     /// Cert.
     ///
     /// This returns a tri-state: if the packet sequence is a valid
-    /// Cert, it returns CertValidity::Cert, if the packet sequence is
-    /// invalid, then it returns CertValidity::Error.  If the packet
-    /// sequence could be valid, then it returns
-    /// CertValidity::CertPrefix.
+    /// Cert, it returns `CertValidity::Cert`, if the packet sequence
+    /// is invalid, then it returns `CertValidity::Error`.  If the
+    /// packet sequence that has been processed so far is a valid
+    /// prefix, then it returns `CertValidity::CertPrefix`.
     ///
-    /// Note: if CertValidator::finish() *hasn't* been called, then
+    /// Note: if `CertValidator::finish()` *hasn't* been called, then
     /// this function will only ever return either
-    /// CertValidity::CertPrefix or CertValidity::Error.  Once
-    /// CertValidity::finish() has been called, then only
-    /// CertValidity::Cert or CertValidity::Bad will be called.
+    /// `CertValidity::CertPrefix` or `CertValidity::Error`.  Once
+    /// `CertValidity::finish()` has been called, then it will only
+    /// return either `CertValidity::Cert` or `CertValidity::Error`.
     pub fn check(&self) -> CertValidity {
         if self.0.n_keys > 1 {
             return CertValidity::Error(Error::MalformedMessage(
@@ -395,7 +395,7 @@ enum PacketSource<'a, I: Iterator<Item=Packet>> {
 /// # extern crate sequoia_openpgp as openpgp;
 /// # use openpgp::Result;
 /// # use openpgp::parse::{Parse, PacketParserResult, PacketParser};
-/// use openpgp::cert::CertParser;
+/// use openpgp::cert::prelude::*;
 ///
 /// # fn main() { f().unwrap(); }
 /// # fn f() -> Result<()> {
@@ -403,9 +403,9 @@ enum PacketSource<'a, I: Iterator<Item=Packet>> {
 /// for certo in CertParser::from_packet_parser(ppr) {
 ///     match certo {
 ///         Ok(cert) => {
-///             println!("Key: {}", cert.primary());
-///             for binding in cert.userids() {
-///                 println!("User ID: {}", binding.userid());
+///             println!("Key: {}", cert.fingerprint());
+///             for ca in cert.userids() {
+///                 println!("User ID: {}", ca.userid());
 ///             }
 ///         }
 ///         Err(err) => {
@@ -512,7 +512,7 @@ impl<'a, I: Iterator<Item=Packet>> CertParser<'a, I> {
     /// # extern crate sequoia_openpgp as openpgp;
     /// # use openpgp::Result;
     /// # use openpgp::parse::{Parse, PacketParser};
-    /// use openpgp::cert::CertParser;
+    /// use openpgp::cert::prelude::*;
     /// use openpgp::Cert;
     /// use openpgp::KeyID;
     ///
@@ -522,11 +522,8 @@ impl<'a, I: Iterator<Item=Packet>> CertParser<'a, I> {
     /// #     let some_keyid = KeyID::from_hex("C2B819056C652598").unwrap();
     /// for certr in CertParser::from_packet_parser(ppr)
     ///     .unvalidated_cert_filter(|cert, _| {
-    ///         if cert.primary().keyid() == some_keyid {
-    ///             return true;
-    ///         }
-    ///         for binding in cert.subkeys() {
-    ///             if binding.key().keyid() == some_keyid {
+    ///         for component in cert.keys() {
+    ///             if component.key().keyid() == some_keyid {
     ///                 return true;
     ///             }
     ///         }
@@ -624,56 +621,8 @@ impl<'a, I: Iterator<Item=Packet>> CertParser<'a, I> {
 
             Some(cert)
         }).and_then(|mut cert| {
-            fn split_sigs<C>(primary: &Fingerprint, primary_keyid: &KeyID,
-                             b: &mut ComponentBinding<C>)
-            {
-                let mut self_signatures = vec![];
-                let mut certifications = vec![];
-                let mut self_revs = vec![];
-                let mut other_revs = vec![];
-
-                for sig in mem::replace(&mut b.certifications, vec![]) {
-                    match sig {
-                        Signature::V4(sig) => {
-                            let typ = sig.typ();
-
-                            let is_selfsig =
-                                sig.issuer_fingerprint()
-                                .map(|fp| fp == *primary)
-                                .unwrap_or(false)
-                                || sig.issuer()
-                                .map(|keyid| keyid == *primary_keyid)
-                                .unwrap_or(false);
-
-                            use crate::SignatureType::*;
-                            if typ == KeyRevocation
-                                || typ == SubkeyRevocation
-                                || typ == CertificateRevocation
-                            {
-                                if is_selfsig {
-                                    self_revs.push(sig.into());
-                                } else {
-                                    other_revs.push(sig.into());
-                                }
-                            } else {
-                                if is_selfsig {
-                                    self_signatures.push(sig.into());
-                                } else {
-                                    certifications.push(sig.into());
-                                }
-                            }
-                        },
-                    }
-                }
-
-                b.self_signatures = self_signatures;
-                b.certifications = certifications;
-                b.self_revocations = self_revs;
-                b.other_revocations = other_revs;
-            }
-
-            let primary_fp = cert.primary().fingerprint();
-            let primary_keyid = KeyID::from(&primary_fp);
+            let primary_fp: KeyHandle = cert.key_handle();
+            let primary_keyid = KeyHandle::KeyID(primary_fp.clone().into());
 
             // The parser puts all of the signatures on the
             // certifications field.  Split them now.
@@ -706,6 +655,50 @@ impl<'a, I: Iterator<Item=Packet>> CertParser<'a, I> {
     }
 }
 
+/// Splits the signatures in b.certifications into the correct
+/// vectors.
+pub fn split_sigs<C>(primary: &KeyHandle, primary_keyid: &KeyHandle,
+                     b: &mut ComponentBundle<C>)
+{
+    let mut self_signatures = vec![];
+    let mut certifications = vec![];
+    let mut self_revs = vec![];
+    let mut other_revs = vec![];
+
+    for sig in mem::replace(&mut b.certifications, vec![]) {
+        let typ = sig.typ();
+
+        let issuers =
+            sig.get_issuers();
+        let is_selfsig =
+            issuers.contains(primary)
+            || issuers.contains(primary_keyid);
+
+        use crate::SignatureType::*;
+        if typ == KeyRevocation
+            || typ == SubkeyRevocation
+            || typ == CertificationRevocation
+        {
+            if is_selfsig {
+                self_revs.push(sig.into());
+            } else {
+                other_revs.push(sig.into());
+            }
+        } else {
+            if is_selfsig {
+                self_signatures.push(sig.into());
+            } else {
+                certifications.push(sig.into());
+            }
+        }
+    }
+
+    b.self_signatures = self_signatures;
+    b.certifications = certifications;
+    b.self_revocations = self_revs;
+    b.other_revocations = other_revs;
+}
+
 impl<'a, I: Iterator<Item=Packet>> Iterator for CertParser<'a, I> {
     type Item = Result<Cert>;
 
@@ -726,7 +719,16 @@ impl<'a, I: Iterator<Item=Packet>> Iterator for CertParser<'a, I> {
                         Err(err) => return Some(Err(err)),
                     }
                 },
-                PacketSource::PacketParser(pp) => {
+                PacketSource::PacketParser(mut pp) => {
+                    if let Packet::Unknown(_) = pp.packet {
+                        // Buffer unknown packets.  This may be a
+                        // signature that we don't understand, and
+                        // keeping it intact is important.
+                        if let Err(e) = pp.buffer_unread_content() {
+                            return Some(Err(e));
+                        }
+                    }
+
                     match pp.next() {
                         Ok((packet, ppr)) => {
                             if let PacketParserResult::Some(pp) = ppr {
@@ -759,7 +761,7 @@ impl<'a, I: Iterator<Item=Packet>> Iterator for CertParser<'a, I> {
                         Ok(Some(cert)) => {
                             if TRACE {
                                 eprintln!("CertParser::next => {}",
-                                          cert.primary().fingerprint());
+                                          cert.fingerprint());
                             }
                             return Some(Ok(cert));
                         }
@@ -898,7 +900,7 @@ mod test {
             },
         ];
 
-        for v in test_vectors.into_iter() {
+        for v in &test_vectors {
             if v.result {
                 let mut l = CertValidator::new();
                 for token in v.s.into_iter() {

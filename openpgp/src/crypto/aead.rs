@@ -18,6 +18,12 @@ use crate::crypto::SessionKey;
 use crate::crypto::mem::secure_cmp;
 use crate::parse::Cookie;
 
+/// Disables authentication checks.
+///
+/// This is DANGEROUS, and is only useful for debugging problems with
+/// malformed AEAD-encrypted messages.
+const DANGER_DISABLE_AUTHENTICATION: bool = false;
+
 impl AEADAlgorithm {
     /// Returns the digest size of the AEAD algorithm.
     pub fn digest_size(&self) -> Result<usize> {
@@ -217,7 +223,7 @@ impl<'a> Decryptor<'a> {
         if self.buffer.len() > 0 {
             let to_copy = cmp::min(self.buffer.len(), plaintext.len());
             &plaintext[..to_copy].copy_from_slice(&self.buffer[..to_copy]);
-            self.buffer.drain(..to_copy);
+            crate::vec_drain_prefix(&mut self.buffer, to_copy);
 
             pos = to_copy;
             if pos == plaintext.len() {
@@ -323,7 +329,7 @@ impl<'a> Decryptor<'a> {
                 // Check digest.
                 aead.digest(&mut digest);
                 if secure_cmp(&digest[..], &chunk[to_decrypt..])
-                    != Ordering::Equal
+                    != Ordering::Equal && ! DANGER_DISABLE_AUTHENTICATION
                 {
                     return Err(Error::ManipulatedMessage.into());
                 }
@@ -335,7 +341,7 @@ impl<'a> Decryptor<'a> {
 
                     &plaintext[pos..pos + to_copy]
                         .copy_from_slice(&self.buffer[..to_copy]);
-                    self.buffer.drain(..to_copy);
+                    crate::vec_drain_prefix(&mut self.buffer, to_copy);
                     pos += to_copy;
                 } else {
                     pos += to_decrypt;
@@ -363,6 +369,7 @@ impl<'a> Decryptor<'a> {
                 let final_digest = self.source.data(final_digest_size)?;
                 if final_digest.len() != final_digest_size
                     || secure_cmp(&digest[..], final_digest) != Ordering::Equal
+                    && ! DANGER_DISABLE_AUTHENTICATION
                 {
                     return Err(Error::ManipulatedMessage.into());
                 }
@@ -389,9 +396,8 @@ impl<'a> io::Read for Decryptor<'a> {
             Err(e) => match e.downcast::<io::Error>() {
                 // An io::Error.  Pass as-is.
                 Ok(e) => Err(e),
-                // A failure.  Create a compat object and wrap it.
-                Err(e) => Err(io::Error::new(io::ErrorKind::Other,
-                                             e.compat())),
+                // A failure.  Wrap it.
+                Err(e) => Err(io::Error::new(io::ErrorKind::Other, e)),
             },
         }
     }
@@ -498,7 +504,7 @@ impl<'a> BufferedReader<Cookie> for BufferedReaderDecryptor<'a> {
 
     fn into_inner<'b>(self: Box<Self>)
             -> Option<Box<dyn BufferedReader<Cookie> + 'b>> where Self: 'b {
-        Some(Box::new(self.reader.reader.source))
+        Some(self.reader.reader.source.as_boxed())
     }
 
     fn cookie_set(&mut self, cookie: Cookie) -> Cookie {
@@ -737,9 +743,8 @@ impl<W: io::Write> io::Write for Encryptor<W> {
             Err(e) => match e.downcast::<io::Error>() {
                 // An io::Error.  Pass as-is.
                 Ok(e) => Err(e),
-                // A failure.  Create a compat object and wrap it.
-                Err(e) => Err(io::Error::new(io::ErrorKind::Other,
-                                             e.compat())),
+                // A failure.  Wrap it.
+                Err(e) => Err(io::Error::new(io::ErrorKind::Other, e)),
             },
         }
     }

@@ -1,12 +1,10 @@
 //! AEAD encrypted data packets.
 
-use std::ops::{Deref, DerefMut};
-
 use crate::types::{
     AEADAlgorithm,
     SymmetricAlgorithm,
 };
-use crate::packet::{self, Common};
+use crate::packet;
 use crate::Packet;
 use crate::Error;
 use crate::Result;
@@ -17,7 +15,9 @@ use crate::Result;
 /// of RFC 4880bis] for details.
 ///
 /// [Section 5.16 of RFC 4880bis]: https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-05#section-5.16
-#[derive(PartialEq, Eq, Hash, Clone, Debug)]
+///
+/// This feature is [experimental](../../index.html#experimental-features).
+#[derive(Clone, Debug)]
 pub struct AED1 {
     /// CTB packet header fields.
     pub(crate) common: packet::Common,
@@ -29,6 +29,31 @@ pub struct AED1 {
     chunk_size: usize,
     /// Initialization vector for the AEAD algorithm.
     iv: Box<[u8]>,
+
+    /// This is a container packet.
+    container: packet::Container,
+}
+
+impl PartialEq for AED1 {
+    fn eq(&self, other: &AED1) -> bool {
+        self.sym_algo == other.sym_algo
+            && self.aead == other.aead
+            && self.chunk_size == other.chunk_size
+            && self.iv == other.iv
+            && self.container == other.container
+    }
+}
+
+impl Eq for AED1 {}
+
+impl std::hash::Hash for AED1 {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(&self.sym_algo, state);
+        std::hash::Hash::hash(&self.aead, state);
+        std::hash::Hash::hash(&self.chunk_size, state);
+        std::hash::Hash::hash(&self.iv, state);
+        std::hash::Hash::hash(&self.container, state);
+    }
 }
 
 impl AED1 {
@@ -55,6 +80,7 @@ impl AED1 {
             aead: aead,
             chunk_size: chunk_size,
             iv: iv,
+            container: Default::default(),
         })
     }
 
@@ -64,8 +90,8 @@ impl AED1 {
     }
 
     /// Sets the sym_algo algorithm.
-    pub fn set_sym_algo(&mut self, sym_algo: SymmetricAlgorithm)
-                        -> SymmetricAlgorithm {
+    pub fn set_symmetric_algo(&mut self, sym_algo: SymmetricAlgorithm)
+                              -> SymmetricAlgorithm {
         ::std::mem::replace(&mut self.sym_algo, sym_algo)
     }
 
@@ -118,6 +144,8 @@ impl AED1 {
     }
 }
 
+impl_container_forwards!(AED1);
+
 impl From<AED1> for Packet {
     fn from(p: AED1) -> Self {
         super::AED::from(p).into()
@@ -127,22 +155,6 @@ impl From<AED1> for Packet {
 impl From<AED1> for super::AED {
     fn from(p: AED1) -> Self {
         super::AED::V1(p)
-    }
-}
-
-// Allow transparent access of common fields.
-impl<'a> Deref for AED1 {
-    type Target = Common;
-
-    fn deref(&self) -> &Self::Target {
-        &self.common
-    }
-}
-
-// Allow transparent access of common fields.
-impl<'a> DerefMut for AED1 {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.common
     }
 }
 
@@ -156,8 +168,8 @@ mod tests {
                               AEADAlgorithm::EAX,
                               64,
                               vec![].into_boxed_slice()).unwrap();
-        assert_eq!(s.body(), None);
+        assert_eq!(s.body(), &[]);
         s.set_body(vec![0, 1, 2]);
-        assert_eq!(s.body(), Some(&[0, 1, 2][..]));
+        assert_eq!(s.body(), &[0, 1, 2]);
     }
 }

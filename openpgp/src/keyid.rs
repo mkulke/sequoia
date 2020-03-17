@@ -8,7 +8,7 @@ use crate::Result;
 
 impl fmt::Display for KeyID {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.to_string())
+        write!(f, "{}", self.convert_to_string(true))
     }
 }
 
@@ -21,7 +21,7 @@ impl fmt::Debug for KeyID {
 }
 
 impl std::str::FromStr for KeyID {
-    type Err = failure::Error;
+    type Err = anyhow::Error;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         Self::from_hex(s)
@@ -42,6 +42,12 @@ impl From<KeyID> for Vec<u8> {
 impl From<u64> for KeyID {
     fn from(id: u64) -> Self {
         Self::new(id)
+    }
+}
+
+impl From<[u8; 8]> for KeyID {
+    fn from(id: [u8; 8]) -> Self {
+        KeyID::from_bytes(&id[..])
     }
 }
 
@@ -144,13 +150,6 @@ impl KeyID {
     /// Returns true if this is a wild card ID.
     pub fn is_wildcard(&self) -> bool {
         self.as_slice().iter().all(|b| *b == 0)
-    }
-
-    /// Converts the key ID to its standard representation.
-    ///
-    /// Returns the fingerprint suitable for human consumption.
-    pub fn to_string(&self) -> String {
-        self.convert_to_string(true)
     }
 
     /// Converts the key ID to a hexadecimal number.

@@ -38,14 +38,11 @@
 extern crate sequoia_openpgp as openpgp;
 extern crate sequoia_core;
 
-#[macro_use]
-extern crate failure;
 extern crate futures;
 extern crate http;
 extern crate hyper;
 extern crate hyper_tls;
 extern crate native_tls;
-extern crate nettle;
 extern crate tokio_core;
 extern crate tokio_io;
 extern crate percent_encoding;
@@ -159,7 +156,7 @@ impl KeyServer {
 
     /// Retrieves the key with the given `keyid`.
     pub fn get(&mut self, keyid: &KeyID)
-               -> Box<dyn Future<Item=Cert, Error=failure::Error> + 'static> {
+               -> Box<dyn Future<Item=Cert, Error=anyhow::Error> + 'static> {
         let keyid_want = keyid.clone();
         let uri = self.uri.join(
             &format!("pks/lookup?op=get&options=mr&search=0x{}",
@@ -183,8 +180,8 @@ impl KeyServer {
                                          Some(armor::Kind::PublicKey)));
                                  match Cert::from_reader(r) {
                                      Ok(cert) => {
-                                         if cert.keys_all().any(|(_, _, key)| {
-                                             KeyID::from(key.fingerprint())
+                                         if cert.keys().any(|ka| {
+                                             KeyID::from(ka.fingerprint())
                                                  == keyid_want
                                          }) {
                                              future::done(Ok(cert))
@@ -207,7 +204,7 @@ impl KeyServer {
 
     /// Sends the given key to the server.
     pub fn send(&mut self, key: &Cert)
-                -> Box<dyn Future<Item=(), Error=failure::Error> + 'static> {
+                -> Box<dyn Future<Item=(), Error=anyhow::Error> + 'static> {
         use crate::openpgp::armor::{Writer, Kind};
 
         let uri =
@@ -218,18 +215,20 @@ impl KeyServer {
                 Ok(u) => u,
             };
 
-        let mut armored_blob = vec![];
-        {
-            let mut w = match Writer::new(&mut armored_blob,
-                                          Kind::PublicKey, &[]) {
-                Err(e) => return Box::new(future::err(e.into())),
-                Ok(w) => w,
-            };
+        let mut w = match Writer::new(Vec::new(),
+                                      Kind::PublicKey, &[]) {
+            Ok(v) => v,
+            Err(e) => return Box::new(future::err(e.into())),
+        };
 
-            if let Err(e) = key.serialize(&mut w) {
-                return Box::new(future::err(e));
-            }
+        if let Err(e) = key.serialize(&mut w) {
+            return Box::new(future::err(e));
         }
+
+        let armored_blob = match w.finalize() {
+            Ok(v) => v,
+            Err(e) => return Box::new(future::err(e.into())),
+        };
 
         // Prepare to send url-encoded data.
         let mut post_data = b"keytext=".to_vec();
@@ -291,68 +290,50 @@ pub(crate) fn url2uri(uri: Url) -> hyper::Uri {
 }
 
 /// Results for sequoia-net.
-pub type Result<T> = ::std::result::Result<T, failure::Error>;
+pub type Result<T> = ::std::result::Result<T, anyhow::Error>;
 
-#[derive(Fail, Debug)]
+#[derive(thiserror::Error, Debug)]
 /// Errors returned from the network routines.
 pub enum Error {
     /// A requested key was not found.
-    #[fail(display = "Key not found")]
+    #[error("Key not found")]
     NotFound,
     /// Mismatched key ID
-    #[fail(display = "Mismatched key ID, expected {}", _0)]
+    #[error("Mismatched key ID, expected {0}")]
     MismatchedKeyID(KeyID, Cert),
     /// A given keyserver URI was malformed.
-    #[fail(display = "Malformed URI; expected hkp: or hkps:")]
+    #[error("Malformed URI; expected hkp: or hkps:")]
     MalformedUri,
     /// The server provided malformed data.
-    #[fail(display = "Malformed response from server")]
+    #[error("Malformed response from server")]
     MalformedResponse,
     /// A communication partner violated the protocol.
-    #[fail(display = "Protocol violation")]
+    #[error("Protocol violation")]
     ProtocolViolation,
     /// Encountered an unexpected low-level http status.
-    #[fail(display = "Error communicating with server")]
+    #[error("Error communicating with server")]
     HttpStatus(hyper::StatusCode),
     /// A `hyper::error::UriError` occurred.
-    #[fail(display = "URI Error")]
-    UriError(url::ParseError),
+    #[error("URI Error")]
+    UriError(#[from] url::ParseError),
     /// A `http::Error` occurred.
-    #[fail(display = "http Error")]
-    HttpError(http::Error),
+    #[error("http Error")]
+    HttpError(#[from] http::Error),
     /// A `hyper::Error` occurred.
-    #[fail(display = "Hyper Error")]
-    HyperError(hyper::Error),
+    #[error("Hyper Error")]
+    HyperError(#[from] hyper::Error),
     /// A `native_tls::Error` occurred.
-    #[fail(display = "TLS Error")]
+    #[error("TLS Error")]
     TlsError(native_tls::Error),
 
     /// wkd errors:
     /// An email address is malformed
-    #[fail(display = "Malformed email address {}", _0)]
+    #[error("Malformed email address {0}")]
     MalformedEmail(String),
 
     /// An email address was not found in Cert userids.
-    #[fail(display = "Email address {} not found in Cert's userids", _0)]
+    #[error("Email address {0} not found in Cert's userids")]
     EmailNotInUserids(String),
-}
-
-impl From<http::Error> for Error {
-    fn from(e: http::Error) -> Error {
-        Error::HttpError(e)
-    }
-}
-
-impl From<hyper::Error> for Error {
-    fn from(e: hyper::Error) -> Error {
-        Error::HyperError(e)
-    }
-}
-
-impl From<url::ParseError> for Error {
-    fn from(e: url::ParseError) -> Error {
-        Error::UriError(e)
-    }
 }
 
 #[cfg(test)]

@@ -3,31 +3,36 @@
 use std::io::{self, Write};
 
 extern crate sequoia_openpgp as openpgp;
+use crate::openpgp::cert::prelude::*;
 use crate::openpgp::crypto::SessionKey;
 use crate::openpgp::types::SymmetricAlgorithm;
 use crate::openpgp::serialize::stream::*;
 use crate::openpgp::parse::stream::*;
+use crate::openpgp::policy::Policy;
+use crate::openpgp::policy::StandardPolicy as P;
 
 const MESSAGE: &'static str = "дружба";
 
 fn main() {
+    let p = &P::new();
+
     // Generate a key.
     let key = generate().unwrap();
 
     // Encrypt the message.
     let mut ciphertext = Vec::new();
-    encrypt(&mut ciphertext, MESSAGE, &key).unwrap();
+    encrypt(p, &mut ciphertext, MESSAGE, &key).unwrap();
 
     // Decrypt the message.
     let mut plaintext = Vec::new();
-    decrypt(&mut plaintext, &ciphertext, &key).unwrap();
+    decrypt(p, &mut plaintext, &ciphertext, &key).unwrap();
 
     assert_eq!(MESSAGE.as_bytes(), &plaintext[..]);
 }
 
 /// Generates an encryption-capable key.
 fn generate() -> openpgp::Result<openpgp::Cert> {
-    let (cert, _revocation) = openpgp::cert::CertBuilder::new()
+    let (cert, _revocation) = CertBuilder::new()
         .add_userid("someone@example.org")
         .add_transport_encryption_subkey()
         .generate()?;
@@ -38,13 +43,15 @@ fn generate() -> openpgp::Result<openpgp::Cert> {
 }
 
 /// Encrypts the given message.
-fn encrypt(sink: &mut dyn Write, plaintext: &str, recipient: &openpgp::Cert)
-           -> openpgp::Result<()> {
+fn encrypt(p: &dyn Policy, sink: &mut dyn Write, plaintext: &str,
+           recipient: &openpgp::Cert)
+    -> openpgp::Result<()>
+{
     // Build a vector of recipients to hand to Encryptor.
     let mut recipients =
-        recipient.keys_valid()
+        recipient.keys().with_policy(p, None).alive().revoked(false)
         .for_transport_encryption()
-        .map(|(_, _, key)| key.into())
+        .map(|ka| ka.key().into())
         .collect::<Vec<_>>();
 
     // Start streaming an OpenPGP message.
@@ -72,16 +79,18 @@ fn encrypt(sink: &mut dyn Write, plaintext: &str, recipient: &openpgp::Cert)
 }
 
 /// Decrypts the given message.
-fn decrypt(sink: &mut dyn Write, ciphertext: &[u8], recipient: &openpgp::Cert)
+fn decrypt(p: &dyn Policy,
+           sink: &mut dyn Write, ciphertext: &[u8], recipient: &openpgp::Cert)
            -> openpgp::Result<()> {
     // Make a helper that that feeds the recipient's secret key to the
     // decryptor.
     let helper = Helper {
         secret: recipient,
+        policy: p,
     };
 
     // Now, create a decryptor with a helper using the given Certs.
-    let mut decryptor = Decryptor::from_bytes(ciphertext, helper, None)?;
+    let mut decryptor = Decryptor::from_bytes(p, ciphertext, helper, None)?;
 
     // Decrypt the data.
     io::copy(&mut decryptor, sink)?;
@@ -91,6 +100,7 @@ fn decrypt(sink: &mut dyn Write, ciphertext: &[u8], recipient: &openpgp::Cert)
 
 struct Helper<'a> {
     secret: &'a openpgp::Cert,
+    policy: &'a dyn Policy,
 }
 
 impl<'a> VerificationHelper for Helper<'a> {
@@ -100,7 +110,7 @@ impl<'a> VerificationHelper for Helper<'a> {
         Ok(Vec::new())
     }
 
-    fn check(&mut self, _structure: &MessageStructure)
+    fn check(&mut self, _structure: MessageStructure)
              -> openpgp::Result<()> {
         // Implement your signature verification policy here.
         Ok(())
@@ -111,19 +121,19 @@ impl<'a> DecryptionHelper for Helper<'a> {
     fn decrypt<D>(&mut self,
                   pkesks: &[openpgp::packet::PKESK],
                   _skesks: &[openpgp::packet::SKESK],
+                  sym_algo: Option<SymmetricAlgorithm>,
                   mut decrypt: D)
                   -> openpgp::Result<Option<openpgp::Fingerprint>>
         where D: FnMut(SymmetricAlgorithm, &SessionKey) -> openpgp::Result<()>
     {
-        // The encryption key is the first and only subkey.
-        let key = self.secret.subkeys().nth(0)
-            .map(|binding| binding.key().clone())
-            .unwrap();
+        let key = self.secret.keys().unencrypted_secret()
+            .with_policy(self.policy, None)
+            .for_transport_encryption().nth(0).unwrap().key().clone();
 
         // The secret key is not encrypted.
-        let mut pair = key.mark_parts_secret().unwrap().into_keypair().unwrap();
+        let mut pair = key.into_keypair().unwrap();
 
-        pkesks[0].decrypt(&mut pair)
+        pkesks[0].decrypt(&mut pair, sym_algo)
             .and_then(|(algo, session_key)| decrypt(algo, &session_key))
             .map(|_| None)
         // XXX: In production code, return the Fingerprint of the

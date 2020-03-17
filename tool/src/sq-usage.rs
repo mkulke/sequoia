@@ -87,6 +87,8 @@
 //!     -r, --recipient <LABEL>...                 Recipient to encrypt for (can be given multiple times)
 //!         --recipient-key-file <CERT-FILE>...    Recipient to encrypt for, given as a file (can be given multiple times)
 //!         --signer-key-file <TSK-FILE>...        Secret key to sign with, given as a file (can be given multiple times)
+//!     -t, --time <TIME>                          Chooses keys valid at the specified time and sets the signature's
+//!                                                creation time
 //!
 //! ARGS:
 //!     <FILE>    Sets the input file to use
@@ -111,6 +113,8 @@
 //! OPTIONS:
 //!     -o, --output <FILE>                    Sets the output file to use
 //!         --secret-key-file <TSK-FILE>...    Secret key to sign with, given as a file (can be given multiple times)
+//!     -t, --time <TIME>                      Chooses keys valid at the specified time and sets the signature's creation
+//!                                            time
 //!
 //! ARGS:
 //!     <FILE>    Sets the input file to use
@@ -490,8 +494,9 @@
 //!                                          transport, storage, universal]
 //!     -c, --cipher-suite <CIPHER-SUITE>    Cryptographic algorithms used for the key. [default: cv25519]  [possible
 //!                                          values: rsa3k, rsa4k, cv25519]
-//!         --expiry <EXPIRY>                When the key should expire.  Either 'N[ymwd]', for N years, months, weeks, or
-//!                                          days, or 'never'.
+//!         --expires <TIME>                 Absolute time When the key should expire, or 'never'.
+//!         --expires-in <DURATION>          Relative time when the key should expire.  Either 'N[ymwd]', for N years,
+//!                                          months, weeks, or days, or 'never'.
 //!     -e, --export <OUTFILE>               Exports the key instead of saving it in the store
 //!         --rev-cert <FILE or ->           Sets the output file for the revocation certificate. Default is <OUTFILE>.rev,
 //!                                          mandatory if OUTFILE is '-'.
@@ -589,10 +594,34 @@
 //!     -V, --version    Prints version information
 //!
 //! SUBCOMMANDS:
-//!     dump     Lists OpenPGP packets
-//!     help     Prints this message or the help of the given subcommand(s)
-//!     join     Joins OpenPGP packets split across files
-//!     split    Splits a message into OpenPGP packets
+//!     decrypt    Decrypts an OpenPGP message, dumping the content of the encryption container without further
+//!                processing
+//!     dump       Lists OpenPGP packets
+//!     help       Prints this message or the help of the given subcommand(s)
+//!     join       Joins OpenPGP packets split across files
+//!     split      Splits a message into OpenPGP packets
+//! ```
+//!
+//! ### Subcommand packet decrypt
+//!
+//! ```text
+//! Decrypts an OpenPGP message, dumping the content of the encryption container without further processing
+//!
+//! USAGE:
+//!     sq packet decrypt [FLAGS] [OPTIONS] [--] [FILE]
+//!
+//! FLAGS:
+//!     -B, --binary              Don't ASCII-armor encode the OpenPGP data
+//!         --dump-session-key    Prints the session key to stderr
+//!     -h, --help                Prints help information
+//!     -V, --version             Prints version information
+//!
+//! OPTIONS:
+//!     -o, --output <FILE>                    Sets the output file to use
+//!         --secret-key-file <TSK-FILE>...    Secret key to decrypt with, given as a file (can be given multiple times)
+//!
+//! ARGS:
+//!     <FILE>    Sets the input file to use
 //! ```
 //!
 //! ### Subcommand packet dump
@@ -686,7 +715,7 @@
 //! updated and existing ones will be updated.
 //!
 //! USAGE:
-//!     sq wkd generate [FLAGS] <BASE-DIRECTORY> <DOMAIN> [KEYRING]
+//!     sq wkd generate [FLAGS] <WEB-ROOT> <DOMAIN> [KEYRING]
 //!
 //! FLAGS:
 //!     -d, --direct_method    Use the direct method. [default: advanced method]
@@ -694,9 +723,10 @@
 //!     -V, --version          Prints version information
 //!
 //! ARGS:
-//!     <BASE-DIRECTORY>    The location to write the WKD to
-//!     <DOMAIN>            The domain for the WKD.
-//!     <KEYRING>           The keyring file with the keys to add to the WKD.
+//!     <WEB-ROOT>    The location to write the WKD to. This must be the directory the webserver is serving the '.well-
+//!                   known' directory from.
+//!     <DOMAIN>      The domain for the WKD.
+//!     <KEYRING>     The keyring file with the keys to add to the WKD.
 //! ```
 //!
 //! ### Subcommand wkd get

@@ -10,11 +10,12 @@
 use std::env;
 use std::collections::HashMap;
 extern crate sequoia_openpgp as openpgp;
-use crate::openpgp::Packet;
+use crate::openpgp::{Packet, Fingerprint, KeyID, KeyHandle};
 use crate::openpgp::types::*;
 use crate::openpgp::packet::{user_attribute, header::BodyLength, Tag};
 use crate::openpgp::packet::signature::subpacket::SubpacketTag;
 use crate::openpgp::parse::{Parse, PacketParserResult, PacketParser};
+use crate::openpgp::serialize::MarshalInto;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -34,7 +35,10 @@ fn main() {
     let mut tags_size_count = vec![0; 64];
     let mut tags_size_min = vec![::std::u32::MAX; 64];
     let mut tags_size_max = vec![0; 64];
+
+    // Signature statistics.
     let mut sigs_count = vec![0; 256];
+    let mut sigs_count_1st_party = vec![0; 256];
 
     // Signature Subpacket statistics.
     let mut sigs_subpacket_tags_count = vec![0; 256];
@@ -74,6 +78,11 @@ fn main() {
     let mut ua_unknown_count = vec![0; 256];
     let mut ua_invalid_count = 0;
 
+    // Current certificate.
+    let mut current_fingerprint =
+        KeyHandle::Fingerprint(Fingerprint::from_bytes(&vec![0; 20]));
+    let mut current_keyid = KeyHandle::KeyID(KeyID::wildcard());
+
     // For each input file, create a parser.
     for input in &args[1..] {
         eprintln!("Parsing {}...", input);
@@ -101,20 +110,38 @@ fn main() {
 
             match packet {
                 // If a new Cert starts, update Cert statistics.
-                Packet::PublicKey(_) | Packet::SecretKey(_) => {
+                Packet::PublicKey(ref k) => {
                     if cert_count > 0 {
                         cert.update_min_max(&mut cert_min, &mut cert_max);
                     }
                     cert_count += 1;
                     cert = PerCert::min();
+                    current_fingerprint = k.fingerprint().into();
+                    current_keyid = k.keyid().into();
+                },
+                Packet::SecretKey(ref k) => {
+                    if cert_count > 0 {
+                        cert.update_min_max(&mut cert_min, &mut cert_max);
+                    }
+                    cert_count += 1;
+                    cert = PerCert::min();
+                    current_fingerprint = k.fingerprint().into();
+                    current_keyid = k.keyid().into();
                 },
 
                 Packet::Signature(ref sig) => {
                     sigs_count[u8::from(sig.typ()) as usize] += 1;
+                    let issuers = sig.get_issuers();
+                    if issuers.contains(&current_keyid)
+                        || issuers.contains(&current_fingerprint)
+                    {
+                        sigs_count_1st_party[u8::from(sig.typ()) as usize] += 1;
+                    }
+
                     cert.sigs[u8::from(sig.typ()) as usize] += 1;
                     let mut signature = PerSignature::min();
 
-                    for (_offset, len, sub) in sig.hashed_area().iter()
+                    for sub in sig.hashed_area().iter()
                         .chain(sig.unhashed_area().iter())
                     {
                         use crate::openpgp::packet::signature::subpacket::*;
@@ -122,10 +149,11 @@ fn main() {
                         sigs_subpacket_tags_count[i] += 1;
                         cert.sigs_subpacket_tags_count[i] += 1;
                         signature.subpacket_tags_count[i] += 1;
-                        if let SubpacketValue::Unknown(_) = sub.value() {
+                        if let SubpacketValue::Unknown { .. } = sub.value() {
                             sigs_subpacket_tags_unknown
                                 [u8::from(sub.tag()) as usize] += 1;
                         } else {
+                            let len = sub.serialized_len();
                             sigs_subpacket_tags_size_bytes[i] += len;
                             sigs_subpacket_tags_size_count[i] += 1;
                             let len = len as u32;
@@ -137,7 +165,8 @@ fn main() {
                             }
 
                             match sub.value() {
-                                SubpacketValue::Unknown(_) => unreachable!(),
+                                SubpacketValue::Unknown { .. } =>
+                                    unreachable!(),
                                 SubpacketValue::KeyFlags(k) =>
                                     if let Some(count) = key_flags.get_mut(&k) {
                                         *count += 1;
@@ -278,6 +307,9 @@ fn main() {
                 println!("{:>22} {:>9}",
                          format!("{:?}", SignatureType::from(t as u8)),
                          sigs_count[t]);
+                println!("{:>22} {:>9}", "1st party", sigs_count_1st_party[t]);
+                println!("{:>22} {:>9}", "3rd party",
+                         sigs_count[t] - sigs_count_1st_party[t]);
             }
         }
 

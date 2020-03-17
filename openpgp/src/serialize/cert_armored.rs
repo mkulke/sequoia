@@ -3,12 +3,14 @@ use std::io;
 use std::str;
 
 use crate::armor;
+use crate::cert::{Cert, amalgamation::ValidAmalgamation};
 use crate::Result;
-use crate::RevocationStatus;
+use crate::types::RevocationStatus;
 use crate::serialize::{
-    Serialize, SerializeInto, generic_serialize_into, generic_export_into,
+    Marshal, MarshalInto,
+    generic_serialize_into, generic_export_into,
 };
-use crate::Cert;
+use crate::policy::StandardPolicy as P;
 
 
 /// Whether or not a character is printable.
@@ -23,28 +25,21 @@ impl Cert {
     /// Creates descriptive armor headers.
     ///
     /// Returns armor headers that describe this Cert.  The Cert's
-    /// primary fingerprint and userids are included as comments, so
-    /// that it is easier to identify the Cert when looking at the
-    /// armored data.
+    /// primary fingerprint and valid userids (according to the
+    /// default policy) are included as comments, so that it is easier
+    /// to identify the Cert when looking at the armored data.
     pub fn armor_headers(&self) -> Vec<String> {
+        let p = &P::default();
+
         let length_value = armor::LINE_LENGTH - "Comment: ".len();
         // Create a header per userid.
-        let mut headers: Vec<String> = self.userids()
+        let mut headers: Vec<String> = self.userids().with_policy(p, None)
             // Ignore revoked userids.
             .filter_map(|uidb| {
-                if let RevocationStatus::Revoked(_) = uidb.revoked(None) {
+                if let RevocationStatus::Revoked(_) = uidb.revoked() {
                     None
                 } else {
                     Some(uidb)
-                }
-            // Ignore userids not "alive".
-            }).filter_map(|uidb| {
-                if uidb.binding_signature(None)?
-                    .signature_alive(None, None)
-                {
-                    Some(uidb)
-                } else {
-                    None
                 }
             // Ignore userids with non-printable characters.
             }).filter_map(|uidb| {
@@ -75,13 +70,13 @@ impl Cert {
     ///
     /// ```rust
     /// use sequoia_openpgp as openpgp;
-    /// use openpgp::cert;
+    /// use openpgp::cert::prelude::*;
     /// use openpgp::serialize::SerializeInto;
     ///
     /// # f().unwrap();
     /// # fn f() -> openpgp::Result<()> {
     /// let (cert, _) =
-    ///     cert::CertBuilder::general_purpose(None, Some("Mr. Pink ☮☮☮"))
+    ///     CertBuilder::general_purpose(None, Some("Mr. Pink ☮☮☮"))
     ///     .generate()?;
     /// let armored = String::from_utf8(cert.armored().to_vec()?)?;
     ///
@@ -89,7 +84,9 @@ impl Cert {
     /// assert!(armored.contains("Mr. Pink ☮☮☮"));
     /// # Ok(()) }
     /// ```
-    pub fn armored<'a>(&'a self) -> impl Serialize + SerializeInto + 'a {
+    pub fn armored<'a>(&'a self)
+        -> impl crate::serialize::Serialize + crate::serialize::SerializeInto + 'a
+    {
         Encoder::new(self)
     }
 }
@@ -121,14 +118,18 @@ impl<'a> Encoder<'a> {
 
         let mut w = armor::Writer::new(o, armor::Kind::PublicKey, &headers)?;
         if export {
-            self.cert.export(&mut w)
+            self.cert.export(&mut w)?;
         } else {
-            self.cert.serialize(&mut w)
+            self.cert.serialize(&mut w)?;
         }
+        w.finalize()?;
+        Ok(())
     }
 }
 
-impl<'a> Serialize for Encoder<'a> {
+impl<'a> crate::serialize::Serialize for Encoder<'a> {}
+
+impl<'a> Marshal for Encoder<'a> {
     fn serialize(&self, o: &mut dyn io::Write) -> Result<()> {
         self.serialize_common(o, false)
     }
@@ -138,11 +139,13 @@ impl<'a> Serialize for Encoder<'a> {
     }
 }
 
-impl<'a> SerializeInto for Encoder<'a> {
+impl<'a> crate::serialize::SerializeInto for Encoder<'a> {}
+
+impl<'a> MarshalInto for Encoder<'a> {
     fn serialized_len(&self) -> usize {
         let h = self.cert.armor_headers();
         let headers_len =
-            "Comment: ".len() * h.len()
+            ("Comment: ".len() + 1 /* NL */) * h.len()
             + h.iter().map(|c| c.len()).sum::<usize>();
         let body_len = (self.cert.serialized_len() + 2) / 3 * 4; // base64
 
@@ -166,7 +169,7 @@ impl<'a> SerializeInto for Encoder<'a> {
 #[cfg(test)]
 mod tests {
     use crate::armor::{Kind, Reader, ReaderMode};
-    use crate::cert::CertBuilder;
+    use crate::cert::prelude::*;
     use crate::parse::Parse;
 
     use super::*;
@@ -270,7 +273,7 @@ mod tests {
         let userid5: String = userid5.into_iter().collect();
 
         // Create a Cert with the userids.
-        let (cert, _) = CertBuilder::autocrypt(None, Some(&userid1[..]))
+        let (cert, _) = CertBuilder::general_purpose(None, Some(&userid1[..]))
             .add_userid(&userid2[..])
             .add_userid(&userid3[..])
             .add_userid(&userid4[..])
@@ -308,5 +311,21 @@ mod tests {
         assert_eq!(headers_iter.next().unwrap(), &userid2_expected);
         assert_eq!(headers_iter.next().unwrap(), &userid3_expected);
         assert_eq!(headers_iter.next().unwrap(), &userid4_expected);
+    }
+
+    #[test]
+    fn serialize_into() {
+        let cert = Cert::from_bytes(crate::tests::key("neal.pgp")).unwrap();
+        let mut v = Vec::new();
+        cert.armored().serialize(&mut v).unwrap();
+        let v_ = cert.armored().to_vec().unwrap();
+        assert_eq!(v, v_);
+
+        // Test truncation.
+        let mut v = vec![0; cert.armored().serialized_len() - 1];
+        let r = cert.armored().serialize_into(&mut v[..]);
+        assert_match!(
+            crate::Error::InvalidArgument(_) =
+                r.unwrap_err().downcast().expect("not an openpgp::Error"));
     }
 }

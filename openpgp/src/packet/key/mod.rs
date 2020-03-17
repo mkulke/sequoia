@@ -30,8 +30,7 @@
 //! # extern crate sequoia_openpgp as openpgp;
 //! # use openpgp::Result;
 //! # use openpgp::parse::{Parse, PacketParserResult, PacketParser};
-//! # use openpgp::cert::CertParser;
-//! # use openpgp::cert::{CipherSuite, CertBuilder};
+//! # use openpgp::cert::prelude::*;
 //! use openpgp::packet::{Key, key};
 //!
 //! # fn main() { f().unwrap(); }
@@ -43,10 +42,10 @@
 //! // Get a handle to the Cert's primary key that allows using the
 //! // secret key material.
 //! use std::convert::TryInto;
-//! let sk : &key::SecretKey = cert.primary().try_into()?;
+//! let sk: &Key<key::SecretParts, key::PrimaryRole> = cert.primary_key().key().try_into()?;
 //!
 //! // Make the conversion explicit.
-//! let sk : &key::SecretKey = cert.primary().mark_parts_secret_ref()?;
+//! let sk = cert.primary_key().key().mark_parts_secret_ref()?;
 //! #     Ok(())
 //! # }
 //! ```
@@ -57,6 +56,7 @@ use std::convert::{TryFrom, TryInto};
 use std::time;
 
 use crate::Error;
+use crate::cert::prelude::*;
 use crate::crypto::{self, mem::{self, Protected}, mpis, hash::Hash};
 use crate::packet;
 use crate::packet::prelude::*;
@@ -64,20 +64,81 @@ use crate::PublicKeyAlgorithm;
 use crate::SymmetricAlgorithm;
 use crate::HashAlgorithm;
 use crate::types::{Curve, Timestamp};
-use crate::crypto::s2k::S2K;
+use crate::crypto::S2K;
 use crate::Result;
 use crate::crypto::Password;
 use crate::KeyID;
 use crate::Fingerprint;
+use crate::KeyHandle;
 
 /// A marker trait that indicates whether a `Key` only contains
 /// public key material or *may* also contains secret key
 /// material.
-pub trait KeyParts: fmt::Debug {}
+pub trait KeyParts: fmt::Debug {
+    /// Converts a key with unspecified parts into this kind of key.
+    fn convert_key<R: KeyRole>(key: Key<UnspecifiedParts, R>)
+                               -> Result<Key<Self, R>>
+        where Self: Sized;
+
+    /// Converts a reference to a key with unspecified parts into this
+    /// kind of key reference.
+    fn convert_key_ref<R: KeyRole>(key: &Key<UnspecifiedParts, R>)
+                                   -> Result<&Key<Self, R>>
+        where Self: Sized;
+
+    /// Converts a key bundle with unspecified parts into this kind of
+    /// key bundle.
+    fn convert_bundle<R: KeyRole>(bundle: KeyBundle<UnspecifiedParts, R>)
+                                  -> Result<KeyBundle<Self, R>>
+        where Self: Sized;
+
+    /// Converts a reference to a key bundle with unspecified parts
+    /// into this kind of key bundle reference.
+    fn convert_bundle_ref<R: KeyRole>(bundle: &KeyBundle<UnspecifiedParts, R>)
+                                      -> Result<&KeyBundle<Self, R>>
+        where Self: Sized;
+
+    /// Converts a key amalgamation with unspecified parts into this
+    /// kind of key amalgamation.
+    fn convert_key_amalgamation<'a, R: KeyRole>(
+        ka: ComponentAmalgamation<'a, Key<UnspecifiedParts, R>>)
+        -> Result<ComponentAmalgamation<'a, Key<Self, R>>>
+        where Self: Sized;
+
+    /// Converts a reference to a key amalgamation with unspecified
+    /// parts into this kind of key amalgamation reference.
+    fn convert_key_amalgamation_ref<'a, R: KeyRole>(
+        ka: &'a ComponentAmalgamation<'a, Key<UnspecifiedParts, R>>)
+        -> Result<&'a ComponentAmalgamation<'a, Key<Self, R>>>
+        where Self: Sized;
+}
 
 /// A marker trait that indicates whether a `Key` is a primary key or
 /// subordinate key (i.e., a subkey).
-pub trait KeyRole: fmt::Debug {}
+pub trait KeyRole: fmt::Debug {
+    /// Converts a key with unspecified role into this kind of key.
+    fn convert_key<P: KeyParts>(key: Key<P, UnspecifiedRole>)
+                                -> Key<P, Self>
+        where Self: Sized;
+
+    /// Converts a reference to a key with unspecified role into this
+    /// kind of key reference.
+    fn convert_key_ref<P: KeyParts>(key: &Key<P, UnspecifiedRole>)
+                                    -> &Key<P, Self>
+        where Self: Sized;
+
+    /// Converts a key bundle with unspecified role into this kind of
+    /// key bundle.
+    fn convert_bundle<P: KeyParts>(bundle: KeyBundle<P, UnspecifiedRole>)
+                                   -> KeyBundle<P, Self>
+        where Self: Sized;
+
+    /// Converts a reference to a key bundle with unspecified role
+    /// into this kind of key bundle reference.
+    fn convert_bundle_ref<P: KeyParts>(bundle: &KeyBundle<P, UnspecifiedRole>)
+                                       -> &KeyBundle<P, Self>
+        where Self: Sized;
+}
 
 /// Indicates that a `Key` should be treated like a public key.
 ///
@@ -87,7 +148,41 @@ pub trait KeyRole: fmt::Debug {}
 /// `PublicParts` marker, secret key material will *not* be exported.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PublicParts;
-impl KeyParts for PublicParts {}
+impl KeyParts for PublicParts {
+    fn convert_key<R: KeyRole>(key: Key<UnspecifiedParts, R>)
+                               -> Result<Key<Self, R>> {
+        Ok(key.into())
+    }
+
+    fn convert_key_ref<R: KeyRole>(key: &Key<UnspecifiedParts, R>)
+                                   -> Result<&Key<Self, R>> {
+        Ok(key.into())
+    }
+
+    fn convert_bundle<R: KeyRole>(bundle: KeyBundle<UnspecifiedParts, R>)
+                                  -> Result<KeyBundle<Self, R>> {
+        Ok(bundle.into())
+    }
+
+    fn convert_bundle_ref<R: KeyRole>(bundle: &KeyBundle<UnspecifiedParts, R>)
+                                      -> Result<&KeyBundle<Self, R>> {
+        Ok(bundle.into())
+    }
+
+    fn convert_key_amalgamation<'a, R: KeyRole>(
+        ka: ComponentAmalgamation<'a, Key<UnspecifiedParts, R>>)
+        -> Result<ComponentAmalgamation<'a, Key<Self, R>>> {
+        Ok(ka.into())
+    }
+
+    /// Converts a reference to a key amalgamation with unspecified
+    /// parts into this kind of key amalgamation reference.
+    fn convert_key_amalgamation_ref<'a, R: KeyRole>(
+        ka: &'a ComponentAmalgamation<'a, Key<UnspecifiedParts, R>>)
+        -> Result<&'a ComponentAmalgamation<'a, Key<Self, R>>> {
+        Ok(ka.into())
+    }
+}
 
 /// Indicates that a `Key` should be treated like a secret key.
 ///
@@ -97,7 +192,41 @@ impl KeyParts for PublicParts {}
 /// `SecretParts` marker, secret key material will be exported.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SecretParts;
-impl KeyParts for SecretParts {}
+impl KeyParts for SecretParts {
+    fn convert_key<R: KeyRole>(key: Key<UnspecifiedParts, R>)
+                               -> Result<Key<Self, R>>{
+        key.try_into()
+    }
+
+    fn convert_key_ref<R: KeyRole>(key: &Key<UnspecifiedParts, R>)
+                                   -> Result<&Key<Self, R>> {
+        key.try_into()
+    }
+
+    fn convert_bundle<R: KeyRole>(bundle: KeyBundle<UnspecifiedParts, R>)
+                                  -> Result<KeyBundle<Self, R>> {
+        bundle.try_into()
+    }
+
+    fn convert_bundle_ref<R: KeyRole>(bundle: &KeyBundle<UnspecifiedParts, R>)
+                                      -> Result<&KeyBundle<Self, R>> {
+        bundle.try_into()
+    }
+
+    fn convert_key_amalgamation<'a, R: KeyRole>(
+        ka: ComponentAmalgamation<'a, Key<UnspecifiedParts, R>>)
+        -> Result<ComponentAmalgamation<'a, Key<Self, R>>> {
+        ka.try_into()
+    }
+
+    /// Converts a reference to a key amalgamation with unspecified
+    /// parts into this kind of key amalgamation reference.
+    fn convert_key_amalgamation_ref<'a, R: KeyRole>(
+        ka: &'a ComponentAmalgamation<'a, Key<UnspecifiedParts, R>>)
+        -> Result<&'a ComponentAmalgamation<'a, Key<Self, R>>> {
+        ka.try_into()
+    }
+}
 
 /// Indicates that a `Key`'s parts are unspecified.
 ///
@@ -110,17 +239,91 @@ impl KeyParts for SecretParts {}
 /// different `KeyParts` marker.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct UnspecifiedParts;
-impl KeyParts for UnspecifiedParts {}
+impl KeyParts for UnspecifiedParts {
+    fn convert_key<R: KeyRole>(key: Key<UnspecifiedParts, R>)
+                               -> Result<Key<Self, R>> {
+        Ok(key)
+    }
+
+    fn convert_key_ref<R: KeyRole>(key: &Key<UnspecifiedParts, R>)
+                                   -> Result<&Key<Self, R>> {
+        Ok(key)
+    }
+
+    fn convert_bundle<R: KeyRole>(bundle: KeyBundle<UnspecifiedParts, R>)
+                                  -> Result<KeyBundle<Self, R>> {
+        Ok(bundle)
+    }
+
+    fn convert_bundle_ref<R: KeyRole>(bundle: &KeyBundle<UnspecifiedParts, R>)
+                                      -> Result<&KeyBundle<Self, R>> {
+        Ok(bundle)
+    }
+
+    fn convert_key_amalgamation<'a, R: KeyRole>(
+        ka: ComponentAmalgamation<'a, Key<UnspecifiedParts, R>>)
+        -> Result<ComponentAmalgamation<'a, Key<UnspecifiedParts, R>>> {
+        Ok(ka.into())
+    }
+
+    /// Converts a reference to a key amalgamation with unspecified
+    /// parts into this kind of key amalgamation reference.
+    fn convert_key_amalgamation_ref<'a, R: KeyRole>(
+        ka: &'a ComponentAmalgamation<'a, Key<UnspecifiedParts, R>>)
+        -> Result<&'a ComponentAmalgamation<'a, Key<Self, R>>> {
+        Ok(ka.into())
+    }
+}
 
 /// Indicates that a `Key` should treated like a primary key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PrimaryRole;
-impl KeyRole for PrimaryRole {}
+impl KeyRole for PrimaryRole {
+    fn convert_key<P: KeyParts>(key: Key<P, UnspecifiedRole>)
+                                -> Key<P, Self> {
+        key.into()
+    }
+
+    fn convert_key_ref<P: KeyParts>(key: &Key<P, UnspecifiedRole>)
+                                    -> &Key<P, Self> {
+        key.into()
+    }
+
+    fn convert_bundle<P: KeyParts>(bundle: KeyBundle<P, UnspecifiedRole>)
+                                   -> KeyBundle<P, Self> {
+        bundle.into()
+    }
+
+    fn convert_bundle_ref<P: KeyParts>(bundle: &KeyBundle<P, UnspecifiedRole>)
+                                       -> &KeyBundle<P, Self> {
+        bundle.into()
+    }
+}
 
 /// Indicates that a `Key` should treated like a subkey key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SubordinateRole;
-impl KeyRole for SubordinateRole {}
+impl KeyRole for SubordinateRole {
+    fn convert_key<P: KeyParts>(key: Key<P, UnspecifiedRole>)
+                                -> Key<P, Self> {
+        key.into()
+    }
+
+    fn convert_key_ref<P: KeyParts>(key: &Key<P, UnspecifiedRole>)
+                                    -> &Key<P, Self> {
+        key.into()
+    }
+
+    fn convert_bundle<P: KeyParts>(bundle: KeyBundle<P, UnspecifiedRole>)
+                                   -> KeyBundle<P, Self> {
+        bundle.into()
+    }
+
+    fn convert_bundle_ref<P: KeyParts>(bundle: &KeyBundle<P, UnspecifiedRole>)
+                                       -> &KeyBundle<P, Self> {
+        bundle.into()
+    }
+}
 
 /// Indicates that a `Key`'s role is unknown.
 ///
@@ -128,32 +331,56 @@ impl KeyRole for SubordinateRole {}
 /// are allowed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct UnspecifiedRole;
-impl KeyRole for UnspecifiedRole {}
+impl KeyRole for UnspecifiedRole {
+    fn convert_key<P: KeyParts>(key: Key<P, UnspecifiedRole>)
+                                -> Key<P, Self> {
+        key
+    }
+
+    fn convert_key_ref<P: KeyParts>(key: &Key<P, UnspecifiedRole>)
+                                    -> &Key<P, Self> {
+        key
+    }
+
+    fn convert_bundle<P: KeyParts>(bundle: KeyBundle<P, UnspecifiedRole>)
+                                   -> KeyBundle<P, Self> {
+        bundle
+    }
+
+    fn convert_bundle_ref<P: KeyParts>(bundle: &KeyBundle<P, UnspecifiedRole>)
+                                       -> &KeyBundle<P, Self> {
+        bundle
+    }
+}
 
 /// A Public Key.
-pub type PublicKey = Key<PublicParts, PrimaryRole>;
+pub(crate) type PublicKey = Key<PublicParts, PrimaryRole>;
 /// A Public Subkey.
-pub type PublicSubkey = Key<PublicParts, SubordinateRole>;
+pub(crate) type PublicSubkey = Key<PublicParts, SubordinateRole>;
 /// A Secret Key.
-pub type SecretKey = Key<SecretParts, PrimaryRole>;
+pub(crate) type SecretKey = Key<SecretParts, PrimaryRole>;
 /// A Secret Subkey.
-pub type SecretSubkey = Key<SecretParts, SubordinateRole>;
+pub(crate) type SecretSubkey = Key<SecretParts, SubordinateRole>;
 
 /// A key with public parts, and an unspecified role
 /// (`UnspecifiedRole`).
-pub type UnspecifiedPublic = Key<PublicParts, UnspecifiedRole>;
+#[allow(dead_code)]
+pub(crate) type UnspecifiedPublic = Key<PublicParts, UnspecifiedRole>;
 /// A key with secret parts, and an unspecified role
 /// (`UnspecifiedRole`).
-pub type UnspecifiedSecret = Key<SecretParts, UnspecifiedRole>;
+pub(crate) type UnspecifiedSecret = Key<SecretParts, UnspecifiedRole>;
 
 /// A primary key with unspecified parts (`UnspecifiedParts`).
-pub type UnspecifiedPrimary = Key<UnspecifiedParts, PrimaryRole>;
+#[allow(dead_code)]
+pub(crate) type UnspecifiedPrimary = Key<UnspecifiedParts, PrimaryRole>;
 /// A subkey key with unspecified parts (`UnspecifiedParts`).
-pub type UnspecifiedSecondary = Key<UnspecifiedParts, SubordinateRole>;
+#[allow(dead_code)]
+pub(crate) type UnspecifiedSecondary = Key<UnspecifiedParts, SubordinateRole>;
 
 /// A key whose parts and role are unspecified
 /// (`UnspecifiedParts`, `UnspecifiedRole`).
-pub type UnspecifiedKey = Key<UnspecifiedParts, UnspecifiedRole>;
+#[allow(dead_code)]
+pub(crate) type UnspecifiedKey = Key<UnspecifiedParts, UnspecifiedRole>;
 
 macro_rules! convert {
     ( $x:ident ) => {
@@ -224,26 +451,29 @@ macro_rules! convert_ref {
 // To solve this, we need at least one generic variable to be
 // concrete on both sides of the `From`.
 
-macro_rules! create_conversions {
-    ( $Key:ident ) => {
+macro_rules! create_part_conversions {
+    ( $Key:ident<$( $l:lifetime ),*; $( $g:ident ),*>) => {
+        create_part_conversions!($Key<$($l),*; $($g),*> where );
+    };
+    ( $Key:ident<$( $l:lifetime ),*; $( $g:ident ),*> where $( $w:ident: $c:path ),* ) => {
         // Convert between two KeyParts for a constant KeyRole.
         // Unfortunately, we can't let the KeyRole vary as otherwise we
         // get conflicting types when we do the same to convert between
         // two KeyRoles for a constant KeyParts. :(
         macro_rules! p {
-            ( <$from_parts:ty> -> <$to_parts:ty>) => {
-                impl<R> From<$Key<$from_parts, R>> for $Key<$to_parts, R>
-                    where R: KeyRole
+            ( <$from_parts:ty> -> <$to_parts:ty> ) => {
+                impl<$($l, )* $($g, )* > From<$Key<$($l, )* $from_parts, $($g, )* >> for $Key<$($l, )* $to_parts, $($g, )* >
+                    where $($w: $c ),*
                 {
-                    fn from(p: $Key<$from_parts, R>) -> Self {
+                    fn from(p: $Key<$($l, )* $from_parts, $($g, )* >) -> Self {
                         convert!(p)
                     }
                 }
 
-                impl<R> From<&$Key<$from_parts, R>> for &$Key<$to_parts, R>
-                    where R: KeyRole
+                impl<$($l, )* $($g, )* > From<&$($l)* $Key<$($l, )* $from_parts, $($g, )* >> for &$($l)* $Key<$($l, )* $to_parts, $($g, )* >
+                    where $($w: $c ),*
                 {
-                    fn from(p: &$Key<$from_parts, R>) -> Self {
+                    fn from(p: &$($l)* $Key<$($l, )* $from_parts, $($g, )* >) -> Self {
                         convert_ref!(p)
                     }
                 }
@@ -253,21 +483,21 @@ macro_rules! create_conversions {
         // Likewise, but using TryFrom.
         macro_rules! p_try {
             ( <$from_parts:ty> -> <$to_parts:ty>) => {
-                impl<R> TryFrom<$Key<$from_parts, R>> for $Key<$to_parts, R>
-                    where R: KeyRole
+                impl<$($l, )* $($g, )* > TryFrom<$Key<$($l, )* $from_parts, $($g, )* >> for $Key<$($l, )* $to_parts, $($g, )* >
+                    where $($w: $c ),*
                 {
-                    type Error = failure::Error;
-                    fn try_from(p: $Key<$from_parts, R>) -> Result<Self> {
+                    type Error = anyhow::Error;
+                    fn try_from(p: $Key<$($l, )* $from_parts, $($g, )* >) -> Result<Self> {
                         p.mark_parts_secret()
                     }
                 }
 
-                impl<R> TryFrom<&$Key<$from_parts, R>> for &$Key<$to_parts, R>
-                    where R: KeyRole
+                impl<$($l, )* $($g, )* > TryFrom<&$($l)* $Key<$($l, )* $from_parts, $($g, )* >> for &$($l)* $Key<$($l, )* $to_parts, $($g, )* >
+                    where $($w: $c ),*
                 {
-                    type Error = failure::Error;
-                    fn try_from(p: &$Key<$from_parts, R>) -> Result<Self> {
-                        if p.secret().is_some() {
+                    type Error = anyhow::Error;
+                    fn try_from(p: &$($l)* $Key<$($l, )* $from_parts, $($g, )* >) -> Result<Self> {
+                        if p.has_secret() {
                             Ok(convert_ref!(p))
                         } else {
                             Err(Error::InvalidArgument("No secret key".into())
@@ -288,22 +518,89 @@ macro_rules! create_conversions {
         p!(<UnspecifiedParts> -> <PublicParts>);
         p_try!(<UnspecifiedParts> -> <SecretParts>);
 
+
+        impl<$($l, )* P, $($g, )*> $Key<$($l, )* P, $($g, )*> where P: KeyParts, $($w: $c ),*
+        {
+            /// Changes the key's parts tag to `PublicParts`.
+            pub fn mark_parts_public(self) -> $Key<$($l, )* PublicParts, $($g, )*> {
+                // Ideally, we'd use self.into() to do the actually
+                // conversion.  But, because P is not concrete, we get the
+                // following error:
+                //
+                //     error[E0277]: the trait bound `packet::Key<packet::key::PublicParts, R>: std::convert::From<packet::Key<P, R>>` is not satisfied
+                //        --> openpgp/src/packet/key.rs:401:18
+                //         |
+                //     401 |             self.into()
+                //         |                  ^^^^ the trait `std::convert::From<packet::Key<P, R>>` is not implemented for `packet::Key<packet::key::PublicParts, R>`
+                //         |
+                //         = help: consider adding a `where packet::Key<packet::key::PublicParts, R>: std::convert::From<packet::Key<P, R>>` bound
+                //         = note: required because of the requirements on the impl of `std::convert::Into<packet::Key<packet::key::PublicParts, R>>` for `packet::Key<P, R>`
+                //
+                // But we can't implement implement `From<Key<P, R>>` for
+                // `Key<PublicParts, R>`, because that conflicts with a
+                // standard conversion!  (See the comment for the `p`
+                // macro above.)
+                //
+                // Adding the trait bound is annoying, because then we'd
+                // have to add it everywhere that we use into.
+                convert!(self)
+            }
+
+            /// Changes the key's parts tag to `PublicParts`.
+            pub fn mark_parts_public_ref(&$($l)* self) -> &$($l)* $Key<$($l, )* PublicParts, $($g, )*> {
+                convert_ref!(self)
+            }
+
+            /// Changes the key's parts tag to `SecretParts`.
+            pub fn mark_parts_secret(self) -> Result<$Key<$($l, )* SecretParts, $($g, )*>> {
+                if self.has_secret() {
+                    Ok(convert!(self))
+                } else {
+                    Err(Error::InvalidArgument("No secret key".into()).into())
+                }
+            }
+
+            /// Changes the key's parts tag to `SecretParts`.
+            pub fn mark_parts_secret_ref(&$($l)* self) -> Result<&$($l)* $Key<$($l, )* SecretParts, $($g, )*>>
+            {
+                if self.has_secret() {
+                    Ok(convert_ref!(self))
+                } else {
+                    Err(Error::InvalidArgument("No secret key".into()).into())
+                }
+            }
+
+            /// Changes the key's parts tag to `UnspecifiedParts`.
+            pub fn mark_parts_unspecified(self) -> $Key<$($l, )* UnspecifiedParts, $($g, )*> {
+                convert!(self)
+            }
+
+            /// Changes the key's parts tag to `UnspecifiedParts`.
+            pub fn mark_parts_unspecified_ref(&$($l)* self) -> &$Key<$($l, )* UnspecifiedParts, $($g, )*> {
+                convert_ref!(self)
+            }
+        }
+    }
+}
+
+macro_rules! create_role_conversions {
+    ( $Key:ident<$( $l:lifetime ),*> ) => {
         // Convert between two KeyRoles for a constant KeyParts.  See
         // the comment for the p macro above.
         macro_rules! r {
             ( <$from_role:ty> -> <$to_role:ty>) => {
-                impl<P> From<$Key<P, $from_role>> for $Key<P, $to_role>
+                impl<$($l, )* P> From<$Key<$($l, )* P, $from_role>> for $Key<$($l, )* P, $to_role>
                     where P: KeyParts
                 {
-                    fn from(p: $Key<P, $from_role>) -> Self {
+                    fn from(p: $Key<$($l, )* P, $from_role>) -> Self {
                         convert!(p)
                     }
                 }
 
-                impl<P> From<&$Key<P, $from_role>> for &$Key<P, $to_role>
+                impl<$($l, )* P> From<&$($l)* $Key<$($l, )* P, $from_role>> for &$($l)* $Key<$($l, )* P, $to_role>
                     where P: KeyParts
                 {
-                    fn from(p: &$Key<P, $from_role>) -> Self {
+                    fn from(p: &$($l)* $Key<$($l, )* P, $from_role>) -> Self {
                         convert_ref!(p)
                     }
                 }
@@ -318,22 +615,29 @@ macro_rules! create_conversions {
 
         r!(<UnspecifiedRole> -> <PrimaryRole>);
         r!(<UnspecifiedRole> -> <SubordinateRole>);
+    }
+}
+
+macro_rules! create_conversions {
+    ( $Key:ident<$( $l:lifetime ),*> ) => {
+        create_part_conversions!($Key<$($l ),* ; R> where R: KeyRole);
+        create_role_conversions!($Key<$($l ),* >);
 
         // We now handle converting both the part and the role at the same
         // time.
 
         macro_rules! f {
             ( <$from_parts:ty, $from_role:ty> -> <$to_parts:ty, $to_role:ty> ) => {
-                impl From<$Key<$from_parts, $from_role>> for $Key<$to_parts, $to_role>
+                impl<$($l ),*> From<$Key<$($l, )* $from_parts, $from_role>> for $Key<$($l, )* $to_parts, $to_role>
                 {
-                    fn from(p: $Key<$from_parts, $from_role>) -> Self {
+                    fn from(p: $Key<$($l, )* $from_parts, $from_role>) -> Self {
                         convert!(p)
                     }
                 }
 
-                impl From<&$Key<$from_parts, $from_role>> for &$Key<$to_parts, $to_role>
+                impl<$($l ),*> From<&$($l)* $Key<$($l, )* $from_parts, $from_role>> for &$($l)* $Key<$($l, )* $to_parts, $to_role>
                 {
-                    fn from(p: &$Key<$from_parts, $from_role>) -> Self {
+                    fn from(p: &$($l)* $Key<$from_parts, $from_role>) -> Self {
                         convert_ref!(p)
                     }
                 }
@@ -435,100 +739,38 @@ macro_rules! create_conversions {
         //f!(<UnspecifiedParts, UnspecifiedRole> -> <UnspecifiedParts, UnspecifiedRole>);
 
 
-        impl<P, R> $Key<P, R> where P: KeyParts, R: KeyRole
-        {
-            /// Changes the key's parts tag to `PublicParts`.
-            pub fn mark_parts_public(self) -> $Key<PublicParts, R> {
-                // Ideally, we'd use self.into() to do the actually
-                // conversion.  But, because P is not concrete, we get the
-                // following error:
-                //
-                //     error[E0277]: the trait bound `packet::Key<packet::key::PublicParts, R>: std::convert::From<packet::Key<P, R>>` is not satisfied
-                //        --> openpgp/src/packet/key.rs:401:18
-                //         |
-                //     401 |             self.into()
-                //         |                  ^^^^ the trait `std::convert::From<packet::Key<P, R>>` is not implemented for `packet::Key<packet::key::PublicParts, R>`
-                //         |
-                //         = help: consider adding a `where packet::Key<packet::key::PublicParts, R>: std::convert::From<packet::Key<P, R>>` bound
-                //         = note: required because of the requirements on the impl of `std::convert::Into<packet::Key<packet::key::PublicParts, R>>` for `packet::Key<P, R>`
-                //
-                // But we can't implement implement `From<Key<P, R>>` for
-                // `Key<PublicParts, R>`, because that conflicts with a
-                // standard conversion!  (See the comment for the `p`
-                // macro above.)
-                //
-                // Adding the trait bound is annoying, because then we'd
-                // have to add it everywhere that we use into.
-                convert!(self)
-            }
-
-            /// Changes the key's parts tag to `PublicParts`.
-            pub fn mark_parts_public_ref(&self) -> &$Key<PublicParts, R> {
-                convert_ref!(self)
-            }
-
-            /// Changes the key's parts tag to `SecretParts`.
-            pub fn mark_parts_secret(self) -> Result<$Key<SecretParts, R>> {
-                if self.secret().is_some() {
-                    Ok(convert!(self))
-                } else {
-                    Err(Error::InvalidArgument("No secret key".into()).into())
-                }
-            }
-
-            /// Changes the key's parts tag to `SecretParts`.
-            pub fn mark_parts_secret_ref(&self) -> Result<&$Key<SecretParts, R>>
-            {
-                if self.secret().is_some() {
-                    Ok(convert_ref!(self))
-                } else {
-                    Err(Error::InvalidArgument("No secret key".into()).into())
-                }
-            }
-
-            /// Changes the key's parts tag to `UnspecifiedParts`.
-            pub fn mark_parts_unspecified(self) -> $Key<UnspecifiedParts, R> {
-                convert!(self)
-            }
-
-            /// Changes the key's parts tag to `UnspecifiedParts`.
-            pub fn mark_parts_unspecified_ref(&self) -> &$Key<UnspecifiedParts, R> {
-                convert_ref!(self)
-            }
-        }
-
-        impl<P, R> $Key<P, R> where P: KeyParts, R: KeyRole
+        impl<$($l, )* P, R> $Key<$($l, )* P, R> where P: KeyParts, R: KeyRole
         {
             /// Changes the key's role tag to `PrimaryRole`.
-            pub fn mark_role_primary(self) -> $Key<P, PrimaryRole> {
+            pub fn mark_role_primary(self) -> $Key<$($l, )* P, PrimaryRole> {
                 convert!(self)
             }
 
             /// Changes the key's role tag to `PrimaryRole`.
-            pub fn mark_role_primary_ref(&self) -> &$Key<P, PrimaryRole> {
+            pub fn mark_role_primary_ref(&$($l)* self) -> &$($l)* $Key<$($l, )* P, PrimaryRole> {
                 convert_ref!(self)
             }
 
             /// Changes the key's role tag to `SubordinateRole`.
-            pub fn mark_role_secondary(self) -> $Key<P, SubordinateRole>
+            pub fn mark_role_subordinate(self) -> $Key<$($l, )* P, SubordinateRole>
             {
                 convert!(self)
             }
 
             /// Changes the key's role tag to `SubordinateRole`.
-            pub fn mark_role_secondary_ref(&self) -> &$Key<P, SubordinateRole>
+            pub fn mark_role_subordinate_ref(&$($l)* self) -> &$($l)* $Key<$($l, )* P, SubordinateRole>
             {
                 convert_ref!(self)
             }
 
             /// Changes the key's role tag to `UnspecifiedRole`.
-            pub fn mark_role_unspecified(self) -> $Key<P, UnspecifiedRole>
+            pub fn mark_role_unspecified(self) -> $Key<$($l, )* P, UnspecifiedRole>
             {
                 convert!(self)
             }
 
             /// Changes the key's role tag to `UnspecifiedRole`.
-            pub fn mark_role_unspecified_ref(&self) -> &$Key<P, UnspecifiedRole>
+            pub fn mark_role_unspecified_ref(&$($l)* self) -> &$($l)* $Key<$($l, )* P, UnspecifiedRole>
             {
                 convert_ref!(self)
             }
@@ -536,18 +778,35 @@ macro_rules! create_conversions {
     }
 }
 
-create_conversions!(Key);
-create_conversions!(Key4);
+impl<K: key::KeyParts, R: key::KeyRole> KeyBundle<K, R>
+{
+    fn has_secret(&self) -> bool {
+        self.key().secret.is_some()
+    }
+}
 
-use crate::cert::KeyBinding;
-create_conversions!(KeyBinding);
+create_conversions!(Key<>);
+create_conversions!(Key4<>);
+create_conversions!(KeyBundle<>);
+
+// A hack, since the type has to be an ident, which means that we
+// can't use <>.
+type KeyComponentAmalgamation<'a, P, R> = ComponentAmalgamation<'a, Key<P, R>>;
+create_conversions!(KeyComponentAmalgamation<'a>);
+
+create_part_conversions!(PrimaryKeyAmalgamation<'a;>);
+create_part_conversions!(SubordinateKeyAmalgamation<'a;>);
+create_part_conversions!(ErasedKeyAmalgamation<'a;>);
+create_part_conversions!(ValidPrimaryKeyAmalgamation<'a;>);
+create_part_conversions!(ValidSubordinateKeyAmalgamation<'a;>);
+create_part_conversions!(ValidErasedKeyAmalgamation<'a;>);
 
 /// Holds a public key, public subkey, private key or private subkey packet.
 ///
 /// See [Section 5.5 of RFC 4880] for details.
 ///
 ///   [Section 5.5 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.5
-#[derive(PartialEq, Eq, Hash, Clone)]
+#[derive(Clone)]
 pub struct Key4<P, R>
     where P: KeyParts, R: KeyRole
 {
@@ -566,6 +825,25 @@ pub struct Key4<P, R>
     r: std::marker::PhantomData<R>,
 }
 
+impl<P: KeyParts, R: KeyRole> PartialEq for Key4<P, R> {
+    fn eq(&self, other: &Key4<P, R>) -> bool {
+        self.creation_time == other.creation_time
+            && self.pk_algo == other.pk_algo
+            && self.mpis == other.mpis
+            && self.secret == other.secret
+    }
+}
+
+impl<P: KeyParts, R: KeyRole> Eq for Key4<P, R> {}
+
+impl<P: KeyParts, R: KeyRole> std::hash::Hash for Key4<P, R> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(&self.creation_time, state);
+        std::hash::Hash::hash(&self.pk_algo, state);
+        std::hash::Hash::hash(&self.mpis, state);
+        std::hash::Hash::hash(&self.secret, state);
+    }
+}
 
 impl<P, R> fmt::Debug for Key4<P, R>
     where P: key::KeyParts,
@@ -601,18 +879,21 @@ impl<P, R> Key4<P, R>
     /// creation time and algorithm of the two `Key4`s match.  This
     /// does not consider the packet's encoding, packet's tag or the
     /// secret key material.
-    pub fn public_cmp(a: &Self, b: &Self) -> Ordering {
-        match a.mpis.cmp(&b.mpis) {
+    pub fn public_cmp<PB, RB>(&self, b: &Key4<PB, RB>) -> Ordering
+        where PB: key::KeyParts,
+              RB: key::KeyRole,
+    {
+        match self.mpis.cmp(&b.mpis) {
             Ordering::Equal => (),
             o => return o,
         }
 
-        match a.creation_time.cmp(&b.creation_time) {
+        match self.creation_time.cmp(&b.creation_time) {
             Ordering::Equal => (),
             o => return o,
         }
 
-        a.pk_algo.cmp(&b.pk_algo)
+        self.pk_algo.cmp(&b.pk_algo)
     }
 }
 
@@ -819,7 +1100,7 @@ impl<R> Key4<SecretParts, R>
 
     /// Generates a new RSA key with a public modulos of size `bits`.
     pub fn generate_rsa(bits: usize) -> Result<Self> {
-        use nettle::{rsa, Yarrow};
+        use nettle::{rsa, random::Yarrow};
         use crate::crypto::mpis::{MPI, PublicKey};
 
         let mut rng = Yarrow::default();
@@ -852,7 +1133,7 @@ impl<R> Key4<SecretParts, R>
     /// signing/encryption
     pub fn generate_ecc(for_signing: bool, curve: Curve) -> Result<Self> {
         use nettle::{
-            Yarrow,
+            random::Yarrow,
             ed25519, ed25519::ED25519_KEY_SIZE,
             curve25519, curve25519::CURVE25519_SIZE,
             ecc, ecdh, ecdsa,
@@ -1005,9 +1286,12 @@ impl<P, R> Key4<P, R>
     }
 
     /// Sets the key packet's creation time field.
-    pub fn set_creation_time(&mut self, timestamp: time::SystemTime)
-                             -> Result<time::SystemTime> {
-        Ok(std::mem::replace(&mut self.creation_time, timestamp.try_into()?)
+    pub fn set_creation_time<T>(&mut self, timestamp: T)
+                                -> Result<time::SystemTime>
+        where T: Into<time::SystemTime>
+    {
+        Ok(std::mem::replace(&mut self.creation_time,
+                             timestamp.into().try_into()?)
            .into())
     }
 
@@ -1036,23 +1320,35 @@ impl<P, R> Key4<P, R>
         ::std::mem::replace(&mut self.mpis, mpis)
     }
 
-    /// Gets the key packet's `SecretKeyMaterial`.
-    pub fn secret(&self) -> Option<&SecretKeyMaterial> {
+    /// Returns whether the key contains secret key material.
+    pub fn has_secret(&self) -> bool {
+        self.secret.is_some()
+    }
+
+    /// Returns whether the key contains unencrypted secret key
+    /// material.
+    pub fn has_unencrypted_secret(&self) -> bool
+    {
+        if let Some(secret) = &self.secret {
+            if let SecretKeyMaterial::Unencrypted { .. } = secret {
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Gets the key packet's `SecretKeyMaterial`, if any.
+    pub fn optional_secret(&self) -> Option<&SecretKeyMaterial> {
         self.secret.as_ref()
     }
 
-    /// Gets a mutable reference to the key packet's `SecretKeyMaterial`.
-    pub fn secret_mut(&mut self) -> Option<&mut SecretKeyMaterial> {
-        self.secret.as_mut()
-    }
-
-    /// Sets the key packet's `SecretKeyMaterial`.
-    ///
-    /// Returns the old value.
-    pub fn set_secret(&mut self, secret: Option<SecretKeyMaterial>)
-        -> Option<SecretKeyMaterial>
-    {
-        std::mem::replace(&mut self.secret, secret)
+    /// Computes and returns the key's fingerprint as per Section 12.2
+    /// of RFC 4880 as returns it as a KeyHandle.
+    pub fn key_handle(&self) -> KeyHandle {
+        self.fingerprint().into()
     }
 
     /// Computes and returns the key's fingerprint as per Section 12.2
@@ -1071,6 +1367,69 @@ impl<P, R> Key4<P, R>
     /// RFC 4880.
     pub fn keyid(&self) -> KeyID {
         self.fingerprint().into()
+    }
+}
+
+macro_rules! impl_common_secret_functions {
+    ($t: ident) => {
+        /// Secret key handling.
+        impl<R> Key4<$t, R>
+            where R: key::KeyRole,
+        {
+            /// Takes the key packet's `SecretKeyMaterial`, if any.
+            pub fn take_secret(mut self)
+                               -> (Key4<PublicParts, R>, Option<SecretKeyMaterial>)
+            {
+                let old = std::mem::replace(&mut self.secret, None);
+                (self.mark_parts_public(), old)
+            }
+
+            /// Adds `SecretKeyMaterial` to the packet, returning the old if
+            /// any.
+            pub fn add_secret(mut self, secret: SecretKeyMaterial)
+                              -> (Key4<SecretParts, R>, Option<SecretKeyMaterial>)
+            {
+                let old = std::mem::replace(&mut self.secret, Some(secret));
+                (self.mark_parts_secret().expect("secret just set"), old)
+            }
+        }
+    }
+}
+impl_common_secret_functions!(PublicParts);
+impl_common_secret_functions!(UnspecifiedParts);
+
+/// Secret key handling.
+impl<R> Key4<SecretParts, R>
+    where R: key::KeyRole,
+{
+    /// Gets the key packet's `SecretKeyMaterial`.
+    pub fn secret(&self) -> &SecretKeyMaterial {
+        self.secret.as_ref().expect("has secret")
+    }
+
+    /// Gets a mutable reference to the key packet's
+    /// `SecretKeyMaterial`.
+    pub fn secret_mut(&mut self) -> &mut SecretKeyMaterial {
+        self.secret.as_mut().expect("has secret")
+    }
+
+    /// Takes the key packet's `SecretKeyMaterial`.
+    pub fn take_secret(mut self)
+                       -> (Key4<PublicParts, R>, SecretKeyMaterial)
+    {
+        let old = std::mem::replace(&mut self.secret, None);
+        (self.mark_parts_public(),
+         old.expect("Key<SecretParts, _> has a secret key material"))
+    }
+
+    /// Adds `SecretKeyMaterial` to the packet, returning the old if
+    /// any.
+    pub fn add_secret(mut self, secret: SecretKeyMaterial)
+                      -> (Key4<SecretParts, R>, SecretKeyMaterial)
+    {
+        let old = std::mem::replace(&mut self.secret, Some(secret));
+        (self.mark_parts_secret().expect("secret just set"),
+         old.expect("Key<SecretParts, _> has a secret key material"))
     }
 }
 
@@ -1158,21 +1517,20 @@ impl SecretKeyMaterial {
 }
 
 /// Unencrypted secret key. Can be used as-is.
-#[derive(Eq, Hash, Clone, Debug)]
+///
+/// The secret key is encrypted in memory and only decrypted on
+/// demand.  See [`crypto::mem::Encrypted`] for details.
+///
+///  [`crypto::mem::Encrypted`]: ../../crypto/mem/struct.Encrypted.html
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Unencrypted {
     /// MPIs of the secret key.
     mpis: mem::Encrypted,
 }
 
-impl PartialEq for Unencrypted {
-    fn eq(&self, other: &Self) -> bool {
-        self.map(|a| other.map(|b| a == b))
-    }
-}
-
 impl From<mpis::SecretKeyMaterial> for Unencrypted {
     fn from(mpis: mpis::SecretKeyMaterial) -> Self {
-        use crate::serialize::Serialize;
+        use crate::serialize::Marshal;
         let mut plaintext = Vec::new();
         // We need to store the type.
         plaintext.push(
@@ -1293,7 +1651,7 @@ mod tests {
     fn encrypted_rsa_key() {
         let cert = Cert::from_bytes(
             crate::tests::key("testy-new-encrypted-with-123.pgp")).unwrap();
-        let mut pair = cert.primary().clone();
+        let mut pair = cert.primary_key().key().clone();
         let pk_algo = pair.pk_algo();
         let secret = pair.secret.as_mut().unwrap();
 
@@ -1349,7 +1707,7 @@ mod tests {
             Key4::generate_rsa(b).unwrap()
         }));
 
-        for mut key in keys {
+        for key in keys {
             let mut b = Vec::new();
             Packet::SecretKey(key.clone().into()).serialize(&mut b).unwrap();
 
@@ -1357,7 +1715,6 @@ mod tests {
             if let Some(Packet::SecretKey(Key::V4(ref parsed_key))) =
                 pp.path_ref(&[0])
             {
-                assert_eq!(key.common, parsed_key.common);
                 assert_eq!(key.creation_time, parsed_key.creation_time);
                 assert_eq!(key.pk_algo, parsed_key.pk_algo);
                 assert_eq!(key.mpis, parsed_key.mpis);
@@ -1376,10 +1733,10 @@ mod tests {
             if let Some(Packet::PublicKey(Key::V4(ref parsed_key))) =
                 pp.path_ref(&[0])
             {
-                assert!(parsed_key.secret().is_none());
+                assert!(! parsed_key.has_secret());
 
-                key.set_secret(None);
-                assert_eq!(&key.mark_parts_public(), parsed_key);
+                let key = key.take_secret().0;
+                assert_eq!(&key, parsed_key);
             } else {
                 panic!("bad packet: {:?}", pp.path_ref(&[0]));
             }
@@ -1403,10 +1760,14 @@ mod tests {
             let cipher = SymmetricAlgorithm::AES256;
             let sk = SessionKey::new(cipher.key_size().unwrap());
 
-            let pkesk =
-                PKESK3::for_recipient(cipher, &sk, &key.mark_parts_public())
-                .unwrap();
-            let (cipher_, sk_) = pkesk.decrypt(&mut keypair).unwrap();
+            let pkesk = PKESK3::for_recipient(cipher, &sk, &key).unwrap();
+            let (cipher_, sk_) = pkesk.decrypt(&mut keypair, None).unwrap();
+
+            assert_eq!(cipher, cipher_);
+            assert_eq!(sk, sk_);
+
+            let (cipher_, sk_) =
+                pkesk.decrypt(&mut keypair, Some(cipher)).unwrap();
 
             assert_eq!(cipher, cipher_);
             assert_eq!(sk, sk_);
@@ -1426,18 +1787,17 @@ mod tests {
         }));
 
         for key in keys {
-            assert!(! key.secret().unwrap().is_encrypted());
+            assert!(! key.secret().is_encrypted());
 
             let password = Password::from("foobarbaz");
             let mut encrypted_key = key.clone();
 
-            encrypted_key.secret_mut().unwrap()
-                .encrypt_in_place(&password).unwrap();
-            assert!(encrypted_key.secret().unwrap().is_encrypted());
+            encrypted_key.secret_mut().encrypt_in_place(&password).unwrap();
+            assert!(encrypted_key.secret().is_encrypted());
 
-            encrypted_key.secret_mut().unwrap()
+            encrypted_key.secret_mut()
                 .decrypt_in_place(key.pk_algo, &password).unwrap();
-            assert!(! key.secret().unwrap().is_encrypted());
+            assert!(! key.secret().is_encrypted());
             assert_eq!(key, encrypted_key);
             assert_eq!(key.secret(), encrypted_key.secret());
         }
@@ -1510,7 +1870,7 @@ mod tests {
         let dek = b"\x09\x0D\xDC\x40\xC5\x71\x51\x88\xAC\xBD\x45\x56\xD4\x2A\xDF\x77\xCD\xF4\x82\xA2\x1B\x8F\x2E\x48\x3B\xCA\xBF\xD3\xE8\x6D\x0A\x7C\xDF\x10\xe6";
 
         let key = key.mark_parts_public();
-        let got_dek = match key.secret() {
+        let got_dek = match key.optional_secret() {
             Some(SecretKeyMaterial::Unencrypted(ref u)) => u.map(|mpis| {
                 ecdh::decrypt(&key, mpis, &ciphertext)
                     .unwrap()
@@ -1550,8 +1910,7 @@ mod tests {
 
         // Expected
         let mut decryptor = key.into_keypair().unwrap();
-        let got_sk = pkesk.decrypt(&mut decryptor).unwrap();
-
+        let got_sk = pkesk.decrypt(&mut decryptor, None).unwrap();
         assert_eq!(got_sk.1, sk);
     }
 
@@ -1570,8 +1929,8 @@ mod tests {
         let key: key::PublicKey
             = Key4::import_public_ed25519(q, ctime).unwrap().into();
 
-        let mut hashed = SubpacketArea::empty();
-        let mut unhashed = SubpacketArea::empty();
+        let mut hashed = SubpacketArea::default();
+        let mut unhashed = SubpacketArea::default();
         let fpr = Fingerprint::from_hex("D81A 5DC0 DEBF EE5F 9AC8  20EB 6769 5DB9 920D 4FAC").unwrap();
         let kid = KeyID::from_hex("6769 5DB9 920D 4FAC").unwrap();
         let ctime = 1549460479.into();
@@ -1589,7 +1948,8 @@ mod tests {
                                   mpis::Signature::EdDSA{
                                       r: mpis::MPI::new(r), s: mpis::MPI::new(s)
                                   });
-        assert_eq!(sig.verify_message(&key, b"Hello, World\n").ok(), Some(true));
+        let sig: Signature = sig.into();
+        sig.verify_message(&key, b"Hello, World\n").unwrap();
     }
 
     #[test]

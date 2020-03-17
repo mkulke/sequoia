@@ -105,7 +105,7 @@ typedef enum pgp_status {
   /*/
   /// Malformed Cert.
   /*/
-  PGP_STATUS_MALFORMED_Cert = -13,
+  PGP_STATUS_MALFORMED_CERT = -13,
 
   /*/
   /// Bad signature.
@@ -130,7 +130,17 @@ typedef enum pgp_status {
   /*/
   /// Cert not supported.
   /*/
-  PGP_STATUS_UNSUPPORTED_Cert = -24,
+  PGP_STATUS_UNSUPPORTED_CERT = -24,
+
+  /*/
+  /// Expired.
+  /*/
+  PGP_STATUS_EXPIRED = -30,
+
+  /*/
+  /// Not yet live.
+  /*/
+  PGP_STATUS_NOT_YET_LIVE = -31,
 
   /* Dummy value to make sure the enumeration has a defined size.  Do
      not use this value.  */

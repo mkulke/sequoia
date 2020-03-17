@@ -4,7 +4,7 @@ use std::io::Read;
 use std::ops::{Deref, DerefMut};
 use std::fmt;
 
-use nettle::{Random, Yarrow};
+use nettle::random::{Random, Yarrow};
 
 use crate::types::HashAlgorithm;
 use crate::Result;
@@ -15,9 +15,10 @@ pub(crate) mod ecdh;
 pub mod hash;
 mod keygrip;
 pub use self::keygrip::Keygrip;
-pub(crate) mod mem;
+pub mod mem;
 pub mod mpis;
-pub mod s2k;
+mod s2k;
+pub use s2k::S2K;
 pub mod sexp;
 pub(crate) mod symmetric;
 
@@ -29,9 +30,7 @@ pub use self::asymmetric::{
 
 /// Fills the given buffer with random data.
 pub fn random<B: AsMut<[u8]>>(mut buf: B) {
-    use std::cell::RefCell;
-    thread_local!(static RNG: RefCell<Yarrow> = Default::default());
-    RNG.with(|rng| rng.borrow_mut().random(buf.as_mut()));
+    Yarrow::default().random(buf.as_mut());
 }
 
 /// Holds a session key.
@@ -46,11 +45,6 @@ impl SessionKey {
         let mut sk: mem::Protected = vec![0; size].into();
         random(&mut sk);
         Self(sk)
-    }
-
-    /// Converts to a buffer for modification.
-    pub unsafe fn into_vec(self) -> Vec<u8> {
-        self.0.into_vec()
     }
 }
 
@@ -112,33 +106,22 @@ impl fmt::Debug for SessionKey {
 
 /// Holds a password.
 ///
-/// The password is cleared when dropped.
+/// The password is encrypted in memory and only decrypted on demand.
+/// See [`mem::Encrypted`] for details.
+///
+///  [`mem::Encrypted`]: mem/struct.Encrypted.html
 #[derive(Clone, PartialEq, Eq)]
-pub struct Password(mem::Protected);
-
-impl AsRef<[u8]> for Password {
-    fn as_ref(&self) -> &[u8] {
-        &self.0
-    }
-}
-
-impl Deref for Password {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
+pub struct Password(mem::Encrypted);
 
 impl From<Vec<u8>> for Password {
     fn from(v: Vec<u8>) -> Self {
-        Password(v.into())
+        Password(mem::Encrypted::new(v.into()))
     }
 }
 
 impl From<Box<[u8]>> for Password {
     fn from(v: Box<[u8]>) -> Self {
-        Password(v.into())
+        Password(mem::Encrypted::new(v.into()))
     }
 }
 
@@ -162,16 +145,32 @@ impl From<&[u8]> for Password {
 
 impl fmt::Debug for Password {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Password ({:?})", self.0)
+        if cfg!(debug_assertions) {
+            self.map(|p| write!(f, "Password({:?})", p))
+        } else {
+            f.write_str("Password(<Encrypted>)")
+        }
+    }
+}
+
+impl Password {
+    /// Maps the given function over the password.
+    pub fn map<F, T>(&self, fun: F) -> T
+        where F: FnMut(&mem::Protected) -> T
+    {
+        self.0.map(fun)
     }
 }
 
 
-/// Hash the specified file.
+/// Hashes the given reader.
 ///
-/// This is useful when verifying detached signatures.
-pub fn hash_file<R: Read>(reader: R, algos: &[HashAlgorithm])
-    -> Result<Vec<(HashAlgorithm, hash::Context)>>
+/// This can be used to verify detached signatures.  For a more
+/// convenient method, see [`DetachedVerifier`].
+///
+///  [`DetachedVerifier`]: ../parse/stream/struct.DetachedVerifier.html
+pub fn hash_reader<R: Read>(reader: R, algos: &[HashAlgorithm])
+    -> Result<Vec<hash::Context>>
 {
     use std::mem;
 
@@ -190,16 +189,15 @@ pub fn hash_file<R: Read>(reader: R, algos: &[HashAlgorithm])
     // Hash all of the data.
     reader.drop_eof()?;
 
-    let mut hashes =
+    let hashes =
         mem::replace(&mut reader.cookie_mut().sig_group_mut().hashes,
                      Default::default());
-    let hashes = hashes.drain(..).collect();
     Ok(hashes)
 }
 
 
 #[test]
-fn hash_file_test() {
+fn hash_reader_test() {
     use std::collections::HashMap;
 
     let expected: HashMap<HashAlgorithm, &str> = [
@@ -208,11 +206,12 @@ fn hash_file_test() {
     ].iter().cloned().collect();
 
     let result =
-        hash_file(::std::io::Cursor::new(crate::tests::manifesto()),
-                  &expected.keys().cloned().collect::<Vec<HashAlgorithm>>())
+        hash_reader(std::io::Cursor::new(crate::tests::manifesto()),
+                    &expected.keys().cloned().collect::<Vec<HashAlgorithm>>())
         .unwrap();
 
-    for (algo, mut hash) in result.into_iter() {
+    for mut hash in result.into_iter() {
+        let algo = hash.algo();
         let mut digest = vec![0u8; hash.digest_size()];
         hash.digest(&mut digest);
 

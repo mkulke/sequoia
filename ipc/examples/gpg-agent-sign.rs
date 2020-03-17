@@ -9,9 +9,12 @@ extern crate sequoia_ipc as ipc;
 use crate::openpgp::armor;
 use crate::openpgp::parse::Parse;
 use crate::openpgp::serialize::stream::{Message, LiteralWriter, Signer};
+use crate::openpgp::policy::StandardPolicy as P;
 use crate::ipc::gnupg::{Context, KeyPair};
 
 fn main() {
+    let p = &P::new();
+
     let matches = clap::App::new("gpg-agent-sign")
         .version(env!("CARGO_PKG_VERSION"))
         .about("Connects to gpg-agent and creates a dummy signature.")
@@ -39,10 +42,11 @@ fn main() {
 
     // Construct a KeyPair for every signing-capable (sub)key.
     let mut signers = certs.iter().flat_map(|cert| {
-        cert.keys_valid().for_signing().filter_map(|(_, _, key)| {
-            KeyPair::new(&ctx, key).ok()
-        })
-    }).collect::<Vec<KeyPair<_>>>();
+        cert.keys().with_policy(p, None).alive().revoked(false).for_signing()
+            .filter_map(|ka| {
+                KeyPair::new(&ctx, ka.key()).ok()
+            })
+    }).collect::<Vec<KeyPair>>();
 
     // Compose a writer stack corresponding to the output format and
     // packet structure we want.  First, we want the output to be

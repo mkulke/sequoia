@@ -47,7 +47,7 @@ pub extern "C" fn pgp_reader_from_file(errp: Option<&mut *mut crate::error::Erro
     let filename = ffi_param_cstr!(filename).to_string_lossy().into_owned();
     File::open(Path::new(&filename))
         .map(|r| ReaderKind::Generic(Box::new(r)))
-        .map_err(|e| ::failure::Error::from(e))
+        .map_err(|e| ::anyhow::Error::from(e))
         .move_into_raw(errp)
 }
 
@@ -73,6 +73,42 @@ pub extern "C" fn pgp_reader_from_bytes(buf: *const u8,
     ReaderKind::Generic(Box::new(Cursor::new(buf))).move_into_raw()
 }
 
+/// The callback type for the generic callback-based reader interface.
+type ReaderCallbackFn = fn(*mut c_void, *const c_void, size_t) -> ssize_t;
+
+/// Creates an reader from a callback and cookie.
+///
+/// This reader calls the given callback to write data.
+#[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
+fn pgp_reader_from_callback(cb: ReaderCallbackFn,
+                            cookie: *mut c_void)
+                            -> *mut Reader {
+    let r: Box<dyn io::Read> = Box::new(ReaderCallback {
+        cb, cookie,
+    });
+    ReaderKind::Generic(r).move_into_raw()
+}
+
+/// A generic callback-based reader implementation.
+struct ReaderCallback {
+    cb: ReaderCallbackFn,
+    cookie: *mut c_void,
+}
+
+impl Read for ReaderCallback {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let r =
+            (self.cb)(self.cookie, buf.as_mut_ptr() as *mut c_void, buf.len());
+        if r < 0 {
+            use std::io as stdio;
+            Err(stdio::Error::new(stdio::ErrorKind::Other,
+                                  "Unknown error in read callback"))
+        } else {
+            Ok(r as usize)
+        }
+    }
+}
+
 /// Reads up to `len` bytes into `buf`.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle]
 pub extern "C" fn pgp_reader_read(errp: Option<&mut *mut crate::error::Error>,
@@ -87,7 +123,7 @@ pub extern "C" fn pgp_reader_read(errp: Option<&mut *mut crate::error::Error>,
         .map(|n_read| n_read as ssize_t)
         .unwrap_or_else(|e| {
             if let Some(errp) = errp {
-                *errp = ::failure::Error::from(e).move_into_raw();
+                *errp = ::anyhow::Error::from(e).move_into_raw();
             };
 
             // Signal failure.
@@ -109,7 +145,7 @@ pub extern "C" fn pgp_reader_copy(errp: Option<&mut *mut crate::error::Error>,
         .map(|n_read| n_read as ssize_t)
         .unwrap_or_else(|e| {
             if let Some(errp) = errp {
-                *errp = ::failure::Error::from(e).move_into_raw();
+                *errp = ::anyhow::Error::from(e).move_into_raw();
             };
 
             // Signal failure.
@@ -128,7 +164,7 @@ pub extern "C" fn pgp_reader_discard(errp: Option<&mut *mut crate::error::Error>
         .map(|n_read| n_read as ssize_t)
         .unwrap_or_else(|e| {
             if let Some(errp) = errp {
-                *errp = ::failure::Error::from(e).move_into_raw();
+                *errp = ::anyhow::Error::from(e).move_into_raw();
             };
 
             // Signal failure.
@@ -138,7 +174,35 @@ pub extern "C" fn pgp_reader_discard(errp: Option<&mut *mut crate::error::Error>
 
 /// Wraps a generic writer.
 #[crate::ffi_wrapper_type(prefix = "pgp_")]
-pub struct Writer(Box<dyn io::Write>);
+pub struct Writer(WriterKind);
+
+/// Specializes writers.
+///
+/// In some cases, we want to call functions on concrete types.  To
+/// avoid nasty hacks, we have specialized variants for that.
+pub(crate) enum WriterKind {
+    Generic(Box<dyn io::Write>),
+    Armored(openpgp::armor::Writer<&'static mut WriterKind>),
+}
+
+impl Write for WriterKind {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        use self::WriterKind::*;
+        match self {
+            Generic(w) => w.write(buf),
+            Armored(w) => w.write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        use self::WriterKind::*;
+        match self {
+            Generic(ref mut w) => w.flush(),
+            Armored(ref mut w) => w.flush(),
+        }
+    }
+}
+
 
 /// Opens a file returning a writer.
 ///
@@ -150,8 +214,8 @@ fn pgp_writer_from_file(errp: Option<&mut *mut crate::error::Error>,
                         -> Maybe<Writer> {
     let filename = ffi_param_cstr!(filename).to_string_lossy().into_owned();
     File::create(Path::new(&filename))
-        .map(|w| -> Box<dyn io::Write> { Box::new(w) })
-        .map_err(|e| ::failure::Error::from(e))
+        .map(|w| WriterKind::Generic(Box::new(w)))
+        .map_err(|e| ::anyhow::Error::from(e))
         .move_into_raw(errp)
 }
 
@@ -159,8 +223,9 @@ fn pgp_writer_from_file(errp: Option<&mut *mut crate::error::Error>,
 #[cfg(unix)]
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
 fn pgp_writer_from_fd(fd: c_int) -> *mut Writer {
-    let w: Box<dyn io::Write> = Box::new(unsafe { File::from_raw_fd(fd) });
-    w.move_into_raw()
+    WriterKind::Generic(Box::new(unsafe {
+        File::from_raw_fd(fd)
+    })).move_into_raw()
 }
 
 /// Creates a writer from a buffer.
@@ -170,8 +235,7 @@ fn pgp_writer_from_bytes(buf: *mut u8, len: size_t) -> *mut Writer {
     let buf = unsafe {
         slice::from_raw_parts_mut(buf, len as usize)
     };
-    let w: Box<dyn io::Write> = Box::new(Cursor::new(buf));
-    w.move_into_raw()
+    WriterKind::Generic(Box::new(Cursor::new(buf))).move_into_raw()
 }
 
 /// Creates an allocating writer.
@@ -188,10 +252,10 @@ fn pgp_writer_alloc(buf: *mut *mut c_void, len: *mut size_t)
     let buf = ffi_param_ref_mut!(buf);
     let len = ffi_param_ref_mut!(len);
 
-    let w: Box<dyn io::Write> = Box::new(WriterAlloc {
+    let w = WriterKind::Generic(Box::new(WriterAlloc {
         buf: buf,
         len: len,
-    });
+    }));
     w.move_into_raw()
 }
 
@@ -228,6 +292,48 @@ impl Write for WriterAlloc {
     }
 }
 
+/// The callback type for the generic callback-based writer interface.
+type WriterCallbackFn = fn(*mut c_void, *const c_void, size_t) -> ssize_t;
+
+/// Creates an writer from a callback and cookie.
+///
+/// This writer calls the given callback to write data.
+#[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
+fn pgp_writer_from_callback(cb: WriterCallbackFn,
+                            cookie: *mut c_void)
+                            -> *mut Writer {
+    let w = WriterKind::Generic(Box::new(WriterCallback {
+        cb, cookie,
+    }));
+    w.move_into_raw()
+}
+
+/// A generic callback-based writer implementation.
+struct WriterCallback {
+    cb: WriterCallbackFn,
+    cookie: *mut c_void,
+}
+
+impl Write for WriterCallback {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let r =
+            (self.cb)(self.cookie, buf.as_ptr() as *const c_void, buf.len());
+        if r < 0 {
+            use std::io as stdio;
+            Err(stdio::Error::new(stdio::ErrorKind::Other,
+                                  "Unknown error in write callback"))
+        } else {
+            Ok(r as usize)
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        // Do nothing.
+        // XXX: Should we add a callback for that?
+        Ok(())
+    }
+}
+
 /// Writes up to `len` bytes of `buf` into `writer`.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
 fn pgp_writer_write(errp: Option<&mut *mut crate::error::Error>,
@@ -242,7 +348,7 @@ fn pgp_writer_write(errp: Option<&mut *mut crate::error::Error>,
         .map(|n_read| n_read as ssize_t)
         .unwrap_or_else(|e| {
             if let Some(errp) = errp {
-                *errp = ::failure::Error::from(e).move_into_raw();
+                *errp = ::anyhow::Error::from(e).move_into_raw();
             };
 
             // Signal failure.

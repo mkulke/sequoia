@@ -3,28 +3,232 @@
 /// See https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=872271 for
 /// the motivation.
 
+use std::process::exit;
+use std::io;
+
+use chrono::{DateTime, offset::Utc};
 extern crate clap;
-extern crate failure;
-use failure::ResultExt;
+use anyhow::Context;
 
 extern crate sequoia_openpgp as openpgp;
 
-use std::process::exit;
-use std::fs::File;
-use std::collections::{HashMap, HashSet};
-
-use crate::openpgp::{Cert, Packet, packet::Signature, KeyID, RevocationStatus};
-use crate::openpgp::types::HashAlgorithm;
-use crate::openpgp::crypto::hash::Hash;
-use crate::openpgp::parse::{Parse, PacketParserResult, PacketParser};
-use crate::openpgp::cert::CertParser;
+use crate::openpgp::{
+    Cert,
+    KeyHandle,
+    Result,
+    parse::Parse,
+};
+use crate::openpgp::parse::stream::{
+    DetachedVerifier,
+    MessageLayer,
+    MessageStructure,
+    VerificationHelper,
+    GoodChecksum,
+    VerificationError,
+};
+use crate::openpgp::cert::prelude::*;
+use crate::openpgp::policy::StandardPolicy as P;
 
 mod sqv_cli;
 
-fn real_main() -> Result<(), failure::Error> {
+struct VHelper<'a> {
+    not_before: Option<std::time::SystemTime>,
+    not_after: std::time::SystemTime,
+
+    good: usize,
+    total: usize,
+    threshold: usize,
+
+    keyrings: clap::OsValues<'a>,
+}
+
+impl<'a> std::fmt::Debug for VHelper<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.debug_struct("VHelper")
+            .field("not_before", &self.not_before)
+            .field("not_after", &self.not_after)
+            .field("good", &self.good)
+            .field("total", &self.total)
+            .field("threshold", &self.threshold)
+            .field("keyrings", &self.keyrings)
+            .finish()
+    }
+}
+
+impl<'a> VHelper<'a> {
+    fn new(threshold: usize,
+           not_before: Option<std::time::SystemTime>,
+           not_after: std::time::SystemTime,
+           keyrings: clap::OsValues<'a>) -> Self {
+        VHelper {
+            not_before: not_before,
+            not_after: not_after,
+            good: 0,
+            total: 0,
+            threshold: threshold,
+            keyrings: keyrings,
+        }
+    }
+}
+
+impl<'a> VerificationHelper for VHelper<'a> {
+    fn get_public_keys(&mut self, ids: &[crate::KeyHandle]) -> Result<Vec<Cert>> {
+        let mut certs = Vec::with_capacity(ids.len());
+
+        // Load relevant keys from the keyring.
+        for filename in self.keyrings.clone() {
+            certs.extend(
+                CertParser::from_file(filename)?
+                    .unvalidated_cert_filter(|cert, _| {
+                        // We don't skip keys that are valid (not revoked,
+                        // alive, etc.) so that
+                        cert.keys().key_handles(ids.iter()).next().is_some()
+                    })
+                    .map(|certr| {
+                        match certr {
+                            Ok(cert) => cert,
+                            Err(err) => {
+                                eprintln!("Error reading keyring {:?}: {}",
+                                          filename, err);
+                                exit(2);
+                            }
+                        }
+                    }))
+        }
+
+        // Dedup.  To avoid cloning the certificates, we don't use
+        // Vec::dedup.
+        certs.sort_by(|a, b| a.fingerprint().cmp(&b.fingerprint()));
+        let count = certs.len();
+        let (certs, errs) = certs.into_iter().fold(
+            (Vec::with_capacity(count), Vec::new()),
+            |(mut certs, mut errs), a| {
+                if certs.len() == 0 {
+                    certs.push(a);
+                } else if certs[certs.len() - 1].fingerprint() == a.fingerprint() {
+                    // Merge `a` into the last element.
+                    match certs.pop().expect("non-empty vec").merge(a) {
+                        Ok(cert) => certs.push(cert),
+                        Err(err) => errs.push(err),
+                    }
+                } else {
+                    certs.push(a);
+                }
+
+                (certs, errs)
+            });
+
+        if errs.len() > 0 {
+            eprintln!("Error merging duplicate keys:");
+            for err in errs.iter() {
+                eprintln!("  {}", err);
+            }
+            Err(errs.into_iter().next().expect("non-empty vec"))
+        } else {
+            Ok(certs)
+        }
+    }
+
+    fn check(&mut self, structure: MessageStructure) -> Result<()> {
+        use self::VerificationError::*;
+
+        let mut signers = Vec::with_capacity(2);
+        let mut verification_err = None;
+
+        for layer in structure.into_iter() {
+            match layer {
+                MessageLayer::SignatureGroup { results } =>
+                    for result in results {
+                        self.total += 1;
+                        match result {
+                            Ok(GoodChecksum { sig, ka, .. }) => {
+                                match (sig.signature_creation_time(),
+                                                self.not_before,
+                                                self.not_after)
+                                {
+                                    (None, _, _) =>
+                                        eprintln!("Malformed signature: \
+                                                   no signature creation time"),
+                                    (Some(t), Some(not_before), not_after) => {
+                                        if t < not_before {
+                                            eprintln!(
+                                                "Signature by {} was created before \
+                                                 the --not-before date.",
+                                                ka.key().fingerprint().to_hex());
+                                        } else if t > not_after {
+                                            eprintln!(
+                                                "Signature by {} was created after \
+                                                 the --not-after date.",
+                                                ka.key().fingerprint().to_hex());
+                                        } else {
+                                            signers.push(ka.cert().fingerprint());
+                                        }
+                                    }
+                                    (Some(t), None, not_after) => {
+                                        if t > not_after {
+                                            eprintln!(
+                                                "Signature by {} was created after \
+                                                 the --not-after date.",
+                                                ka.key().fingerprint().to_hex());
+                                        } else {
+                                            signers.push(ka.cert().fingerprint());
+                                        }
+                                    }
+                                };
+                            }
+                            Err(MalformedSignature { error, .. }) => {
+                                eprintln!("Signature is malformed: {}", error);
+                            }
+                            Err(MissingKey { sig, .. }) => {
+                                let issuers = sig.get_issuers();
+                                eprintln!("Missing key {}, which is needed to \
+                                           verify signature.",
+                                          issuers.first().unwrap().to_hex());
+                            }
+                            Err(UnboundKey { cert, error, .. }) => {
+                                eprintln!("Signing key on {} is not bound: {}",
+                                          cert.fingerprint().to_hex(), error);
+                            }
+                            Err(BadKey { ka, error, .. }) => {
+                                eprintln!("Signing key on {} is bad: {}",
+                                          ka.cert().fingerprint().to_hex(),
+                                          error);
+                            }
+                            Err(BadSignature { error, .. }) => {
+                                eprintln!("Verifying signature: {}.", error);
+                                if verification_err.is_none() {
+                                    verification_err = Some(error)
+                                }
+                            }
+                        }
+                    }
+                MessageLayer::Compression { .. } => (),
+                _ => unreachable!(),
+            }
+        }
+
+        // Dedup the keys so that it is not possible to exceed the
+        // threshold by duplicating signatures or by using the same
+        // key.
+        signers.sort();
+        signers.dedup();
+
+        self.good = signers.len();
+        for signer in signers {
+            println!("{}", signer.to_hex());
+        }
+
+        Ok(())
+    }
+}
+
+
+fn main() -> Result<()> {
+    let p = &P::new();
+
     let matches = sqv_cli::build().get_matches();
 
-    let trace = matches.is_present("trace");
+    let verbose = matches.is_present("verbose");
 
     let good_threshold
         = if let Some(good_threshold) = matches.value_of("signatures") {
@@ -46,11 +250,13 @@ fn real_main() -> Result<(), failure::Error> {
         exit(2);
     }
 
-    use chrono::{DateTime, offset::Utc, NaiveDate};
+    let file = matches.value_of_os("file").expect("'file' is required");
+    let sig_file = matches.value_of_os("sig-file")
+        .expect("'sig-file' is required");
+
     let not_before: Option<std::time::SystemTime> =
         if let Some(t) = matches.value_of("not-before") {
-            Some(NaiveDate::parse_from_str(t, "%Y-%m-%d")
-                 .map(|n| DateTime::<Utc>::from_utc(n.and_hms(0, 0, 0), Utc))
+            Some(parse_iso8601(t, chrono::NaiveTime::from_hms(0, 0, 0))
                  .context(format!("Bad value passed to --not-before: {:?}", t))?
                  .into())
         } else {
@@ -58,297 +264,101 @@ fn real_main() -> Result<(), failure::Error> {
         };
     let not_after: std::time::SystemTime =
         if let Some(t) = matches.value_of("not-after") {
-            Some(NaiveDate::parse_from_str(t, "%Y-%m-%d")
-                 .map(|n| DateTime::<Utc>::from_utc(n.and_hms(23, 59, 59), Utc))
+            Some(parse_iso8601(t, chrono::NaiveTime::from_hms(23, 59, 59))
                  .context(format!("Bad value passed to --not-after: {:?}", t))?
                  .into())
         } else {
             None
         }.unwrap_or_else(|| std::time::SystemTime::now());
 
-    // First, we collect the signatures and the alleged issuers.
-    // Then, we scan the keyrings exactly once to find the associated
-    // Certs.
+    let keyrings = matches.values_of_os("keyring")
+        .expect("No keyring specified.");
 
-    // .unwrap() is safe, because "sig-file" is required.
-    let sig_file = matches.value_of_os("sig-file").unwrap();
+    let h = VHelper::new(good_threshold, not_before, not_after, keyrings);
 
-    let mut ppr = PacketParser::from_file(sig_file)?;
+    let mut v = DetachedVerifier::from_file(
+        p, sig_file, file, h, None)?;
 
-    let mut sigs_seen = HashSet::new();
-    let mut sigs : Vec<(Signature, KeyID, Option<Cert>)> = Vec::new();
+    io::copy(&mut v, &mut io::sink())?;
 
-    // sig_i is count of all Signature packets that we've seen.  This
-    // may be more than sigs.len() if we can't handle some of the
-    // sigs.
-    let mut sig_i = 0;
+    let h = v.into_helper();
 
-    while let PacketParserResult::Some(pp) = ppr {
-        let (packet, ppr_tmp) = pp.recurse().unwrap();
-        ppr = ppr_tmp;
-
-        match packet {
-            Packet::Signature(sig) => {
-                // To check for duplicates, we normalize the
-                // signature, and put it into the hashset of seen
-                // signatures.
-                let mut sig_normalized = sig.clone();
-                sig_normalized.unhashed_area_mut().clear();
-                if sigs_seen.replace(sig_normalized).is_some() {
-                    eprintln!("Ignoring duplicate signature.");
-                    continue;
-                }
-
-                sig_i += 1;
-                if let Some(fp) = sig.issuer_fingerprint() {
-                    if trace {
-                        eprintln!("Will check signature allegedly issued by {}.",
-                                  fp);
-                    }
-
-                    // XXX: We use a KeyID even though we have a
-                    // fingerprint!
-                    sigs.push((sig, fp.into(), None));
-                } else if let Some(keyid) = sig.issuer() {
-                    if trace {
-                        eprintln!("Will check signature allegedly issued by {}.",
-                                  keyid);
-                    }
-
-                    sigs.push((sig, keyid, None));
-                } else {
-                    eprintln!("Signature #{} does not contain information \
-                               about the issuer.  Unable to validate.",
-                              sig_i);
-                }
-            },
-            Packet::CompressedData(_) => {
-                // Skip it.
-            },
-            packet => {
-                eprintln!("OpenPGP message is not a detached signature.  \
-                           Encountered unexpected packet: {:?} packet.",
-                          packet.tag());
-                exit(2);
-            }
-        }
-    }
-
-    if sigs.len() == 0 {
-        eprintln!("{:?} does not contain an OpenPGP signature.", sig_file);
-        exit(2);
-    }
-
-
-    // Hash the content.
-
-    // .unwrap() is safe, because "file" is required.
-    let file = matches.value_of_os("file").unwrap();
-    let hash_algos : Vec<HashAlgorithm>
-        = sigs.iter().map(|&(ref sig, _, _)| sig.hash_algo()).collect();
-    let hashes: HashMap<_, _> =
-        openpgp::crypto::hash_file(File::open(file)?, &hash_algos[..])?
-        .into_iter().collect();
-
-    fn cert_has_key(cert: &Cert, keyid: &KeyID) -> bool {
-        // Even if a key is revoked or expired, we can still use it to
-        // verify a message.
-        cert.keys_all().any(|(_, _, k)| *keyid == k.keyid())
-    }
-
-    // Find the keys.
-    for filename in matches.values_of_os("keyring")
-        .expect("No keyring specified.")
-    {
-        // Load the keyring.
-        let certs : Vec<Cert> = CertParser::from_file(filename)?
-            .unvalidated_cert_filter(|cert, _| {
-                for &(_, ref issuer, _) in &sigs {
-                    if cert_has_key(cert, issuer) {
-                        return true;
-                    }
-                }
-                false
-            })
-            .map(|certr| {
-                match certr {
-                    Ok(cert) => cert,
-                    Err(err) => {
-                        eprintln!("Error reading keyring {:?}: {}",
-                                  filename, err);
-                        exit(2);
-                    }
-                }
-            })
-            .collect();
-
-        for cert in certs {
-            for &mut (_, ref issuer, ref mut issuer_certo) in sigs.iter_mut() {
-                if cert_has_key(&cert, issuer) {
-                    if let Some(issuer_cert) = issuer_certo.take() {
-                        if trace {
-                            eprintln!("Found key {} again.  Merging.",
-                                      issuer);
-                        }
-
-                        *issuer_certo
-                            = issuer_cert.merge(cert.clone()).ok();
-                    } else {
-                        if trace {
-                            eprintln!("Found key {}.", issuer);
-                        }
-
-                        *issuer_certo = Some(cert.clone());
-                    }
-                }
-            }
-        }
-    }
-
-    // Verify the signatures.
-    let mut sigs_seen_from_cert = HashSet::new();
-    let mut good = 0;
-    'sig_loop: for (mut sig, issuer, certo) in sigs.into_iter() {
-        if trace {
-            eprintln!("Checking signature allegedly issued by {}.", issuer);
-        }
-
-        if let Some(ref cert) = certo {
-            // Find the right key.
-            for (maybe_binding, _, key) in cert.keys_all() {
-                let binding = match maybe_binding {
-                    Some(b) => b,
-                    None => continue,
-                };
-
-                if issuer == key.keyid() {
-                    if !binding.key_flags().for_signing() {
-                        eprintln!("Cannot check signature, key has no signing \
-                                   capability");
-                        continue 'sig_loop;
-                    }
-
-                    let mut hash = match hashes.get(&sig.hash_algo()) {
-                        Some(h) => h.clone(),
-                        None => {
-                            eprintln!("Cannot check signature, hash algorithm \
-                                       {} not supported.", sig.hash_algo());
-                            continue 'sig_loop;
-                        },
-                    };
-                    sig.hash(&mut hash);
-
-                    let mut digest = vec![0u8; hash.digest_size()];
-                    hash.digest(&mut digest);
-                    let hash_algo = sig.hash_algo();
-                    sig.set_computed_hash(Some((hash_algo, digest)));
-
-                    match sig.verify(key) {
-                        Ok(true) => {
-                            if let Some(t) = sig.signature_creation_time() {
-                                if let Some(not_before) = not_before {
-                                    if t < not_before {
-                                        eprintln!(
-                                            "Signature by {} was created before \
-                                             the --not-before date.",
-                                            issuer);
-                                        break;
-                                    }
-                                }
-
-                                if t > not_after {
-                                    eprintln!(
-                                        "Signature by {} was created after \
-                                         the --not-after date.",
-                                        issuer);
-                                    break;
-                                }
-
-                                // check key was valid at sig creation time
-                                let binding = cert
-                                    .subkeys()
-                                    .find(|s| {
-                                        s.key().fingerprint() == key.fingerprint()
-                                    });
-                                if let Some(binding) = binding {
-                                    if binding.revoked(t) != RevocationStatus::NotAsFarAsWeKnow {
-                                        eprintln!(
-                                            "Key was revoked when the signature \
-                                             was created.");
-                                        break;
-                                    }
-                                }
-
-                                if cert.revoked(t)
-                                    != RevocationStatus::NotAsFarAsWeKnow
-                                {
-                                    eprintln!(
-                                        "Primary key was revoked when the \
-                                         signature was created.");
-                                    break;
-                                }
-                            } else {
-                                eprintln!(
-                                    "Signature by {} does not contain \
-                                     information about the creation time.",
-                                    issuer);
-                                break;
-                            }
-
-                            if trace {
-                                eprintln!("Signature by {} is good.", issuer);
-                            }
-
-                            if sigs_seen_from_cert.replace(cert.fingerprint())
-                                .is_some()
-                            {
-                                eprintln!(
-                                    "Ignoring additional good signature by {}.",
-                                    issuer);
-                                continue;
-                            }
-
-                            println!("{}", cert.primary().fingerprint());
-                            good += 1;
-                        },
-                        Ok(false) => {
-                            if trace {
-                                eprintln!("Signature by {} is bad.", issuer);
-                            }
-                        },
-                        Err(err) => {
-                            if trace {
-                                eprintln!("Verifying signature: {}.", err);
-                            }
-                        },
-                    }
-
-                    break;
-                }
-            }
-        } else {
-            eprintln!("Can't verify signature by {}, missing key.",
-                      issuer);
-        }
-    }
-
-    if trace {
+    if verbose {
         eprintln!("{} of {} signatures are valid (threshold is: {}).",
-                  good, sig_i, good_threshold);
+                  h.good, h.total, good_threshold);
     }
 
-    exit(if good >= good_threshold { 0 } else { 1 });
+    exit(if h.good >= good_threshold { 0 } else { 1 });
 }
 
-fn main() {
-    if let Err(e) = real_main() {
-        let mut cause = e.as_fail();
-        eprint!("{}", cause);
-        while let Some(c) = cause.cause() {
-            eprint!(":\n  {}", c);
-            cause = c;
+/// Parses the given string depicting a ISO 8601 timestamp.
+fn parse_iso8601(s: &str, pad_date_with: chrono::NaiveTime)
+                 -> Result<DateTime<Utc>>
+{
+    // If you modify this function this function, synchronize the
+    // changes with the copy in sqv.rs!
+    for f in &[
+        "%Y-%m-%dT%H:%M:%S%#z",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M%#z",
+        "%Y-%m-%dT%H:%M",
+        "%Y-%m-%dT%H%#z",
+        "%Y-%m-%dT%H",
+        "%Y%m%dT%H%M%S%#z",
+        "%Y%m%dT%H%M%S",
+        "%Y%m%dT%H%M%#z",
+        "%Y%m%dT%H%M",
+        "%Y%m%dT%H%#z",
+        "%Y%m%dT%H",
+    ] {
+        if f.ends_with("%#z") {
+            if let Ok(d) = DateTime::parse_from_str(s, *f) {
+                return Ok(d.into());
+            }
+        } else {
+            if let Ok(d) = chrono::NaiveDateTime::parse_from_str(s, *f) {
+                return Ok(DateTime::from_utc(d, Utc));
+            }
         }
-        eprintln!();
-        exit(2);
     }
+    for f in &[
+        "%Y-%m-%d",
+        "%Y-%m",
+        "%Y-%j",
+        "%Y%m%d",
+        "%Y%m",
+        "%Y%j",
+        "%Y",
+    ] {
+        if let Ok(d) = chrono::NaiveDate::parse_from_str(s, *f) {
+            return Ok(DateTime::from_utc(d.and_time(pad_date_with), Utc));
+        }
+    }
+    Err(anyhow::anyhow!("Malformed ISO8601 timestamp: {}", s))
+}
+
+#[test]
+fn test_parse_iso8601() {
+    let z = chrono::NaiveTime::from_hms(0, 0, 0);
+    parse_iso8601("2017-03-04T13:25:35Z", z).unwrap();
+    parse_iso8601("2017-03-04T13:25:35+08:30", z).unwrap();
+    parse_iso8601("2017-03-04T13:25:35", z).unwrap();
+    parse_iso8601("2017-03-04T13:25Z", z).unwrap();
+    parse_iso8601("2017-03-04T13:25", z).unwrap();
+    // parse_iso8601("2017-03-04T13Z", z).unwrap(); // XXX: chrono doesn't like
+    // parse_iso8601("2017-03-04T13", z).unwrap(); // ditto
+    parse_iso8601("2017-03-04", z).unwrap();
+    // parse_iso8601("2017-03", z).unwrap(); // ditto
+    parse_iso8601("2017-031", z).unwrap();
+    parse_iso8601("20170304T132535Z", z).unwrap();
+    parse_iso8601("20170304T132535+0830", z).unwrap();
+    parse_iso8601("20170304T132535", z).unwrap();
+    parse_iso8601("20170304T1325Z", z).unwrap();
+    parse_iso8601("20170304T1325", z).unwrap();
+    // parse_iso8601("20170304T13Z", z).unwrap(); // ditto
+    // parse_iso8601("20170304T13", z).unwrap(); // ditto
+    parse_iso8601("20170304", z).unwrap();
+    // parse_iso8601("201703", z).unwrap(); // ditto
+    parse_iso8601("2017031", z).unwrap();
+    // parse_iso8601("2017", z).unwrap(); // ditto
 }

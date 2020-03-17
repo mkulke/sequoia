@@ -1,8 +1,9 @@
-use failure::{self, ResultExt};
+use anyhow::Context as _;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, Write};
+use std::time::SystemTime;
 use rpassword;
 
 extern crate sequoia_openpgp as openpgp;
@@ -10,6 +11,7 @@ use sequoia_core::Context;
 use crate::openpgp::types::{
     CompressionAlgorithm,
 };
+use crate::openpgp::cert::prelude::*;
 use crate::openpgp::crypto;
 use crate::openpgp::{Cert, KeyID, Result};
 use crate::openpgp::packet::prelude::*;
@@ -18,7 +20,11 @@ use crate::openpgp::parse::{
     PacketParserResult,
 };
 use crate::openpgp::parse::stream::{
-    Verifier, DetachedVerifier, VerificationResult, VerificationHelper,
+    Verifier, DetachedVerifier,
+    GoodChecksum,
+    VerificationResult,
+    VerificationError,
+    VerificationHelper,
     MessageStructure, MessageLayer,
 };
 use crate::openpgp::serialize::stream::{
@@ -29,9 +35,10 @@ use crate::openpgp::serialize::padding::{
     Padder,
     padme,
 };
+use crate::openpgp::policy::Policy;
 extern crate sequoia_store as store;
 
-mod decrypt;
+pub mod decrypt;
 pub use self::decrypt::decrypt;
 mod sign;
 pub use self::sign::sign;
@@ -43,17 +50,17 @@ pub use self::inspect::inspect;
 pub mod key;
 
 /// Returns suitable signing keys from a given list of Certs.
-fn get_signing_keys(certs: &[openpgp::Cert])
-    -> Result<Vec<crypto::KeyPair<
-           openpgp::packet::key::UnspecifiedRole>>>
+fn get_signing_keys(certs: &[openpgp::Cert], p: &dyn Policy,
+                    timestamp: Option<SystemTime>)
+    -> Result<Vec<crypto::KeyPair>>
 {
     let mut keys = Vec::new();
     'next_cert: for tsk in certs {
-        for key in tsk.keys_valid()
+        for key in tsk.keys().with_policy(p, timestamp).alive().revoked(false)
             .for_signing()
-            .map(|k| k.2)
+            .map(|ka| ka.key())
         {
-            if let Some(secret) = key.secret() {
+            if let Some(secret) = key.optional_secret() {
                 let unencrypted = match secret {
                     SecretKeyMaterial::Encrypted(ref e) => {
                         let password = rpassword::read_password_from_tty(Some(
@@ -71,19 +78,20 @@ fn get_signing_keys(certs: &[openpgp::Cert])
             }
         }
 
-        return Err(failure::err_msg(
+        return Err(anyhow::anyhow!(
             format!("Found no suitable signing key on {}", tsk)));
     }
 
     Ok(keys)
 }
 
-pub fn encrypt(mapping: &mut store::Mapping,
+pub fn encrypt(policy: &dyn Policy,
+               mapping: &mut store::Mapping,
                input: &mut dyn io::Read, output: &mut dyn io::Write,
                npasswords: usize, recipients: Vec<&str>,
                mut certs: Vec<openpgp::Cert>, signers: Vec<openpgp::Cert>,
-               mode: openpgp::types::KeyFlags,
-               compression: &str)
+               mode: openpgp::types::KeyFlags, compression: &str,
+               time: Option<SystemTime>)
                -> Result<()> {
     for r in recipients {
         certs.push(mapping.lookup(r).context("No such key found")?.cert()?);
@@ -100,11 +108,11 @@ pub fn encrypt(mapping: &mut store::Mapping,
     }
 
     if certs.len() + passwords.len() == 0 {
-        return Err(failure::format_err!(
+        return Err(anyhow::anyhow!(
             "Neither recipient nor password given"));
     }
 
-    let mut signers = get_signing_keys(&signers)?;
+    let mut signers = get_signing_keys(&signers, policy, time)?;
 
     // Build a vector of references to hand to Signer.
     let recipients: Vec<&openpgp::Cert> = certs.iter().collect();
@@ -113,12 +121,14 @@ pub fn encrypt(mapping: &mut store::Mapping,
     let mut recipient_subkeys: Vec<Recipient> = Vec::new();
     for cert in certs.iter() {
         let mut count = 0;
-        for (_, _, key) in cert.keys_valid().key_flags(mode.clone()) {
+        for key in cert.keys().with_policy(policy, None).alive().revoked(false)
+            .key_flags(&mode).map(|ka| ka.key())
+        {
             recipient_subkeys.push(key.into());
             count += 1;
         }
         if count == 0 {
-            return Err(failure::format_err!(
+            return Err(anyhow::anyhow!(
                 "Key {} has no suitable encryption key", cert));
         }
     }
@@ -159,6 +169,9 @@ pub fn encrypt(mapping: &mut store::Mapping,
         let mut signer = Signer::new(sink, signers.pop().unwrap());
         for s in signers {
             signer = signer.add_signer(s);
+            if let Some(time) = time {
+                signer = signer.creation_time(time);
+            }
         }
         for r in recipients {
             signer = signer.add_intended_recipient(r);
@@ -191,6 +204,7 @@ struct VHelper<'a> {
     unknown_checksums: usize,
     bad_signatures: usize,
     bad_checksums: usize,
+    broken_signatures: usize,
 }
 
 impl<'a> VHelper<'a> {
@@ -209,6 +223,7 @@ impl<'a> VHelper<'a> {
             unknown_checksums: 0,
             bad_signatures: 0,
             bad_checksums: 0,
+            broken_signatures: 0,
         }
     }
 
@@ -229,32 +244,58 @@ impl<'a> VHelper<'a> {
         p(&mut dirty, "unknown checksum", self.unknown_checksums);
         p(&mut dirty, "bad signature", self.bad_signatures);
         p(&mut dirty, "bad checksum", self.bad_checksums);
+        p(&mut dirty, "broken signatures", self.broken_signatures);
         if dirty {
             eprintln!(".");
         }
     }
 
     fn print_sigs(&mut self, results: &[VerificationResult]) {
-        use self::VerificationResult::*;
+        use self::VerificationError::*;
         for result in results {
-            if let MissingKey { sig } = result {
-                let issuer = sig.get_issuers().iter().nth(0)
-                    .expect("missing key checksum has an issuer")
-                    .to_string();
-                let what = match sig.level() {
-                    0 => "checksum".into(),
-                    n => format!("level {} notarizing checksum", n),
-                };
-                eprintln!("No key to check {} from {}", what, issuer);
-                self.unknown_checksums += 1;
-                continue;
-            }
-
             let (issuer, level) = match result {
-                GoodChecksum { sig, key, .. }
-                | NotAlive { sig, key, .. }
-                | BadChecksum { sig, key, .. } => (key.keyid(), sig.level()),
-                MissingKey { .. } => unreachable!("handled above"),
+                Ok(GoodChecksum { sig, ka, .. }) =>
+                    (ka.key().keyid(), sig.level()),
+                Err(MalformedSignature { error, .. }) => {
+                    eprintln!("Malformed signature: {}", error);
+                    self.broken_signatures += 1;
+                    continue;
+                },
+                Err(MissingKey { sig, .. }) => {
+                    let issuer = sig.get_issuers().get(0)
+                        .expect("missing key checksum has an issuer")
+                        .to_string();
+                    let what = match sig.level() {
+                        0 => "checksum".into(),
+                        n => format!("level {} notarizing checksum", n),
+                    };
+                    eprintln!("No key to check {} from {}", what, issuer);
+                    self.unknown_checksums += 1;
+                    continue;
+                },
+                Err(UnboundKey { cert, error, .. }) => {
+                    eprintln!("Signing key on {} is not bound: {}",
+                              cert.fingerprint(), error);
+                    self.bad_checksums += 1;
+                    continue;
+                },
+                Err(BadKey { ka, error, .. }) => {
+                    eprintln!("Signing key on {} is bad: {}",
+                              ka.cert().fingerprint(), error);
+                    self.bad_checksums += 1;
+                    continue;
+                },
+                Err(BadSignature { sig, ka, error }) => {
+                    let issuer = ka.fingerprint().to_string();
+                    let what = match sig.level() {
+                        0 => "checksum".into(),
+                        n => format!("level {} notarizing checksum", n),
+                    };
+                    eprintln!("Error verifying {} from {}: {}",
+                              what, issuer, error);
+                    self.bad_checksums += 1;
+                    continue;
+                }
             };
 
             let trusted = self.trusted.contains(&issuer);
@@ -268,33 +309,11 @@ impl<'a> VHelper<'a> {
 
             let issuer_str = issuer.to_string();
             let label = self.labels.get(&issuer).unwrap_or(&issuer_str);
-            match result {
-                GoodChecksum { .. } => {
-                    eprintln!("Good {} from {}", what, label);
-                    if trusted {
-                        self.good_signatures += 1;
-                    } else {
-                        self.good_checksums += 1;
-                    }
-                },
-                NotAlive { .. } => {
-                    eprintln!("Good checksum, but not alive: {} from {}",
-                              what, label);
-                    if trusted {
-                        self.bad_signatures += 1;
-                    } else {
-                        self.bad_checksums += 1;
-                    }
-                },
-                BadChecksum { .. } => {
-                    eprintln!("Bad {} from {}", what, label);
-                    if trusted {
-                        self.bad_signatures += 1;
-                    } else {
-                        self.bad_checksums += 1;
-                    }
-                },
-                MissingKey { .. } => unreachable!("handled above"),
+            eprintln!("Good {} from {}", what, label);
+            if trusted {
+                self.good_signatures += 1;
+            } else {
+                self.good_checksums += 1;
             }
         }
     }
@@ -303,18 +322,17 @@ impl<'a> VHelper<'a> {
 impl<'a> VerificationHelper for VHelper<'a> {
     fn get_public_keys(&mut self, ids: &[openpgp::KeyHandle]) -> Result<Vec<Cert>> {
         let mut certs = self.certs.take().unwrap();
+        // Get all keys.
         let seen: HashSet<_> = certs.iter()
             .flat_map(|cert| {
-                // Even if a key is revoked or expired, we can still
-                // use it to verify a message.
-                cert.keys_all().map(|(_, _, key)| key.fingerprint().into())
+                cert.keys().map(|ka| ka.key().fingerprint().into())
             }).collect();
 
         // Explicitly provided keys are trusted.
         self.trusted = seen.clone();
 
         // Try to get missing Certs from the mapping.
-        for id in ids.iter().map(|i| KeyID::from(i.clone()))
+        for id in ids.iter().map(|i| KeyID::from(i))
             .filter(|i| !seen.contains(i))
         {
             let _ =
@@ -354,7 +372,7 @@ impl<'a> VerificationHelper for VHelper<'a> {
         Ok(certs)
     }
 
-    fn check(&mut self, structure: &MessageStructure) -> Result<()> {
+    fn check(&mut self, structure: MessageStructure) -> Result<()> {
         for layer in structure.iter() {
             match layer {
                 MessageLayer::Compression { algo } =>
@@ -376,12 +394,13 @@ impl<'a> VerificationHelper for VHelper<'a> {
             Ok(())
         } else {
             self.print_status();
-            Err(failure::err_msg("Verification failed"))
+            Err(anyhow::anyhow!("Verification failed"))
         }
     }
 }
 
-pub fn verify(ctx: &Context, mapping: &mut store::Mapping,
+pub fn verify(ctx: &Context, policy: &dyn Policy,
+              mapping: &mut store::Mapping,
               input: &mut dyn io::Read,
               detached: Option<&mut dyn io::Read>,
               output: &mut dyn io::Write,
@@ -389,19 +408,12 @@ pub fn verify(ctx: &Context, mapping: &mut store::Mapping,
               -> Result<()> {
     let helper = VHelper::new(ctx, mapping, signatures, certs);
     let mut verifier = if let Some(dsig) = detached {
-        DetachedVerifier::from_reader(dsig, input, helper, None)?
+        DetachedVerifier::from_reader(policy, dsig, input, helper, None)?
     } else {
-        Verifier::from_reader(input, helper, None)?
+        Verifier::from_reader(policy, input, helper, None)?
     };
 
-    io::copy(&mut verifier, output)
-        .map_err(|e| if e.get_ref().is_some() {
-            // Wrapped failure::Error.  Recover it.
-            failure::Error::from_boxed_compat(e.into_inner().unwrap())
-        } else {
-            // Plain io::Error.
-            e.into()
-        })?;
+    io::copy(&mut verifier, output)?;
 
     verifier.into_helper().print_status();
     Ok(())
@@ -421,9 +433,10 @@ pub fn split(input: &mut dyn io::Read, prefix: &str)
     while let PacketParserResult::Some(pp) = ppr {
         if let Some(ref map) = pp.map() {
             let filename = format!(
-                "{}{}--{:?}", prefix,
+                "{}{}--{}{:?}", prefix,
                 pos.iter().map(|n| format!("{}", n))
                     .collect::<Vec<String>>().join("-"),
+                pp.packet.kind().map(|_| "").unwrap_or("Unknown-"),
                 pp.packet.tag());
             let mut sink = File::create(filename)
                 .context("Failed to create output file")?;

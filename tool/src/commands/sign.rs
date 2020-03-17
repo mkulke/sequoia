@@ -1,7 +1,8 @@
-use failure::{self, ResultExt};
+use anyhow::Context as _;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
+use std::time::SystemTime;
 use tempfile::NamedTempFile;
 
 extern crate sequoia_openpgp as openpgp;
@@ -16,26 +17,35 @@ use crate::openpgp::serialize::Serialize;
 use crate::openpgp::serialize::stream::{
     Message, Signer, LiteralWriter,
 };
-use crate::create_or_stdout;
+use crate::openpgp::policy::Policy;
+use crate::{
+    create_or_stdout,
+    create_or_stdout_pgp,
+    Writer,
+};
 
-pub fn sign(input: &mut dyn io::Read, output_path: Option<&str>,
+pub fn sign(policy: &dyn Policy,
+            input: &mut dyn io::Read, output_path: Option<&str>,
             secrets: Vec<openpgp::Cert>, detached: bool, binary: bool,
-            append: bool, notarize: bool, force: bool)
+            append: bool, notarize: bool, time: Option<SystemTime>,
+            force: bool)
             -> Result<()> {
     match (detached, append|notarize) {
         (_, false) | (true, true) =>
-            sign_data(input, output_path, secrets, detached, binary, append,
-                      force),
+            sign_data(policy, input, output_path, secrets, detached, binary,
+                      append, time, force),
         (false, true) =>
-            sign_message(input, output_path, secrets, binary, notarize, force),
+            sign_message(policy, input, output_path, secrets, binary, notarize,
+                         time, force),
     }
 }
 
-fn sign_data(input: &mut dyn io::Read, output_path: Option<&str>,
+fn sign_data(policy: &dyn Policy,
+             input: &mut dyn io::Read, output_path: Option<&str>,
              secrets: Vec<openpgp::Cert>, detached: bool, binary: bool,
-             append: bool, force: bool)
+             append: bool, time: Option<SystemTime>, force: bool)
              -> Result<()> {
-    let (mut output, prepend_sigs, tmp_path):
+    let (output, prepend_sigs, tmp_path):
     (Box<dyn io::Write>, Vec<Signature>, Option<PathBuf>) =
         if detached && append && output_path.is_some() {
             // First, read the existing signatures.
@@ -50,7 +60,7 @@ fn sign_data(input: &mut dyn io::Read, output_path: Option<&str>,
                 match packet {
                     Packet::Signature(sig) => sigs.push(sig),
                     p => return Err(
-                        failure::err_msg(
+                        anyhow::anyhow!(
                             format!("{} in detached signature", p.tag()))
                             .context("Invalid detached signature").into()),
                 }
@@ -68,21 +78,20 @@ fn sign_data(input: &mut dyn io::Read, output_path: Option<&str>,
             (create_or_stdout(output_path, force)?, Vec::new(), None)
         };
 
-    let mut output = if ! binary {
-        Box::new(armor::Writer::new(&mut output,
-                                    if detached {
-                                        armor::Kind::Signature
-                                    } else {
-                                        armor::Kind::Message
-                                    },
-                                    &[])?)
-    } else {
-        output
-    };
+    let mut output = Writer::from(output);
+    if ! binary {
+        output = output.armor(
+            if detached {
+                armor::Kind::Signature
+            } else {
+                armor::Kind::Message
+            },
+            &[])?;
+    }
 
-    let mut keypairs = super::get_signing_keys(&secrets)?;
+    let mut keypairs = super::get_signing_keys(&secrets, policy, time)?;
     if keypairs.is_empty() {
-        return Err(failure::format_err!("No signing keys found"));
+        return Err(anyhow::anyhow!("No signing keys found"));
     }
 
     // When extending a detached signature, prepend any existing
@@ -92,11 +101,14 @@ fn sign_data(input: &mut dyn io::Read, output_path: Option<&str>,
     }
 
     // Stream an OpenPGP message.
-    let sink = Message::new(output);
+    let sink = Message::new(&mut output);
 
     let mut signer = Signer::new(sink, keypairs.pop().unwrap());
     for s in keypairs {
         signer = signer.add_signer(s);
+        if let Some(time) = time {
+            signer = signer.creation_time(time);
+        }
     }
     if detached {
         signer = signer.detached();
@@ -119,31 +131,42 @@ fn sign_data(input: &mut dyn io::Read, output_path: Option<&str>,
 
     writer.finalize()
         .context("Failed to sign")?;
+    // The sink may be a NamedTempFile.  Carefully keep a reference so
+    // that we can rename it.
+    let tmp = output.finalize()?;
 
     if let Some(path) = tmp_path {
         // Atomically replace the old file.
         fs::rename(path,
                    output_path.expect("must be Some if tmp_path is Some"))?;
     }
+    drop(tmp);
     Ok(())
 }
 
-fn sign_message(input: &mut dyn io::Read, output_path: Option<&str>,
+fn sign_message(policy: &dyn Policy,
+                input: &mut dyn io::Read, output_path: Option<&str>,
                 secrets: Vec<openpgp::Cert>, binary: bool, notarize: bool,
-                force: bool)
+                time: Option<SystemTime>, force: bool)
              -> Result<()> {
-    let mut output = create_or_stdout(output_path, force)?;
-    let output = if ! binary {
-        Box::new(armor::Writer::new(&mut output,
-                                    armor::Kind::Message,
-                                    &[])?)
-    } else {
-        output
-    };
+    let mut output =
+        create_or_stdout_pgp(output_path, force,
+                             binary,
+                             armor::Kind::Message)?;
+    sign_message_(policy, input, &mut output, secrets, notarize, time)?;
+    output.finalize()?;
+    Ok(())
+}
 
-    let mut keypairs = super::get_signing_keys(&secrets)?;
+fn sign_message_(policy: &dyn Policy,
+                 input: &mut dyn io::Read, output: &mut dyn io::Write,
+                 secrets: Vec<openpgp::Cert>, notarize: bool,
+                 time: Option<SystemTime>)
+                 -> Result<()>
+{
+    let mut keypairs = super::get_signing_keys(&secrets, policy, time)?;
     if keypairs.is_empty() {
-        return Err(failure::format_err!("No signing keys found"));
+        return Err(anyhow::anyhow!("No signing keys found"));
     }
 
     let mut sink = Message::new(output);
@@ -182,7 +205,7 @@ fn sign_message(input: &mut dyn io::Read, output_path: Option<&str>,
 
         match pp.packet {
             Packet::PKESK(_) | Packet::SKESK(_) =>
-                return Err(failure::err_msg(
+                return Err(anyhow::anyhow!(
                     "Signing encrypted data is not implemented")),
 
             Packet::Literal(_) =>
@@ -200,7 +223,7 @@ fn sign_message(input: &mut dyn io::Read, output_path: Option<&str>,
             // If you do implement this, there is a half-disabled test
             // in tests/sq-sign.rs.
             Packet::CompressedData(_) if seen_signature =>
-                return Err(failure::err_msg(
+                return Err(anyhow::anyhow!(
                     "Signing a compress-then-sign message is not implemented")),
 
             _ => (),
@@ -213,6 +236,9 @@ fn sign_message(input: &mut dyn io::Read, output_path: Option<&str>,
                 let mut signer = Signer::new(sink, keypairs.pop().unwrap());
                 for s in keypairs.drain(..) {
                     signer = signer.add_signer(s);
+                    if let Some(time) = time {
+                        signer = signer.creation_time(time);
+                    }
                 }
                 sink = signer.build().context("Failed to create signer")?;
                 state = State::Signing { signature_count: 0, };
@@ -315,9 +341,8 @@ fn sign_message(input: &mut dyn io::Read, output_path: Option<&str>,
     match state {
         State::Signing { signature_count } => {
             assert_eq!(signature_count, 0);
-            sink.finalize_one()
-                .context("Failed to sign data")?
-                .unwrap();
+            sink.finalize()
+                .context("Failed to sign data")?;
         },
         State::Done => (),
         _ => panic!("Unexpected state: {:?}", state),
