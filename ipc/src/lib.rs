@@ -38,7 +38,7 @@
 
 use std::fs;
 use std::io::{self, Read, Write};
-use std::net::{SocketAddr, AddrParseError, TcpStream, TcpListener};
+use std::net::{Ipv4Addr, SocketAddr, TcpStream, TcpListener};
 use std::path::PathBuf;
 
 extern crate capnp_rpc;
@@ -62,14 +62,12 @@ use capnp_rpc::{RpcSystem, twoparty};
 use capnp_rpc::rpc_twoparty_capnp::Side;
 
 /* Unix-specific options.  */
-use std::os::unix::io::FromRawFd;
+use std::os::unix::io::{IntoRawFd, FromRawFd};
 use std::os::unix::fs::OpenOptionsExt;
 
 /* XXX: Implement Windows support.  */
 
 use std::process::{Command, Stdio};
-use std::os::unix::io::AsRawFd;
-
 use std::thread;
 
 extern crate sequoia_core;
@@ -103,8 +101,6 @@ pub struct Descriptor {
     factory: HandlerFactory,
 }
 
-const LOCALHOST: &str = "127.0.0.1";
-
 impl Descriptor {
     /// Create a descriptor given its rendezvous point, the path to
     /// the servers executable file, and a handler factory.
@@ -113,9 +109,9 @@ impl Descriptor {
                -> Self {
         Descriptor {
             ctx: ctx.clone(),
-            rendezvous: rendezvous,
-            executable: executable,
-            factory: factory,
+            rendezvous,
+            executable,
+            factory,
         }
     }
 
@@ -132,7 +128,7 @@ impl Descriptor {
 
     /// Connects to a descriptor, starting the server if necessary.
     ///
-    /// This function does not use the contexts IPC policy, but uses
+    /// This function does not use the context's IPC policy, but uses
     /// the given one.
     pub fn connect_with_policy(&self, handle: &tokio_core::reactor::Handle,
                                policy: core::IPCPolicy)
@@ -168,16 +164,17 @@ impl Descriptor {
         file.read_to_end(&mut c)?;
 
         if let Some((cookie, a)) = Cookie::extract(c) {
-            let addr: ::std::result::Result<SocketAddr, AddrParseError> =
-                String::from_utf8_lossy(&a).parse();
-            if addr.is_err() {
-                /* Malformed.  Invalidate the cookie and try again.  */
-                file.set_len(0)?;
-                drop(file);
-                return self.connect(handle);
-            }
+            let addr = match String::from_utf8_lossy(&a).parse::<SocketAddr>() {
+                Ok(addr) => addr,
+                Err(..) => {
+                    /* Malformed.  Invalidate the cookie and try again.  */
+                    file.set_len(0)?;
+                    drop(file);
+                    return self.connect(handle);
+                }
+            };
 
-            let stream = TcpStream::connect(addr.unwrap());
+            let stream = TcpStream::connect(addr);
             if let Ok(s) = stream {
                 do_connect(cookie, s)
             } else {
@@ -187,9 +184,9 @@ impl Descriptor {
                 self.connect(handle)
             }
         } else {
-            let cookie = Cookie::new()?;
-            for external in [true, false].iter() {
-                // Implement the IPC pocicy.
+            let cookie = Cookie::new();
+            for external in &[true, false] {
+                // Implement the IPC policy.
                 if policy == core::IPCPolicy::Internal && *external {
                     // Do not try to fork.
                     continue;
@@ -221,7 +218,7 @@ impl Descriptor {
                     /* Write connection information to file.  */
                     file.set_len(0)?;
                     cookie.send(&mut file)?;
-                    write!(file, "{}:{}", LOCALHOST, addr.port())?;
+                    write!(file, "{}", addr)?;
                 }
                 drop(file);
 
@@ -231,22 +228,10 @@ impl Descriptor {
         }
     }
 
-    /// Try to create a TCP socket, bind it to a random port on
-    /// localhost.
-    fn listen(&self) -> Result<TcpListener> {
-        let port = OsRng.next_u32() as u16;
-        Ok(TcpListener::bind((LOCALHOST, port))?)
-    }
-
     /// Start the service, either as an external process or as a
     /// thread.
     fn start(&self, external: bool) -> Result<SocketAddr> {
-        /* Listen on a random port on localhost.  */
-        let mut listener = self.listen();
-        while listener.is_err() {
-            listener = self.listen();
-        }
-        let listener = listener.unwrap();
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let addr = listener.local_addr()?;
 
         /* Start the server, connect to it, and send the cookie.  */
@@ -259,21 +244,15 @@ impl Descriptor {
         Ok(addr)
     }
 
-    fn fork(&self, l: TcpListener) -> Result<()> {
-        // Convert to raw fd, then forget l so that it will not be
-        // closed when it is dropped.
-        let fd = l.as_raw_fd();
-        ::std::mem::forget(l);
-
-        Command::new(&self.executable.clone().into_os_string())
+    fn fork(&self, listener: TcpListener) -> Result<()> {
+        Command::new(&self.executable)
             .arg("--home")
-            .arg(self.ctx.home().to_string_lossy().into_owned())
+            .arg(self.ctx.home())
             .arg("--lib")
-            .arg(self.ctx.home().to_string_lossy().into_owned())
+            .arg(self.ctx.lib())
             .arg("--ephemeral")
-            .arg(format!("{}", self.ctx.ephemeral()))
-            // l will be closed here if the exec fails.
-            .stdin(unsafe { Stdio::from_raw_fd(fd) })
+            .arg(self.ctx.ephemeral().to_string())
+            .stdin(unsafe { Stdio::from_raw_fd(listener.into_raw_fd()) })
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()?;
@@ -303,7 +282,7 @@ impl Server {
     pub fn new(descriptor: Descriptor) -> Result<Self> {
         Ok(Server {
             core: tokio_core::reactor::Core::new()?,
-            descriptor: descriptor,
+            descriptor,
         })
     }
 
@@ -409,20 +388,20 @@ extern crate rand;
 use self::rand::RngCore;
 use self::rand::rngs::OsRng;
 
-const COOKIE_SIZE: usize = 32;
-
 impl Cookie {
+    const SIZE: usize = 32;
+
     /// Make a new cookie.
-    fn new() -> Result<Self> {
-        let mut c = vec![0; COOKIE_SIZE];
+    fn new() -> Self {
+        let mut c = vec![0; Cookie::SIZE];
         OsRng.fill_bytes(&mut c);
-        Ok(Cookie(c))
+        Cookie(c)
     }
 
     /// Make a new cookie from a slice.
-    fn from(buf: &Vec<u8>) -> Option<Self> {
-        if buf.len() == COOKIE_SIZE {
-            let mut c = Vec::<u8>::with_capacity(COOKIE_SIZE);
+    fn from(buf: &[u8]) -> Option<Self> {
+        if buf.len() == Cookie::SIZE {
+            let mut c = Vec::with_capacity(Cookie::SIZE);
             c.extend_from_slice(buf);
             Some(Cookie(c))
         } else {
@@ -433,8 +412,8 @@ impl Cookie {
     /// Given a vector starting with a cookie, extract it and return
     /// the rest.
     fn extract(mut buf: Vec<u8>) -> Option<(Self, Vec<u8>)> {
-        if buf.len() >= COOKIE_SIZE {
-            let r = buf.split_off(COOKIE_SIZE);
+        if buf.len() >= Cookie::SIZE {
+            let r = buf.split_off(Cookie::SIZE);
             Some((Cookie(buf), r))
         } else {
             None
@@ -443,7 +422,7 @@ impl Cookie {
 
     /// Read a cookie from 'from'.
     fn receive<R: Read>(from: &mut R) -> Result<Self> {
-        let mut buf = vec![0; COOKIE_SIZE];
+        let mut buf = vec![0; Cookie::SIZE];
         from.read_exact(&mut buf)?;
         Ok(Cookie(buf))
     }
@@ -451,15 +430,14 @@ impl Cookie {
     /// Asynchronously read a cookie from 'socket'.
     fn receive_async(socket: net::TcpStream) -> ReadExact<net::TcpStream,
                                                           Vec<u8>> {
-        let buf = vec![0; COOKIE_SIZE];
+        let buf = vec![0; Cookie::SIZE];
         tokio_io::io::read_exact(socket, buf)
     }
 
 
     /// Write a cookie to 'to'.
     fn send<W: Write>(&self, to: &mut W) -> io::Result<()> {
-        to.write_all(&self.0)?;
-        Ok(())
+        to.write_all(&self.0)
     }
 }
 
