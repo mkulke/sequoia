@@ -62,11 +62,17 @@ use winapi::um::winsock2;
 use std::process::{Command, Stdio};
 use std::thread;
 
+#[allow(unused_imports)]
 use sequoia_openpgp as openpgp;
 use sequoia_core as core;
 
+#[cfg(unix)]
 #[macro_use] mod trace;
+// TODO: Implement Assuan IPC Windows support using TCP + nonce as used upstream
+// https://gnupg.org/documentation/manuals/assuan.pdf#Socket%20wrappers
+#[cfg(unix)]
 pub mod assuan;
+#[cfg(unix)]
 pub mod gnupg;
 
 macro_rules! platform {
