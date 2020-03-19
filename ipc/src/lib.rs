@@ -41,21 +41,12 @@ use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream, TcpListener};
 use std::path::PathBuf;
 
-extern crate capnp_rpc;
-extern crate fs2;
-extern crate futures;
-extern crate lalrpop_util;
-extern crate memsec;
-extern crate tokio;
-extern crate tokio_core;
-extern crate tokio_io;
-
 use anyhow::Result;
 use fs2::FileExt;
 use futures::{Future, Stream};
 
 use tokio_core::net;
-use tokio_io::io::{ReadHalf, ReadExact};
+use tokio_io::io::ReadHalf;
 use tokio_io::AsyncRead;
 
 use capnp_rpc::{RpcSystem, twoparty};
@@ -70,9 +61,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::process::{Command, Stdio};
 use std::thread;
 
-extern crate sequoia_core;
-extern crate sequoia_openpgp as openpgp;
-
+use sequoia_openpgp as openpgp;
 use sequoia_core as core;
 
 #[macro_use] mod trace;
@@ -133,8 +122,7 @@ impl Descriptor {
     pub fn connect_with_policy(&self, handle: &tokio_core::reactor::Handle,
                                policy: core::IPCPolicy)
                    -> Result<RpcSystem<Side>> {
-        let do_connect =
-            move |cookie: Cookie, mut s: TcpStream| -> Result<RpcSystem<Side>> {
+        let do_connect = |cookie: Cookie, mut s: TcpStream| {
             cookie.send(&mut s)?;
 
             /* Tokioize.  */
@@ -146,9 +134,8 @@ impl Descriptor {
                 Box::new(twoparty::VatNetwork::new(reader, writer,
                                                    Side::Client,
                                                    Default::default()));
-            let rpc_system = RpcSystem::new(network, None);
 
-            Ok(rpc_system)
+            Ok(RpcSystem::new(network, None))
         };
 
         fs::create_dir_all(self.ctx.home())?;
@@ -163,18 +150,11 @@ impl Descriptor {
         let mut c = vec![];
         file.read_to_end(&mut c)?;
 
-        if let Some((cookie, a)) = Cookie::extract(c) {
-            let addr = match String::from_utf8_lossy(&a).parse::<SocketAddr>() {
-                Ok(addr) => addr,
-                Err(..) => {
-                    /* Malformed.  Invalidate the cookie and try again.  */
-                    file.set_len(0)?;
-                    drop(file);
-                    return self.connect(handle);
-                }
-            };
+        if let Some((cookie, rest)) = Cookie::extract(c) {
+            let stream = String::from_utf8(rest).map_err(drop)
+                .and_then(|rest| rest.parse::<SocketAddr>().map_err(drop))
+                .and_then(|addr| TcpStream::connect(addr).map_err(drop));
 
-            let stream = TcpStream::connect(addr);
             if let Ok(s) = stream {
                 do_connect(cookie, s)
             } else {
@@ -185,52 +165,32 @@ impl Descriptor {
             }
         } else {
             let cookie = Cookie::new();
-            for external in &[true, false] {
-                // Implement the IPC policy.
-                if policy == core::IPCPolicy::Internal && *external {
-                    // Do not try to fork.
-                    continue;
-                }
 
-                let addr = match self.start(*external) {
-                    Ok(a) => a,
-                    Err(e) => if *external {
-                        if policy == core::IPCPolicy::External {
-                            // Fail!
-                            return Err(e);
-                        }
+            let (addr, external) = match policy {
+                core::IPCPolicy::Internal => self.start(false)?,
+                core::IPCPolicy::External => self.start(true)?,
+                core::IPCPolicy::Robust => self.start(true)
+                    .or_else(|_| self.start(false))?
+            };
 
-                        // Try to spawn a thread next.
-                        continue;
-                    } else {
-                        // Failed to spawn a thread.
-                        return Err(e);
-                    }
-                };
+            /* XXX: It'd be nice not to waste this connection.  */
+            cookie.send(&mut TcpStream::connect(addr)?)?;
 
-                let mut stream = TcpStream::connect(addr)?;
-                cookie.send(&mut stream)?;
-
-                /* XXX: It'd be nice not to waste this connection.  */
-                drop(stream);
-
-                if *external {
-                    /* Write connection information to file.  */
-                    file.set_len(0)?;
-                    cookie.send(&mut file)?;
-                    write!(file, "{}", addr)?;
-                }
-                drop(file);
-
-                return do_connect(cookie, TcpStream::connect(addr)?);
+            if external {
+                /* Write connection information to file.  */
+                file.set_len(0)?;
+                file.write_all(&cookie.0)?;
+                write!(file, "{}", addr)?;
             }
-            unreachable!();
+            drop(file);
+
+            do_connect(cookie, TcpStream::connect(addr)?)
         }
     }
 
     /// Start the service, either as an external process or as a
     /// thread.
-    fn start(&self, external: bool) -> Result<SocketAddr> {
+    fn start(&self, external: bool) -> Result<(SocketAddr, bool)> {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let addr = listener.local_addr()?;
 
@@ -241,7 +201,7 @@ impl Descriptor {
             self.spawn(listener)?;
         }
 
-        Ok(addr)
+        Ok((addr, external))
     }
 
     fn fork(&self, listener: TcpListener) -> Result<()> {
@@ -344,10 +304,11 @@ impl Server {
 
     fn serve_listener(&mut self, l: TcpListener) -> Result<()> {
         /* The first client tells us our cookie.  */
-        let mut i = l.accept()?;
-        let cookie = Cookie::receive(&mut i.0)?;
-        /* XXX: It'd be nice to recycle this connection.  */
-        drop(i);
+        let cookie = {
+            /* XXX: It'd be nice to recycle this connection.  */
+            let mut i = l.accept()?;
+            Cookie::receive(&mut i.0)?
+        };
 
         let handler = (self.descriptor.factory)(self.descriptor.clone(), self.core.handle())?;
 
@@ -359,8 +320,8 @@ impl Server {
         let done = socket.incoming().and_then(|(socket, _addr)| {
             let _ = socket.set_nodelay(true);
             Cookie::receive_async(socket)
-        }).and_then(|(socket, buf)| {
-            if Cookie::from(&buf).map(|c| c == cookie).unwrap_or(false) {
+        }).and_then(|(socket, received_cookie)| {
+            if received_cookie == cookie {
                 Ok(socket)
             } else {
                 Err(io::Error::new(io::ErrorKind::BrokenPipe, "Bad cookie."))
@@ -384,9 +345,8 @@ impl Server {
 /// Cookies are used to authenticate clients.
 struct Cookie(Vec<u8>);
 
-extern crate rand;
-use self::rand::RngCore;
-use self::rand::rngs::OsRng;
+use rand::RngCore;
+use rand::rngs::OsRng;
 
 impl Cookie {
     const SIZE: usize = 32;
@@ -428,10 +388,13 @@ impl Cookie {
     }
 
     /// Asynchronously read a cookie from 'socket'.
-    fn receive_async(socket: net::TcpStream) -> ReadExact<net::TcpStream,
-                                                          Vec<u8>> {
+    fn receive_async(socket: net::TcpStream)
+        -> impl Future<Item = (net::TcpStream, Cookie), Error = io::Error> {
         let buf = vec![0; Cookie::SIZE];
         tokio_io::io::read_exact(socket, buf)
+            .and_then(|(socket, buf)| {
+                Ok((socket, Cookie::from(&buf).expect("enough bytes read")))
+            })
     }
 
 
