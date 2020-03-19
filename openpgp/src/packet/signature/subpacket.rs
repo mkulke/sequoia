@@ -1138,12 +1138,6 @@ impl SubpacketArea {
     /// Returns the value of the Issuer subpacket, which contains the
     /// KeyID of the key that allegedly created this signature.
     ///
-    /// Note: for historical reasons this packet is usually stored in
-    /// the unhashed area of the signature and, consequently, it is
-    /// *not* protected by the signature.  Thus, it is trivial to
-    /// modify it in transit.  For this reason, the Issuer Fingerprint
-    /// subpacket should be preferred, when it is present.
-    ///
     /// If the subpacket is not present, this returns `None`.
     ///
     /// Note: if the signature contains multiple instances of this
@@ -1480,10 +1474,7 @@ impl SubpacketArea {
     /// this signature.
     ///
     /// This subpacket should be preferred to the Issuer subpacket,
-    /// because Fingerprints are not subject to collisions, and the
-    /// Issuer subpacket is, for historic reasons, traditionally
-    /// stored in the unhashed area, i.e., it is not cryptographically
-    /// secured.
+    /// because Fingerprints are not subject to collisions.
     ///
     /// If the subpacket is not present, this returns `None`.
     ///
@@ -1785,12 +1776,6 @@ impl SubpacketAreas {
     /// Returns the value of the Issuer subpacket, which contains the
     /// KeyID of the key that allegedly created this signature.
     ///
-    /// Note: for historical reasons this packet is usually stored in
-    /// the unhashed area of the signature and, consequently, it is
-    /// *not* protected by the signature.  Thus, it is trivial to
-    /// modify it in transit.  For this reason, the Issuer Fingerprint
-    /// subpacket should be preferred, when it is present.
-    ///
     /// If the subpacket is not present, this returns `None`.
     ///
     /// Note: if the signature contains multiple instances of this
@@ -1838,10 +1823,7 @@ impl SubpacketAreas {
     /// this signature.
     ///
     /// This subpacket should be preferred to the Issuer subpacket,
-    /// because Fingerprints are not subject to collisions, and the
-    /// Issuer subpacket is, for historic reasons, traditionally
-    /// stored in the unhashed area, i.e., it is not cryptographically
-    /// secured.
+    /// because Fingerprints are not subject to collisions.
     ///
     /// If the subpacket is not present, this returns `None`.
     ///
@@ -2082,8 +2064,11 @@ impl signature::Builder {
 
     /// Sets the value of the Issuer subpacket, which contains the
     /// KeyID of the key that allegedly created this signature.
+    ///
+    /// Caution: By default, the issuer is set correctly when creating
+    /// the signature. Only use this function to override it.
     pub fn set_issuer(mut self, id: KeyID) -> Result<Self> {
-        self.hashed_area.replace(Subpacket::new(
+        self.unhashed_area.replace(Subpacket::new(
             SubpacketValue::Issuer(id),
             false)?)?;
 
@@ -2093,7 +2078,7 @@ impl signature::Builder {
     /// Sets the value of the Notation Data subpacket with the given
     /// name.
     ///
-    /// Any existing Notation Data subpacket with the given name are
+    /// Any existing Notation Data subpackets with the given name are
     /// replaced.
     ///
     /// The name falls into two namespaces: The user namespace and the
@@ -2126,7 +2111,7 @@ impl signature::Builder {
     /// Adds a Notation Data subpacket with the given name, value, and
     /// flags.
     ///
-    /// Any existing Notation Data subpacket with the given name are
+    /// Any existing Notation Data subpackets with the given name are
     /// kept.
     ///
     /// The name falls into two namespaces: The user namespace and the
@@ -2312,8 +2297,11 @@ impl signature::Builder {
     /// Sets the value of the Issuer Fingerprint subpacket, which
     /// contains the fingerprint of the key that allegedly created
     /// this signature.
+    ///
+    /// Caution: By default, the issuer fingerprint is set correctly when
+    /// creating the signature. Only use this function to override it.
     pub fn set_issuer_fingerprint(mut self, fp: Fingerprint) -> Result<Self> {
-        self.hashed_area.replace(Subpacket::new(
+        self.unhashed_area.replace(Subpacket::new(
             SubpacketValue::IssuerFingerprint(fp),
             false)?)?;
 
@@ -3169,4 +3157,43 @@ fn subpacket_test_2() {
 //             }
 //         }
 //     }
+}
+
+#[test]
+fn issuer_default() -> Result<()> {
+    use crate::types::Curve;
+
+    let hash_algo = HashAlgorithm::SHA512;
+    let hash = hash_algo.context()?;
+    let sig = signature::Builder::new(crate::types::SignatureType::Binary);
+    let key: crate::packet::key::SecretKey =
+        crate::packet::key::Key4::generate_ecc(true, Curve::Ed25519)?.into();
+    let mut keypair = key.into_keypair()?;
+
+    // no issuer or issuer_fingerprint present, use default
+    let sig_ = sig.sign_hash(&mut keypair, hash.clone())?;
+
+    assert_eq!(sig_.issuer(), Some(&keypair.public().keyid()));
+    assert_eq!(sig_.issuer_fingerprint(), Some(&keypair.public().fingerprint()));
+
+    let fp = Fingerprint::from_bytes(b"bbbbbbbbbbbbbbbbbbbb");
+
+    // issuer subpacket present, do not override
+    let mut sig = signature::Builder::new(crate::types::SignatureType::Binary);
+
+    sig = sig.set_issuer(fp.clone().into())?;
+    let sig_ = sig.clone().sign_hash(&mut keypair, hash.clone())?;
+
+    assert_eq!(sig_.issuer(), Some(&fp.clone().into()));
+    assert!(sig_.issuer_fingerprint().is_none());
+
+    // issuer_fingerprint subpacket present, do not override
+    let mut sig = signature::Builder::new(crate::types::SignatureType::Binary);
+
+    sig = sig.set_issuer_fingerprint(fp.clone())?;
+    let sig_ = sig.clone().sign_hash(&mut keypair, hash.clone())?;
+
+    assert_eq!(sig_.issuer_fingerprint(), Some(&fp));
+    assert!(sig_.issuer().is_none());
+    Ok(())
 }
