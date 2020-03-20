@@ -20,6 +20,20 @@ impl fmt::Debug for KeyID {
     }
 }
 
+impl fmt::UpperHex for KeyID {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(&self.convert_to_string(false))
+    }
+}
+
+impl fmt::LowerHex for KeyID {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let mut hex = self.convert_to_string(false);
+        hex.make_ascii_lowercase();
+        f.write_str(&hex)
+    }
+}
+
 impl std::str::FromStr for KeyID {
     type Err = anyhow::Error;
 
@@ -152,11 +166,6 @@ impl KeyID {
         self.as_slice().iter().all(|b| *b == 0)
     }
 
-    /// Converts the key ID to a hexadecimal number.
-    pub fn to_hex(&self) -> String {
-        self.convert_to_string(false)
-    }
-
     /// Common code for the above functions.
     fn convert_to_string(&self, pretty: bool) -> String {
         let raw = match self {
@@ -237,6 +246,13 @@ mod test {
         assert_match!(KeyID::Invalid(_) = KeyID::from_hex("587DAEF1").unwrap());
         assert_match!(KeyID::Invalid(_) =
                       KeyID::from_hex("0x587DAEF1").unwrap());
+    }
+
+    #[test]
+    fn hex_formatting() {
+        let keyid = KeyID::from_hex("FB3751F1587DAEF1").unwrap();
+        assert_eq!(format!("{:X}", keyid), "FB3751F1587DAEF1");
+        assert_eq!(format!("{:x}", keyid), "fb3751f1587daef1");
     }
 
     #[test]

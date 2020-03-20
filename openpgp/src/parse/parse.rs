@@ -1664,7 +1664,7 @@ fn one_pass_sig_parser_test () {
         assert_eq!(p.typ(), SignatureType::Binary);
         assert_eq!(p.hash_algo(), HashAlgorithm::SHA512);
         assert_eq!(p.pk_algo(), PublicKeyAlgorithm::RSAEncryptSign);
-        assert_eq!(p.issuer().to_hex(), "7223B56678E02528");
+        assert_eq!(format!("{:X}", p.issuer()), "7223B56678E02528");
         assert_eq!(p.last_raw(), 1);
     } else {
         panic!("Wrong packet!");
@@ -2987,15 +2987,14 @@ impl <'a> PacketParser<'a> {
         &mut self.reader
     }
 
-    /// Marks the packet's contents (packet.common.body) as being
-    /// decrypted (true) or encrypted (false).
+    /// Marks the packet's contents as being decrypted (true) or
+    /// encrypted (false).
     fn set_decrypted(mut self, v: bool) -> Self {
         self.decrypted = v;
         self
     }
 
-    /// Returns whether the packet's contents (packet.common.body) are
-    /// decrypted.
+    /// Returns whether the packet's contents are decrypted.
     pub fn decrypted(&self) -> bool {
         self.decrypted
     }
@@ -3619,64 +3618,30 @@ impl <'a> PacketParser<'a> {
     /// # return Ok(());
     /// # }
     pub fn buffer_unread_content(&mut self) -> Result<&[u8]> {
-        let mut rest = self.steal_eof()?;
+        let rest = self.steal_eof()?;
+
+        fn set_or_extend(rest: Vec<u8>, c: &mut Container) -> Result<&[u8]> {
+            if rest.len() > 0 {
+                if c.body().len() > 0 {
+                    let mut new =
+                        Vec::with_capacity(c.body().len() + rest.len());
+                    new.extend_from_slice(c.body());
+                    new.extend_from_slice(&rest);
+                    c.set_body(new);
+                } else {
+                    c.set_body(rest);
+                }
+            }
+
+            Ok(c.body())
+        }
 
         match &mut self.packet {
-            Packet::Literal(p) => {
-                if rest.len() > 0 {
-                    if p.body().len() > 0 {
-                        p.body_mut().append(&mut rest);
-                    } else {
-                        p.set_body(rest);
-                    }
-                }
-
-                Ok(p.body())
-            },
-            Packet::Unknown(p) => {
-                if rest.len() > 0 {
-                    if p.body().len() > 0 {
-                        p.body_mut().append(&mut rest);
-                    } else {
-                        p.set_body(rest);
-                    }
-                }
-
-                Ok(p.body())
-            },
-            Packet::CompressedData(p) => {
-                if rest.len() > 0 {
-                    if p.body().len() > 0 {
-                        p.body_mut().append(&mut rest);
-                    } else {
-                        p.set_body(rest);
-                    }
-                }
-
-                Ok(p.body())
-            },
-            Packet::SEIP(p) => {
-                if rest.len() > 0 {
-                    if p.body().len() > 0 {
-                        p.body_mut().append(&mut rest);
-                    } else {
-                        p.set_body(rest);
-                    }
-                }
-
-                Ok(p.body())
-            },
-            Packet::AED(p) => {
-                if rest.len() > 0 {
-                    if p.body().len() > 0 {
-                        p.body_mut().append(&mut rest);
-                    } else {
-                        p.set_body(rest);
-                    }
-                }
-
-                Ok(p.body())
-            },
+            Packet::Literal(p) => set_or_extend(rest, p.container_mut()),
+            Packet::Unknown(p) => set_or_extend(rest, p.container_mut()),
+            Packet::CompressedData(p) => set_or_extend(rest, p.container_mut()),
+            Packet::SEIP(p) => set_or_extend(rest, p.container_mut()),
+            Packet::AED(p) => set_or_extend(rest, p.container_mut()),
             p => {
                 if rest.len() > 0 {
                     Err(Error::MalformedPacket(

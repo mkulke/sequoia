@@ -17,6 +17,20 @@ impl fmt::Debug for Fingerprint {
     }
 }
 
+impl fmt::UpperHex for Fingerprint {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(&self.convert_to_string(false))
+    }
+}
+
+impl fmt::LowerHex for Fingerprint {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let mut hex = self.convert_to_string(false);
+        hex.make_ascii_lowercase();
+        f.write_str(&hex)
+    }
+}
+
 impl std::str::FromStr for Fingerprint {
     type Err = anyhow::Error;
 
@@ -49,7 +63,7 @@ impl Fingerprint {
     /// let hex = "3E8877C877274692975189F5D03F6F865226FE8B";
     /// let fp = Fingerprint::from_hex(hex);
     /// assert!(fp.is_ok());
-    /// assert_eq!(fp.unwrap().to_hex(), hex);
+    /// assert_eq!(format!("{:X}", fp.unwrap()), hex);
     /// ```
     pub fn from_hex(hex: &str) -> Result<Fingerprint> {
         Ok(Fingerprint::from_bytes(&crate::fmt::from_hex(hex, true)?[..]))
@@ -61,11 +75,6 @@ impl Fingerprint {
             &Fingerprint::V4(ref fp) => fp,
             &Fingerprint::Invalid(ref fp) => fp,
         }
-    }
-
-    /// Converts the fingerprint to a hexadecimal number.
-    pub fn to_hex(&self) -> String {
-        self.convert_to_string(false)
     }
 
     /// Common code for the above functions.
@@ -126,7 +135,7 @@ impl Fingerprint {
     pub fn to_icao(&self) -> String {
         let mut ret = String::default();
 
-        for ch in self.to_hex().chars() {
+        for ch in self.convert_to_string(false).chars() {
             let word = match ch {
                 '0' => "Zero",
                 '1' => "One",
@@ -171,6 +180,14 @@ Echo Foxtrot Zero One Two Three Four Five Six Seven Eight Niner Alpha Bravo \
 Charlie Delta Echo Foxtrot Zero One Two Three Four Five Six Seven";
 
         assert_eq!(fpr.to_icao(), expected);
+    }
+
+    #[test]
+    fn hex_formatting() {
+        let fpr = Fingerprint::from_hex(
+            "0123 4567 89AB CDEF 0123 4567 89AB CDEF 0123 4567").unwrap();
+        assert_eq!(format!("{:X}", fpr), "0123456789ABCDEF0123456789ABCDEF01234567");
+        assert_eq!(format!("{:x}", fpr), "0123456789abcdef0123456789abcdef01234567");
     }
 
     #[test]
