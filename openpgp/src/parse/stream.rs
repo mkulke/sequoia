@@ -994,9 +994,12 @@ impl DetachedVerifier {
         let t = t.into();
         Verifier::from_buffered_reader(
             policy,
+            // XXX: impl BufferedReader for Transformer to reduce
+            // buffering.
             Box::new(buffered_reader::Generic::with_cookie(
                 Transformer::new(signature_bio, reader)?,
-                None, Default::default())),
+                Some(1 << 22), // 4MB.
+                Default::default())),
             helper, t)
     }
 }
