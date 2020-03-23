@@ -656,6 +656,9 @@ struct Transformer<'a> {
     /// offset of unread bytes in the buffer.
     buffer: Vec<u8>,
     cursor: usize,
+
+    /// For BufferedReader.
+    cookie: Cookie,
 }
 
 #[derive(PartialEq, Debug)]
@@ -702,6 +705,7 @@ impl<'a> Transformer<'a> {
         // from data.
         let state = {
             const HEADER_LEN: usize = 6;
+            // XXX: Don't consume, pass thru.
             let data_prefix = data.data_consume(512 - HEADER_LEN)?;
             if data_prefix.len() < 512 - HEADER_LEN {
                 // Too little data for a partial body encoding, produce a
@@ -741,25 +745,27 @@ impl<'a> Transformer<'a> {
             reader: data,
             buffer: buf,
             cursor: 0,
+            cookie: Default::default(),
         })
     }
 
-    fn read_helper(&mut self, mut buf: &mut [u8]) -> Result<usize> {
-        // Keep track of the bytes written into `buf`.
-        let mut bytes_read = 0;
+    fn data_helper(&mut self, amount: usize, hard: bool, and_consume: bool)
+                   -> io::Result<&[u8]> {
+        assert!(self.cursor <= self.buffer.len());
+        let amount_buffered = self.buffer.len() - self.cursor;
 
-        if self.cursor >= self.buffer.len() {
-            // We have exhausted the buffered data.  Reset length and
-            // offset.
-            crate::vec_truncate(&mut self.buffer, 0);
-            self.cursor = 0;
+        if amount > amount_buffered {
+            // We have exhausted the buffered data.
+            let want = amount;
+            let mut new_buffer = Vec::with_capacity(want);
+            new_buffer.extend_from_slice(&self.buffer[self.cursor..]);
 
             self.state = match self.state {
                 TransformationState::Data => {
                     // Find the largest power of two equal or smaller
                     // than the size of buf.
-                    let mut s = buf.len().next_power_of_two();
-                    if ! buf.len().is_power_of_two() {
+                    let mut s = want.next_power_of_two();
+                    if ! want.is_power_of_two() {
                         s >>= 1;
                     }
 
@@ -773,7 +779,7 @@ impl<'a> Transformer<'a> {
 
                     // Try to read that amount into the buffer.
                     let data = self.reader.data_consume(s)?;
-                    let mut data = &data[..cmp::min(s, data.len())];
+                    let data = &data[..cmp::min(s, data.len())];
 
                     // Short read?  The end is nigh.
                     let short_read = data.len() < s;
@@ -782,30 +788,15 @@ impl<'a> Transformer<'a> {
                     } else {
                         BodyLength::Partial(data.len() as u32)
                     };
-                    len.serialize(&mut self.buffer)?;
-                    // Offset into `self.buffer`.
-                    let mut off = self.buffer.len();
-
-                    // Try to copy the length directly into the read
-                    // buffer.
-                    if off < buf.len() {
-                        &mut buf[..off].copy_from_slice(&self.buffer[..off]);
-                        buf = &mut buf[off..];
-                        bytes_read += off;
-                        off = 0;
-
-                        // Try to copy as much as possible of `data` into
-                        // the read buffer.
-                        let n = cmp::min(buf.len(), data.len());
-                        &mut buf[..n].copy_from_slice(&data[..n]);
-                        data = &data[n..];
-                        bytes_read += n;
-                    }
+                    len.serialize(&mut new_buffer)
+                        .expect("representable; write to buffer is infallible");
+                    // Offset into `new_buffer`.
+                    let off = new_buffer.len();
 
                     // Copy the rest.
-                    // XXX: Could avoid the copy here.
-                    self.buffer.resize(off + data.len(), 0);
-                    &mut self.buffer[off..].copy_from_slice(data);
+                    // XXX: Opportunity for set_len.
+                    new_buffer.resize(off + data.len(), 0);
+                    &mut new_buffer[off..].copy_from_slice(data);
 
                     if short_read {
                         TransformationState::Sigs
@@ -816,7 +807,10 @@ impl<'a> Transformer<'a> {
 
                 TransformationState::Sigs => {
                     for sig in self.sigs.drain(..) {
-                        Packet::Signature(sig).serialize(&mut self.buffer)?;
+                        Packet::Signature(sig).serialize(&mut new_buffer)
+                            .map_err(|e| {
+                                io::Error::new(io::ErrorKind::Other, e)
+                            })?;
                     }
 
                     TransformationState::Done
@@ -825,38 +819,114 @@ impl<'a> Transformer<'a> {
                 TransformationState::Done =>
                     TransformationState::Done,
             };
+
+            self.buffer = new_buffer;
+            self.cursor = 0;
         }
 
-        if bytes_read > 0 {
-            // We (partially?) satisfied the read request.  Return
-            // now, and leave `self.buffer` for the next read
-            // invocation.
-            return Ok(bytes_read);
+        let amount_buffered = self.buffer.len() - self.cursor;
+        if hard && amount_buffered < amount {
+            Err(io::Error::new(io::ErrorKind::UnexpectedEof, "EOF"))
+        } else if amount == 0 || amount_buffered == 0 {
+            Ok(&b""[..])
+        } else {
+            if and_consume {
+                let amount_consumed = cmp::min(amount_buffered, amount);
+                self.cursor += amount_consumed;
+                assert!(self.cursor <= self.buffer.len());
+                Ok(&self.buffer[self.cursor - amount_consumed..])
+            } else {
+                Ok(&self.buffer[self.cursor..])
+            }
         }
+    }
+}
 
-        assert!(self.cursor <= self.buffer.len());
-        let n = cmp::min(buf.len(), self.buffer.len() - self.cursor);
-        &mut buf[..n]
-            .copy_from_slice(&self.buffer[self.cursor..n + self.cursor]);
-        self.cursor += n;
-        Ok(n)
+// Dummy implementations of Display and Debug so that we can implement
+// BufferedReader.
+use std::fmt;
+impl<'a> fmt::Display for Transformer<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl<'a> fmt::Debug for Transformer<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Transformer")
+            .field("state", &self.state)
+            .field("sigs", &self.sigs)
+            .field("buffer size", &self.buffer.len())
+            .field("cursor", &self.cursor)
+            .finish()
     }
 }
 
 impl<'a> io::Read for Transformer<'a> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        match self.read_helper(buf) {
-            Ok(n) => Ok(n),
-            Err(e) => match e.downcast::<io::Error>() {
-                // An io::Error.  Pass as-is.
-                Ok(e) => Err(e),
-                // A failure.  Wrap it.
-                Err(e) => Err(io::Error::new(io::ErrorKind::Other, e)),
-            },
-        }
+        buffered_reader::buffered_reader_generic_read_impl(self, buf)
     }
 }
 
+impl<'a> BufferedReader<Cookie> for Transformer<'a> {
+    fn buffer(&self) -> &[u8] {
+        &self.buffer[self.cursor..]
+    }
+
+    fn data(&mut self, amount: usize) -> io::Result<&[u8]> {
+        self.data_helper(amount, false, false)
+    }
+
+    fn data_hard(&mut self, amount: usize) -> io::Result<&[u8]> {
+        self.data_helper(amount, true, false)
+    }
+
+    fn consume(&mut self, amount: usize) -> &[u8] {
+        // The caller can't consume more than is buffered!
+        assert!(self.cursor <= self.buffer.len());
+        assert!(amount <= self.buffer.len() - self.cursor,
+                "buffer contains just {} bytes, but you are trying to \
+                 consume {} bytes.  Did you forget to call data()?",
+                self.buffer.len() - self.cursor, amount);
+
+        self.cursor += amount;
+        &self.buffer[self.cursor - amount..]
+    }
+
+    fn data_consume(&mut self, amount: usize) -> io::Result<&[u8]> {
+        self.data_helper(amount, false, true)
+    }
+
+    fn data_consume_hard(&mut self, amount: usize) -> io::Result<&[u8]> {
+        self.data_helper(amount, true, true)
+    }
+
+    fn get_mut(&mut self) -> Option<&mut dyn BufferedReader<Cookie>> {
+        None
+    }
+
+    fn get_ref(&self) -> Option<&dyn BufferedReader<Cookie>> {
+        None
+    }
+
+    fn into_inner<'b>(self: Box<Self>)
+                      -> Option<Box<dyn BufferedReader<Cookie> + 'b>>
+        where Self: 'b {
+        None
+    }
+
+    fn cookie_set(&mut self, cookie: Cookie) -> Cookie {
+        std::mem::replace(&mut self.cookie, cookie)
+    }
+
+    fn cookie_ref(&self) -> &Cookie {
+        &self.cookie
+    }
+
+    fn cookie_mut(&mut self) -> &mut Cookie {
+        &mut self.cookie
+    }
+}
 
 /// Verifies a detached signature.
 ///
@@ -994,12 +1064,7 @@ impl DetachedVerifier {
         let t = t.into();
         Verifier::from_buffered_reader(
             policy,
-            // XXX: impl BufferedReader for Transformer to reduce
-            // buffering.
-            Box::new(buffered_reader::Generic::with_cookie(
-                Transformer::new(signature_bio, reader)?,
-                Some(1 << 22), // 4MB.
-                Default::default())),
+            Box::new(Transformer::new(signature_bio, reader)?),
             helper, t)
     }
 }
@@ -2007,6 +2072,56 @@ mod test {
             assert_eq!(h.bad, 0);
         }
         crate::vec_truncate(&mut buffer, 0);
+    }
+
+    /// Transforms a detached signature into a signed message,
+    /// verifies that.
+    ///
+    /// This exercises the unhappy path of the transformer by reading
+    /// chunks of random sizes.
+    #[test]
+    fn transformer() -> Result<()> {
+        use rand::Rng;
+
+        let p = &P::new();
+        let sig = crate::tests::message(
+            "a-cypherpunks-manifesto.txt.ed25519.sig");
+        let content = crate::tests::manifesto();
+        let cert = Cert::from_bytes(crate::tests::key(
+            "emmelie-dorothea-dina-samantha-awina-ed25519.pgp"))?;
+
+        let mut tr = Transformer::new(
+            Box::new(buffered_reader::Memory::with_cookie(sig,
+                                                          Default::default())),
+            Box::new(buffered_reader::Memory::new(content)))?;
+        let mut message = Vec::new();
+        let mut buf = vec![0; 4096];
+        let mut rng = rand::thread_rng();
+
+        loop {
+            let len = rng.gen_range(1, buf.len());
+            let got = tr.read(&mut buf[..len])?;
+            if got == 0 {
+                break;
+            }
+            message.extend_from_slice(&buf[..got]);
+        }
+
+        std::fs::write("/tmp/m", &message)?;
+        let h = VHelper::new(0, 0, 0, 0, vec![cert]);
+        let mut v = Verifier::from_bytes(p, &message, h, crate::frozen_time())?;
+
+        let mut buffer = Vec::new();
+        let got = v.read_to_end(&mut buffer)?;
+        assert!(v.message_processed());
+        assert_eq!(got, content.len());
+        assert_eq!(&buffer[..], content);
+
+        let h = v.into_helper();
+        assert_eq!(h.good, 1);
+        assert_eq!(h.bad, 0);
+
+        Ok(())
     }
 
     #[test]
