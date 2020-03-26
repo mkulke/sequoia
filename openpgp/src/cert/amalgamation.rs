@@ -47,6 +47,45 @@ pub trait ValidateAmalgamation<'a, C: 'a> {
               Self: Sized;
 }
 
+/// Applies a policy to an amalgamation.
+///
+/// This is an internal variant of `ValidateAmalgamation`, which
+/// allows validating a component for an otherwise invalid
+/// certificate.  See `ValidComponentAmalgamation::primary` for an
+/// explanation.
+trait ValidateAmalgamationRelaxed<'a, C: 'a> {
+    /// The type returned by `with_policy`.
+    type V;
+
+    /// Changes the amalgamation's policy.
+    ///
+    /// If `time` is `None`, the current time is used.
+    ///
+    /// If `valid_cert` is `false`, then this does not also check
+    /// whether the certificate is valid; it only checks whether the
+    /// component is valid.  Normally, this should be `true`.  This
+    /// option is only expose to allow breaking an infinite recursion:
+    ///
+    ///   - To check if a certificate is valid, we check if the
+    ///     primary key is valid.
+    ///
+    ///   - To check if the primary key is valid, we need the primary
+    ///     key's self signature
+    ///
+    ///   - To find the primary key's self signature, we need to find
+    ///     the primary user id
+    ///
+    ///   - To find the primary user id, we need to check if the user
+    ///     id is valid.
+    ///
+    ///   - To check if the user id is valid, we need to check that
+    ///     the corresponding certificate is valid.
+    fn with_policy_relaxed<T>(self, policy: &'a dyn Policy, time: T,
+                              valid_cert: bool) -> Result<Self::V>
+        where T: Into<Option<time::SystemTime>>,
+              Self: Sized;
+}
+
 /// An amalgamation with a policy and a reference time.
 ///
 /// In a certain sense, a `ValidAmalgamation` provides a view of an
@@ -64,7 +103,7 @@ pub trait ValidateAmalgamation<'a, C: 'a> {
 pub trait ValidAmalgamation<'a, C: 'a>
 {
     /// Returns the certificate.
-    fn cert(&self) -> &'a Cert;
+    fn cert(&self) -> &ValidCert<'a>;
 
     /// Returns the amalgamation's reference time.
     ///
@@ -97,13 +136,13 @@ pub trait ValidAmalgamation<'a, C: 'a>
     /// Returns the certificate's revocation status as of the
     /// amalgamation's reference time.
     fn cert_revoked(&self) -> RevocationStatus<'a> {
-        self.cert().revoked(self.policy(), self.time())
+        self.cert().revoked()
     }
 
     /// Returns whether the certificate is alive as of the
     /// amalgamation's reference time.
     fn cert_alive(&self) -> Result<()> {
-        self.cert().alive(self.policy(), self.time())
+        self.cert().alive()
     }
 
     /// Maps the given function over binding and direct key signature.
@@ -391,25 +430,51 @@ impl<'a, C> ComponentAmalgamation<'a, C> {
     }
 }
 
+macro_rules! impl_with_policy {
+    ($func:ident, $value:ident $(, $arg:ident: $type:ty )*) => {
+        fn $func<T>(self, policy: &'a dyn Policy, time: T, $($arg: $type, )*)
+            -> Result<Self::V>
+            where T: Into<Option<time::SystemTime>>,
+                  Self: Sized
+        {
+            let time = time.into().unwrap_or_else(SystemTime::now);
+
+            if $value {
+                self.cert.with_policy(policy, time)?;
+            }
+
+            if let Some(binding_signature) = self.binding_signature(policy, time) {
+                let cert = self.cert;
+                // We can't do `Cert::with_policy` as that would
+                // result in infinite recursion.  But at this point,
+                // we know the certificate is valid (unless the caller
+                // doesn't care).
+                Ok(ValidComponentAmalgamation {
+                    ca: self,
+                    cert: ValidCert {
+                        cert: cert,
+                        policy: policy,
+                        time: time,
+                    },
+                    binding_signature: binding_signature,
+                })
+            } else {
+                Err(Error::NoBindingSignature(time).into())
+            }
+        }
+    }
+}
+
 impl<'a, C> ValidateAmalgamation<'a, C> for ComponentAmalgamation<'a, C> {
     type V = ValidComponentAmalgamation<'a, C>;
 
-    fn with_policy<T>(self, policy: &'a dyn Policy, time: T) -> Result<Self::V>
-        where T: Into<Option<time::SystemTime>>,
-              Self: Sized
-    {
-        let time = time.into().unwrap_or_else(SystemTime::now);
-        if let Some(binding_signature) = self.binding_signature(policy, time) {
-            Ok(ValidComponentAmalgamation {
-                ca: self,
-                policy: policy,
-                time: time,
-                binding_signature: binding_signature,
-            })
-        } else {
-            Err(Error::NoBindingSignature(time).into())
-        }
-    }
+    impl_with_policy!(with_policy, true);
+}
+
+impl<'a, C> ValidateAmalgamationRelaxed<'a, C> for ComponentAmalgamation<'a, C> {
+    type V = ValidComponentAmalgamation<'a, C>;
+
+    impl_with_policy!(with_policy_relaxed, valid_cert, valid_cert: bool);
 }
 
 impl<'a, C> ComponentAmalgamation<'a, C> {
@@ -454,9 +519,7 @@ impl<'a> ComponentAmalgamation<'a, crate::packet::UserAttribute> {
 #[derive(Debug)]
 pub struct ValidComponentAmalgamation<'a, C> {
     ca: ComponentAmalgamation<'a, C>,
-    policy: &'a dyn Policy,
-    // The reference time.
-    time: SystemTime,
+    cert: ValidCert<'a>,
     // The binding signature at time `time`.  (This is just a cache.)
     binding_signature: &'a Signature,
 }
@@ -470,8 +533,7 @@ impl<'a, C> Clone for ValidComponentAmalgamation<'a, C> {
     fn clone(&self) -> Self {
         Self {
             ca: self.ca.clone(),
-            policy: self.policy,
-            time: self.time,
+            cert: self.cert.clone(),
             binding_signature: self.binding_signature,
         }
     }
@@ -481,6 +543,7 @@ impl<'a, C> std::ops::Deref for ValidComponentAmalgamation<'a, C> {
     type Target = ComponentAmalgamation<'a, C>;
 
     fn deref(&self) -> &Self::Target {
+        assert!(std::ptr::eq(self.ca.cert(), self.cert.cert()));
         &self.ca
     }
 }
@@ -489,6 +552,7 @@ impl<'a, C: 'a> From<ValidComponentAmalgamation<'a, C>>
     for ComponentAmalgamation<'a, C>
 {
     fn from(vca: ValidComponentAmalgamation<'a, C>) -> Self {
+        assert!(std::ptr::eq(vca.ca.cert(), vca.cert.cert()));
         vca.ca
     }
 }
@@ -510,9 +574,30 @@ impl<'a, C> ValidComponentAmalgamation<'a, C>
     ///
     /// If there is more than one, than one is selected in a
     /// deterministic, but undefined manner.
+    ///
+    /// If `valid_cert` is `false`, then this does not also check
+    /// whether the certificate is valid; it only checks whether the
+    /// component is valid.  Normally, this should be `true`.  This
+    /// option is only expose to allow breaking an infinite recursion:
+    ///
+    ///   - To check if a certificate is valid, we check if the
+    ///     primary key is valid.
+    ///
+    ///   - To check if the primary key is valid, we need the primary
+    ///     key's self signature
+    ///
+    ///   - To find the primary key's self signature, we need to find
+    ///     the primary user id
+    ///
+    ///   - To find the primary user id, we need to check if the user
+    ///     id is valid.
+    ///
+    ///   - To check if the user id is valid, we need to check that
+    ///     the corresponding certificate is valid.
     pub(super) fn primary(cert: &'a Cert,
                           iter: std::slice::Iter<'a, ComponentBundle<C>>,
-                          policy: &'a dyn Policy, t: SystemTime)
+                          policy: &'a dyn Policy, t: SystemTime,
+                          valid_cert: bool)
         -> Option<ValidComponentAmalgamation<'a, C>>
     {
         use std::cmp::Ordering;
@@ -562,7 +647,7 @@ impl<'a, C> ValidComponentAmalgamation<'a, C>
                 }
             })
             .and_then(|c| ComponentAmalgamation::new(cert, (c.0).0)
-                      .with_policy(policy, t).ok())
+                      .with_policy_relaxed(policy, t, valid_cert).ok())
     }
 }
 
@@ -573,14 +658,17 @@ impl<'a, C> ValidateAmalgamation<'a, C> for ValidComponentAmalgamation<'a, C> {
         where T: Into<Option<time::SystemTime>>,
               Self: Sized,
     {
+        assert!(std::ptr::eq(self.ca.cert(), self.cert.cert()));
+
         let time = time.into().unwrap_or_else(SystemTime::now);
         self.ca.with_policy(policy, time)
     }
 }
 
 impl<'a, C> ValidAmalgamation<'a, C> for ValidComponentAmalgamation<'a, C> {
-    fn cert(&self) -> &'a Cert {
-        self.ca.cert()
+    fn cert(&self) -> &ValidCert<'a> {
+        assert!(std::ptr::eq(self.ca.cert(), self.cert.cert()));
+        &self.cert
     }
 
     /// Returns the amalgamation's reference time.
@@ -591,17 +679,20 @@ impl<'a, C> ValidAmalgamation<'a, C> for ValidComponentAmalgamation<'a, C> {
     /// `ValidComponentAmalgamation::alive` will return true if the reference
     /// time is greater than or equal to `t_c` and less than `t_e`.
     fn time(&self) -> SystemTime {
-        self.time
+        assert!(std::ptr::eq(self.ca.cert(), self.cert.cert()));
+        self.cert.time
     }
 
     /// Returns the amalgamation's policy.
     fn policy(&self) -> &'a dyn Policy
     {
-        self.policy
+        assert!(std::ptr::eq(self.ca.cert(), self.cert.cert()));
+        self.cert.policy
     }
 
     /// Returns the component's binding signature as of the reference time.
     fn binding_signature(&self) -> &'a Signature {
+        assert!(std::ptr::eq(self.ca.cert(), self.cert.cert()));
         self.binding_signature
     }
 
@@ -611,7 +702,7 @@ impl<'a, C> ValidAmalgamation<'a, C> for ValidComponentAmalgamation<'a, C> {
     /// Subpackets on direct key signatures apply to all components of
     /// the certificate.
     fn direct_key_signature(&self) -> Option<&'a Signature> {
-        self.cert.primary.binding_signature(self.policy(), self.time())
+        self.cert.cert.primary.binding_signature(self.policy(), self.time())
     }
 
     /// Returns the component's revocation status as of the amalgamation's
@@ -619,7 +710,7 @@ impl<'a, C> ValidAmalgamation<'a, C> for ValidComponentAmalgamation<'a, C> {
     ///
     /// Note: this does not return whether the certificate is valid.
     fn revoked(&self) -> RevocationStatus<'a> {
-        self.bundle._revoked(self.policy(), self.time,
+        self.bundle._revoked(self.policy(), self.cert.time,
                               false, Some(self.binding_signature))
     }
 

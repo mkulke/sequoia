@@ -626,13 +626,22 @@ impl Cert {
     }
 
     /// Returns the amalgamated primary userid at `t`, if any.
-    pub fn primary_userid<'a, T>(&'a self, policy: &'a dyn Policy, t: T)
+    fn primary_userid_relaxed<'a, T>(&'a self, policy: &'a dyn Policy, t: T,
+                                     valid_cert: bool)
         -> Option<ValidComponentAmalgamation<'a, UserID>>
         where T: Into<Option<std::time::SystemTime>>
     {
         let t = t.into().unwrap_or_else(std::time::SystemTime::now);
         ValidComponentAmalgamation::primary(self, self.userids.iter(),
-                                            policy, t)
+                                            policy, t, valid_cert)
+    }
+
+    /// Returns the amalgamated primary userid at `t`, if any.
+    pub fn primary_userid<'a, T>(&'a self, policy: &'a dyn Policy, t: T)
+        -> Option<ValidComponentAmalgamation<'a, UserID>>
+        where T: Into<Option<std::time::SystemTime>>
+    {
+        self.primary_userid_relaxed(policy, t, true)
     }
 
     /// Returns an iterator over the Cert's userids.
@@ -647,7 +656,7 @@ impl Cert {
     {
         let t = t.into().unwrap_or_else(std::time::SystemTime::now);
         ValidComponentAmalgamation::primary(self, self.user_attributes.iter(),
-                                            policy, t)
+                                            policy, t, true)
     }
 
     /// Returns an iterator over the Cert's `UserAttributeBundle`s.
@@ -1361,6 +1370,7 @@ impl Cert {
 }
 
 /// A certificate under a given policy at a given time.
+#[derive(Debug, Clone)]
 pub struct ValidCert<'a> {
     cert: &'a Cert,
     policy: &'a dyn Policy,
@@ -1376,7 +1386,18 @@ impl<'a> std::ops::Deref for ValidCert<'a> {
     }
 }
 
+impl<'a> fmt::Display for ValidCert<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.fingerprint())
+    }
+}
+
 impl<'a> ValidCert<'a> {
+    /// Returns the certificate.
+    pub fn cert(&self) -> &'a Cert {
+        self.cert
+    }
+
     /// Returns the amalgamation's reference time.
     ///
     /// For queries that are with respect to a point in time, this
@@ -1393,14 +1414,14 @@ impl<'a> ValidCert<'a> {
     /// Changes the amalgamation's policy.
     ///
     /// If `time` is `None`, the current time is used.
-    pub fn with_policy<T>(self, policy: &'a dyn Policy, time: T) -> Self
+    ///
+    /// Returns an error if the certificate is not valid for the given
+    /// policy at the given time.
+    pub fn with_policy<T>(self, policy: &'a dyn Policy, time: T)
+        -> Result<ValidCert<'a>>
         where T: Into<Option<time::SystemTime>>,
     {
-        ValidCert {
-            cert: self.cert,
-            policy,
-            time: time.into().unwrap_or_else(time::SystemTime::now),
-        }
+        self.cert.with_policy(policy, time)
     }
 
     /// Returns the Cert's revocation status.
@@ -1418,7 +1439,7 @@ impl<'a> ValidCert<'a> {
     ///
     /// Note: this only returns whether this Cert is revoked; it does
     /// not imply anything about the Cert or other components.
-    pub fn revoked(&self) -> RevocationStatus {
+    pub fn revoked(&self) -> RevocationStatus<'a> {
         self.cert.revoked(self.policy, self.time)
     }
 
