@@ -34,6 +34,19 @@ pub struct AED1 {
     container: packet::Container,
 }
 
+impl std::ops::Deref for AED1 {
+    type Target = packet::Container;
+    fn deref(&self) -> &Self::Target {
+        &self.container
+    }
+}
+
+impl std::ops::DerefMut for AED1 {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.container
+    }
+}
+
 impl PartialEq for AED1 {
     fn eq(&self, other: &AED1) -> bool {
         self.sym_algo == other.sym_algo
@@ -144,8 +157,6 @@ impl AED1 {
     }
 }
 
-impl_container_forwards!(AED1);
-
 impl From<AED1> for Packet {
     fn from(p: AED1) -> Self {
         super::AED::from(p).into()
@@ -155,21 +166,5 @@ impl From<AED1> for Packet {
 impl From<AED1> for super::AED {
     fn from(p: AED1) -> Self {
         super::AED::V1(p)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn deref() {
-        let mut s = AED1::new(SymmetricAlgorithm::AES128,
-                              AEADAlgorithm::EAX,
-                              64,
-                              vec![].into_boxed_slice()).unwrap();
-        assert_eq!(s.body(), &[]);
-        s.set_body(vec![0, 1, 2]);
-        assert_eq!(s.body(), &[0, 1, 2]);
     }
 }

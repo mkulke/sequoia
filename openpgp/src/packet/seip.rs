@@ -23,6 +23,19 @@ pub struct SEIP1 {
     container: packet::Container,
 }
 
+impl std::ops::Deref for SEIP1 {
+    type Target = packet::Container;
+    fn deref(&self) -> &Self::Target {
+        &self.container
+    }
+}
+
+impl std::ops::DerefMut for SEIP1 {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.container
+    }
+}
+
 impl PartialEq for SEIP1 {
     fn eq(&self, other: &SEIP1) -> bool {
         self.container == other.container
@@ -47,8 +60,6 @@ impl SEIP1 {
     }
 }
 
-impl_container_forwards!(SEIP1);
-
 impl From<SEIP1> for super::SEIP {
     fn from(p: SEIP1) -> Self {
         super::SEIP::V1(p)
@@ -58,18 +69,5 @@ impl From<SEIP1> for super::SEIP {
 impl From<SEIP1> for Packet {
     fn from(s: SEIP1) -> Self {
         Packet::SEIP(s.into())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn deref() {
-        let mut s = SEIP1::new();
-        assert_eq!(s.body(), &[]);
-        s.set_body(vec![0, 1, 2]);
-        assert_eq!(s.body(), &[0, 1, 2]);
     }
 }
