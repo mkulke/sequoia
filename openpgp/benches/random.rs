@@ -1,7 +1,6 @@
-use criterion::{black_box, criterion_group, criterion_main, AxisScale, Criterion, BenchmarkId, PlotConfiguration};
+use criterion::{black_box, Throughput, criterion_group, criterion_main, Criterion};
 
 use sequoia_openpgp::crypto;
-use sequoia_openpgp::parse::Parse;
 use sequoia_openpgp::cert::{CertBuilder, Cert};
 use sequoia_openpgp::policy::{Policy, StandardPolicy};
 use std::io::Write;
@@ -12,6 +11,7 @@ fn run_random(size: usize) {
     crypto::random(&mut buf);
 }
 
+/// Borrowed from the guide, chapter 02
 /// Encrypts the given message.
 fn encrypt(policy: &dyn Policy,
            sink: &mut Write, plaintext: &str, recipient: &Cert)
@@ -55,14 +55,15 @@ fn run_random_use_case() {
 
     let p = StandardPolicy::new();
     let mut ciphertext = Vec::new();
-    encrypt(&p, &mut ciphertext, "foo", &cert);
+    let _ = encrypt(&p, &mut ciphertext, "message_text", &cert);
 }
 
 fn bench_random(c: &mut Criterion) {
     let mut group = c.benchmark_group("bench_crypto_random");
 
-    //group.sample_size(10);
+    group.sample_size(50);
     for i in (8..33).step_by(8) {
+        group.throughput(Throughput::Bytes(i as u64));
         group.bench_function(format!("crypto::random {:02}", i), |b| b.iter(|| run_random(black_box(i)) ));
     };
     group.finish();
