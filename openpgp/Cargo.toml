@@ -61,6 +61,7 @@ lalrpop = ">=0.17"
 quickcheck = { version = "0.9", default-features = false }
 rand = { version = "0.7", default-features = false }
 rpassword = "5.0"
+criterion = "0.3"
 
 [features]
 default = ["compression", "crypto-nettle"]
@@ -80,3 +81,7 @@ vendored-nettle = ["nettle/vendored"]
 [[example]]
 name = "pad"
 required-features = ["compression-deflate"]
+
+[[bench]]
+name = "random"
+harness = false
