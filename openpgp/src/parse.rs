@@ -3899,10 +3899,9 @@ impl<'a> BufferedReader<Cookie> for PacketParser<'a> {
         if let Some(mut body_hash) = self.body_hash.take() {
             let data = self.data_hard(amount)
                 .expect("It is an error to consume more than data returns");
-            let read_something = data.len() > 0;
-            body_hash.update(data);
+            body_hash.update(&data[..amount]);
             self.body_hash = Some(body_hash);
-            self.content_was_read |= read_something;
+            self.content_was_read |= amount > 0;
         } else {
             panic!("body_hash is None");
         }
@@ -3910,14 +3909,14 @@ impl<'a> BufferedReader<Cookie> for PacketParser<'a> {
         self.reader.consume(amount)
     }
 
-    fn data_consume(&mut self, amount: usize) -> io::Result<&[u8]> {
+    fn data_consume(&mut self, mut amount: usize) -> io::Result<&[u8]> {
         // This is awkward.  Juggle mutable references around.
         if let Some(mut body_hash) = self.body_hash.take() {
             let data = self.data(amount)?;
-            let read_something = data.len() > 0;
-            body_hash.update(data);
+            amount = cmp::min(data.len(), amount);
+            body_hash.update(&data[..amount]);
             self.body_hash = Some(body_hash);
-            self.content_was_read |= read_something;
+            self.content_was_read |= amount > 0;
         } else {
             panic!("body_hash is None");
         }
@@ -3929,27 +3928,14 @@ impl<'a> BufferedReader<Cookie> for PacketParser<'a> {
         // This is awkward.  Juggle mutable references around.
         if let Some(mut body_hash) = self.body_hash.take() {
             let data = self.data_hard(amount)?;
-            let read_something = data.len() > 0;
-            body_hash.update(data);
+            body_hash.update(&data[..amount]);
             self.body_hash = Some(body_hash);
-            self.content_was_read |= read_something;
+            self.content_was_read |= amount > 0;
         } else {
             panic!("body_hash is None");
         }
 
         self.reader.data_consume_hard(amount)
-    }
-
-    fn read_be_u16(&mut self) -> io::Result<u16> {
-        let v = self.reader.read_be_u16()?;
-        self.hash_read_content(&v.to_be_bytes());
-        Ok(v)
-    }
-
-    fn read_be_u32(&mut self) -> io::Result<u32> {
-        let v = self.reader.read_be_u32()?;
-        self.hash_read_content(&v.to_be_bytes());
-        Ok(v)
     }
 
     fn steal(&mut self, amount: usize) -> io::Result<Vec<u8>> {
@@ -3962,10 +3948,6 @@ impl<'a> BufferedReader<Cookie> for PacketParser<'a> {
         let v = self.reader.steal_eof()?;
         self.hash_read_content(&v);
         Ok(v)
-    }
-
-    fn drop_eof(&mut self) -> io::Result<bool> {
-        Ok(! self.steal_eof()?.is_empty())
     }
 
     fn get_mut(&mut self) -> Option<&mut dyn BufferedReader<Cookie>> {
