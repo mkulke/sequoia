@@ -263,6 +263,38 @@ windows-msvc:
   variables:
     CFLAGS: "" # Silence some C warnings when compiling with MSVC
 
+coverage:
+# XXX If this works, only do it occasionally.
+#  only:
+#    - web
+#    - scheduled
+  tags:
+    - self-hosted
+  stage: build
+  image: rustlang/rust:nightly-slim
+
+  before_script:
+    - apt update -y -qq
+    - apt install --no-install-recommends -y -qq -o=Dpkg::Use-Pty=0 clang libclang-dev llvm pkg-config nettle-dev libssl-dev cmake zlib1g-dev
+    - if [ -d $CARGO_TARGET_DIR ]; then find $CARGO_TARGET_DIR | wc --lines; du -sh $CARGO_TARGET_DIR; fi
+    - if [ -d $CARGO_HOME ]; then find $CARGO_HOME | wc --lines; du -sh $CARGO_HOME; fi
+    - rustc --version
+    - cargo --version
+    - clang --version
+    - cargo install cargo-tarpaulin
+    - mkdir coverage
+
+  script:
+    - cargo tarpaulin -p buffered-reader -p sequoia-openpgp -p sequoia-openpgp --run-types Tests --run-types Doctests -o Html --output-dir $(pwd)/coverage
+
+  artifacts:
+    paths:
+      - coverage
+
+  variables:
+    CARGO_TARGET_DIR: $CI_PROJECT_DIR/../target.$CI_CONCURRENT_ID.rust-nightly
+    RUSTFLAGS: -D warnings -A unused-parens
+
 variables:
   DEBIAN_FRONTEND: noninteractive
   CARGO_HOME: $CI_PROJECT_DIR/../cargo
