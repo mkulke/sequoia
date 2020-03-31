@@ -2,6 +2,11 @@ use std::hash::{Hash, Hasher};
 use std::fmt;
 
 /// Describes preferences regarding key servers.
+///
+/// # A note on equality
+///
+/// `PartialEq` is implements semantic equality, i.e. it ignores
+/// padding.
 #[derive(Clone)]
 pub struct KeyServerPreferences{
     no_modify: bool,
@@ -44,6 +49,7 @@ impl fmt::Debug for KeyServerPreferences {
 impl PartialEq for KeyServerPreferences {
     fn eq(&self, other: &Self) -> bool {
         self.no_modify == other.no_modify
+            && self.unknown == other.unknown
     }
 }
 
@@ -52,6 +58,7 @@ impl Eq for KeyServerPreferences {}
 impl Hash for KeyServerPreferences {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.no_modify.hash(state);
+        self.unknown.hash(state);
     }
 }
 
