@@ -143,7 +143,8 @@ pub mod fmt;
 pub mod crypto;
 
 pub mod packet;
-use crate::packet::{Container, key};
+pub use packet::Packet;
+use crate::packet::key;
 
 pub mod parse;
 
@@ -152,7 +153,9 @@ pub use cert::Cert;
 pub mod serialize;
 
 mod packet_pile;
+pub use packet_pile::PacketPile;
 pub mod message;
+pub use message::Message;
 
 pub mod types;
 use crate::types::{
@@ -163,7 +166,9 @@ use crate::types::{
 };
 
 mod fingerprint;
+pub use fingerprint::Fingerprint;
 mod keyid;
+pub use keyid::KeyID;
 mod keyhandle;
 pub use keyhandle::KeyHandle;
 pub mod policy;
@@ -312,188 +317,4 @@ pub enum Error {
     /// This marks this enum as non-exhaustive.  Do not use this
     /// variant.
     #[doc(hidden)] #[error("__Nonexhaustive")] __Nonexhaustive,
-}
-
-/// The OpenPGP packets that Sequoia understands.
-///
-/// The different OpenPGP packets are detailed in [Section 5 of RFC 4880].
-///
-/// The `Unknown` packet allows Sequoia to deal with packets that it
-/// doesn't understand.  The `Unknown` packet is basically a binary
-/// blob that includes the packet's tag.
-///
-/// The unknown packet is also used for packets that are understood,
-/// but use unsupported options.  For instance, when the packet parser
-/// encounters a compressed data packet with an unknown compression
-/// algorithm, it returns the packet in an `Unknown` packet rather
-/// than a `CompressedData` packet.
-///
-///   [Section 5 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5
-///
-/// Note: This enum cannot be exhaustively matched to allow future
-/// extensions.
-///
-/// # A note on equality
-///
-/// We define equality on `Packet` like equality of the serialized
-/// form of the packet bodies defined by RFC4880, i.e. two packets are
-/// considered equal if and only if their serialized form is equal,
-/// modulo the OpenPGP framing (`CTB` and length style, potential
-/// partial body encoding).
-#[derive(Debug)]
-#[derive(PartialEq, Eq, Hash, Clone)]
-pub enum Packet {
-    /// Unknown packet.
-    Unknown(packet::Unknown),
-    /// Signature packet.
-    Signature(packet::Signature),
-    /// One pass signature packet.
-    OnePassSig(packet::OnePassSig),
-    /// Public key packet.
-    PublicKey(packet::key::PublicKey),
-    /// Public subkey packet.
-    PublicSubkey(packet::key::PublicSubkey),
-    /// Public/Secret key pair.
-    SecretKey(packet::key::SecretKey),
-    /// Public/Secret subkey pair.
-    SecretSubkey(packet::key::SecretSubkey),
-    /// Marker packet.
-    Marker(packet::Marker),
-    /// Trust packet.
-    Trust(packet::Trust),
-    /// User ID packet.
-    UserID(packet::UserID),
-    /// User attribute packet.
-    UserAttribute(packet::UserAttribute),
-    /// Literal data packet.
-    Literal(packet::Literal),
-    /// Compressed literal data packet.
-    CompressedData(packet::CompressedData),
-    /// Public key encrypted data packet.
-    PKESK(packet::PKESK),
-    /// Symmetric key encrypted data packet.
-    SKESK(packet::SKESK),
-    /// Symmetric key encrypted, integrity protected data packet.
-    SEIP(packet::SEIP),
-    /// Modification detection code packet.
-    MDC(packet::MDC),
-    /// AEAD Encrypted Data Packet.
-    AED(packet::AED),
-
-    /// This marks this enum as non-exhaustive.  Do not use this
-    /// variant.
-    #[doc(hidden)] __Nonexhaustive,
-}
-
-impl Packet {
-    /// Returns the `Packet's` corresponding OpenPGP tag.
-    ///
-    /// Tags are explained in [Section 4.3 of RFC 4880].
-    ///
-    ///   [Section 4.3 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-4.3
-    pub fn tag(&self) -> packet::Tag {
-        use crate::packet::Tag;
-        match self {
-            &Packet::Unknown(ref packet) => packet.tag(),
-            &Packet::Signature(_) => Tag::Signature,
-            &Packet::OnePassSig(_) => Tag::OnePassSig,
-            &Packet::PublicKey(_) => Tag::PublicKey,
-            &Packet::PublicSubkey(_) => Tag::PublicSubkey,
-            &Packet::SecretKey(_) => Tag::SecretKey,
-            &Packet::SecretSubkey(_) => Tag::SecretSubkey,
-            &Packet::Marker(_) => Tag::Marker,
-            &Packet::Trust(_) => Tag::Trust,
-            &Packet::UserID(_) => Tag::UserID,
-            &Packet::UserAttribute(_) => Tag::UserAttribute,
-            &Packet::Literal(_) => Tag::Literal,
-            &Packet::CompressedData(_) => Tag::CompressedData,
-            &Packet::PKESK(_) => Tag::PKESK,
-            &Packet::SKESK(_) => Tag::SKESK,
-            &Packet::SEIP(_) => Tag::SEIP,
-            &Packet::MDC(_) => Tag::MDC,
-            &Packet::AED(_) => Tag::AED,
-            Packet::__Nonexhaustive => unreachable!(),
-        }
-    }
-
-    /// Returns the parsed `Packet's` corresponding OpenPGP tag.
-    ///
-    /// Returns the packets tag, but only if it was successfully
-    /// parsed into the corresponding packet type.  If e.g. a
-    /// Signature Packet uses some unsupported methods, it is parsed
-    /// into an `Packet::Unknown`.  `tag()` returns `Tag::Signature`,
-    /// whereas `kind()` returns `None`.
-    pub fn kind(&self) -> Option<packet::Tag> {
-        match self {
-            &Packet::Unknown(_) => None,
-            _ => Some(self.tag()),
-        }
-    }
-}
-
-/// A `PacketPile` holds a deserialized sequence of OpenPGP messages.
-///
-/// To deserialize an OpenPGP usage, use either [`PacketParser`],
-/// [`PacketPileParser`], or [`PacketPile::from_file`] (or related
-/// routines).
-///
-/// Normally, you'll want to convert the `PacketPile` to a Cert or a
-/// `Message`.
-///
-///   [`PacketParser`]: parse/struct.PacketParser.html
-///   [`PacketPileParser`]: parse/struct.PacketPileParser.html
-///   [`PacketPile::from_file`]: struct.PacketPile.html#method.from_file
-#[derive(PartialEq, Clone)]
-pub struct PacketPile {
-    /// At the top level, we have a sequence of packets, which may be
-    /// containers.
-    top_level: Container,
-}
-
-/// An OpenPGP message.
-///
-/// An OpenPGP message is a structured sequence of OpenPGP packets.
-/// Basically, it's an optionally encrypted, optionally signed literal
-/// data packet.  The exact structure is defined in [Section 11.3 of RFC
-/// 4880].
-///
-///   [Section 11.3 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-11.3
-#[derive(PartialEq)]
-pub struct Message {
-    /// A message is just a validated packet pile.
-    pile: PacketPile,
-}
-
-/// Holds a fingerprint.
-///
-/// A fingerprint uniquely identifies a public key.  For more details
-/// about how a fingerprint is generated, see [Section 12.2 of RFC
-/// 4880].
-///
-///   [Section 12.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-12.2
-#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
-pub enum Fingerprint {
-    /// 20 byte SHA-1 hash.
-    V4([u8;20]),
-    /// Used for holding fingerprints that we don't understand.  For
-    /// instance, we don't grok v3 fingerprints.  And, it is possible
-    /// that the Issuer subpacket contains the wrong number of bytes.
-    Invalid(Box<[u8]>)
-}
-
-/// Holds a KeyID.
-///
-/// A KeyID is a fingerprint fragment.  It identifies a public key,
-/// but is easy to forge.  For more details about how a KeyID is
-/// generated, see [Section 12.2 of RFC 4880].
-///
-///   [Section 12.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-12.2
-#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
-pub enum KeyID {
-    /// Lower 8 byte SHA-1 hash.
-    V4([u8;8]),
-    /// Used for holding fingerprints that we don't understand.  For
-    /// instance, we don't grok v3 fingerprints.  And, it is possible
-    /// that the Issuer subpacket contains the wrong number of bytes.
-    Invalid(Box<[u8]>)
 }
