@@ -230,6 +230,33 @@ impl<'a> DerefMut for Packet {
         }
     }
 }
+
+impl Arbitrary for Packet {
+    fn arbitrary<G: Gen>(g: &mut G) -> Self {
+        use rand::Rng;
+        match g.gen_range(0, 14) {
+            0 => Signature::arbitrary(g).into(),
+            1 => OnePassSig::arbitrary(g).into(),
+            2 => Key::<key::PublicParts, key::UnspecifiedRole>::arbitrary(g)
+                .mark_role_primary().into(),
+            3 => Key::<key::PublicParts, key::UnspecifiedRole>::arbitrary(g)
+                .mark_role_subordinate().into(),
+            4 => Key::<key::SecretParts, key::UnspecifiedRole>::arbitrary(g)
+                .mark_role_primary().into(),
+            5 => Key::<key::SecretParts, key::UnspecifiedRole>::arbitrary(g)
+                .mark_role_subordinate().into(),
+            6 => Marker::arbitrary(g).into(),
+            7 => Trust::arbitrary(g).into(),
+            8 => UserID::arbitrary(g).into(),
+            9 => UserAttribute::arbitrary(g).into(),
+            10 => Literal::arbitrary(g).into(),
+            11 => CompressedData::arbitrary(g).into(),
+            12 => PKESK::arbitrary(g).into(),
+            13 => SKESK::arbitrary(g).into(),
+            _ => unreachable!(),
+        }
+    }
+}
 
 /// Fields used by multiple packet types.
 #[derive(Debug, Clone)]
@@ -1046,10 +1073,48 @@ impl DerefMut for AED {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::serialize::SerializeInto;
+    use crate::parse::Parse;
 
     #[test]
     fn packet_is_send_and_sync() {
         fn f<T: Send + Sync>(_: T) {}
         f(Packet::Marker(Default::default()));
+    }
+
+    quickcheck! {
+        fn roundtrip(p: Packet) -> bool {
+            let buf = p.to_vec().expect("Failed to serialize packet");
+            let q = Packet::from_bytes(&buf).unwrap();
+            assert_eq!(p, q);
+            true
+        }
+    }
+
+    quickcheck! {
+        /// Given a packet and a position, induces a bit flip in the
+        /// serialized form, then checks that PartialEq detects that.
+        /// Recall that for packets, PartialEq is defined using the
+        /// serialized form.
+        fn mutate_eq_discriminates(p: Packet, i: usize) -> bool {
+            if p.tag() == Tag::CompressedData {
+                // Mutating compressed data streams is not that
+                // trivial, because there are bits we can flip without
+                // changing the decompressed data.
+                return true;
+            }
+
+            let mut buf = p.to_vec().unwrap();
+            let bit =
+                // Avoid first two bytes so that we don't change the
+                // type and reduce the chance of changing the length.
+                i.saturating_add(16)
+                % (buf.len() * 8);
+            buf[bit / 8] ^= 1 << (bit % 8);
+            match Packet::from_bytes(&buf) {
+                Ok(q) => p != q,
+                Err(_) => true, // Packet failed to parse.
+            }
+        }
     }
 }
