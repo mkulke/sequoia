@@ -661,15 +661,17 @@ impl Cert {
     }
 
     /// Returns an iterator over the Cert's subkeys.
-    pub(crate) fn subkeys(&self) -> UnfilteredKeyBundleIter<key::PublicParts,
-                                            key::SubordinateRole>
+    pub(crate) fn subkeys(&self)
+        -> impl Iterator<Item=&ComponentBundle<Key<key::PublicParts,
+                                                   key::SubordinateRole>>>
     {
-        UnfilteredKeyBundleIter { iter: Some(self.subkeys.iter()) }
+        self.subkeys.iter()
     }
 
     /// Returns an iterator over the Cert's unknown components.
-    pub fn unknowns(&self) -> UnknownBundleIter {
-        UnknownBundleIter { iter: Some(self.unknowns.iter()) }
+    pub fn unknowns(&self) -> impl Iterator<Item=&ComponentBundle<Unknown>>
+    {
+        self.unknowns.iter()
     }
 
     /// Returns a slice containing all bad signatures.
@@ -2755,7 +2757,7 @@ mod test {
         // tsk is now a cert, but it still has its private bits.
         assert!(tsk.primary.key().has_secret());
         assert!(tsk.is_tsk());
-        let subkey_count = tsk.subkeys().len();
+        let subkey_count = tsk.subkeys().count();
         assert!(subkey_count > 0);
         assert!(tsk.subkeys().all(|k| k.key().has_secret()));
 
@@ -2773,13 +2775,13 @@ mod test {
         let merge1 = cert.clone().merge(tsk.clone()).unwrap();
         assert!(merge1.is_tsk());
         assert!(merge1.primary.key().has_secret());
-        assert_eq!(merge1.subkeys().len(), subkey_count);
+        assert_eq!(merge1.subkeys().count(), subkey_count);
         assert!(merge1.subkeys().all(|k| k.key().has_secret()));
 
         let merge2 = tsk.clone().merge(cert.clone()).unwrap();
         assert!(merge2.is_tsk());
         assert!(merge2.primary.key().has_secret());
-        assert_eq!(merge2.subkeys().len(), subkey_count);
+        assert_eq!(merge2.subkeys().count(), subkey_count);
         assert!(merge2.subkeys().all(|k| k.key().has_secret()));
     }
 
@@ -2828,7 +2830,7 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
             .add_transport_encryption_subkey()
             .add_certification_subkey()
             .generate().unwrap();
-        assert_eq!(cert.subkeys().len(), 2);
+        assert_eq!(cert.subkeys().count(), 2);
         let pile = cert
             .into_packet_pile()
             .into_children()
@@ -2849,7 +2851,7 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
         eprintln!("parse back");
         let cert = Cert::from_packet_pile(PacketPile::from(pile)).unwrap();
 
-        assert_eq!(cert.subkeys().len(), 2);
+        assert_eq!(cert.subkeys().count(), 2);
     }
 
     #[test]
@@ -3162,7 +3164,7 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
                 .add_signing_subkey()
                 .generate().unwrap();
 
-            assert_eq!(bob.userids().len(), 1);
+            assert_eq!(bob.userids().count(), 1);
             let bob_userid_binding = bob.userids().nth(0).unwrap();
             assert_eq!(bob_userid_binding.userid().value(), b"bob@bar.com");
 
@@ -3185,7 +3187,7 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
 
             // Make sure the certification is merged, and put in the right
             // place.
-            assert_eq!(bob.userids().len(), 1);
+            assert_eq!(bob.userids().count(), 1);
             let bob_userid_binding = bob.userids().nth(0).unwrap();
             assert_eq!(bob_userid_binding.userid().value(), b"bob@bar.com");
 

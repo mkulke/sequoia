@@ -98,7 +98,7 @@ impl UserID {
     /// let (cert, _) = CertBuilder::new().generate()?;
     /// let mut keypair = cert.primary_key().key().clone()
     ///     .mark_parts_secret()?.into_keypair()?;
-    /// assert_eq!(cert.userids().len(), 0);
+    /// assert_eq!(cert.userids().count(), 0);
     ///
     /// // Generate a userid and a binding signature.
     /// let userid = UserID::from("test@example.org");
@@ -110,7 +110,7 @@ impl UserID {
     /// let cert = cert.merge_packets(vec![userid.into(), binding.into()])?;
     ///
     /// // Check that we have a userid.
-    /// assert_eq!(cert.userids().len(), 1);
+    /// assert_eq!(cert.userids().count(), 1);
     /// # Ok(()) }
     pub fn bind(&self, signer: &mut dyn Signer, cert: &Cert,
                 signature: signature::Builder)
@@ -233,7 +233,7 @@ impl UserAttribute {
     ///     .generate()?;
     /// let mut keypair = cert.primary_key().key().clone()
     ///     .mark_parts_secret()?.into_keypair()?;
-    /// assert_eq!(cert.userids().len(), 0);
+    /// assert_eq!(cert.userids().count(), 0);
     ///
     /// // Generate a user attribute and a binding signature.
     /// let user_attr = UserAttribute::new(&[

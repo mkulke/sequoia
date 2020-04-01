@@ -406,19 +406,26 @@ pub extern "C" fn pgp_user_id_bundle_selfsig(
 
 /* UserIDBundleIter */
 
+/// Wraps a KeyIter for export via the FFI.
+pub struct UserIDBundleIterWrapper<'a> {
+    iter: Box<dyn Iterator<Item=&'a UserIDBundle> + 'a>,
+}
+
 /// Returns an iterator over the Cert's user id bundles.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle]
 pub extern "C" fn pgp_cert_user_id_bundle_iter(cert: *const Cert)
-    -> *mut UserIDBundleIter<'static>
+    -> *mut UserIDBundleIterWrapper<'static>
 {
     let cert = cert.ref_raw();
-    box_raw!(cert.userids().bundles())
+    box_raw!(UserIDBundleIterWrapper {
+        iter: Box::new(cert.userids().bundles())
+    })
 }
 
 /// Frees a pgp_user_id_bundle_iter_t.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle]
 pub extern "C" fn pgp_user_id_bundle_iter_free(
-    iter: Option<&mut UserIDBundleIter>)
+    iter: Option<&mut UserIDBundleIterWrapper>)
 {
     ffi_free!(iter)
 }
@@ -426,11 +433,11 @@ pub extern "C" fn pgp_user_id_bundle_iter_free(
 /// Returns the next `UserIDBundle`.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle]
 pub extern "C" fn pgp_user_id_bundle_iter_next<'a>(
-    iter: *mut UserIDBundleIter<'a>)
+    iter: *mut UserIDBundleIterWrapper<'a>)
     -> Option<&'a UserIDBundle>
 {
     let iter = ffi_param_ref_mut!(iter);
-    iter.next()
+    iter.iter.next()
 }
 
 /* cert::KeyIter. */

@@ -16,7 +16,7 @@ use crate::{
 /// By default, `ComponentIter` returns all components without context.
 pub struct ComponentIter<'a, C> {
     cert: &'a Cert,
-    iter: ComponentBundleIter<'a, C>,
+    iter: Box<Iterator<Item=&'a ComponentBundle<C>> + 'a>,
 }
 
 impl<'a, C> fmt::Debug for ComponentIter<'a, C> {
@@ -26,7 +26,9 @@ impl<'a, C> fmt::Debug for ComponentIter<'a, C> {
     }
 }
 
-impl<'a, C> Iterator for ComponentIter<'a, C> {
+impl<'a, C> Iterator for ComponentIter<'a, C>
+    where C: 'a
+{
     type Item = ComponentAmalgamation<'a, C>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -34,14 +36,15 @@ impl<'a, C> Iterator for ComponentIter<'a, C> {
     }
 }
 
-impl<'a, C> ComponentIter<'a, C> {
+impl<'a, C> ComponentIter<'a, C> where C: 'a {
     /// Returns a new `ComponentIter` instance.
     pub(crate) fn new(cert: &'a Cert,
-                      iter: std::slice::Iter<'a, ComponentBundle<C>>) -> Self
+                      iter: impl Iterator<Item=&'a ComponentBundle<C>> + 'a) -> Self
         where Self: 'a
     {
         ComponentIter {
-            cert, iter: ComponentBundleIter { iter: Some(iter), },
+            cert,
+            iter: Box::new(iter),
         }
     }
 
@@ -69,7 +72,8 @@ impl<'a, C> ComponentIter<'a, C> {
     /// A component binding is similar to a component amalgamation,
     /// but is not bound to a specific time.  It contains the
     /// component and all relevant signatures.
-    pub fn bundles(self) -> ComponentBundleIter<'a, C> {
+    pub fn bundles(self) -> impl Iterator<Item=&'a ComponentBundle<C>>
+    {
         self.iter
     }
 }
@@ -85,7 +89,7 @@ impl<'a, C> ComponentIter<'a, C> {
 pub struct ValidComponentIter<'a, C> {
     // This is an option to make it easier to create an empty ValidComponentIter.
     cert: &'a Cert,
-    iter: ComponentBundleIter<'a, C>,
+    iter: Box<Iterator<Item=&'a ComponentBundle<C>> + 'a>,
 
     policy: &'a dyn Policy,
     // The time.
@@ -106,7 +110,7 @@ impl<'a, C> fmt::Debug for ValidComponentIter<'a, C> {
 }
 
 impl<'a, C> Iterator for ValidComponentIter<'a, C>
-    where C: std::fmt::Debug
+    where C: 'a, C: std::fmt::Debug
 {
     type Item = ValidComponentAmalgamation<'a, C>;
 
@@ -147,11 +151,13 @@ impl<'a, C> Iterator for ValidComponentIter<'a, C>
     }
 }
 
-impl<'a, C> ExactSizeIterator for ComponentIter<'a, C> {
-    fn len(&self) -> usize {
-        self.iter.len()
-    }
-}
+// impl<'a, C> ExactSizeIterator for ComponentIter<'a, C>
+//     where C: 'a
+// {
+//     fn len(&self) -> usize {
+//         self.iter.len()
+//     }
+// }
 
 impl<'a, C> ValidComponentIter<'a, C> {
     /// Filters by whether a component is definitely revoked.

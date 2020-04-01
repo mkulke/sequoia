@@ -1217,7 +1217,7 @@ Autocrypt-Gossip: addr=neal@walfield.org; keydata=
             .expect("Failed to parse key material.");
         assert_eq!(&cert.fingerprint().to_string(),
                    "3E88 77C8 7727 4692 9751  89F5 D03F 6F86 5226 FE8B");
-        assert_eq!(cert.userids().len(), 1);
+        assert_eq!(cert.userids().count(), 1);
         assert_eq!(cert.keys().subkeys().count(), 1);
         assert_eq!(cert.userids().next().unwrap().userid().value(),
                    &b"Testy McTestface <testy@example.org>"[..]);

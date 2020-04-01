@@ -6,6 +6,7 @@ use std::borrow::Borrow;
 use crate::{
     KeyHandle,
     types::RevocationStatus,
+    packet::Key,
     packet::key,
     packet::key::SecretKeyMaterial,
     types::KeyFlags,
@@ -35,9 +36,10 @@ pub struct KeyIter<'a, P, R>
     // This is an option to make it easier to create an empty KeyIter.
     cert: Option<&'a Cert>,
     primary: bool,
-    subkey_iter: UnfilteredKeyBundleIter<'a,
-                                key::PublicParts,
-                                key::SubordinateRole>,
+    subkey_iter: Box<dyn Iterator<
+            Item=&'a ComponentBundle<Key<key::PublicParts,
+                                         key::SubordinateRole>>>
+                     + 'a>,
 
     // If not None, filters by whether a key has a secret.
     secret: Option<bool>,
@@ -189,7 +191,7 @@ impl<'a, P, R> KeyIter<'a, P, R>
         KeyIter {
             cert: Some(cert),
             primary: false,
-            subkey_iter: cert.subkeys(),
+            subkey_iter: Box::new(cert.subkeys()),
 
             // The filters.
             secret: None,
@@ -451,9 +453,10 @@ pub struct ValidKeyIter<'a, P, R>
     // This is an option to make it easier to create an empty ValidKeyIter.
     cert: Option<&'a Cert>,
     primary: bool,
-    subkey_iter: UnfilteredKeyBundleIter<'a,
-                                key::PublicParts,
-                                key::SubordinateRole>,
+    subkey_iter: Box<dyn Iterator<
+            Item=&'a ComponentBundle<Key<key::PublicParts,
+                                         key::SubordinateRole>>>
+                     + 'a>,
 
     // The policy.
     policy: &'a dyn Policy,
