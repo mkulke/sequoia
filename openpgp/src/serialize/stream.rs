@@ -35,7 +35,6 @@ use crate::packet::header::BodyLength;
 use super::{
     PartialBodyFilter,
     Marshal,
-    writer,
 };
 use crate::types::{
     AEADAlgorithm,
@@ -44,6 +43,10 @@ use crate::types::{
     SignatureType,
     SymmetricAlgorithm,
 };
+
+pub mod writer;
+#[cfg(feature = "compression-deflate")]
+pub mod padding;
 
 /// Cookie must be public because the writers are.
 #[doc(hidden)]
