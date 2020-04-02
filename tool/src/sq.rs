@@ -24,7 +24,7 @@ extern crate sequoia_net;
 extern crate sequoia_store as store;
 
 use crate::openpgp::Result;
-use crate::openpgp::{armor, Fingerprint, Cert};
+use crate::openpgp::{armor, Cert};
 use sequoia_autocrypt as autocrypt;
 use crate::openpgp::fmt::hex;
 use crate::openpgp::types::KeyFlags;
@@ -484,7 +484,7 @@ fn main() -> Result<()> {
             match m.subcommand() {
                 ("get",  Some(m)) => {
                     let keyid = m.value_of("keyid").unwrap();
-                    let id = openpgp::KeyID::from_hex(keyid);
+                    let id = keyid.parse();
                     if id.is_err() {
                         eprintln!("Malformed key ID: {:?}\n\
                                    (Note: only long Key IDs are supported.)",
@@ -522,7 +522,7 @@ fn main() -> Result<()> {
                     list_bindings(&mapping, realm_name, mapping_name)?;
                 },
                 ("add",  Some(m)) => {
-                    let fp = Fingerprint::from_hex(m.value_of("fingerprint").unwrap())
+                    let fp = m.value_of("fingerprint").unwrap().parse()
                         .expect("Malformed fingerprint");
                     mapping.add(m.value_of("label").unwrap(), &fp)?;
                 },

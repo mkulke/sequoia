@@ -26,7 +26,6 @@ extern crate sequoia_net;
 
 use crate::openpgp::armor::Reader;
 use crate::openpgp::Cert;
-use crate::openpgp::{Fingerprint, KeyID};
 use crate::openpgp::parse::Parse;
 use sequoia_core::{Context, NetworkPolicy};
 use sequoia_net::KeyServer;
@@ -98,7 +97,7 @@ fn service(req: Request<Body>)
                                                     None)).unwrap();
                                     assert_eq!(
                                         key.fingerprint(),
-                                        Fingerprint::from_hex(FP)
+                                        FP.parse()
                                             .unwrap());
                                 },
                                 _ => panic!("Bad post: {}:{}", key, value),
@@ -155,11 +154,11 @@ fn get() {
 
     let mut keyserver =
         KeyServer::new(&ctx, &format!("hkp://{}", addr)).unwrap();
-    let keyid = KeyID::from_hex(ID).unwrap();
+    let keyid = ID.parse().unwrap();
     let key = core.run(keyserver.get(&keyid)).unwrap();
 
     assert_eq!(key.fingerprint(),
-               Fingerprint::from_hex(FP).unwrap());
+               FP.parse().unwrap());
 }
 
 #[test]

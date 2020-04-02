@@ -2898,7 +2898,7 @@ fn subpacket_test_2() {
                            Features::default().set_mdc(true))
                    }));
 
-        let keyid = KeyID::from_hex("F004 B9A4 5C58 6126").unwrap();
+        let keyid = "F004 B9A4 5C58 6126".parse().unwrap();
         assert_eq!(sig.issuer(), Some(&keyid));
         assert_eq!(sig.subpacket(SubpacketTag::Issuer),
                    Some(&Subpacket {
@@ -2907,8 +2907,7 @@ fn subpacket_test_2() {
                        value: SubpacketValue::Issuer(keyid)
                    }));
 
-        let fp = Fingerprint::from_hex(
-            "361A96BDE1A65B6D6C25AE9FF004B9A45C586126").unwrap();
+        let fp = "361A96BDE1A65B6D6C25AE9FF004B9A45C586126".parse().unwrap();
         assert_eq!(sig.issuer_fingerprint(), Some(&fp));
         assert_eq!(sig.subpacket(SubpacketTag::IssuerFingerprint),
                    Some(&Subpacket {
@@ -3007,10 +3006,9 @@ fn subpacket_test_2() {
                        value: SubpacketValue::Revocable(false)
                    }));
 
-        let fp = Fingerprint::from_hex(
-            "361A96BDE1A65B6D6C25AE9FF004B9A45C586126").unwrap();
+        let fp = "361A96BDE1A65B6D6C25AE9FF004B9A45C586126".parse().unwrap();
         let rk = RevocationKey::new(PublicKeyAlgorithm::RSAEncryptSign,
-                                    fp.clone(), false);
+                                    fp, false);
         assert_eq!(sig.revocation_keys().nth(0).unwrap(), &rk);
         assert_eq!(sig.subpacket(SubpacketTag::RevocationKey),
                    Some(&Subpacket {
@@ -3020,7 +3018,7 @@ fn subpacket_test_2() {
                    }));
 
 
-        let keyid = KeyID::from_hex("CEAD 0621 0934 7957").unwrap();
+        let keyid = "CEAD 0621 0934 7957".parse().unwrap();
         assert_eq!(sig.issuer(), Some(&keyid));
         assert_eq!(sig.subpacket(SubpacketTag::Issuer),
                    Some(&Subpacket {
@@ -3029,8 +3027,7 @@ fn subpacket_test_2() {
                        value: SubpacketValue::Issuer(keyid)
                    }));
 
-        let fp = Fingerprint::from_hex(
-            "B59B8817F519DCE10AFD85E4CEAD062109347957").unwrap();
+        let fp = "B59B8817F519DCE10AFD85E4CEAD062109347957".parse().unwrap();
         assert_eq!(sig.issuer_fingerprint(), Some(&fp));
         assert_eq!(sig.subpacket(SubpacketTag::IssuerFingerprint),
                    Some(&Subpacket {
@@ -3224,7 +3221,7 @@ fn subpacket_test_2() {
                            63072000.into())
                    }));
 
-        let keyid = KeyID::from_hex("CEAD 0621 0934 7957").unwrap();
+        let keyid = "CEAD 0621 0934 7957".parse().unwrap();
         assert_eq!(sig.issuer(), Some(&keyid));
         assert_eq!(sig.subpacket(SubpacketTag::Issuer),
                    Some(&Subpacket {
@@ -3233,8 +3230,7 @@ fn subpacket_test_2() {
                        value: SubpacketValue::Issuer(keyid)
                    }));
 
-        let fp = Fingerprint::from_hex(
-            "B59B8817F519DCE10AFD85E4CEAD062109347957").unwrap();
+        let fp = "B59B8817F519DCE10AFD85E4CEAD062109347957".parse().unwrap();
         assert_eq!(sig.issuer_fingerprint(), Some(&fp));
         assert_eq!(sig.subpacket(SubpacketTag::IssuerFingerprint),
                    Some(&Subpacket {
