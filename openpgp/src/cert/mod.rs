@@ -661,15 +661,15 @@ impl Cert {
     }
 
     /// Returns an iterator over the Cert's subkeys.
-    pub(crate) fn subkeys(&self) -> UnfilteredKeyBundleIter<key::PublicParts,
-                                            key::SubordinateRole>
+    pub(crate) fn subkeys(&self) -> ComponentIter<Key<key::PublicParts,
+                                                      key::SubordinateRole>>
     {
-        UnfilteredKeyBundleIter { iter: Some(self.subkeys.iter()) }
+        ComponentIter::new(self, self.subkeys.iter())
     }
 
     /// Returns an iterator over the Cert's unknown components.
-    pub fn unknowns(&self) -> UnknownBundleIter {
-        UnknownBundleIter { iter: Some(self.unknowns.iter()) }
+    pub fn unknowns(&self) -> ComponentIter<Unknown> {
+        ComponentIter::new(self, self.unknowns.iter())
     }
 
     /// Returns a slice containing all bad signatures.
@@ -2526,7 +2526,7 @@ mod test {
             where T: Into<Option<time::SystemTime>>
         {
             !destructures_to!(RevocationStatus::NotAsFarAsWeKnow
-                              = cert.subkeys().nth(0).unwrap().revoked(p, t))
+                              = cert.subkeys().nth(0).unwrap().bundle().revoked(p, t))
         }
 
         let tests : [(&str, Box<dyn Fn(&dyn Policy, &Cert, _) -> bool>); 2] = [
