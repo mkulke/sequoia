@@ -4,6 +4,7 @@ use std::time;
 use std::ops::Deref;
 
 use crate::{
+    Error,
     packet::Signature,
     packet::Key,
     packet::key,
@@ -64,12 +65,6 @@ pub type PrimaryKeyBundle<KeyPart> =
 /// A subkey and any associated signatures.
 pub type SubkeyBundle<KeyPart>
     = KeyBundle<KeyPart, key::SubordinateRole>;
-
-/// A key (primary or subkey, public or private) and any associated
-/// signatures.
-#[allow(dead_code)]
-type GenericKeyBinding
-    = ComponentBundle<Key<key::UnspecifiedParts, key::UnspecifiedRole>>;
 
 /// A User ID and any associated signatures.
 pub type UserIDBundle = ComponentBundle<UserID>;
@@ -169,15 +164,27 @@ impl<C> ComponentBundle<C> {
             };
 
         let mut sig = None;
-        let mut error = crate::Error::NoBindingSignature(t).into();
+
+        // Prefer the first error, which is the error arising from the
+        // most recent binding signature that wasn't created after
+        // `t`.
+        let mut error = None;
+
         for s in self.self_signatures[i..].iter() {
             if let Err(e) = s.signature_alive(t, time::Duration::new(0, 0)) {
-                error = e;
+                // We know that t >= signature's creation time.  So,
+                // it is expired.  But an older signature might not
+                // be.  So, keep trying.
+                if error.is_none() {
+                    error = Some(e);
+                }
                 continue;
             }
 
             if let Err(e) = policy.signature(s) {
-                error = e;
+                if error.is_none() {
+                    error = Some(e);
+                }
                 continue;
             }
 
@@ -185,7 +192,13 @@ impl<C> ComponentBundle<C> {
             break;
         }
 
-        sig.ok_or(error)
+        if let Some(sig) = sig {
+            Ok(sig)
+        } else if let Some(err) = error {
+            Err(err)
+        } else {
+            Err(Error::NoBindingSignature(t).into())
+        }
     }
 
     /// The self-signatures.
