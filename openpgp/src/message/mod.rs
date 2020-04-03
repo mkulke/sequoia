@@ -10,6 +10,7 @@
 //!
 //! [Section 11.3 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-11.3
 
+use std::convert::TryFrom;
 use std::fmt;
 use std::io;
 use std::path::Path;
@@ -337,29 +338,29 @@ impl fmt::Debug for Message {
 impl<'a> Parse<'a, Message> for Message {
     /// Reads a `Message` from the specified reader.
     ///
-    /// See [`Message::from_packet_pile`] for more details.
+    /// See [`Message::try_from`] for more details.
     ///
-    ///   [`Message::from_packet_pile`]: #method.from_packet_pile
+    ///   [`Message::try_from`]: #method.try_from
     fn from_reader<R: 'a + io::Read>(reader: R) -> Result<Self> {
-        Self::from_packet_pile(PacketPile::from_reader(reader)?)
+        Self::try_from(PacketPile::from_reader(reader)?)
     }
 
     /// Reads a `Message` from the specified file.
     ///
-    /// See [`Message::from_packet_pile`] for more details.
+    /// See [`Message::try_from`] for more details.
     ///
-    ///   [`Message::from_packet_pile`]: #method.from_packet_pile
+    ///   [`Message::try_from`]: #method.try_from
     fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
-        Self::from_packet_pile(PacketPile::from_file(path)?)
+        Self::try_from(PacketPile::from_file(path)?)
     }
 
     /// Reads a `Message` from `buf`.
     ///
-    /// See [`Message::from_packet_pile`] for more details.
+    /// See [`Message::try_from`] for more details.
     ///
-    ///   [`Message::from_packet_pile`]: #method.from_packet_pile
+    ///   [`Message::try_from`]: #method.try_from
     fn from_bytes<D: AsRef<[u8]> + ?Sized>(data: &'a D) -> Result<Self> {
-        Self::from_packet_pile(PacketPile::from_bytes(data)?)
+        Self::try_from(PacketPile::from_bytes(data)?)
     }
 }
 
@@ -372,6 +373,25 @@ impl std::str::FromStr for Message {
 }
 
 impl Message {
+    /// Returns the body of the message.
+    ///
+    /// Returns `None` if no literal data packet is found.  This
+    /// happens if a SEIP container has not been decrypted.
+    pub fn body(&self) -> Option<&Literal> {
+        for packet in self.pile.descendants() {
+            if let &Packet::Literal(ref l) = packet {
+                return Some(l);
+            }
+        }
+
+        // No literal data packet found.
+        None
+    }
+}
+
+impl TryFrom<PacketPile> for Message {
+    type Error = anyhow::Error;
+
     /// Converts the `PacketPile` to a `Message`.
     ///
     /// Converting a `PacketPile` to a `Message` doesn't change the
@@ -384,7 +404,7 @@ impl Message {
     /// or still compressed parts are valid messages.
     ///
     ///   [Section 11.3 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-11.3
-    pub fn from_packet_pile(pile: PacketPile) -> Result<Self> {
+    fn try_from(pile: PacketPile) -> Result<Self> {
         let mut v = MessageValidator::new();
         for (mut path, packet) in pile.descendants().paths() {
             match packet {
@@ -423,29 +443,18 @@ impl Message {
             MessageValidity::Error(e) => Err(e.into()),
         }
     }
+}
+
+impl TryFrom<Vec<Packet>> for Message {
+    type Error = anyhow::Error;
 
     /// Converts the vector of `Packets` to a `Message`.
     ///
-    /// See [`Message::from_packet_pile`] for more details.
+    /// See [`Message::try_from`] for more details.
     ///
-    ///   [`Message::from_packet_pile`]: #method.from_packet_pile
-    pub fn from_packets(packets: Vec<Packet>) -> Result<Self> {
-        Self::from_packet_pile(PacketPile::from(packets))
-    }
-
-    /// Returns the body of the message.
-    ///
-    /// Returns `None` if no literal data packet is found.  This
-    /// happens if a SEIP container has not been decrypted.
-    pub fn body(&self) -> Option<&Literal> {
-        for packet in self.pile.descendants() {
-            if let &Packet::Literal(ref l) = packet {
-                return Some(l);
-            }
-        }
-
-        // No literal data packet found.
-        None
+    ///   [`Message::try_from`]: #method.try_from
+    fn try_from(packets: Vec<Packet>) -> Result<Self> {
+        Self::try_from(PacketPile::from(packets))
     }
 }
 
@@ -747,7 +756,7 @@ mod tests {
     fn basic() {
         // Empty.
         // => bad.
-        let message = Message::from_packets(vec![]);
+        let message = Message::try_from(vec![]);
         assert!(message.is_err(), "{:?}", message);
 
         // 0: Literal
@@ -757,7 +766,7 @@ mod tests {
         lit.set_body(b"data".to_vec());
         packets.push(lit.into());
 
-        let message = Message::from_packets(packets);
+        let message = Message::try_from(packets);
         assert!(message.is_ok(), "{:?}", message);
     }
 
@@ -775,7 +784,7 @@ mod tests {
                 .push(lit.clone().into())
                 .into());
 
-        let message = Message::from_packets(packets);
+        let message = Message::try_from(packets);
         assert!(message.is_ok(), "{:?}", message);
 
         // 0: CompressedData
@@ -789,7 +798,7 @@ mod tests {
                 .push(lit.clone().into())
                 .into());
 
-        let message = Message::from_packets(packets);
+        let message = Message::try_from(packets);
         assert!(message.is_err(), "{:?}", message);
 
         // 0: CompressedData
@@ -803,7 +812,7 @@ mod tests {
                 .into());
         packets.push(lit.clone().into());
 
-        let message = Message::from_packets(packets);
+        let message = Message::try_from(packets);
         assert!(message.is_err(), "{:?}", message);
 
         // 0: CompressedData
@@ -819,7 +828,7 @@ mod tests {
                       .into())
                 .into());
 
-        let message = Message::from_packets(packets);
+        let message = Message::try_from(packets);
         assert!(message.is_ok(), "{:?}", message);
     }
 
@@ -841,7 +850,7 @@ mod tests {
         let mut packets : Vec<Packet> = Vec::new();
         packets.push(OnePassSig3::new(SignatureType::Binary).into());
 
-        let message = Message::from_packets(packets);
+        let message = Message::try_from(packets);
         assert!(message.is_err(), "{:?}", message);
 
         // 0: OnePassSig
@@ -851,7 +860,7 @@ mod tests {
         packets.push(OnePassSig3::new(SignatureType::Binary).into());
         packets.push(lit.clone().into());
 
-        let message = Message::from_packets(packets);
+        let message = Message::try_from(packets);
         assert!(message.is_err(), "{:?}", message);
 
         // 0: OnePassSig
@@ -863,7 +872,7 @@ mod tests {
         packets.push(lit.clone().into());
         packets.push(sig.clone().into());
 
-        let message = Message::from_packets(packets);
+        let message = Message::try_from(packets);
         assert!(message.is_ok(), "{:?}", message);
 
         // 0: OnePassSig
@@ -877,7 +886,7 @@ mod tests {
         packets.push(sig.clone().into());
         packets.push(sig.clone().into());
 
-        let message = Message::from_packets(packets);
+        let message = Message::try_from(packets);
         assert!(message.is_err(), "{:?}", message);
 
         // 0: OnePassSig
@@ -893,7 +902,7 @@ mod tests {
         packets.push(sig.clone().into());
         packets.push(sig.clone().into());
 
-        let message = Message::from_packets(packets);
+        let message = Message::try_from(packets);
         assert!(message.is_ok(), "{:?}", message);
 
         // 0: OnePassSig
@@ -911,7 +920,7 @@ mod tests {
         packets.push(sig.clone().into());
         packets.push(sig.clone().into());
 
-        let message = Message::from_packets(packets);
+        let message = Message::try_from(packets);
         assert!(message.is_err(), "{:?}", message);
 
         // 0: OnePassSig
@@ -931,7 +940,7 @@ mod tests {
         packets.push(sig.clone().into());
         packets.push(sig.clone().into());
 
-        let message = Message::from_packets(packets);
+        let message = Message::try_from(packets);
         assert!(message.is_ok(), "{:?}", message);
     }
 
@@ -953,7 +962,7 @@ mod tests {
         let mut packets : Vec<Packet> = Vec::new();
         packets.push(sig.clone().into());
 
-        let message = Message::from_packets(packets);
+        let message = Message::try_from(packets);
         assert!(message.is_err(), "{:?}", message);
 
         // 0: Signature
@@ -963,7 +972,7 @@ mod tests {
         packets.push(sig.clone().into());
         packets.push(lit.clone().into());
 
-        let message = Message::from_packets(packets);
+        let message = Message::try_from(packets);
         assert!(message.is_ok(), "{:?}", message);
 
         // 0: Signature
@@ -975,7 +984,7 @@ mod tests {
         packets.push(sig.clone().into());
         packets.push(lit.clone().into());
 
-        let message = Message::from_packets(packets);
+        let message = Message::try_from(packets);
         assert!(message.is_ok(), "{:?}", message);
     }
 
@@ -999,7 +1008,7 @@ mod tests {
             S2K::Simple { hash: HashAlgorithm::SHA256 },
             &sk,
             &"12345678".into()).unwrap().into());
-        let message = Message::from_packets(packets.clone());
+        let message = Message::try_from(packets.clone());
         assert!(message.is_err(), "{:?}", message);
 
         // 0: SK-ESK
@@ -1010,7 +1019,7 @@ mod tests {
         assert!(packets.iter().map(|p| p.tag()).collect::<Vec<Tag>>()
                 == [ Tag::SKESK, Tag::Literal ]);
 
-        let message = Message::from_packets(packets.clone());
+        let message = Message::try_from(packets.clone());
         assert!(message.is_err(), "{:?}", message);
 
         // 0: SK-ESK
@@ -1028,7 +1037,7 @@ mod tests {
         assert!(packets.iter().map(|p| p.tag()).collect::<Vec<Tag>>()
                 == [ Tag::SKESK, Tag::SEIP ]);
 
-        let message = Message::from_packets(packets.clone());
+        let message = Message::try_from(packets.clone());
         assert!(message.is_ok(), "{:#?}", message);
 
         // 0: SK-ESK
@@ -1043,7 +1052,7 @@ mod tests {
         assert!(packets.iter().map(|p| p.tag()).collect::<Vec<Tag>>()
                 == [ Tag::SKESK, Tag::SEIP, Tag::SKESK ]);
 
-        let message = Message::from_packets(packets.clone());
+        let message = Message::try_from(packets.clone());
         assert!(message.is_err(), "{:#?}", message);
 
         // 0: SK-ESK
@@ -1057,7 +1066,7 @@ mod tests {
         assert!(packets.iter().map(|p| p.tag()).collect::<Vec<Tag>>()
                 == [ Tag::SKESK, Tag::SKESK, Tag::SEIP ]);
 
-        let message = Message::from_packets(packets.clone());
+        let message = Message::try_from(packets.clone());
         assert!(message.is_ok(), "{:#?}", message);
 
         // 0: SK-ESK
@@ -1075,7 +1084,7 @@ mod tests {
         assert!(packets.iter().map(|p| p.tag()).collect::<Vec<Tag>>()
                 == [ Tag::SKESK, Tag::SKESK, Tag::SEIP, Tag::SEIP ]);
 
-        let message = Message::from_packets(packets.clone());
+        let message = Message::try_from(packets.clone());
         assert!(message.is_err(), "{:#?}", message);
 
         // 0: SK-ESK
@@ -1090,7 +1099,7 @@ mod tests {
         assert!(packets.iter().map(|p| p.tag()).collect::<Vec<Tag>>()
                 == [ Tag::SKESK, Tag::SKESK, Tag::SEIP, Tag::Literal ]);
 
-        let message = Message::from_packets(packets.clone());
+        let message = Message::try_from(packets.clone());
         assert!(message.is_err(), "{:#?}", message);
 
         // 0: SK-ESK
@@ -1107,7 +1116,7 @@ mod tests {
         assert!(packets.iter().map(|p| p.tag()).collect::<Vec<Tag>>()
                 == [ Tag::SKESK, Tag::SKESK, Tag::SEIP ]);
 
-        let message = Message::from_packets(packets.clone());
+        let message = Message::try_from(packets.clone());
         assert!(message.is_err(), "{:#?}", message);
 
         // 0: SK-ESK
@@ -1130,13 +1139,13 @@ mod tests {
         assert!(packets.iter().map(|p| p.tag()).collect::<Vec<Tag>>()
                 == [ Tag::SKESK, Tag::PKESK, Tag::SKESK, Tag::SEIP ]);
 
-        let message = Message::from_packets(packets.clone());
+        let message = Message::try_from(packets.clone());
         assert!(message.is_ok(), "{:#?}", message);
     }
 
     #[test]
     fn message_is_send_and_sync() {
         fn f<T: Send + Sync>(_: T) {}
-        f(Message::from_packets(vec![]));
+        f(Message::try_from(vec![]));
     }
 }
