@@ -46,9 +46,6 @@ pub mod amalgamation;
 mod builder;
 mod bindings;
 pub mod bundle;
-mod component_iter;
-mod keyiter;
-pub mod key_amalgamation;
 mod parser;
 mod revoke;
 
@@ -641,8 +638,8 @@ impl Cert {
     }
 
     /// Returns an iterator over the Cert's userids.
-    pub fn userids(&self) -> ComponentIter<UserID> {
-        ComponentIter::new(self, self.userids.iter())
+    pub fn userids(&self) -> ComponentBundleIter<UserID> {
+        ComponentBundleIter::new(self, self.userids.iter())
     }
 
     /// Returns the amalgamated primary user attribute at `t`, if any.
@@ -656,20 +653,20 @@ impl Cert {
     }
 
     /// Returns an iterator over the Cert's `UserAttributeBundle`s.
-    pub fn user_attributes(&self) -> ComponentIter<UserAttribute> {
-        ComponentIter::new(self, self.user_attributes.iter())
+    pub fn user_attributes(&self) -> ComponentBundleIter<UserAttribute> {
+        ComponentBundleIter::new(self, self.user_attributes.iter())
     }
 
     /// Returns an iterator over the Cert's subkeys.
-    pub(crate) fn subkeys(&self) -> ComponentIter<Key<key::PublicParts,
+    pub(crate) fn subkeys(&self) -> ComponentBundleIter<Key<key::PublicParts,
                                                       key::SubordinateRole>>
     {
-        ComponentIter::new(self, self.subkeys.iter())
+        ComponentBundleIter::new(self, self.subkeys.iter())
     }
 
     /// Returns an iterator over the Cert's unknown components.
-    pub fn unknowns(&self) -> ComponentIter<Unknown> {
-        ComponentIter::new(self, self.unknowns.iter())
+    pub fn unknowns(&self) -> ComponentBundleIter<Unknown> {
+        ComponentBundleIter::new(self, self.unknowns.iter())
     }
 
     /// Returns a slice containing all bad signatures.
@@ -684,9 +681,9 @@ impl Cert {
     ///
     /// That is, this returns an iterator over the primary key and any
     /// subkeys.
-    pub fn keys(&self) -> KeyIter<key::PublicParts, key::UnspecifiedRole>
+    pub fn keys(&self) -> KeyAmalgamationIter<key::PublicParts, key::UnspecifiedRole>
     {
-        KeyIter::new(self)
+        KeyAmalgamationIter::new(self)
     }
 
     /// Returns the Cert found in the packet stream.
@@ -1466,7 +1463,7 @@ impl<'a> ValidCert<'a> {
     ///
     /// That is, this returns an iterator over the primary key and any
     /// subkeys.
-    pub fn keys(&self) -> ValidKeyIter<key::PublicParts, key::UnspecifiedRole> {
+    pub fn keys(&self) -> ValidKeyAmalgamationIter<key::PublicParts, key::UnspecifiedRole> {
         self.cert.keys().with_policy(self.policy, self.time)
     }
 
@@ -1478,7 +1475,7 @@ impl<'a> ValidCert<'a> {
     }
 
     /// Returns an iterator over the Cert's userids.
-    pub fn userids(&self) -> ValidComponentIter<UserID> {
+    pub fn userids(&self) -> ValidComponentBundleIter<UserID> {
         self.cert.userids().with_policy(self.policy, self.time)
     }
 
@@ -1490,7 +1487,7 @@ impl<'a> ValidCert<'a> {
     }
 
     /// Returns an iterator over the Cert's `UserAttributeBundle`s.
-    pub fn user_attributes(&self) -> ValidComponentIter<UserAttribute> {
+    pub fn user_attributes(&self) -> ValidComponentBundleIter<UserAttribute> {
         self.cert.user_attributes().with_policy(self.policy, self.time)
     }
 }

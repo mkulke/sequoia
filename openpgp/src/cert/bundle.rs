@@ -24,12 +24,34 @@ use super::{
     canonical_signature_order,
 };
 
-pub use super::{
-    component_iter::ComponentIter,
-    component_iter::ValidComponentIter,
-    keyiter::KeyIter,
-    keyiter::ValidKeyIter,
+mod iter;
+pub use iter::{
+    ComponentBundleIter,
+    ValidComponentBundleIter,
 };
+
+/// A Cert component binding.
+///
+/// A Cert component is a primary key, a subkey, a user id, or a user
+/// attribute.  A binding is a Cert component and any related
+/// signatures.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ComponentBundle<C> {
+    pub(crate) component: C,
+
+    // Self signatures.
+    pub(crate) self_signatures: Vec<Signature>,
+
+    // Third-party certifications.  (In general, this will only be by
+    // designated revokers.)
+    pub(crate) certifications: Vec<Signature>,
+
+    // Self revocations.
+    pub(crate) self_revocations: Vec<Signature>,
+
+    // Third-party revocations (e.g., designated revokers).
+    pub(crate) other_revocations: Vec<Signature>,
+}
 
 /// A key (primary or subkey, public or private) and any associated
 /// signatures.
@@ -60,28 +82,6 @@ pub type UserAttributeBundle = ComponentBundle<UserAttribute>;
 /// Note: all signatures are stored as certifications.
 pub type UnknownBundle = ComponentBundle<Unknown>;
 
-/// A Cert component binding.
-///
-/// A Cert component is a primary key, a subkey, a user id, or a user
-/// attribute.  A binding is a Cert component and any related
-/// signatures.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ComponentBundle<C> {
-    pub(crate) component: C,
-
-    // Self signatures.
-    pub(crate) self_signatures: Vec<Signature>,
-
-    // Third-party certifications.  (In general, this will only be by
-    // designated revokers.)
-    pub(crate) certifications: Vec<Signature>,
-
-    // Self revocations.
-    pub(crate) self_revocations: Vec<Signature>,
-
-    // Third-party revocations (e.g., designated revokers).
-    pub(crate) other_revocations: Vec<Signature>,
-}
 
 impl<C> Deref for ComponentBundle<C>
 {
