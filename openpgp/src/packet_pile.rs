@@ -1,15 +1,17 @@
 use std::convert::TryFrom;
 use std::fmt;
-use std::slice;
 use std::vec;
 use std::io;
 use std::path::Path;
+use std::iter::FromIterator;
+use std::iter::IntoIterator;
 
 use buffered_reader::BufferedReader;
 
 use crate::Result;
 use crate::Error;
 use crate::Packet;
+use crate::cert::Cert;
 use crate::packet::{self, Container};
 use crate::parse::PacketParserResult;
 use crate::parse::PacketParserBuilder;
@@ -99,6 +101,12 @@ impl From<Vec<Packet>> for PacketPile {
 impl From<Packet> for PacketPile {
     fn from(p: Packet) -> Self {
         Self::from(vec![p])
+    }
+}
+
+impl FromIterator<Packet> for PacketPile {
+    fn from_iter<I: IntoIterator<Item=Packet>>(iter: I) -> Self {
+        Self::from(Vec::from_iter(iter))
     }
 }
 
@@ -297,12 +305,16 @@ impl PacketPile {
     }
 
     /// Returns an iterator over the top-level packets.
-    pub fn children<'a>(&'a self) -> slice::Iter<'a, Packet> {
+    pub fn children(&self)
+        -> impl Iterator<Item=&Packet> + ExactSizeIterator
+    {
         self.top_level.children().expect("toplevel is a container")
     }
 
     /// Returns an `IntoIter` over the top-level packets.
-    pub fn into_children(self) -> vec::IntoIter<Packet> {
+    pub fn into_children(self)
+        -> impl Iterator<Item=Packet> + ExactSizeIterator
+    {
         self.top_level.into_children().expect("toplevel is a container")
     }
 
@@ -312,6 +324,13 @@ impl PacketPile {
         PacketParserBuilder::from_buffered_reader(bio)?
             .buffer_unread_content()
             .into_packet_pile()
+    }
+}
+
+impl From<Cert> for PacketPile {
+    /// Converts the `Cert` into a `PacketPile`.
+    fn from(cert: Cert) -> PacketPile {
+        PacketPile::from(cert.into_packets().collect::<Vec<Packet>>())
     }
 }
 
