@@ -7,8 +7,8 @@ use crate::Result;
 
 /// A short identifier for certificates and keys.
 ///
-/// A KeyID is a fingerprint fragment.  It identifies a public key,
-/// but is easy to forge.  For more details about how a KeyID is
+/// A `KeyID` is a fingerprint fragment.  It identifies a public key,
+/// but is easy to forge.  For more details about how a `KeyID` is
 /// generated, see [Section 12.2 of RFC 4880].
 ///
 ///   [Section 12.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-12.2
@@ -115,13 +115,33 @@ impl From<Fingerprint> for KeyID {
 }
 
 impl KeyID {
-    /// Converts a u64 to a KeyID.
+    /// Converts a `u64` to a `KeyID`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # extern crate sequoia_openpgp as openpgp;
+    /// use openpgp::KeyID;
+    ///
+    /// let keyid = KeyID::new(0x123456789ABCDEF1);
+    /// ```
     pub fn new(data: u64) -> KeyID {
         let bytes = data.to_be_bytes();
         Self::from_bytes(&bytes[..])
     }
 
-    /// Converts the KeyID to a u64 if possible.
+    /// Converts the `KeyID` to a `u64` if possible.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # extern crate sequoia_openpgp as openpgp;
+    /// use openpgp::KeyID;
+    ///
+    /// let keyid = KeyID::new(0x123456789ABCDEF1);
+    ///
+    /// assert_eq!(keyid.as_u64().unwrap(), 0x123456789ABCDEF1);
+    /// ```
     pub fn as_u64(&self) -> Result<u64> {
         match &self {
             KeyID::V4(ref b) =>
@@ -131,7 +151,19 @@ impl KeyID {
         }
     }
 
-    /// Reads a binary key ID.
+    /// Creates a `KeyID` from a big endian byte slice.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # extern crate sequoia_openpgp as openpgp;
+    /// use openpgp::KeyID;
+    ///
+    /// let bytes = [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF1];
+    /// let keyid = KeyID::from_bytes(&bytes);
+    ///
+    /// assert_eq!(keyid, KeyID::new(0x123456789ABCDEF1u64));
+    /// ```
     pub fn from_bytes(raw: &[u8]) -> KeyID {
         if raw.len() == 8 {
             let mut keyid : [u8; 8] = Default::default();
@@ -142,7 +174,20 @@ impl KeyID {
         }
     }
 
-    /// Returns a reference to the raw KeyID.
+    /// Returns a reference to the raw `KeyID` as a byte slice in big endian
+    /// representation.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # extern crate sequoia_openpgp as openpgp;
+    /// # use openpgp::Result;
+    /// use openpgp::KeyID;
+    ///
+    /// let keyid = KeyID::new(0x123456789ABCDEF1);
+    ///
+    /// assert_eq!(keyid.as_bytes(), [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF1]);
+    /// ```
     pub fn as_bytes(&self) -> &[u8] {
         match self {
             &KeyID::V4(ref id) => id,
@@ -150,17 +195,49 @@ impl KeyID {
         }
     }
 
-    /// Returns the wildcard KeyID.
+    /// Creates a wildcard `KeyID`.
+    ///
+    /// Refer to [Section 5.1 of RFC 4880] for details.
+    ///
+    ///   [Section 5.1 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.1
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # extern crate sequoia_openpgp as openpgp;
+    /// # use openpgp::Result;
+    /// use openpgp::KeyID;
+    ///
+    /// let keyid = KeyID::wildcard();
+    ///
+    /// assert_eq!(keyid, KeyID::new(0x0000000000000000));
+    /// ```
     pub fn wildcard() -> Self {
         Self::from_bytes(&[0u8; 8][..])
     }
 
-    /// Returns true if this is a wild card ID.
+    /// Returns `true` if this is the wildcard `KeyID`.
+    ///
+    /// Refer to [Section 5.1 of RFC 4880] for details.
+    ///
+    ///   [Section 5.1 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.1
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # extern crate sequoia_openpgp as openpgp;
+    /// # use openpgp::Result;
+    /// use openpgp::KeyID;
+    ///
+    /// let keyid = KeyID::new(0x0000000000000000);
+    ///
+    /// assert!(keyid.is_wildcard());
+    /// ```
     pub fn is_wildcard(&self) -> bool {
         self.as_bytes().iter().all(|b| *b == 0)
     }
 
-    /// Converts this key ID to its canonical hexadecimal representation.
+    /// Converts this `KeyID` to its canonical hexadecimal representation.
     ///
     /// This representation is always uppercase and without spaces and is
     /// suitable for stable key identifiers.
@@ -181,10 +258,10 @@ impl KeyID {
         format!("{:X}", self)
     }
 
-    /// Parses the hexadecimal representation of an OpenPGP key ID.
+    /// Parses the hexadecimal representation of an OpenPGP `KeyID`.
     ///
     /// This function is the reverse of `to_hex`. It also accepts other variants
-    /// of the key ID notation including lower-case letters, spaces and optional
+    /// of the `keyID` notation including lower-case letters, spaces and optional
     /// leading `0x`.
     ///
     /// ```rust
