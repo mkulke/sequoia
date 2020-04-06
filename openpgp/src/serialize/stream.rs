@@ -272,7 +272,7 @@ impl<'a> Signer<'a> {
     /// // Now check the signature.
     /// struct Helper<'a>(&'a openpgp::Cert);
     /// impl<'a> VerificationHelper for Helper<'a> {
-    ///     fn get_public_keys(&mut self, _: &[openpgp::KeyHandle])
+    ///     fn get_certs(&mut self, _: &[openpgp::KeyHandle])
     ///                        -> openpgp::Result<Vec<openpgp::Cert>> {
     ///         Ok(vec![self.0.clone()])
     ///     }
@@ -383,7 +383,7 @@ impl<'a> Signer<'a> {
     /// // Now check the signature.
     /// struct Helper<'a>(&'a openpgp::Cert);
     /// impl<'a> VerificationHelper for Helper<'a> {
-    ///     fn get_public_keys(&mut self, _: &[openpgp::KeyHandle])
+    ///     fn get_certs(&mut self, _: &[openpgp::KeyHandle])
     ///                        -> openpgp::Result<Vec<openpgp::Cert>> {
     ///         Ok(vec![self.0.clone()])
     ///     }
@@ -415,8 +415,10 @@ impl<'a> Signer<'a> {
     ///
     /// Note: it is up to the caller to make sure the signing keys are
     /// actually valid as of `time`.
-    pub fn creation_time(mut self, creation_time: SystemTime) -> Self {
-        self.creation_time = Some(creation_time);
+    pub fn creation_time<T: Into<SystemTime>>(mut self, creation_time: T)
+                                              -> Self
+    {
+        self.creation_time = Some(creation_time.into());
         self
     }
 
@@ -1707,7 +1709,7 @@ mod test {
             tsk: &'a Cert,
         };
         impl<'a> VerificationHelper for Helper<'a> {
-            fn get_public_keys(&mut self, _ids: &[crate::KeyHandle])
+            fn get_certs(&mut self, _ids: &[crate::KeyHandle])
                                -> Result<Vec<Cert>> {
                 Ok(Vec::new())
             }
