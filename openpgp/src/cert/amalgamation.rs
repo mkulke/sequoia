@@ -157,25 +157,16 @@ pub trait ValidAmalgamation<'a, C: 'a>
     ///
     /// Subpackets on direct key signatures apply to all components of
     /// the certificate.
-    fn direct_key_signature(&self) -> Result<&'a Signature>;
+    fn direct_key_signature(&self) -> Result<&'a Signature> {
+        self.cert().cert.primary.binding_signature(self.policy(), self.time())
+    }
+
 
     /// Returns the component's revocation status as of the amalgamation's
     /// reference time.
     ///
     /// Note: this does not return whether the certificate is valid.
     fn revoked(&self) -> RevocationStatus<'a>;
-
-    /// Returns the certificate's revocation status as of the
-    /// amalgamation's reference time.
-    fn cert_revoked(&self) -> RevocationStatus<'a> {
-        self.cert().revoked()
-    }
-
-    /// Returns whether the certificate is alive as of the
-    /// amalgamation's reference time.
-    fn cert_alive(&self) -> Result<()> {
-        self.cert().alive()
-    }
 
     /// Maps the given function over binding and direct key signature.
     ///
@@ -460,6 +451,68 @@ impl<'a, C> ComponentAmalgamation<'a, C> {
     pub fn component(&self) -> &'a C {
         self.bundle().component()
     }
+
+    /// The component's self-signatures.
+    ///
+    /// This method is a forwarder for
+    /// [`ComponentBundle::self_signatures`].  Although
+    /// `ComponentAmalgamation` derefs to a `&ComponentBundle`, this
+    /// method provides a more accurate lifetime, which is helpful
+    /// when returning the reference from a function.  [See the
+    /// module's documentation] for more details.
+    ///
+    /// [`ComponentBundle::self_signatures`]: ../bundle/struct.ComponentBundle.html#method.self_signatures
+    /// [See the module's documentation]: index.html
+    pub fn self_signatures(&self) -> &'a [Signature] {
+        self.bundle().self_signatures()
+    }
+
+    /// The component's third-party certifications.
+    ///
+    /// This method is a forwarder for
+    /// [`ComponentBundle::certifications`].  Although
+    /// `ComponentAmalgamation` derefs to a `&ComponentBundle`, this
+    /// method provides a more accurate lifetime, which is helpful
+    /// when returning the reference from a function.  [See the
+    /// module's documentation] for more details.
+    ///
+    /// [`ComponentBundle::certifications`]: ../bundle/struct.ComponentBundle.html#method.certifications
+    /// [See the module's documentation]: index.html
+    pub fn certifications(&self) -> &'a [Signature] {
+        self.bundle().certifications()
+    }
+
+    /// The component's revocations that were issued by the
+    /// certificate holder.
+    ///
+    /// This method is a forwarder for
+    /// [`ComponentBundle::self_revocations`].  Although
+    /// `ComponentAmalgamation` derefs to a `&ComponentBundle`, this
+    /// method provides a more accurate lifetime, which is helpful
+    /// when returning the reference from a function.  [See the
+    /// module's documentation] for more details.
+    ///
+    /// [`ComponentBundle::self_revocations`]: ../bundle/struct.ComponentBundle.html#method.self_revocations
+    /// [See the module's documentation]: index.html
+    pub fn self_revocations(&self) -> &'a [Signature] {
+        self.bundle().self_revocations()
+    }
+
+    /// The component's revocations that were issued by other
+    /// certificates.
+    ///
+    /// This method is a forwarder for
+    /// [`ComponentBundle::other_revocations`].  Although
+    /// `ComponentAmalgamation` derefs to a `&ComponentBundle`, this
+    /// method provides a more accurate lifetime, which is helpful
+    /// when returning the reference from a function.  [See the
+    /// module's documentation] for more details.
+    ///
+    /// [`ComponentBundle::other_revocations`]: ../bundle/struct.ComponentBundle.html#method.other_revocations
+    /// [See the module's documentation]: index.html
+    pub fn other_revocations(&self) -> &'a [Signature] {
+        self.bundle().other_revocations()
+    }
 }
 
 macro_rules! impl_with_policy {
@@ -743,15 +796,6 @@ impl<'a, C> ValidAmalgamation<'a, C> for ValidComponentAmalgamation<'a, C> {
     fn binding_signature(&self) -> &'a Signature {
         assert!(std::ptr::eq(self.ca.cert(), self.cert.cert()));
         self.binding_signature
-    }
-
-    /// Returns the Certificate's direct key signature as of the
-    /// reference time, if any.
-    ///
-    /// Subpackets on direct key signatures apply to all components of
-    /// the certificate.
-    fn direct_key_signature(&self) -> Result<&'a Signature> {
-        self.cert.cert.primary.binding_signature(self.policy(), self.time())
     }
 
     /// Returns the component's revocation status as of the amalgamation's
