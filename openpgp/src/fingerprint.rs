@@ -55,7 +55,24 @@ impl std::str::FromStr for Fingerprint {
 }
 
 impl Fingerprint {
-    /// Reads a binary fingerprint.
+    /// Creates a `Fingerprint` from a byte slice in big endian representation.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # extern crate sequoia_openpgp as openpgp;
+    /// # use openpgp::Result;
+    /// use openpgp::Fingerprint;
+    ///
+    /// # fn main() -> sequoia_openpgp::Result<()> {
+    /// let fpr: Fingerprint = "0123 4567 89AB CDEF 0123 4567 89AB CDEF 0123 4567".parse()?;
+    /// let bytes = [0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0x01, 0x23,
+    ///              0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0x01, 0x23, 0x45, 0x67];
+    ///
+    /// assert_eq!(Fingerprint::from_bytes(&bytes), fpr);
+    /// # return Ok(());
+    /// # }
+    /// ```
     pub fn from_bytes(raw: &[u8]) -> Fingerprint {
         if raw.len() == 20 {
             let mut fp : [u8; 20] = Default::default();
@@ -66,7 +83,23 @@ impl Fingerprint {
         }
     }
 
-    /// Returns a reference to the raw Fingerprint.
+    /// Returns the raw fingerprint as a byte slice in big endian representation.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # extern crate sequoia_openpgp as openpgp;
+    /// # use openpgp::Result;
+    /// use openpgp::Fingerprint;
+    ///
+    /// # fn main() -> sequoia_openpgp::Result<()> {
+    /// let fpr: Fingerprint = "0123 4567 89AB CDEF 0123 4567 89AB CDEF 0123 4567".parse()?;
+    ///
+    /// assert_eq!(fpr.as_bytes(), [0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0x01, 0x23,
+    ///                             0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0x01, 0x23, 0x45, 0x67]);
+    /// # return Ok(());
+    /// # }
+    /// ```
     pub fn as_bytes(&self) -> &[u8] {
         match self {
             &Fingerprint::V4(ref fp) => fp,
@@ -170,8 +203,32 @@ impl Fingerprint {
         String::from_utf8(output).unwrap()
     }
 
-    /// Converts the hex representation of the fingerprint to a phrase in the
-    /// ICAO alphabet.
+    /// Converts the hex representation of the `Fingerprint` to a phrase in the
+    /// [ICAO spelling alphabet].
+    ///
+    ///   [ICAO spelling alphabet]: https://en.wikipedia.org/wiki/ICAO_spelling_alphabet
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # extern crate sequoia_openpgp as openpgp;
+    /// # use openpgp::Result;
+    /// use openpgp::Fingerprint;
+    ///
+    /// # fn main() -> sequoia_openpgp::Result<()> {
+    /// let fpr: Fingerprint = "01AB 4567 89AB CDEF 0123 4567 89AB CDEF 0123 4567".parse()?;
+    ///
+    /// assert!(fpr.to_icao().starts_with("Zero One Alfa Bravo"));
+    ///
+    /// # let expected = "\
+    /// # Zero One Alfa Bravo Four Five Six Seven Eight Niner Alfa Bravo Charlie Delta \
+    /// # Echo Foxtrot Zero One Two Three Four Five Six Seven Eight Niner Alfa Bravo \
+    /// # Charlie Delta Echo Foxtrot Zero One Two Three Four Five Six Seven";
+    /// # assert_eq!(fpr.to_icao(), expected);
+    /// #
+    /// # return Ok(());
+    /// # }
+    /// ```
     pub fn to_icao(&self) -> String {
         let mut ret = String::default();
 
