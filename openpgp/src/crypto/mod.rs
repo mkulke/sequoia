@@ -12,22 +12,17 @@ use crate::Result;
 
 pub(crate) mod aead;
 mod asymmetric;
+pub use self::asymmetric::{Signer, Decryptor, KeyPair};
 pub(crate) mod ecdh;
 pub mod hash;
 mod keygrip;
 pub use self::keygrip::Keygrip;
 pub mod mem;
-pub mod mpis;
+pub mod mpi;
 mod s2k;
 pub use s2k::S2K;
 pub mod sexp;
 pub(crate) mod symmetric;
-
-pub use self::asymmetric::{
-    Signer,
-    Decryptor,
-    KeyPair,
-};
 
 /// Fills the given buffer with random data.
 pub fn random<B: AsMut<[u8]>>(mut buf: B) {
