@@ -1,4 +1,94 @@
 //! Certificates and related data structures.
+//!
+//! An OpenPGP certificate, often called a `PGP key` or just a `key,`
+//! is a collection of keys, identity information, and certifications
+//! about those keys and identities.
+//!
+//! The foundation of an OpenPGP certificate is the so-called primary
+//! key.  A primary key has three essential functions.  First, the
+//! primary key is used to derive a universally unique identifier
+//! (UUID) for the certificate, the certificate's so-called
+//! fingerprint.  Second, the primary key is used to certify
+//! assertions that the certificate's holder makes about their
+//! certificate.  For instance, to associate a subkey or a User ID
+//! with a certificate, the certificate's holder uses the primary key
+//! to create a self signature called a binding signature.  This
+//! binding signature is distributed with the certificate.  It allows
+//! anyone who has the certificate to verify that the certificate's
+//! holder (identified by the primary key) really intended that the
+//! subkey be associated with the certificate.  Finally, the primary
+//! key can be used to make assertions about other certificates.  For
+//! instance, Alice can make a so-called third-party certification
+//! that attests that she is convinced that `Bob` (as described by a
+//! User ID) controls a particular certificate.  These third-party
+//! certifications are typically distributed alongside the signee's
+//! certificate, and are used by trust models like the Web of Trust to
+//! authenticate third-party certificates.
+//!
+//! # Data Structures
+//!
+//! The `[Cert]` data structure closely mirrors the transferable
+//! public key (`TPK`) data structure described in [Section 11.1] of
+//! RFC 4880.
+//!
+//! In this crate, we refer to User IDs, User Attributes, and Keys as
+//! Components.  To accommodate unsupported components (e.g.,
+//! deprecated v3 keys) and unknown components (e.g., the
+//! yet-to-be-defined `Xyzzy Property`), we also define an `Unknown`
+//! component.
+//!
+//! We call a Component and any associated signatures a
+//! `[ComponentBundle]`.  There are four types of associated
+//! signatures: self signatures, third-party signatures, self
+//! revocations, and third-party revocations.
+//!
+//! `[ComponentBundle]`:
+//!
+//! Although some information about a given `Component` is stored in
+//! the `Component` itself, most of the information is stored on the
+//! associated signatures.  For instance, a key's creation time is
+//! stored in the key packet, but the key's capabilities (e.g.,
+//! whether it can be used for encryption or signing), and its expiry
+//! are stored in the associated self signatures.
+//!
+//! When a certificate is parsed, Sequoia ensures that all components
+//! have at least one valid binding signature.  However, when using a
+//! component, it is still to find the right binding signature.  For
+//! instance, signature's from the future should be ignored.  This can
+//! be done using [`ComponentBundle::binding_signature`].
+//!
+//! Using the returned signature, , the signature can be queried for
+//! the required information.  Unfortunately, this approach is
+//! incomplete.  First, in the case of the Primary Key, the
+//! information lives on the Primary User ID's binding signature and
+//! not the Primary Key's self signatures, which aren't actually
+//! binding signatures, but direct key signatures.  Second, if the
+//! information is not available on the binding signature, then
+//! implementation is supposed to fall back to the direct key
+//! signature.
+//!
+//! [`ComponentBundle::binding_signature`]:
+//!
+//! # Certificate and Key Management
+//!
+//! Generating a certificate
+//! Parsing a certificate
+//! Serializing a certificate
+//! Revoking a certificate
+//! Checking if a certificate is revoked
+//! Updating a binding signature
+//! Merging certificates
+//! Third-party certifications
+//!
+//! # Operations
+//!
+//! Signing data
+//! Encrypting
+//! Verifying a signature
+//! Decrypting
+//!
+//! [Section 11.1]: https://tools.ietf.org/html/rfc4880#section-11.1
+//! [Cert]: ./struct.Cert.html
 
 use std::io;
 use std::cmp;
@@ -224,16 +314,103 @@ type UserAttributeBindings = ComponentBundles<UserAttribute>;
 /// Note: all signatures are stored as certifications.
 type UnknownBindings = ComponentBundles<Unknown>;
 
-/// Queries certificate holder's preferences.
+/// Returns the certificate holder's preferences.
 ///
-/// A certificate's key holder controls the primary key.  Subpackets
-/// on self signatures can be used to express preferences for
-/// algorithms and key management.  Furthermore, the key holder's
-/// OpenPGP implementation can express its feature set.
+/// OpenPGP provides a mechanism for a certificate holder to transmit
+/// information about communication preferences, and key management to
+/// communication partners in an asynchronous manner.  This
+/// information is attached to the certificate itself.  Specifically,
+/// the different types of information are stored as signature
+/// subpackets in the User IDs' self signatures, and in the
+/// certificate's direct key signature.
+///
+/// OpenPGP allows the certificate holder to specify different
+/// information depending on the way the certificate is addressed.
+/// When addressed by User ID, that User ID's self-signature is first
+/// checked for the subpacket in question.  If the subpacket is not
+/// present or the certificate is addressed is some other way, for
+/// instance, by its fingerprint, then the primary User ID's
+/// self-signature is checked.  If the subpacket is also not there,
+/// then the direct key signature is checked.  This policy and its
+/// justification are described in [Section 5.2.3.3] of RFC 4880.
+///
+/// [Section 5.2.3.3]: https://tools.ietf.org/html/rfc4880#section-5.2.3.3
 pub trait Preferences<'a> {
-    /// Returns symmetric algorithms that the key holder prefers.
+    /// Returns the supported symmetric algorithms ordered by
+    /// preference.
     ///
-    /// The algorithms are ordered according by the key holder's
+    /// The algorithms are ordered with the most preferred algorithm
+    /// first.  According to RFC 4880, if an algorithm is not listed
+    /// here, then the implementation should assume that it is not
+    /// supported by the certificate holder's software.
+    ///
+    /// The algorithm preference is stored in User ID self signatures,
+    /// and in direct key signatures in the `Preferred Symmetric
+    /// Algorithm` signature subpacket.  Software should look for the
+    /// subpacket at the following locations, in order of preference:
+    ///
+    ///   - If the user addresses the certificate by User ID rather
+    ///     than by fingerprint or Key ID, the specified User ID's
+    ///     self signature.
+    ///
+    ///   - The primary User ID's self signature.
+    ///
+    ///   - The direct key signature.
+    ///
+    /// If a signature exists, but doesn't include the subpacket, the
+    /// next location should be tried.
+    ///
+    /// Note: User IDs may be stripped.  For instance, the WKD
+    /// standard requires User IDs that are unrelated to the WKD's
+    /// domain to be stripped from the certificate prior to
+    /// publication.  As such, depending on the circumstances, any
+    /// User ID may be considered the primary User ID.  Consequently,
+    /// all User ID packets should include this subpacket.
+    /// Furthermore, RFC 4880bis allows certificates [without any User
+    /// ID packets].  To handle this case, certificates should include
+    /// a direct key signature, and it should include this subpacket.
+    ///
+    /// [WKD] https://tools.ietf.org/html/draft-koch-openpgp-webkey-service-09#section-5
+    /// [without any User ID packets]: https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-09#section-11.1
+    /// # RFC
+    ///
+    /// The `Preferred Symmetric Algorithm` property is stored in a
+    /// signature subpacket.  The subpacket is specified in [Section
+    /// 5.2.3.7] of RFC 4880.  [Section 5.2.3.3] describes how to find
+    /// the subpacket.
+    ///
+    /// [Section 5.2.3.7]: https://tools.ietf.org/html/rfc4880#section-5.2.3.7
+    /// [Section 5.2.3.3]: https://tools.ietf.org/html/rfc4880#section-5.2.3.3
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// extern crate sequoia_openpgp as openpgp;
+    /// # use openpgp::Result;
+    /// use openpgp::cert::prelude::*;
+    /// use sequoia_openpgp::policy::StandardPolicy;
+    ///
+    /// # fn main() -> Result<()> {
+    /// let p = &StandardPolicy::new();
+    /// # let (cert, _) =
+    /// #     CertBuilder::general_purpose(None, Some("alice@example.org"))
+    /// #     .generate()?;
+    ///
+    /// match cert.primary_userid(p, None)?.preferred_symmetric_algorithms() {
+    ///     Some(algos) => {
+    ///         println!("Certificate Holder's prefered symmetric algorithms:");
+    ///         for (i, algo) in algos.iter().enumerate() {
+    ///             println!("{}. {}", i, algo);
+    ///         }
+    ///     }
+    ///     None => {
+    ///         println!("Certificate Hold did not specify any prefered \
+    ///                   symmetric algorithms, or the subpacket is missing.");
+    ///     }
+    /// }
+    /// # Ok(()) }
+    /// ```
+    ///
     fn preferred_symmetric_algorithms(&self)
         -> Option<&'a [SymmetricAlgorithm]>;
 
@@ -277,7 +454,7 @@ use super::*;
 /// signatures and encrypt data.  It can be stored in a keystore and
 /// uploaded to keyservers.
 ///
-/// Certs are always canonicalized in the sense that only elements
+/// `Cert`s are always canonicalized in the sense that only elements
 /// (user id, user attribute, subkey) with at least one valid
 /// self-signature at a given time under a given policy are used.
 /// However, we keep all packets around for re-serialization.  It

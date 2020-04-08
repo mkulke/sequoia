@@ -883,6 +883,30 @@ impl<'a, P, R, R2> ValidKeyAmalgamation<'a, P, R, R2>
     /// 5.2.3.3 of RFC 4880].
     ///
     ///   [Section 5.2.3.3 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.3
+    ///
+    /// Note: historically, OpenPGP looks for the primary Key's key
+    /// flags on the primary User ID's binding signature, and only
+    /// falls back to the direct key signature if the binding
+    /// signature does not contain the `KeyFlags` subpacket.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # extern crate sequoia_openpgp as openpgp;
+    /// # use openpgp::cert::prelude::*;
+    /// # use openpgp::policy::{Policy, StandardPolicy};
+    /// #
+    /// # fn main() -> openpgp::Result<()> {
+    /// #     let p : &dyn Policy = &StandardPolicy::new();
+    /// #     let (cert, _) =
+    /// #         CertBuilder::general_purpose(None, Some("alice@example.org"))
+    /// #         .generate()?;
+    /// #     let cert = cert.with_policy(p, None)?;
+    /// let ka = cert.primary_key();
+    /// println!("Primary Key's key flags: {:?}", ka.key_flags());
+    /// # assert!(ka.key_flags().unwrap().for_certification());
+    /// # Ok(()) }
+    /// ```
     pub fn key_flags(&self) -> Option<KeyFlags> {
         self.map(|s| s.key_flags())
     }

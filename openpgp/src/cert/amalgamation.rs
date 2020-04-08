@@ -1,16 +1,205 @@
-//! Component amalgamations.
+//! Components, their associated signatures, and some useful methods.
 //!
-//! Whereas a `ComponentBundle` groups a `Component` with its self
-//! signatures, its third-party signatures, and its revocation
-//! certificates, an `Amalgamation` groups a `ComponentBundle` with
-//! all of the necessary context needed to correctly implement
-//! relevant functionality related to the component.  Specifically, a
-//! `Amalgamation` includes a reference to the `ComponentBundle`, and
-//! a reference to the containing certificate.
+//! Whereas a [`ComponentBundle`] owns a `Component` and its
+//! associated [`Signature`]s, a [`ComponentAmalgamation`] references
+//! a `ComponentBundle` and its containing [`Cert`].  This additional
+//! context means that a `ComponentAmalgamation` can implement more of
+//! OpenPGP's high-level semantics than a `ComponentBundle` can.  For
+//! instance, most of the information about a primary key, such as its
+//! capabilities, is on the primary User ID's binding signature.  A
+//! `ComponentAmalgamation` can find the certificate's primary User
+//! ID; a `ComponentBundle` can't.  Similarly, when looking up a
+//! subpacket, if it isn't present in the component's binding
+//! signature, then an OpenPGP implementation is supposed to consult
+//! the certificate's direct key signatures.  A
+//! `ComponentAmalgamation` has access to this information; a
+//! `ComponentBundle` doesn't.
 //!
-//! A notable differences between `ComponentBundle`s and
-//! `Amalgamation`s is that a `ComponentBundle`, owns its data, but an
-//! `Amalgamation` only references the contained data.
+//! Given the limitations of a `ComponentBundle`, it would seem more
+//! useful to just change it to include a reference to its containing
+//! certificate.  That change would make `ComponentAmalgamation`s
+//! redundant.  Unfortunately, this isn't possible, because it would
+//! result in a self-referential data structure, which Rust doesn't
+//! allow.  To understand how this arises, consider a certificate `C`,
+//! which contains a `ComponentBundle` `B`.  If `B` contains a
+//! reference to `C`, then `C` references itself, because `C` contains
+//! `B`!
+//!
+//! # Policy
+//!
+//! Although a `ComponentAmalgamation` contains the information
+//! necessary to realize high-level OpenPGP functionality, components
+//! can have multiple self signatures, and functions that consult the
+//! binding signature need to determine the best one to use.  There
+//! are two mains concerns here.
+//!
+//! First, we need to protect the user from forgeries.  As attacks
+//! improve, cryptographic algorithms that were once considered secure
+//! now provide insufficient security margins.  For instance, in 2007
+//! it was possible to find [MD5 collisions] using just a few seconds
+//! of computing time on a commodity computer.  Sequoia provides a
+//! flexible mechanism, called [Policy] objects, that allow users to
+//! implement this type of filtering: before a self signature is used,
+//! a policy object is queried to determine whether the `Signature`
+//! should be rejected.  If so, the `Signature` is skipped.
+//!
+//! Second, we need an algorithm to find the most appropriate
+//! self-signature.  Obvious non-candidate self signature are self
+//! signatures whose creation time is in the future.  We don't assume
+//! that these self signatures are bad per se, but that they represent
+//! policy that should go into effect some time in the future.
+//!
+//! We extend this idea of a self signature representing a policy for
+//! a certain period of time to all self signatures.  In particular,
+//! Sequoia takes the view that *a binding signature represents a
+//! policy that is valid from its creation time until its expiry*.
+//! Thus, when considering what self signature to use, we need a
+//! reference time.  Given the reference time, we then use the self
+//! signature that was in effect at that time, i.e., the most recent,
+//! non-expired, non-revoked self signature that was created at or
+//! prior to the reference time.  In other words, we ignore self
+//! signatures created after the reference time.  We take the position
+//! that if the certificate holder wants a new policy to apply to
+//! existing signatures, then the new self signature should be
+//! backdated, and existing self signatures revoked, if necessary.
+//!
+//! Consider evaluating signatures over a document.  Sequoia's
+//! [streaming verifier] uses the signature's creation time as the
+//! reference time.  Thus, if the signature was created on June 9th,
+//! 2011, then, when evaluating that signature, the streaming verifier
+//! uses a self-signature that was alive at that time, since that was
+//! the self-signature that represented the signer's policy at the
+//! time the signature was created.
+//!
+//! A consequence of this approach is that even if the self-signature
+//! were considered expired at the time the signature was evaluated
+//! (e.g., "now"), this fact doesn't invalidate the signature.  That
+//! is, a self-siganture's lifetime does not impact a signature's
+//! lifetime; a signature's lifetime is defined by its own creation
+//! time and expiry.  Likewise, a key's lifetime is defined by its own
+//! creation time and expiry.
+//!
+//! This interpretation of lifetimes removes a major disadvantage that
+//! comes with fast rotation of subkeys: if an implementation binds
+//! the lifetime of signatures to the signing key, and the key
+//! expires, then old messages are considered invalid.  Consider a
+//! user who generates a new signature subkey each week, and sets it
+//! to expire after exactly one week.  If we use the policy that the
+//! signature is only valid while the key and self signatures are
+//! alive, then if someone checks the signature a week after receiving
+//! it, the signature will be considered invalid, because the key has
+//! expired.  The practical result is that all old messages from this
+//! user will be considered invalid!  Unfortunately, this will result
+//! in users becoming accustomed to seeing invalid signatures, and
+//! cause them to be less suspcious of them.
+//!
+//! Note: the possibility of abuse of this interpretation is limited.
+//! If the key has been compromised, then the right thing to do is to
+//! revoked it.  Expiry doesn't help.  The attacker can simply create
+//! self-signatures that say whatevery she wants.  Assuming the secret
+//! key material has not been compromised, then an attacker could
+//! reuse a message that might otherwise be considered expired.
+//! However, the attacker will not be able to change the signature's
+//! creation time, so, assuming a mail context and MUAs that check
+//! that the time in the message's headers matches the signature's
+//! creation time, the mails will appear old.  Further, this type of
+//! attack will be mitigated by the proposed "[Intended Recipients]"
+//! subpacket, which more tightly binds the message to its context.
+//!
+//! # [`ValidComponetAmalgamation`]
+//!
+//! Oftentimes, a `ComponentAmalgamation` isn't just used once for
+//! some operation, but many times.  Passing around the same policy
+//! and the same reference time to each invocation cluters the code
+//! and can introduce subtle bugs.  In particular, when using the
+//! current time as the reference time, the interfaces allow the
+//! caller to pass in `None`.  But if the operation is long running,
+//! then the current time changes, which can cause subtle
+//! inconsistencies.  In these cases, the correct approach is to use
+//! the current time at the start of the operation.
+//!
+//! Alternatively, the `ValidComponetAmalgamation` data structure
+//! embeds a policy and a reference time, and automatically passes
+//! them to methods on the wrapped `ComponetAmalgamation`.  When
+//! passed `None` for the reference time, the
+//! `ValidComponetAmalgamation` constructor stores the current time,
+//! and uses that for all operations.
+//!
+//! # Lifetimes
+//!
+//! `ComponentAmalgamation` autoderefs to `ComponentBundle`.
+//! Unfortunately, due to the definition of the [`Deref` trait],
+//! `ComponentBundle` is assigned the same lifetime as
+//! `ComponentAmalgamation`.  However, particularly when using
+//! combinators like [`std::iter::map`], the `ComponentBundle`'s
+//! lifetime is longer.  Consider the following code, which doesn't
+//! compile:
+//!
+//! ```compile_fail
+//! # extern crate sequoia_openpgp as openpgp;
+//! use openpgp::cert::prelude::*;
+//! use openpgp::packet::prelude::*;
+//!
+//! # let (cert, _) = CertBuilder::new()
+//! #     .add_userid("Alice")
+//! #     .add_signing_subkey()
+//! #     .add_transport_encryption_subkey()
+//! #     .generate().unwrap();
+//! cert.userids()
+//!     .map(|ua| {
+//!         // Use auto deref to get the containing `&ComponentBundle`.
+//!         let b : &ComponentBundle<_> = &ua;
+//!         b
+//!     })
+//!     .collect::<Vec<&UserID>>();
+//! ```
+//!
+//! Compiling it results in the following error:
+//!
+//! > `b` returns a value referencing data owned by the current
+//! function
+//!
+//! This error occurs because the `Deref` trait says that the lifetime
+//! of the target, i.e., `&ComponentBundle`, is bounded by `ua`'s
+//! lifetime, whose lifetime is indeed limited to the closure.  But,
+//! `&ComponentBundle` is independent of `ua`; it is a copy of the
+//! `ComponentAmalgamation`'s reference to the `ComponentBundle` whose
+//! lifetime is `'a`!  Unfortunately, this can't be expressed using
+//! `Deref`, but it can be done using separate methods as shown below
+//! for the [`ComponentAmalgamation::component`] method:
+//!
+//! ```
+//! # extern crate sequoia_openpgp as openpgp;
+//! use openpgp::cert::prelude::*;
+//! use openpgp::packet::prelude::*;
+//!
+//! # let (cert, _) = CertBuilder::new()
+//! #     .add_userid("Alice")
+//! #     .add_signing_subkey()
+//! #     .add_transport_encryption_subkey()
+//! #     .generate().unwrap();
+//! cert.userids()
+//!     .map(|ua| {
+//!         // ua's lifetime is this closure.  But `component()`
+//!         // returns a reference whose lifetime is that of the
+//!         // `cert`.
+//!         ua.component()
+//!     })
+//!     .collect::<Vec<&UserID>>();
+//! ```
+//!
+//! [`ComponentBundle`]: ../bundle/index.html
+//! [`Signature`]: ../../packet/signature/index.html
+//! [`ComponentAmalgamation`]: struct.ComponentAmalgamation.html
+//! [`Cert`]: ../index.html
+//! [`ValidComponetAmalgamation`]: struct.ValidComponentAmalgamation.html
+//! [`std::iter::map`]: https://doc.rust-lang.org/std/iter/struct.Map.html
+//! [MD5 collisions]: https://en.wikipedia.org/wiki/MD5
+//! [Policy]: ../../policy/index.html
+//! [streaming verifier]: ../../parse/stream.html
+//! [Intended Recipients]: https://www.ietf.org/id/draft-ietf-openpgp-rfc4880bis-09.html#name-intended-recipient-fingerpr
+//! [forward secrecy]: https://tools.ietf.org/html/draft-brown-pgp-pfs-03
+//! [`Deref` trait]: https://doc.rust-lang.org/stable/std/ops/trait.Deref.html
 use std::time;
 use std::time::SystemTime;
 use std::clone::Clone;
@@ -37,7 +226,6 @@ use crate::{
         SymmetricAlgorithm,
     },
 };
-
 
 mod iter;
 pub use iter::{
@@ -72,15 +260,16 @@ pub use key::{
 
 /// Applies a policy to an amalgamation.
 ///
-/// Note: This trait is split off from the `Amalgamation` trait, to
-/// reduce code duplication: it is often possible to provide blanket
-/// implementations of `Amalgamation`, but the `ValidateAmalgamation`
-/// trait can only be implemented on more concrete types.
+/// Note: This trait is split off from the `ComponentAmalgamation`
+/// trait, to reduce code duplication: it is often possible to provide
+/// blanket implementations of `ComponentAmalgamation`, but the
+/// `ValidateAmalgamation` trait can only be implemented on more
+/// concrete types.
 pub trait ValidateAmalgamation<'a, C: 'a> {
     /// The type returned by `with_policy`.
     type V;
 
-    /// Changes the amalgamation's policy.
+    /// Uses the specified `Policy` and reference time with the amalgamation.
     ///
     /// If `time` is `None`, the current time is used.
     fn with_policy<T>(self, policy: &'a dyn Policy, time: T) -> Result<Self::V>
@@ -127,56 +316,16 @@ trait ValidateAmalgamationRelaxed<'a, C: 'a> {
               Self: Sized;
 }
 
-/// An amalgamation with a policy and a reference time.
+/// Methods for valid amalgamations.
 ///
-/// In a certain sense, a `ValidAmalgamation` provides a view of an
-/// `Amalgamation` as it was at a particular time.  That is,
-/// signatures and components that are not valid at the reference
-/// time, because they were created after the reference time, for
-/// instance, are ignored.
-///
-/// The methods exposed by a `ValidAmalgamation` are similar to those
-/// exposed by an `Amalgamation`, but the policy and reference time
-/// are taken from the `ValidAmalgamation`.  This helps prevent using
-/// different policies or different reference times when using a
-/// component, which can easily happen when the checks span multiple
-/// functions.
+/// The methods exposed by a `ValidComponentAmalgamation` are similar
+/// to those exposed by a `ComponentAmalgamation`, but the policy and
+/// reference time are included in the `ValidComponentAmalgamation`.
+/// This helps prevent using different policies or different reference
+/// times when using a component, which can easily happen when the
+/// checks span multiple functions.
 pub trait ValidAmalgamation<'a, C: 'a>
 {
-    /// Returns the certificate.
-    fn cert(&self) -> &ValidCert<'a>;
-
-    /// Returns the amalgamation's reference time.
-    ///
-    /// For queries that are with respect to a point in time, this
-    /// determines that point in time.  For instance, if a component is
-    /// created at `t_c` and expires at `t_e`, then
-    /// `ValidComponentAmalgamation::alive` will return true if the reference
-    /// time is greater than or equal to `t_c` and less than `t_e`.
-    fn time(&self) -> SystemTime;
-
-    /// Returns the amalgamation's policy.
-    fn policy(&self) -> &'a dyn Policy;
-
-    /// Returns the component's binding signature as of the reference time.
-    fn binding_signature(&self) -> &'a Signature;
-
-    /// Returns the Certificate's direct key signature as of the
-    /// reference time, if any.
-    ///
-    /// Subpackets on direct key signatures apply to all components of
-    /// the certificate.
-    fn direct_key_signature(&self) -> Result<&'a Signature> {
-        self.cert().cert.primary.binding_signature(self.policy(), self.time())
-    }
-
-
-    /// Returns the component's revocation status as of the amalgamation's
-    /// reference time.
-    ///
-    /// Note: this does not return whether the certificate is valid.
-    fn revoked(&self) -> RevocationStatus<'a>;
-
     /// Maps the given function over binding and direct key signature.
     ///
     /// Makes `f` consider both the binding signature and the direct
@@ -190,11 +339,227 @@ pub trait ValidAmalgamation<'a, C: 'a>
             .or_else(|| self.direct_key_signature().ok().and_then(f))
     }
 
-    /// Returns the value of the Revocation Key subpacket, which
-    /// contains a designated revoker.
+    /// Returns the valid amalgamation's associated certificate.
     ///
-    /// Considers both the binding signature and the direct key
-    /// signature.
+    /// # Examples
+    ///
+    /// ```
+    /// # extern crate sequoia_openpgp as openpgp;
+    /// # use openpgp::cert::prelude::*;
+    /// # use openpgp::policy::StandardPolicy;
+    /// #
+    /// fn f(ua: &ValidUserIDAmalgamation) {
+    ///     let cert = ua.cert();
+    ///     // ...
+    /// }
+    /// # fn main() -> openpgp::Result<()> {
+    /// #     let p = &StandardPolicy::new();
+    /// #     let (cert, _) =
+    /// #         CertBuilder::general_purpose(None, Some("alice@example.org"))
+    /// #         .generate()?;
+    /// #     let fpr = cert.fingerprint();
+    /// #     let ua = cert.userids().nth(0).expect("User IDs");
+    /// #     assert_eq!(ua.cert().fingerprint(), fpr);
+    /// #     f(&ua.with_policy(p, None)?);
+    /// #     Ok(())
+    /// # }
+    /// ```
+    fn cert(&self) -> &ValidCert<'a>;
+
+    /// Returns the amalgamation's reference time.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use std::time::{SystemTime, Duration, UNIX_EPOCH};
+    /// #
+    /// # extern crate sequoia_openpgp as openpgp;
+    /// # use openpgp::cert::prelude::*;
+    /// # use openpgp::policy::StandardPolicy;
+    /// fn f(ua: &ValidUserIDAmalgamation) {
+    ///     let t = ua.time();
+    ///     // ...
+    /// }
+    /// # fn main() -> openpgp::Result<()> {
+    /// #     let p = &StandardPolicy::new();
+    /// #     let t = UNIX_EPOCH + Duration::from_secs(1554542220);
+    /// #     let (cert, _) =
+    /// #         CertBuilder::general_purpose(None, Some("alice@example.org"))
+    /// #         .set_creation_time(t)
+    /// #         .generate()?;
+    /// #     let ua = cert.userids().nth(0).expect("User IDs");
+    /// #     let ua = ua.with_policy(p, t)?;
+    /// #     assert_eq!(t, ua.time());
+    /// #     f(&ua);
+    /// #     Ok(())
+    /// # }
+    /// ```
+    fn time(&self) -> SystemTime;
+
+    /// Returns the amalgamation's policy.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # extern crate sequoia_openpgp as openpgp;
+    /// # use openpgp::cert::prelude::*;
+    /// # use openpgp::policy::{Policy, StandardPolicy};
+    /// #
+    /// fn f(ua: &ValidUserIDAmalgamation) {
+    ///     let policy = ua.policy();
+    ///     // ...
+    /// }
+    /// # fn main() -> openpgp::Result<()> {
+    /// #     let p : &dyn Policy = &StandardPolicy::new();
+    /// #     let (cert, _) =
+    /// #         CertBuilder::general_purpose(None, Some("alice@example.org"))
+    /// #         .generate()?;
+    /// #     let ua = cert.userids().nth(0).expect("User IDs");
+    /// #     let ua = ua.with_policy(p, None)?;
+    /// #     assert!(std::ptr::eq(p, ua.policy()));
+    /// #     f(&ua);
+    /// #     Ok(())
+    /// # }
+    /// ```
+    fn policy(&self) -> &'a dyn Policy;
+
+    /// Returns the component's binding signature as of the reference time.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # extern crate sequoia_openpgp as openpgp;
+    /// # use openpgp::cert::prelude::*;
+    /// # use openpgp::policy::{Policy, StandardPolicy};
+    /// #
+    /// fn f(ua: &ValidUserIDAmalgamation) {
+    ///     let sig = ua.binding_signature();
+    ///     // ...
+    /// }
+    /// # fn main() -> openpgp::Result<()> {
+    /// #     let p : &dyn Policy = &StandardPolicy::new();
+    /// #     let (cert, _) =
+    /// #         CertBuilder::general_purpose(None, Some("alice@example.org"))
+    /// #         .generate()?;
+    /// #     let ua = cert.userids().nth(0).expect("User IDs");
+    /// #     let ua = ua.with_policy(p, None)?;
+    /// #     f(&ua);
+    /// #     Ok(())
+    /// # }
+    /// ```
+    fn binding_signature(&self) -> &'a Signature;
+
+    /// Returns the certificate's direct key signature as of the
+    /// reference time, if any.
+    ///
+    /// Subpackets on direct key signatures apply to all components of
+    /// the certificate, cf. [Section 5.2.3.3 of RFC 4880].
+    ///
+    /// [Section 5.2.3.3 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.3
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # extern crate sequoia_openpgp as openpgp;
+    /// # use openpgp::cert::prelude::*;
+    /// # use openpgp::policy::{Policy, StandardPolicy};
+    /// #
+    /// fn f(ua: &ValidUserIDAmalgamation) {
+    ///     let sig = ua.direct_key_signature();
+    ///     // ...
+    /// }
+    /// # fn main() -> openpgp::Result<()> {
+    /// #     let p : &dyn Policy = &StandardPolicy::new();
+    /// #     let (cert, _) =
+    /// #         CertBuilder::general_purpose(None, Some("alice@example.org"))
+    /// #         .generate()?;
+    /// #     let cert = cert.with_policy(p, None)?;
+    /// #     let ua = cert.userids().nth(0).expect("User IDs");
+    /// #     assert!(std::ptr::eq(ua.direct_key_signature().unwrap(),
+    /// #                          cert.direct_key_signature().unwrap()));
+    /// #     f(&ua);
+    /// #     Ok(())
+    /// # }
+    /// ```
+    fn direct_key_signature(&self) -> Result<&'a Signature> {
+        self.cert().cert.primary.binding_signature(self.policy(), self.time())
+    }
+
+    /// Returns the component's revocation status as of the amalgamation's
+    /// reference time.
+    ///
+    /// This does *not* check whether the certificate has been
+    /// revoked.  For that, use `Cert::revoked()`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # extern crate sequoia_openpgp as openpgp;
+    /// # use openpgp::cert::prelude::*;
+    /// # use openpgp::policy::StandardPolicy;
+    /// # use openpgp::types::RevocationStatus;
+    /// #
+    /// # fn main() -> openpgp::Result<()> {
+    /// #     let p = &StandardPolicy::new();
+    /// #     let (cert, _) =
+    /// #         CertBuilder::general_purpose(None, Some("alice@example.org"))
+    /// #         .generate()?;
+    /// #     let cert = cert.with_policy(p, None)?;
+    /// #     let ua = cert.userids().nth(0).expect("User IDs");
+    /// match ua.revoked() {
+    ///     RevocationStatus::Revoked(revs) => {
+    ///         // The certificate holder revoked the User ID.
+    /// #       unreachable!();
+    ///     }
+    ///     RevocationStatus::CouldBe(revs) => {
+    ///         // There are third-party revocations.  You still need
+    ///         // to check that they are valid (this is necessary,
+    ///         // because without the Certificates are not normally
+    ///         // available to Sequoia).
+    /// #       unreachable!();
+    ///     }
+    ///     RevocationStatus::NotAsFarAsWeKnow => {
+    ///         // We have no evidence that the User ID is revoked.
+    ///     }
+    /// }
+    /// #     Ok(())
+    /// # }
+    /// ```
+    fn revoked(&self) -> RevocationStatus<'a>;
+
+    /// Returns a list of any designated revokers for this component.
+    ///
+    /// This function returns the designated revokers listed on both
+    /// this component's binding signature and the certificate's
+    /// direct key signature.
+    ///
+    /// Note: the returned list has not been deduplicated.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # extern crate sequoia_openpgp as openpgp;
+    /// # use openpgp::Result;
+    /// use openpgp::cert::prelude::*;
+    /// use openpgp::policy::StandardPolicy;
+    /// use openpgp::types::RevocationKey;
+    ///
+    /// # fn main() -> Result<()> {
+    /// let p = &StandardPolicy::new();
+    ///
+    /// let (alice, _) =
+    ///     CertBuilder::general_purpose(None, Some("alice@example.org"))
+    ///     .generate()?;
+    /// let (bob, _) =
+    ///     CertBuilder::general_purpose(None, Some("bob@example.org"))
+    ///     .set_revocation_keys(vec![ (&alice).into() ])
+    ///     .generate()?;
+    ///
+    /// assert_eq!(bob.primary_userid(p, None)?.revocation_keys()
+    ///                .collect::<Vec<&RevocationKey>>(),
+    ///            vec![ &(&alice).into() ]);
+    /// # Ok(()) }
+    /// ```
     fn revocation_keys(&self)
                        -> Box<dyn Iterator<Item = &'a RevocationKey> + 'a>
     {
@@ -212,7 +577,8 @@ pub trait ValidAmalgamation<'a, C: 'a>
     }
 }
 
-/// A certificate's component and its associated data.
+/// A certificate component, its associated signatures, and useful
+/// methods.
 #[derive(Debug, PartialEq)]
 pub struct ComponentAmalgamation<'a, C> {
     cert: &'a Cert,
@@ -259,21 +625,62 @@ impl<'a, C> std::ops::Deref for ComponentAmalgamation<'a, C> {
 }
 
 impl<'a, C> ComponentAmalgamation<'a, C> {
-    /// Returns the certificate that the component came from.
+    /// Creates a new amalgamation.
+    pub(crate) fn new(cert: &'a Cert, bundle: &'a ComponentBundle<C>) -> Self
+    {
+        Self {
+            cert,
+            bundle,
+        }
+    }
+
+    /// Returns the component's associated certificate.
+    ///
+    /// ```
+    /// # extern crate sequoia_openpgp as openpgp;
+    /// # use openpgp::cert::prelude::*;
+    /// #
+    /// # fn main() -> openpgp::Result<()> {
+    /// # let (cert, _) =
+    /// #     CertBuilder::general_purpose(None, Some("alice@example.org"))
+    /// #     .generate()?;
+    /// for u in cert.userids() {
+    ///     // It's not only an identical `Cert`, it's the same one.
+    ///     assert!(std::ptr::eq(u.cert(), &cert));
+    /// }
+    /// # Ok(()) }
+    /// ```
     pub fn cert(&self) -> &'a Cert {
         &self.cert
     }
 
+    /// Selects a binding signature.
+    ///
+    /// Uses the provided policy and reference time to select an
+    /// appropriate binding signature.
+    ///
+    /// Note: this function is not exported.  Users of this interface
+    /// should do: ca.with_policy(policy, time)?.binding_signature().
+    fn binding_signature<T>(&self, policy: &dyn Policy, time: T)
+        -> Result<&'a Signature>
+        where T: Into<Option<time::SystemTime>>
+    {
+        let time = time.into().unwrap_or_else(SystemTime::now);
+        self.bundle.binding_signature(policy, time)
+    }
+
     /// Returns this amalgamation's bundle.
     ///
-    /// Note: although `Amalgamation` derefs to a
-    /// `ComponentBundle`, this method provides a more accurate
-    /// lifetime, which is helpful when returning the reference
-    /// from a function.
+    /// Note: although `ComponentAmalgamation` derefs to a
+    /// `&ComponentBundle`, this method provides a more accurate
+    /// lifetime, which is helpful when returning the reference from a
+    /// function.  [See the module's documentation] for more details.
     ///
-    /// Consider the following, which doesn't work:
+    /// [See the module's documentation]: index.html
     ///
-    /// ```compile_fail
+    /// # Examples
+    ///
+    /// ```
     /// # extern crate sequoia_openpgp as openpgp;
     /// use openpgp::cert::prelude::*;
     /// use openpgp::packet::prelude::*;
@@ -283,103 +690,33 @@ impl<'a, C> ComponentAmalgamation<'a, C> {
     /// #     .add_signing_subkey()
     /// #     .add_transport_encryption_subkey()
     /// #     .generate().unwrap();
-    /// cert.keys()
-    ///     .map(|ka| {
-    ///         let b : &KeyBundle<_, _> = &ka;
-    ///         b
+    /// cert.userids()
+    ///     .map(|ua| {
+    ///         // The following doesn't work:
+    ///         //
+    ///         //   let b : &ComponentBundle<_> = &ua; b
+    ///         //
+    ///         // Because ua's lifetime is this closure and autoderef
+    ///         // assigns `b` the same lifetime as `ua`.  `bundle()`,
+    ///         // however, returns a reference whose lifetime is that
+    ///         // of the `cert`.
+    ///         ua.bundle()
     ///     })
-    ///     .collect::<Vec<&KeyBundle<_, _>>>();
+    ///     .collect::<Vec<&ComponentBundle<_>>>();
     /// ```
-    ///
-    /// Compiling the above code results in the following error:
-    ///
-    /// > `b` returns a value referencing data owned by the current
-    /// function
-    ///
-    /// This error occurs because the [`Deref` trait] says that the
-    /// lifetime of the target, i.e., `&KeyBundle`, is
-    /// bounded by `ka`'s lifetime, whose lifetime is indeed
-    /// limited to the closure.  But, `&KeyBundle` is independent
-    /// of `ka`!  It is a copy of the `KeyAmalgamation`'s
-    /// reference to the `KeyBundle` whose lifetime is `'a`.
-    /// Unfortunately, this can't be expressed using `Deref`, but
-    /// it can be done using a separate method:
-    ///
-    /// ```
-    /// # extern crate sequoia_openpgp as openpgp;
-    /// use openpgp::cert::prelude::*;
-    /// use openpgp::packet::prelude::*;
-    ///
-    /// # let (cert, _) = CertBuilder::new()
-    /// #     .add_userid("Alice")
-    /// #     .add_signing_subkey()
-    /// #     .add_transport_encryption_subkey()
-    /// #     .generate().unwrap();
-    /// cert.keys().map(|ka| ka.bundle())
-    ///     .collect::<Vec<&KeyBundle<_, _>>>();
-    /// ```
-    ///
-    /// [`Deref` trait]: https://doc.rust-lang.org/stable/std/ops/trait.Deref.html
     pub fn bundle(&self) -> &'a ComponentBundle<C> {
         &self.bundle
     }
 
     /// Returns this amalgamation's component.
     ///
-    /// Note: although `Amalgamation` derefs to a `Component` (via
-    /// `ComponentBundle`), this method provides a more accurate
-    /// lifetime, which is helpful when returning the reference
-    /// from a function.
+    /// Note: although `ComponentAmalgamation` derefs to a
+    /// `&Component` (via `&ComponentBundle`), this method provides a
+    /// more accurate lifetime, which is helpful when returning the
+    /// reference from a function.  [See the module's documentation]
+    /// for more details.
     ///
-    /// Consider the following, which doesn't work:
-    ///
-    /// ```compile_fail
-    /// # extern crate sequoia_openpgp as openpgp;
-    /// use openpgp::cert::prelude::*;
-    /// use openpgp::packet::prelude::*;
-    ///
-    /// # let (cert, _) = CertBuilder::new()
-    /// #     .add_userid("Alice")
-    /// #     .add_signing_subkey()
-    /// #     .add_transport_encryption_subkey()
-    /// #     .generate().unwrap();
-    /// cert.keys()
-    ///     .map(|ka| {
-    ///         let k : &Key<_, _> = &ka;
-    ///         k
-    ///     })
-    ///     .collect::<Vec<&Key<_, _>>>();
-    /// ```
-    ///
-    /// Compiling the above code results in the following error:
-    ///
-    /// > `k` returns a value referencing data owned by the current
-    /// function
-    ///
-    /// This error occurs because the [`Deref` trait] says that the
-    /// lifetime of the target, i.e., `&Key`, is bounded by
-    /// the `ka`'s lifetime, whose lifetime is indeed limited to
-    /// the closure.  But, `&Key` is independent of `ka`!  It is a
-    /// copy of the `KeyAmalgamation`'s reference to the `Key`
-    /// whose lifetime is `'a`.  Unfortunately, this can't be
-    /// expressed using `Deref`, but it can be done using a
-    /// separate method:
-    ///
-    /// ```
-    /// # extern crate sequoia_openpgp as openpgp;
-    /// use openpgp::cert::prelude::*;
-    /// use openpgp::packet::prelude::*;
-    ///
-    /// # let (cert, _) = CertBuilder::new()
-    /// #     .add_userid("Alice")
-    /// #     .add_signing_subkey()
-    /// #     .add_transport_encryption_subkey()
-    /// #     .generate().unwrap();
-    /// cert.keys().map(|ka| ka.key())
-    ///     .collect::<Vec<&Key<_, _>>>();
-    /// ```
-    ///
-    /// [`Deref` trait]: https://doc.rust-lang.org/stable/std/ops/trait.Deref.html
+    /// [See the module's documentation]: index.html
     pub fn component(&self) -> &'a C {
         self.bundle().component()
     }
@@ -491,45 +828,107 @@ impl<'a, C> ValidateAmalgamationRelaxed<'a, C> for ComponentAmalgamation<'a, C> 
     impl_with_policy!(with_policy_relaxed, valid_cert, valid_cert: bool);
 }
 
-impl<'a, C> ComponentAmalgamation<'a, C> {
-    /// Creates a new amalgamation.
-    pub(crate) fn new(cert: &'a Cert, bundle: &'a ComponentBundle<C>) -> Self
-    {
-        Self {
-            cert,
-            bundle,
-        }
-    }
-
-    /// Returns the components's binding signature as of the reference
-    /// time, if any.
-    ///
-    /// Note: this function is not exported.  Users of this interface
-    /// should do: ca.with_policy(policy, time)?.binding_signature().
-    fn binding_signature<T>(&self, policy: &dyn Policy, time: T)
-        -> Result<&'a Signature>
-        where T: Into<Option<time::SystemTime>>
-    {
-        let time = time.into().unwrap_or_else(SystemTime::now);
-        self.bundle.binding_signature(policy, time)
-    }
-}
+/// A `ComponentAmalgamation` specialized for `UserID`s.
+pub type UserIDAmalgamation<'a> = ComponentAmalgamation<'a, crate::packet::UserID>;
 
 impl<'a> ComponentAmalgamation<'a, crate::packet::UserID> {
     /// Returns a reference to the User ID.
+    ///
+    /// Note: although `ComponentAmalgamation<UserID>` derefs to a
+    /// `&UserID` (via `&ComponentBundle`), this method provides a
+    /// more accurate lifetime, which is helpful when returning the
+    /// reference from a function.  [See the module's documentation]
+    /// for more details.
+    ///
+    /// [See the module's documentation]: index.html
     pub fn userid(&self) -> &'a crate::packet::UserID {
         self.component()
     }
 }
 
+/// A `ComponentAmalgamation` specialized for `UserAttributes`s.
+pub type UserAttributeAmalgamation<'a> = ComponentAmalgamation<'a, crate::packet::UserAttribute>;
+
 impl<'a> ComponentAmalgamation<'a, crate::packet::UserAttribute> {
     /// Returns a reference to the User Attribute.
+    ///
+    /// Note: although `ComponentAmalgamation<UserAttribute>` derefs
+    /// to a `&UserAttribute` (via `&ComponentBundle`), this method
+    /// provides a more accurate lifetime, which is helpful when
+    /// returning the reference from a function.  [See the module's
+    /// documentation] for more details.
+    ///
+    /// [See the module's documentation]: index.html
     pub fn user_attribute(&self) -> &'a crate::packet::UserAttribute {
         self.component()
     }
 }
 
-/// A certificate's component and its associated data.
+/// A `ComponentAmalgamation` plus a `Policy` and a reference time.
+///
+/// A `ValidComponentAmalgamation` combines a
+/// [`ComponentAmalgamation`] with a [`Policy`] and a reference time.
+/// This makes it easy to call methods that require this information,
+/// and it helps ensure that the same policy and reference time are
+/// used for multipart operations.
+///
+/// A `ComponentAmalgamation` is normally turned into a
+/// `ValidComponentAmalgamation` using
+/// [`ComponentAmalgamation::with_policy`]
+///
+/// # Example
+///
+/// ```
+/// # extern crate sequoia_openpgp as openpgp;
+/// use openpgp::cert::prelude::*;
+/// use openpgp::packet::prelude::*;
+/// use openpgp::policy::StandardPolicy;
+/// use openpgp::types::RevocationStatus;
+///
+/// # fn main() -> openpgp::Result<()> {
+/// let p = &StandardPolicy::new();
+/// # let (cert, _) = CertBuilder::new()
+/// #     .add_userid("Alice")
+/// #     .add_signing_subkey()
+/// #     .add_transport_encryption_subkey()
+/// #     .generate().unwrap();
+/// for u in cert.userids() {
+///     // Create a `ValidComponentAmalgamation`.  This may fail if
+///     // there are no binding signatures that are accepted by the
+///     // policy and live right now.
+///     let u = u.with_policy(p, None)?;
+///
+///     // Before using the User ID, we still need to check that it is
+///     // alive and not revoked; `ComponentAmalgamation::with_policy`
+///     // ensures that there is a valid *binding signature*, not that
+///     // the `Component` is valid.
+///     //
+///     // Note: `ValidComponentAmalgamation::revoked` and
+///     // `Preferences::preferred_symmetric_algorithms` uses th
+///     // embeded policy and timestamp.  Even though we used `None` for
+///     // the timestamp, which means the current time, they are
+///     // guaranteed to use the same timestamp, because `with_policy`
+///     // eagerly transforms it into the current time.
+///     //
+///     // Note: we only check whether the User ID is not revoked.  If
+///     // we were using a key, we'd also want to check that it is alive.
+///     // (Keys can expire, but User IDs do not.)
+///     if let RevocationStatus::Revoked(_revs) = u.revoked() {
+///         // Revoked by the key owner.  (If we care about
+///         // designated revokers, then we need to check those
+///         // ourselves.)
+///     } else {
+///         eprintln!("{}: preferred symmetric algorithms: {:?}",
+///                   String::from_utf8_lossy(u.value()),
+///                   u.preferred_symmetric_algorithms());
+///     }
+/// }
+/// # Ok(()) }
+/// ```
+///
+/// [`ComponentAmalgamation`]: struct.ComponentAmalgamation.html
+/// [`Policy`]: ../../policy/index.html
+/// [`ComponentAmalgamation::with_policy`]: trait.ValidateAmalgamation.html#tymethod.with_policy
 #[derive(Debug)]
 pub struct ValidComponentAmalgamation<'a, C> {
     ca: ComponentAmalgamation<'a, C>,
@@ -538,6 +937,7 @@ pub struct ValidComponentAmalgamation<'a, C> {
     binding_signature: &'a Signature,
 }
 
+<<<<<<< Updated upstream
 /// A User ID and its associated data.
 ///
 /// This is just a specialized version of `ValidComponentAmalgamation`.
@@ -554,6 +954,15 @@ pub type ValidUserAttributeAmalgamation<'a>
 /// This is just a specialized version of `ValidComponentAmalgamation`.
 pub type ValidUnknownComponentAmalgamation<'a>
     = ValidComponentAmalgamation<'a, Unknown>;
+=======
+/// A `ValidComponentAmalgamation` specialized for `UserID`s.
+pub type ValidUserIDAmalgamation<'a>
+    = ValidComponentAmalgamation<'a, crate::packet::UserID>;
+
+/// A `ValidComponentAmalgamation` specialized for `UserAttributes`s.
+pub type ValidUserAttributeAmalgamation<'a>
+    = ValidComponentAmalgamation<'a, crate::packet::UserAttribute>;
+>>>>>>> Stashed changes
 
 // derive(Clone) doesn't work with generic parameters that don't
 // implement clone.  But, we don't need to require that C implements
@@ -722,35 +1131,22 @@ impl<'a, C> ValidAmalgamation<'a, C> for ValidComponentAmalgamation<'a, C> {
         &self.cert
     }
 
-    /// Returns the amalgamation's reference time.
-    ///
-    /// For queries that are with respect to a point in time, this
-    /// determines that point in time.  For instance, if a component is
-    /// created at `t_c` and expires at `t_e`, then
-    /// `ValidComponentAmalgamation::alive` will return true if the reference
-    /// time is greater than or equal to `t_c` and less than `t_e`.
     fn time(&self) -> SystemTime {
         assert!(std::ptr::eq(self.ca.cert(), self.cert.cert()));
         self.cert.time
     }
 
-    /// Returns the amalgamation's policy.
     fn policy(&self) -> &'a dyn Policy
     {
         assert!(std::ptr::eq(self.ca.cert(), self.cert.cert()));
         self.cert.policy
     }
 
-    /// Returns the component's binding signature as of the reference time.
     fn binding_signature(&self) -> &'a Signature {
         assert!(std::ptr::eq(self.ca.cert(), self.cert.cert()));
         self.binding_signature
     }
 
-    /// Returns the component's revocation status as of the amalgamation's
-    /// reference time.
-    ///
-    /// Note: this does not return whether the certificate is valid.
     fn revoked(&self) -> RevocationStatus<'a> {
         self.bundle._revoked(self.policy(), self.cert.time,
                               false, Some(self.binding_signature))
