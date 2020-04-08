@@ -3,8 +3,8 @@ use std::fmt;
 use std::time::SystemTime;
 
 use crate::{
-    types::RevocationStatus,
     cert::prelude::*,
+    cert::amalgamation::ValidateAmalgamation,
     packet::{
         Unknown,
         UserAttribute,
@@ -143,7 +143,8 @@ impl<'a, C> fmt::Debug for ValidComponentAmalgamationIter<'a, C> {
 }
 
 impl<'a, C> Iterator for ValidComponentAmalgamationIter<'a, C>
-    where C: std::fmt::Debug
+    where C: std::fmt::Debug,
+        ComponentAmalgamation<'a, C, ()>: ValidateAmalgamation<'a, C, V=ValidComponentAmalgamation<'a, C, ()>>
 {
     type Item = ValidComponentAmalgamation<'a, C, ()>;
 
@@ -164,19 +165,20 @@ impl<'a, C> Iterator for ValidComponentAmalgamationIter<'a, C>
             };
 
             if let Some(want_revoked) = self.revoked {
-                if let RevocationStatus::Revoked(_) = vca.revoked() {
-                    // The component is definitely revoked.
-                    if ! want_revoked {
-                        t!("Component revoked... skipping.");
-                        continue;
-                    }
-                } else {
-                    // The component is probably not revoked.
-                    if want_revoked {
-                        t!("Component not revoked... skipping.");
-                        continue;
-                    }
-                }
+                unreachable!();
+                // if let RevocationStatus::Revoked(_) = vca.revoked() {
+                //     // The component is definitely revoked.
+                //     if ! want_revoked {
+                //         t!("Component revoked... skipping.");
+                //         continue;
+                //     }
+                // } else {
+                //     // The component is probably not revoked.
+                //     if want_revoked {
+                //         t!("Component not revoked... skipping.");
+                //         continue;
+                //     }
+                // }
             }
 
             return Some(vca);

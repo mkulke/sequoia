@@ -34,7 +34,6 @@
 //! increases type safety for users of this API.
 use std::time;
 use std::time::SystemTime;
-use std::ops::Deref;
 use std::borrow::Borrow;
 use std::convert::TryFrom;
 use std::convert::TryInto;
@@ -42,13 +41,13 @@ use std::convert::TryInto;
 use anyhow::Context;
 
 use crate::{
-    Cert,
-    cert::bundle::KeyBundle,
     cert::amalgamation::{
         ComponentAmalgamation,
-        ValidAmalgamation,
+        ValidComponentAmalgamation,
         ValidateAmalgamation,
     },
+    cert::bundle::KeyBundle,
+    cert::Cert,
     cert::ValidCert,
     crypto::{hash::Hash, Signer},
     Error,
@@ -69,13 +68,13 @@ use crate::{
 /// Methods specific to key amalgamations.
 // This trait exists primarily so that `ValidAmalgamation` can depend
 // on it, and use it in its default implementations.
-pub trait PrimaryKey<'a, P, R>
-    where P: 'a + key::KeyParts,
-          R: 'a + key::KeyRole,
+pub trait PrimaryKey<P, R>
+    where P: key::KeyParts,
+          R: key::KeyRole,
 {
     /// Returns whether the key amalgamation is a primary key
     /// amalgamation.
-    fn primary(&self) -> bool;
+    fn primary_key(&self) -> bool;
 }
 
 /// A key amalgamation.
@@ -86,33 +85,7 @@ pub trait PrimaryKey<'a, P, R>
 ///
 /// See the module-level documentation for information about key
 /// amalgamations.
-#[derive(Debug)]
-pub struct KeyAmalgamation<'a, P, R, R2>
-    where P: 'a + key::KeyParts,
-          R: 'a + key::KeyRole,
-{
-    ca: ComponentAmalgamation<'a, Key<P, R>, ()>,
-    primary: R2,
-}
-
-// derive(Clone) doesn't work with generic parameters that don't
-// implement clone.  But, we don't need to require that C implements
-// Clone, because we're not cloning C, just the reference.
-//
-// See: https://github.com/rust-lang/rust/issues/26925
-impl<'a, P, R, R2> Clone for KeyAmalgamation<'a, P, R, R2>
-    where P: 'a + key::KeyParts,
-          R: 'a + key::KeyRole,
-          R2: Copy,
-{
-    fn clone(&self) -> Self {
-        Self {
-            ca: self.ca.clone(),
-            primary: self.primary,
-        }
-    }
-}
-
+pub type KeyAmalgamation<'a, P, R, R2> = ComponentAmalgamation<'a, Key<P, R>, R2>;
 
 /// A primary key amalgamation.
 pub type PrimaryKeyAmalgamation<'a, P>
@@ -130,18 +103,6 @@ pub type SubordinateKeyAmalgamation<'a, P>
 /// `KeyAmalgamation`.
 pub type ErasedKeyAmalgamation<'a, P>
     = KeyAmalgamation<'a, P, key::UnspecifiedRole, bool>;
-
-
-impl<'a, P, R, R2> Deref for KeyAmalgamation<'a, P, R, R2>
-    where P: 'a + key::KeyParts,
-          R: 'a + key::KeyRole,
-{
-    type Target = ComponentAmalgamation<'a, Key<P, R>, ()>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.ca
-    }
-}
 
 
 impl<'a, P> ValidateAmalgamation<'a, Key<P, key::PrimaryRole>>
@@ -191,19 +152,16 @@ impl<'a, P> ValidateAmalgamation<'a, Key<P, key::UnspecifiedRole>>
         // We need to make sure the certificate is okay.  This means
         // checking the primary key.  But, be careful: we don't need
         // to double check.
-        if ! self.primary() {
-            let pka = PrimaryKeyAmalgamation::new(self.cert());
+        if ! self.primary_key() {
+            let pka = ComponentAmalgamation::new_primary_key(self.cert());
             pka.with_policy(policy, time).context("primary key")?;
         }
 
         let binding_signature = self.binding_signature(policy, time)?;
-        let cert = self.ca.cert();
+        let cert = self.cert();
         let vka = ValidErasedKeyAmalgamation {
-            ka: KeyAmalgamation {
-                ca: key::PublicParts::convert_key_amalgamation(
-                    self.ca.parts_into_unspecified()).expect("to public"),
-                primary: self.primary,
-            },
+            ca: key::PublicParts::convert_key_amalgamation(
+                self.parts_into_unspecified()).expect("to public"),
             // We need some black magic to avoid infinite
             // recursion: a ValidCert must be valid for the
             // specified policy and reference time.  A ValidCert
@@ -227,41 +185,38 @@ impl<'a, P> ValidateAmalgamation<'a, Key<P, key::UnspecifiedRole>>
         };
         policy.key(&vka)?;
         Ok(ValidErasedKeyAmalgamation {
-            ka: KeyAmalgamation {
-                ca: P::convert_key_amalgamation(
-                    vka.ka.ca.parts_into_unspecified()).expect("roundtrip"),
-                primary: vka.ka.primary,
-            },
+            ca: P::convert_key_amalgamation(
+                vka.ca.parts_into_unspecified()).expect("roundtrip"),
             cert: vka.cert,
             binding_signature,
         })
     }
 }
 
-impl<'a, P> PrimaryKey<'a, P, key::PrimaryRole>
+impl<'a, P> PrimaryKey<P, key::PrimaryRole>
     for PrimaryKeyAmalgamation<'a, P>
     where P: 'a + key::KeyParts
 {
-    fn primary(&self) -> bool {
+    fn primary_key(&self) -> bool {
         true
     }
 }
 
-impl<'a, P> PrimaryKey<'a, P, key::SubordinateRole>
+impl<'a, P> PrimaryKey<P, key::SubordinateRole>
     for SubordinateKeyAmalgamation<'a, P>
     where P: 'a + key::KeyParts
 {
-    fn primary(&self) -> bool {
+    fn primary_key(&self) -> bool {
         false
     }
 }
 
-impl<'a, P> PrimaryKey<'a, P, key::UnspecifiedRole>
+impl<'a, P> PrimaryKey<P, key::UnspecifiedRole>
     for ErasedKeyAmalgamation<'a, P>
     where P: 'a + key::KeyParts
 {
-    fn primary(&self) -> bool {
-        self.primary
+    fn primary_key(&self) -> bool {
+        self.extra
     }
 }
 
@@ -271,8 +226,9 @@ impl<'a, P: 'a + key::KeyParts> From<PrimaryKeyAmalgamation<'a, P>>
 {
     fn from(ka: PrimaryKeyAmalgamation<'a, P>) -> Self {
         ErasedKeyAmalgamation {
-            ca: ka.ca.mark_role_unspecified(),
-            primary: true,
+            cert: ka.cert,
+            bundle: ka.bundle.mark_role_unspecified_ref(),
+            extra: true,
         }
     }
 }
@@ -282,8 +238,9 @@ impl<'a, P: 'a + key::KeyParts> From<SubordinateKeyAmalgamation<'a, P>>
 {
     fn from(ka: SubordinateKeyAmalgamation<'a, P>) -> Self {
         ErasedKeyAmalgamation {
-            ca: ka.ca.mark_role_unspecified(),
-            primary: false,
+            cert: ka.cert,
+            bundle: ka.bundle.mark_role_unspecified_ref(),
+            extra: false,
         }
     }
 }
@@ -298,8 +255,9 @@ macro_rules! impl_conversion {
         {
             fn from(ka: $s<'a, $p1>) -> Self {
                 ErasedKeyAmalgamation {
-                    ca: ka.ca.into(),
-                    primary: $primary,
+                    cert: ka.cert,
+                    bundle: ka.bundle.into(),
+                    extra: $primary,
                 }
             }
         }
@@ -333,11 +291,12 @@ impl<'a, P, P2> TryFrom<ErasedKeyAmalgamation<'a, P>>
     type Error = anyhow::Error;
 
     fn try_from(ka: ErasedKeyAmalgamation<'a, P>) -> Result<Self> {
-        if ka.primary {
+        if ka.primary_key() {
             Ok(Self {
-                ca: P2::convert_key_amalgamation(
-                    ka.ca.mark_role_primary().parts_into_unspecified())?,
-                primary: (),
+                cert: ka.cert,
+                bundle: P2::convert_bundle_ref(
+                    ka.bundle.mark_role_primary().parts_as_unspecified())?,
+                extra: (),
             })
         } else {
             Err(Error::InvalidArgument(
@@ -355,38 +314,33 @@ impl<'a, P, P2> TryFrom<ErasedKeyAmalgamation<'a, P>>
     type Error = anyhow::Error;
 
     fn try_from(ka: ErasedKeyAmalgamation<'a, P>) -> Result<Self> {
-        if ka.primary {
+        if ka.primary_key() {
             Err(Error::InvalidArgument(
                 "can't convert a PrimaryKeyAmalgamation \
                  to a SubordinateKeyAmalgamation".into()).into())
         } else {
             Ok(Self {
-                ca: P2::convert_key_amalgamation(
-                    ka.ca.mark_role_subordinate().parts_into_unspecified())?,
-                primary: (),
+                cert: ka.cert,
+                bundle: P2::convert_bundle_ref(
+                    ka.bundle.mark_role_subordinate().parts_as_unspecified())?,
+                extra: (),
             })
         }
     }
 }
 
 impl<'a> PrimaryKeyAmalgamation<'a, key::PublicParts> {
-    pub(crate) fn new(cert: &'a Cert) -> Self {
-        PrimaryKeyAmalgamation {
-            ca: ComponentAmalgamation::new(cert, &cert.primary, ()),
-            primary: (),
-        }
+    pub(crate) fn new_primary_key(cert: &'a Cert) -> Self {
+        ComponentAmalgamation::new(cert, &cert.primary, ())
     }
 }
 
 impl<'a, P: 'a + key::KeyParts> SubordinateKeyAmalgamation<'a, P> {
-    pub(crate) fn new(
+    pub(crate) fn new_subkey(
         cert: &'a Cert, bundle: &'a KeyBundle<P, key::SubordinateRole>)
         -> Self
     {
-        SubordinateKeyAmalgamation {
-            ca: ComponentAmalgamation::new(cert, bundle, ()),
-            primary: (),
-        }
+        ComponentAmalgamation::new(cert, bundle, ())
     }
 }
 
@@ -402,7 +356,7 @@ impl<'a, P: 'a + key::KeyParts> ErasedKeyAmalgamation<'a, P> {
         where T: Into<Option<time::SystemTime>>
     {
         let time = time.into().unwrap_or_else(SystemTime::now);
-        if self.primary {
+        if self.primary_key() {
             self.cert().primary_userid_relaxed(policy, time, false)
                 .map(|u| u.binding_signature())
                 .or_else(|e0| {
@@ -434,12 +388,6 @@ impl<'a, P, R, R2> KeyAmalgamation<'a, P, R, R2>
           R: 'a + key::KeyRole,
 
 {
-    /// Returns the `KeyAmalgamation`'s `ComponentAmalgamation`.
-    pub fn component_amalgamation(&self)
-        -> &ComponentAmalgamation<'a, Key<P, R>, ()> {
-        &self.ca
-    }
-
     /// Returns the `KeyAmalgamation`'s key.
     ///
     /// Normally, a type implementing `KeyAmalgamation` eventually
@@ -447,7 +395,7 @@ impl<'a, P, R, R2> KeyAmalgamation<'a, P, R, R2>
     /// accurate lifetime.  See the documentation for
     /// `ComponentAmalgamation::component` for an explanation.
     pub fn key(&self) -> &'a Key<P, R> {
-        self.ca.component()
+        self.component()
     }
 }
 
@@ -455,24 +403,7 @@ impl<'a, P, R, R2> KeyAmalgamation<'a, P, R, R2>
 ///
 /// A `ValidKeyAmalgamation` includes a policy and a reference time,
 /// and is guaranteed to have a live binding signature at that time.
-#[derive(Debug, Clone)]
-pub struct ValidKeyAmalgamation<'a, P, R, R2>
-    where P: 'a + key::KeyParts,
-          R: 'a + key::KeyRole,
-          R2: Copy,
-{
-    // Ouch, ouch, ouch!  ka is a `KeyAmalgamation`, which contains a
-    // reference to a `Cert`.  `cert` is a `ValidCert` and contains a
-    // reference to the same `Cert`!  We do this so that
-    // `ValidKeyAmalgamation` can deref to a `KeyAmalgamation` and
-    // `ValidKeyAmalgamation::cert` can return a `&ValidCert`.
-
-    ka: KeyAmalgamation<'a, P, R, R2>,
-    cert: ValidCert<'a>,
-
-    // The binding signature at time `time`.  (This is just a cache.)
-    binding_signature: &'a Signature,
-}
+pub type ValidKeyAmalgamation<'a, P, R, R2> = ValidComponentAmalgamation<'a, Key<P, R>, R2>;
 
 /// A valid primary key amalgamation.
 pub type ValidPrimaryKeyAmalgamation<'a, P>
@@ -487,38 +418,13 @@ pub type ValidErasedKeyAmalgamation<'a, P>
     = ValidKeyAmalgamation<'a, P, key::UnspecifiedRole, bool>;
 
 
-impl<'a, P, R, R2> Deref for ValidKeyAmalgamation<'a, P, R, R2>
-    where P: 'a + key::KeyParts,
-          R: 'a + key::KeyRole,
-          R2: Copy,
-{
-    type Target = KeyAmalgamation<'a, P, R, R2>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.ka
-    }
-}
-
-
-impl<'a, P, R, R2> From<ValidKeyAmalgamation<'a, P, R, R2>>
-    for KeyAmalgamation<'a, P, R, R2>
-    where P: 'a + key::KeyParts,
-          R: 'a + key::KeyRole,
-          R2: Copy,
-{
-    fn from(vka: ValidKeyAmalgamation<'a, P, R, R2>) -> Self {
-        assert!(std::ptr::eq(vka.ka.cert(), vka.cert.cert()));
-        vka.ka
-    }
-}
-
 impl<'a, P: 'a + key::KeyParts> From<ValidPrimaryKeyAmalgamation<'a, P>>
     for ValidErasedKeyAmalgamation<'a, P>
 {
     fn from(vka: ValidPrimaryKeyAmalgamation<'a, P>) -> Self {
-        assert!(std::ptr::eq(vka.ka.cert(), vka.cert.cert()));
+        assert!(std::ptr::eq(vka.ca.cert(), vka.cert.cert()));
         ValidErasedKeyAmalgamation {
-            ka: vka.ka.into(),
+            ca: vka.ca.into(),
             cert: vka.cert,
             binding_signature: vka.binding_signature,
         }
@@ -529,9 +435,9 @@ impl<'a, P: 'a + key::KeyParts> From<ValidSubordinateKeyAmalgamation<'a, P>>
     for ValidErasedKeyAmalgamation<'a, P>
 {
     fn from(vka: ValidSubordinateKeyAmalgamation<'a, P>) -> Self {
-        assert!(std::ptr::eq(vka.ka.cert(), vka.cert.cert()));
+        assert!(std::ptr::eq(vka.ca.cert(), vka.cert.cert()));
         ValidErasedKeyAmalgamation {
-            ka: vka.ka.into(),
+            ca: vka.ca.into(),
             cert: vka.cert,
             binding_signature: vka.binding_signature,
         }
@@ -546,9 +452,9 @@ macro_rules! impl_conversion {
             for ValidErasedKeyAmalgamation<'a, $p2>
         {
             fn from(vka: $s<'a, $p1>) -> Self {
-                assert!(std::ptr::eq(vka.ka.cert(), vka.cert.cert()));
+                assert!(std::ptr::eq(vka.ca.cert(), vka.cert.cert()));
                 ValidErasedKeyAmalgamation {
-                    ka: vka.ka.into(),
+                    ca: vka.ca.into(),
                     cert: vka.cert,
                     binding_signature: vka.binding_signature,
                 }
@@ -556,6 +462,34 @@ macro_rules! impl_conversion {
         }
     }
 }
+
+impl<'a, P> PrimaryKey<P, key::PrimaryRole>
+    for ValidPrimaryKeyAmalgamation<'a, P>
+    where P: 'a + key::KeyParts
+{
+    fn primary_key(&self) -> bool {
+        true
+    }
+}
+
+impl<'a, P> PrimaryKey<P, key::SubordinateRole>
+    for ValidSubordinateKeyAmalgamation<'a, P>
+    where P: 'a + key::KeyParts
+{
+    fn primary_key(&self) -> bool {
+        false
+    }
+}
+
+impl<'a, P> PrimaryKey<P, key::UnspecifiedRole>
+    for ValidErasedKeyAmalgamation<'a, P>
+    where P: 'a + key::KeyParts
+{
+    fn primary_key(&self) -> bool {
+        self.extra
+    }
+}
+
 
 impl_conversion!(ValidPrimaryKeyAmalgamation,
                  key::SecretParts, key::PublicParts);
@@ -584,9 +518,9 @@ impl<'a, P, P2> TryFrom<ValidErasedKeyAmalgamation<'a, P>>
     type Error = anyhow::Error;
 
     fn try_from(vka: ValidErasedKeyAmalgamation<'a, P>) -> Result<Self> {
-        assert!(std::ptr::eq(vka.ka.cert(), vka.cert.cert()));
+        assert!(std::ptr::eq(vka.ca.cert(), vka.cert.cert()));
         Ok(ValidPrimaryKeyAmalgamation {
-            ka: vka.ka.try_into()?,
+            ca: vka.ca.try_into()?,
             cert: vka.cert,
             binding_signature: vka.binding_signature,
         })
@@ -602,133 +536,10 @@ impl<'a, P, P2> TryFrom<ValidErasedKeyAmalgamation<'a, P>>
 
     fn try_from(vka: ValidErasedKeyAmalgamation<'a, P>) -> Result<Self> {
         Ok(ValidSubordinateKeyAmalgamation {
-            ka: vka.ka.try_into()?,
+            ca: vka.ca.try_into()?,
             cert: vka.cert,
             binding_signature: vka.binding_signature,
         })
-    }
-}
-
-
-impl<'a, P> ValidateAmalgamation<'a, Key<P, key::PrimaryRole>>
-    for ValidPrimaryKeyAmalgamation<'a, P>
-    where P: 'a + key::KeyParts
-{
-    type V = Self;
-
-    fn with_policy<T>(self, policy: &'a dyn Policy, time: T) -> Result<Self::V>
-        where T: Into<Option<time::SystemTime>>,
-              Self: Sized
-    {
-        assert!(std::ptr::eq(self.ka.cert(), self.cert.cert()));
-        self.ka.with_policy(policy, time)
-            .map(|vka| {
-                assert!(std::ptr::eq(vka.ka.cert(), vka.cert.cert()));
-                vka
-            })
-    }
-}
-
-impl<'a, P> ValidateAmalgamation<'a, Key<P, key::SubordinateRole>>
-    for ValidSubordinateKeyAmalgamation<'a, P>
-    where P: 'a + key::KeyParts
-{
-    type V = Self;
-
-    fn with_policy<T>(self, policy: &'a dyn Policy, time: T) -> Result<Self::V>
-        where T: Into<Option<time::SystemTime>>,
-              Self: Sized
-    {
-        assert!(std::ptr::eq(self.ka.cert(), self.cert.cert()));
-        self.ka.with_policy(policy, time)
-            .map(|vka| {
-                assert!(std::ptr::eq(vka.ka.cert(), vka.cert.cert()));
-                vka
-            })
-    }
-}
-
-
-impl<'a, P> ValidateAmalgamation<'a, Key<P, key::UnspecifiedRole>>
-    for ValidErasedKeyAmalgamation<'a, P>
-    where P: 'a + key::KeyParts
-{
-    type V = Self;
-
-    fn with_policy<T>(self, policy: &'a dyn Policy, time: T) -> Result<Self::V>
-        where T: Into<Option<time::SystemTime>>,
-              Self: Sized
-    {
-        assert!(std::ptr::eq(self.ka.cert(), self.cert.cert()));
-        self.ka.with_policy(policy, time)
-            .map(|vka| {
-                assert!(std::ptr::eq(vka.ka.cert(), vka.cert.cert()));
-                vka
-            })
-    }
-}
-
-
-impl<'a, P, R, R2> ValidAmalgamation<'a, Key<P, R>>
-    for ValidKeyAmalgamation<'a, P, R, R2>
-    where P: 'a + key::KeyParts,
-          R: 'a + key::KeyRole,
-          R2: Copy,
-          Self: PrimaryKey<'a, P, R>,
-{
-    fn cert(&self) -> &ValidCert<'a> {
-        assert!(std::ptr::eq(self.ka.cert(), self.cert.cert()));
-        &self.cert
-    }
-
-    fn time(&self) -> SystemTime {
-        self.cert.time()
-    }
-
-    fn policy(&self) -> &'a dyn Policy {
-        assert!(std::ptr::eq(self.ka.cert(), self.cert.cert()));
-        self.cert.policy()
-    }
-
-    fn binding_signature(&self) -> &'a Signature {
-        self.binding_signature
-    }
-
-    fn revoked(&self) -> RevocationStatus<'a> {
-        if self.primary() {
-            self.cert.revoked()
-        } else {
-            self.bundle()._revoked(self.policy(), self.time(),
-                                   true, Some(self.binding_signature))
-        }
-    }
-}
-
-
-impl<'a, P> PrimaryKey<'a, P, key::PrimaryRole>
-    for ValidPrimaryKeyAmalgamation<'a, P>
-    where P: 'a + key::KeyParts
-{
-    fn primary(&self) -> bool {
-        true
-    }
-}
-
-impl<'a, P> PrimaryKey<'a, P, key::SubordinateRole>
-    for ValidSubordinateKeyAmalgamation<'a, P>
-    where P: 'a + key::KeyParts
-{
-    fn primary(&self) -> bool {
-        false
-    }
-}
-
-impl<'a, P> PrimaryKey<'a, P, key::UnspecifiedRole>
-    for ValidErasedKeyAmalgamation<'a, P>
-    where P: 'a + key::KeyParts
-{
-    fn primary(&self) -> bool {
-        self.ka.primary
     }
 }
 
@@ -737,7 +548,7 @@ impl<'a, P, R, R2> ValidKeyAmalgamation<'a, P, R, R2>
     where P: 'a + key::KeyParts,
           R: 'a + key::KeyRole,
           R2: Copy,
-          Self: ValidAmalgamation<'a, Key<P, R>>
+          Self: PrimaryKey<P, R>,
 {
     /// Returns whether the key (not just the binding signature!) is
     /// alive as of the amalgamtion's reference time.
@@ -767,84 +578,6 @@ impl<'a, P, R, R2> ValidKeyAmalgamation<'a, P, R, R2>
             // signature.  This key does not expire.
             Ok(())
         }
-    }
-
-    /// Returns the wrapped `KeyAmalgamation`.
-    pub fn into_key_amalgamation(self) -> KeyAmalgamation<'a, P, R, R2> {
-        self.ka
-    }
-
-}
-
-impl<'a, P, R, R2> ValidKeyAmalgamation<'a, P, R, R2>
-    where P: 'a + key::KeyParts,
-          R: 'a + key::KeyRole,
-          R2: Copy,
-          Self: PrimaryKey<'a, P, R>,
-{
-    /// Sets the key to expire in delta seconds.
-    ///
-    /// Note: the time is relative to the key's creation time, not the
-    /// current time!
-    ///
-    /// This function exists to facilitate testing, which is why it is
-    /// not exported.
-    pub(crate) fn set_validity_period_as_of(&self,
-                                            primary_signer: &mut dyn Signer,
-                                            expiration: Option<time::Duration>,
-                                            now: time::SystemTime)
-        -> Result<Vec<Packet>>
-    {
-        let mut sigs = Vec::new();
-        let binding = self.binding_signature();
-        for template in [
-            // The primary key's binding signature might be the direct
-            // key signature.  To avoid generating two new direct key
-            // signatures, check that we do in fact have a userid
-            // binding signature.
-            if binding.typ() != SignatureType::DirectKey {
-                // Userid binding signature.
-                Some(binding)
-            } else {
-                None
-            },
-            // Also update the direct key signature if we're updating
-            // the primary key's expiration time.
-            if self.primary() {
-                self.direct_key_signature().ok()
-            } else {
-                None
-            },
-        ].iter().filter_map(|&x| x) {
-            // Recompute the signature.
-            let hash_algo = HashAlgorithm::SHA512;
-            let mut hash = hash_algo.context()?;
-
-            self.cert().primary.key().hash(&mut hash);
-            match template.typ() {
-                SignatureType::DirectKey =>
-                    (), // Nothing to hash.
-                SignatureType::GenericCertification
-                    | SignatureType::PersonaCertification
-                    | SignatureType::CasualCertification
-                    | SignatureType::PositiveCertification =>
-                    self.cert.primary_userid()
-                    .expect("this type must be from a userid binding, \
-                             hence there must be a userid valid at `now`")
-                    .userid().hash(&mut hash),
-                SignatureType::SubkeyBinding =>
-                    self.key().hash(&mut hash),
-                _ => unreachable!(),
-            }
-
-            // Generate the signature.
-            sigs.push(signature::Builder::from(template.clone())
-                      .set_key_validity_period(expiration)?
-                      .set_signature_creation_time(now)?
-                      .sign_hash(primary_signer, hash)?.into());
-        }
-
-        Ok(sigs)
     }
 
     /// Sets the key to expire at the given time.
@@ -978,9 +711,94 @@ impl<'a, P, R, R2> ValidKeyAmalgamation<'a, P, R, R2>
         }
     }
 
+    /// Returns the component's revocation status as of the amalgamation's
+    /// reference time.
+    ///
+    /// Note: this does not return whether the certificate is valid.
+    pub fn revoked(&self) -> RevocationStatus<'a> {
+        if self.primary_key() {
+            self.cert.revoked()
+        } else {
+            self.bundle()._revoked(self.policy(), self.time(),
+                                   true, Some(self.binding_signature))
+        }
+    }
+
     // NOTE: If you add a method to ValidKeyAmalgamation that takes
     // ownership of self, then don't forget to write a forwarder for
     // it for ValidPrimaryKeyAmalgamation.
+}
+
+impl<'a, P, R, R2> ValidKeyAmalgamation<'a, P, R, R2>
+    where P: 'a + key::KeyParts,
+          R: 'a + key::KeyRole,
+          R2: Copy,
+          Self: PrimaryKey<P, R>,
+{
+    /// Sets the key to expire in delta seconds.
+    ///
+    /// Note: the time is relative to the key's creation time, not the
+    /// current time!
+    ///
+    /// This function exists to facilitate testing, which is why it is
+    /// not exported.
+    pub(crate) fn set_validity_period_as_of(&self,
+                                            primary_signer: &mut dyn Signer,
+                                            expiration: Option<time::Duration>,
+                                            now: time::SystemTime)
+        -> Result<Vec<Packet>>
+    {
+        let mut sigs = Vec::new();
+        let binding = self.binding_signature();
+        for template in [
+            // The primary key's binding signature might be the direct
+            // key signature.  To avoid generating two new direct key
+            // signatures, check that we do in fact have a userid
+            // binding signature.
+            if binding.typ() != SignatureType::DirectKey {
+                // Userid binding signature.
+                Some(binding)
+            } else {
+                None
+            },
+            // Also update the direct key signature if we're updating
+            // the primary key's expiration time.
+            if self.primary_key() {
+                self.direct_key_signature().ok()
+            } else {
+                None
+            },
+        ].iter().filter_map(|&x| x) {
+            // Recompute the signature.
+            let hash_algo = HashAlgorithm::SHA512;
+            let mut hash = hash_algo.context()?;
+
+            self.cert().primary.key().hash(&mut hash);
+            match template.typ() {
+                SignatureType::DirectKey =>
+                    (), // Nothing to hash.
+                SignatureType::GenericCertification
+                    | SignatureType::PersonaCertification
+                    | SignatureType::CasualCertification
+                    | SignatureType::PositiveCertification =>
+                    self.cert.primary_userid()
+                    .expect("this type must be from a userid binding, \
+                             hence there must be a userid valid at `now`")
+                    .userid().hash(&mut hash),
+                SignatureType::SubkeyBinding =>
+                    self.key().hash(&mut hash),
+                _ => unreachable!(),
+            }
+
+            // Generate the signature.
+            sigs.push(signature::Builder::from(template.clone())
+                      .set_key_validity_period(expiration)?
+                      .set_signature_creation_time(now)?
+                      .sign_hash(primary_signer, hash)?.into());
+        }
+
+        Ok(sigs)
+    }
 }
 
 

@@ -461,7 +461,7 @@ impl Cert {
     /// Returns the amalgamated primary key.
     pub fn primary_key(&self) -> PrimaryKeyAmalgamation<key::PublicParts>
     {
-        PrimaryKeyAmalgamation::new(&self)
+        PrimaryKeyAmalgamation::new(&self, self.primary_key().bundle(), ())
     }
 
     /// Returns the Certificate's direct key signature as of the

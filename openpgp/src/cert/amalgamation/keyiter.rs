@@ -121,9 +121,9 @@ impl<'a, P, R> KeyAmalgamationIter<'a, P, R>
             let ka : ErasedKeyAmalgamation<key::PublicParts>
                 = if ! self.primary {
                     self.primary = true;
-                    PrimaryKeyAmalgamation::new(cert).into()
+                    ComponentAmalgamation::new_primary_key(cert).into()
                 } else {
-                    SubordinateKeyAmalgamation::new(
+                    ComponentAmalgamation::new_subkey(
                         cert, self.subkey_iter.next()?).into()
                 };
 
@@ -534,10 +534,10 @@ impl_iterator!(key::UnspecifiedParts, key::SubordinateRole,
 
 impl_iterator!(key::PublicParts, key::UnspecifiedRole,
                ValidErasedKeyAmalgamation<'a, key::PublicParts>);
-impl_iterator!(key::SecretParts, key::UnspecifiedRole,
-               ValidErasedKeyAmalgamation<'a, key::SecretParts>);
-impl_iterator!(key::UnspecifiedParts, key::UnspecifiedRole,
-               ValidErasedKeyAmalgamation<'a, key::UnspecifiedParts>);
+// impl_iterator!(key::SecretParts, key::UnspecifiedRole,
+//                ValidErasedKeyAmalgamation<'a, key::SecretParts>);
+// impl_iterator!(key::UnspecifiedParts, key::UnspecifiedRole,
+//                ValidErasedKeyAmalgamation<'a, key::UnspecifiedParts>);
 
 impl<'a, P, R> ValidKeyAmalgamationIter<'a, P, R>
     where P: key::KeyParts,
@@ -566,7 +566,7 @@ impl<'a, P, R> ValidKeyAmalgamationIter<'a, P, R>
             let ka = if ! self.primary {
                 self.primary = true;
                 let ka : ErasedKeyAmalgamation<'a, key::PublicParts>
-                    = PrimaryKeyAmalgamation::new(cert).into();
+                    = ComponentAmalgamation::new_primary_key(cert).into();
                 match ka.with_policy(self.policy, self.time) {
                     Ok(ka) => ka,
                     Err(err) => {
@@ -577,7 +577,7 @@ impl<'a, P, R> ValidKeyAmalgamationIter<'a, P, R>
                 }
             } else {
                 let ka : ErasedKeyAmalgamation<'a, key::PublicParts>
-                    = SubordinateKeyAmalgamation::new(
+                    = ComponentAmalgamation::new_subkey(
                         cert.into(), self.subkey_iter.next()?).into();
                 match ka.with_policy(self.policy, self.time) {
                     Ok(ka) => ka,

@@ -101,16 +101,16 @@ pub trait KeyParts: fmt::Debug {
 
     /// Converts a key amalgamation with unspecified parts into this
     /// kind of key amalgamation.
-    fn convert_key_amalgamation<'a, R: KeyRole>(
-        ka: ComponentAmalgamation<'a, Key<UnspecifiedParts, R>, ()>)
-        -> Result<ComponentAmalgamation<'a, Key<Self, R>, ()>>
+    fn convert_key_amalgamation<'a, R: KeyRole, E>(
+        ka: ComponentAmalgamation<'a, Key<UnspecifiedParts, R>, E>)
+        -> Result<ComponentAmalgamation<'a, Key<Self, R>, E>>
         where Self: Sized;
 
     /// Converts a reference to a key amalgamation with unspecified
     /// parts into this kind of key amalgamation reference.
-    fn convert_key_amalgamation_ref<'a, R: KeyRole>(
-        ka: &'a ComponentAmalgamation<'a, Key<UnspecifiedParts, R>, ()>)
-        -> Result<&'a ComponentAmalgamation<'a, Key<Self, R>, ()>>
+    fn convert_key_amalgamation_ref<'a, R: KeyRole, E>(
+        ka: &'a ComponentAmalgamation<'a, Key<UnspecifiedParts, R>, E>)
+        -> Result<&'a ComponentAmalgamation<'a, Key<Self, R>, E>>
         where Self: Sized;
 }
 
@@ -170,17 +170,17 @@ impl KeyParts for PublicParts {
         Ok(bundle.into())
     }
 
-    fn convert_key_amalgamation<'a, R: KeyRole>(
-        ka: ComponentAmalgamation<'a, Key<UnspecifiedParts, R>, ()>)
-        -> Result<ComponentAmalgamation<'a, Key<Self, R>, ()>> {
+    fn convert_key_amalgamation<'a, R: KeyRole, E>(
+        ka: ComponentAmalgamation<'a, Key<UnspecifiedParts, R>, E>)
+        -> Result<ComponentAmalgamation<'a, Key<Self, R>, E>> {
         Ok(ka.into())
     }
 
     /// Converts a reference to a key amalgamation with unspecified
     /// parts into this kind of key amalgamation reference.
-    fn convert_key_amalgamation_ref<'a, R: KeyRole>(
-        ka: &'a ComponentAmalgamation<'a, Key<UnspecifiedParts, R>, ()>)
-        -> Result<&'a ComponentAmalgamation<'a, Key<Self, R>, ()>> {
+    fn convert_key_amalgamation_ref<'a, R: KeyRole, E>(
+        ka: &'a ComponentAmalgamation<'a, Key<UnspecifiedParts, R>, E>)
+        -> Result<&'a ComponentAmalgamation<'a, Key<Self, R>, E>> {
         Ok(ka.into())
     }
 }
@@ -214,17 +214,17 @@ impl KeyParts for SecretParts {
         bundle.try_into()
     }
 
-    fn convert_key_amalgamation<'a, R: KeyRole>(
-        ka: ComponentAmalgamation<'a, Key<UnspecifiedParts, R>, ()>)
-        -> Result<ComponentAmalgamation<'a, Key<Self, R>, ()>> {
+    fn convert_key_amalgamation<'a, R: KeyRole, E>(
+        ka: ComponentAmalgamation<'a, Key<UnspecifiedParts, R>, E>)
+        -> Result<ComponentAmalgamation<'a, Key<Self, R>, E>> {
         ka.try_into()
     }
 
     /// Converts a reference to a key amalgamation with unspecified
     /// parts into this kind of key amalgamation reference.
-    fn convert_key_amalgamation_ref<'a, R: KeyRole>(
-        ka: &'a ComponentAmalgamation<'a, Key<UnspecifiedParts, R>, ()>)
-        -> Result<&'a ComponentAmalgamation<'a, Key<Self, R>, ()>> {
+    fn convert_key_amalgamation_ref<'a, R: KeyRole, E>(
+        ka: &'a ComponentAmalgamation<'a, Key<UnspecifiedParts, R>, E>)
+        -> Result<&'a ComponentAmalgamation<'a, Key<Self, R>, E>> {
         ka.try_into()
     }
 }
@@ -261,17 +261,17 @@ impl KeyParts for UnspecifiedParts {
         Ok(bundle)
     }
 
-    fn convert_key_amalgamation<'a, R: KeyRole>(
-        ka: ComponentAmalgamation<'a, Key<UnspecifiedParts, R>, ()>)
-        -> Result<ComponentAmalgamation<'a, Key<UnspecifiedParts, R>, ()>> {
+    fn convert_key_amalgamation<'a, R: KeyRole, E>(
+        ka: ComponentAmalgamation<'a, Key<UnspecifiedParts, R>, E>)
+        -> Result<ComponentAmalgamation<'a, Key<UnspecifiedParts, R>, E>> {
         Ok(ka.into())
     }
 
     /// Converts a reference to a key amalgamation with unspecified
     /// parts into this kind of key amalgamation reference.
-    fn convert_key_amalgamation_ref<'a, R: KeyRole>(
-        ka: &'a ComponentAmalgamation<'a, Key<UnspecifiedParts, R>, ()>)
-        -> Result<&'a ComponentAmalgamation<'a, Key<Self, R>, ()>> {
+    fn convert_key_amalgamation_ref<'a, R: KeyRole, E>(
+        ka: &'a ComponentAmalgamation<'a, Key<UnspecifiedParts, R>, E>)
+        -> Result<&'a ComponentAmalgamation<'a, Key<Self, R>, E>> {
         Ok(ka.into())
     }
 }
@@ -463,7 +463,7 @@ macro_rules! create_part_conversions {
         // two KeyRoles for a constant KeyParts. :(
         macro_rules! p {
             ( <$from_parts:ty> -> <$to_parts:ty> ) => {
-                impl<$($l, )* $($g, )* > From<$Key<$($l, )* $from_parts, $($g, )* >> for $Key<$($l, )* $to_parts, $($g, )* >
+                impl<$($l,)* $($g),* > From<$Key<$($l,)* $from_parts, $($g, )* >> for $Key<$($l, )* $to_parts, $($g, )* >
                     where $($w: $c ),*
                 {
                     fn from(p: $Key<$($l, )* $from_parts, $($g, )* >) -> Self {
@@ -471,10 +471,10 @@ macro_rules! create_part_conversions {
                     }
                 }
 
-                impl<$($l, )* $($g, )* > From<&$($l)* $Key<$($l, )* $from_parts, $($g, )* >> for &$($l)* $Key<$($l, )* $to_parts, $($g, )* >
+                impl<$($l,)* $($g),* > From<&$($l)* $Key<$($l,)* $from_parts, $($g, )* >> for &$($l)* $Key<$($l, )* $to_parts, $($g, )* >
                     where $($w: $c ),*
                 {
-                    fn from(p: &$($l)* $Key<$($l, )* $from_parts, $($g, )* >) -> Self {
+                    fn from(p: &$($l)* $Key<$($l,)* $from_parts, $($g, )* >) -> Self {
                         convert_ref!(p)
                     }
                 }
@@ -484,20 +484,20 @@ macro_rules! create_part_conversions {
         // Likewise, but using TryFrom.
         macro_rules! p_try {
             ( <$from_parts:ty> -> <$to_parts:ty>) => {
-                impl<$($l, )* $($g, )* > TryFrom<$Key<$($l, )* $from_parts, $($g, )* >> for $Key<$($l, )* $to_parts, $($g, )* >
+                impl<$($l,)* $($g),* > TryFrom<$Key<$($l,)* $from_parts, $($g, )* >> for $Key<$($l, )* $to_parts, $($g, )* >
                     where $($w: $c ),*
                 {
                     type Error = anyhow::Error;
-                    fn try_from(p: $Key<$($l, )* $from_parts, $($g, )* >) -> Result<Self> {
+                    fn try_from(p: $Key<$($l,)* $from_parts, $($g, )* >) -> Result<Self> {
                         p.parts_into_secret()
                     }
                 }
 
-                impl<$($l, )* $($g, )* > TryFrom<&$($l)* $Key<$($l, )* $from_parts, $($g, )* >> for &$($l)* $Key<$($l, )* $to_parts, $($g, )* >
+                impl<$($l,)* $($g),* > TryFrom<&$($l)* $Key<$($l,)* $from_parts, $($g, )* >> for &$($l)* $Key<$($l, )* $to_parts, $($g, )* >
                     where $($w: $c ),*
                 {
                     type Error = anyhow::Error;
-                    fn try_from(p: &$($l)* $Key<$($l, )* $from_parts, $($g, )* >) -> Result<Self> {
+                    fn try_from(p: &$($l)* $Key<$($l,)* $from_parts, $($g, )* >) -> Result<Self> {
                         if p.has_secret() {
                             Ok(convert_ref!(p))
                         } else {
@@ -585,23 +585,26 @@ macro_rules! create_part_conversions {
 }
 
 macro_rules! create_role_conversions {
-    ( $Key:ident<$( $l:lifetime ),*> ) => {
+    ( $Key:ident<$( $l:lifetime ),*; $( $g:ident ),*>) => {
+        create_role_conversions!($Key<$($l),*; $($g),*> where );
+    };
+    ( $Key:ident<$( $l:lifetime ),*; $( $g:ident ),*> where $( $w:ident: $c:path ),* ) => {
         // Convert between two KeyRoles for a constant KeyParts.  See
         // the comment for the p macro above.
         macro_rules! r {
             ( <$from_role:ty> -> <$to_role:ty>) => {
-                impl<$($l, )* P> From<$Key<$($l, )* P, $from_role>> for $Key<$($l, )* P, $to_role>
-                    where P: KeyParts
+                impl<$($l, )* P $(, $g)*> From<$Key<$($l, )* P, $from_role, $($g, )* >> for $Key<$($l, )* P, $to_role, $($g, )* >
+                    where P: KeyParts $(, $w: $c )*
                 {
-                    fn from(p: $Key<$($l, )* P, $from_role>) -> Self {
+                    fn from(p: $Key<$($l, )* P, $from_role, $($g, )* >) -> Self {
                         convert!(p)
                     }
                 }
 
-                impl<$($l, )* P> From<&$($l)* $Key<$($l, )* P, $from_role>> for &$($l)* $Key<$($l, )* P, $to_role>
-                    where P: KeyParts
+                impl<$($l, )* P $(, $g)*> From<&$($l)* $Key<$($l, )* P, $from_role, $($g, )* >> for &$($l)* $Key<$($l, )* P, $to_role, $($g, )* >
+                    where P: KeyParts $(, $w: $c )*
                 {
-                    fn from(p: &$($l)* $Key<$($l, )* P, $from_role>) -> Self {
+                    fn from(p: &$($l)* $Key<$($l, )* P, $from_role, $($g, )* >) -> Self {
                         convert_ref!(p)
                     }
                 }
@@ -620,25 +623,30 @@ macro_rules! create_role_conversions {
 }
 
 macro_rules! create_conversions {
-    ( $Key:ident<$( $l:lifetime ),*> ) => {
-        create_part_conversions!($Key<$($l ),* ; R> where R: KeyRole);
-        create_role_conversions!($Key<$($l ),* >);
+    ( $Key:ident<$( $l:lifetime ),*; $( $g:ident ),*>) => {
+        create_conversions!($Key<$($l),*; $($g),*> where );
+    };
+    ( $Key:ident<$( $l:lifetime ),*; $( $g:ident ),*> where $( $w:ident: $c:path ),* ) => {
+        create_part_conversions!($Key<$($l ),* ; R $(, $g)*> where R: KeyRole $(, $w:ident: $c:path )*);
+        create_role_conversions!($Key<$($l ),* ; $($g),*> where $( $w:ident: $c:path ),*);
 
         // We now handle converting both the part and the role at the same
         // time.
 
         macro_rules! f {
             ( <$from_parts:ty, $from_role:ty> -> <$to_parts:ty, $to_role:ty> ) => {
-                impl<$($l ),*> From<$Key<$($l, )* $from_parts, $from_role>> for $Key<$($l, )* $to_parts, $to_role>
+                impl<$($l,)* $($g,)*> From<$Key<$($l, )* $from_parts, $from_role, $($g, )*>> for $Key<$($l, )* $to_parts, $to_role, $($g, )*>
+                    where $($w: $c ),*
                 {
-                    fn from(p: $Key<$($l, )* $from_parts, $from_role>) -> Self {
+                    fn from(p: $Key<$($l, )* $from_parts, $from_role, $($g, )*>) -> Self {
                         convert!(p)
                     }
                 }
 
-                impl<$($l ),*> From<&$($l)* $Key<$($l, )* $from_parts, $from_role>> for &$($l)* $Key<$($l, )* $to_parts, $to_role>
+                impl<$($l,)* $($g,)*> From<&$($l)* $Key<$($l, )* $from_parts, $from_role, $($g, )*>> for &$($l)* $Key<$($l, )* $to_parts, $to_role, $($g, )*>
+                    where $($w: $c ),*
                 {
-                    fn from(p: &$($l)* $Key<$from_parts, $from_role>) -> Self {
+                    fn from(p: &$($l)* $Key<$from_parts, $from_role, $($g, )*>) -> Self {
                         convert_ref!(p)
                     }
                 }
@@ -740,38 +748,38 @@ macro_rules! create_conversions {
         //f!(<UnspecifiedParts, UnspecifiedRole> -> <UnspecifiedParts, UnspecifiedRole>);
 
 
-        impl<$($l, )* P, R> $Key<$($l, )* P, R> where P: KeyParts, R: KeyRole
+        impl<$($l, )* P, R,  $($g, )*> $Key<$($l, )* P, R, $($g, )*> where P: KeyParts, R: KeyRole, $($w: $c ),*
         {
             /// Changes the key's role tag to `PrimaryRole`.
-            pub fn mark_role_primary(self) -> $Key<$($l, )* P, PrimaryRole> {
+            pub fn mark_role_primary(self) -> $Key<$($l, )* P, PrimaryRole, $($g, )*> {
                 convert!(self)
             }
 
             /// Changes the key's role tag to `PrimaryRole`.
-            pub fn mark_role_primary_ref(&$($l)* self) -> &$($l)* $Key<$($l, )* P, PrimaryRole> {
+            pub fn mark_role_primary_ref(&$($l)* self) -> &$($l)* $Key<$($l, )* P, PrimaryRole, $($g, )*> {
                 convert_ref!(self)
             }
 
             /// Changes the key's role tag to `SubordinateRole`.
-            pub fn mark_role_subordinate(self) -> $Key<$($l, )* P, SubordinateRole>
+            pub fn mark_role_subordinate(self) -> $Key<$($l, )* P, SubordinateRole, $($g, )*>
             {
                 convert!(self)
             }
 
             /// Changes the key's role tag to `SubordinateRole`.
-            pub fn mark_role_subordinate_ref(&$($l)* self) -> &$($l)* $Key<$($l, )* P, SubordinateRole>
+            pub fn mark_role_subordinate_ref(&$($l)* self) -> &$($l)* $Key<$($l, )* P, SubordinateRole, $($g, )*>
             {
                 convert_ref!(self)
             }
 
             /// Changes the key's role tag to `UnspecifiedRole`.
-            pub fn mark_role_unspecified(self) -> $Key<$($l, )* P, UnspecifiedRole>
+            pub fn mark_role_unspecified(self) -> $Key<$($l, )* P, UnspecifiedRole, $($g, )*>
             {
                 convert!(self)
             }
 
             /// Changes the key's role tag to `UnspecifiedRole`.
-            pub fn mark_role_unspecified_ref(&$($l)* self) -> &$($l)* $Key<$($l, )* P, UnspecifiedRole>
+            pub fn mark_role_unspecified_ref(&$($l)* self) -> &$($l)* $Key<$($l, )* P, UnspecifiedRole, $($g, )*>
             {
                 convert_ref!(self)
             }
@@ -786,21 +794,19 @@ impl<K: key::KeyParts, R: key::KeyRole> KeyBundle<K, R>
     }
 }
 
-create_conversions!(Key<>);
-create_conversions!(Key4<>);
-create_conversions!(KeyBundle<>);
+create_conversions!(Key<;>);
+create_conversions!(Key4<;>);
+create_conversions!(KeyBundle<;>);
 
 // A hack, since the type has to be an ident, which means that we
 // can't use <>.
-type KeyComponentAmalgamation<'a, P, R> = ComponentAmalgamation<'a, Key<P, R>, ()>;
-create_conversions!(KeyComponentAmalgamation<'a>);
+type KeyComponentAmalgamation<'a, P, R, E> = ComponentAmalgamation<'a, Key<P, R>, E>;
+create_conversions!(KeyComponentAmalgamation<'a; E>);
 
-create_part_conversions!(PrimaryKeyAmalgamation<'a;>);
-create_part_conversions!(SubordinateKeyAmalgamation<'a;>);
-create_part_conversions!(ErasedKeyAmalgamation<'a;>);
-create_part_conversions!(ValidPrimaryKeyAmalgamation<'a;>);
-create_part_conversions!(ValidSubordinateKeyAmalgamation<'a;>);
-create_part_conversions!(ValidErasedKeyAmalgamation<'a;>);
+// create_part_conversions!(ErasedKeyAmalgamation<'a;>);
+// create_part_conversions!(ValidPrimaryKeyAmalgamation<'a;>);
+// create_part_conversions!(ValidSubordinateKeyAmalgamation<'a;>);
+// create_part_conversions!(ValidErasedKeyAmalgamation<'a;>);
 
 /// Holds a public key, public subkey, private key or private subkey packet.
 ///

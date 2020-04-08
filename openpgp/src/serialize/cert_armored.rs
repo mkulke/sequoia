@@ -3,7 +3,7 @@ use std::io;
 use std::str;
 
 use crate::armor;
-use crate::cert::{Cert, amalgamation::ValidAmalgamation};
+use crate::cert::Cert;
 use crate::Result;
 use crate::types::RevocationStatus;
 use crate::serialize::{

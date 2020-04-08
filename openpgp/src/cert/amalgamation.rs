@@ -127,91 +127,6 @@ trait ValidateAmalgamationRelaxed<'a, C: 'a> {
               Self: Sized;
 }
 
-/// An amalgamation with a policy and a reference time.
-///
-/// In a certain sense, a `ValidAmalgamation` provides a view of an
-/// `Amalgamation` as it was at a particular time.  That is,
-/// signatures and components that are not valid at the reference
-/// time, because they were created after the reference time, for
-/// instance, are ignored.
-///
-/// The methods exposed by a `ValidAmalgamation` are similar to those
-/// exposed by an `Amalgamation`, but the policy and reference time
-/// are taken from the `ValidAmalgamation`.  This helps prevent using
-/// different policies or different reference times when using a
-/// component, which can easily happen when the checks span multiple
-/// functions.
-pub trait ValidAmalgamation<'a, C: 'a>
-{
-    /// Returns the certificate.
-    fn cert(&self) -> &ValidCert<'a>;
-
-    /// Returns the amalgamation's reference time.
-    ///
-    /// For queries that are with respect to a point in time, this
-    /// determines that point in time.  For instance, if a component is
-    /// created at `t_c` and expires at `t_e`, then
-    /// `ValidComponentAmalgamation::alive` will return true if the reference
-    /// time is greater than or equal to `t_c` and less than `t_e`.
-    fn time(&self) -> SystemTime;
-
-    /// Returns the amalgamation's policy.
-    fn policy(&self) -> &'a dyn Policy;
-
-    /// Returns the component's binding signature as of the reference time.
-    fn binding_signature(&self) -> &'a Signature;
-
-    /// Returns the Certificate's direct key signature as of the
-    /// reference time, if any.
-    ///
-    /// Subpackets on direct key signatures apply to all components of
-    /// the certificate.
-    fn direct_key_signature(&self) -> Result<&'a Signature> {
-        self.cert().cert.primary.binding_signature(self.policy(), self.time())
-    }
-
-
-    /// Returns the component's revocation status as of the amalgamation's
-    /// reference time.
-    ///
-    /// Note: this does not return whether the certificate is valid.
-    fn revoked(&self) -> RevocationStatus<'a>;
-
-    /// Maps the given function over binding and direct key signature.
-    ///
-    /// Makes `f` consider both the binding signature and the direct
-    /// key signature.  Information in the binding signature takes
-    /// precedence over the direct key signature.  See also [Section
-    /// 5.2.3.3 of RFC 4880].
-    ///
-    ///   [Section 5.2.3.3 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.3
-    fn map<F: Fn(&'a Signature) -> Option<T>, T>(&self, f: F) -> Option<T> {
-        f(self.binding_signature())
-            .or_else(|| self.direct_key_signature().ok().and_then(f))
-    }
-
-    /// Returns the value of the Revocation Key subpacket, which
-    /// contains a designated revoker.
-    ///
-    /// Considers both the binding signature and the direct key
-    /// signature.
-    fn revocation_keys(&self)
-                       -> Box<dyn Iterator<Item = &'a RevocationKey> + 'a>
-    {
-        if let Some(dk) = self.direct_key_signature().ok() {
-            let bs = self.binding_signature();
-            if std::ptr::eq(dk, bs) {
-                // Avoid unnecessary duplicates.
-                Box::new(bs.revocation_keys())
-            } else {
-                Box::new(bs.revocation_keys().chain(dk.revocation_keys()))
-            }
-        } else {
-            Box::new(self.binding_signature().revocation_keys())
-        }
-    }
-}
-
 /// A certificate's component and its associated data.
 #[derive(Debug, PartialEq)]
 pub struct ComponentAmalgamation<'a, C, E> {
@@ -388,6 +303,12 @@ impl<'a, C, E> ComponentAmalgamation<'a, C, E> {
         self.bundle().component()
     }
 
+    /// Returns a reference to the `ComponentAmalgamation`'s extra
+    /// data.
+    pub(crate) fn extra(&self) -> &E {
+        &self.extra
+    }
+
     /// The component's self-signatures.
     ///
     /// This method is a forwarder for
@@ -451,6 +372,8 @@ impl<'a, C, E> ComponentAmalgamation<'a, C, E> {
     }
 }
 
+// We can't provide a blanket implementation, because the
+// implementation for KeyAmalgamation is different.
 macro_rules! impl_with_policy {
     ($func:ident, $value:ident $(, $arg:ident: $type:ty )*) => {
         fn $func<T>(self, policy: &'a dyn Policy, time: T, $($arg: $type, )*)
@@ -483,14 +406,30 @@ macro_rules! impl_with_policy {
     }
 }
 
-impl<'a, C, E> ValidateAmalgamation<'a, C> for ComponentAmalgamation<'a, C, E> {
-    type V = ValidComponentAmalgamation<'a, C, E>;
+impl<'a> ValidateAmalgamation<'a, UserID> for UserIDAmalgamation<'a> {
+    type V = ValidUserIDAmalgamation<'a>;
 
     impl_with_policy!(with_policy, true);
 }
 
-impl<'a, C, E> ValidateAmalgamationRelaxed<'a, C> for ComponentAmalgamation<'a, C, E> {
-    type V = ValidComponentAmalgamation<'a, C, E>;
+impl<'a> ValidateAmalgamationRelaxed<'a, UserID> for UserIDAmalgamation<'a> {
+    type V = ValidUserIDAmalgamation<'a>;
+
+    impl_with_policy!(with_policy_relaxed, valid_cert, valid_cert: bool);
+}
+
+impl<'a> ValidateAmalgamation<'a, UserAttribute>
+    for UserAttributeAmalgamation<'a>
+{
+    type V = ValidUserAttributeAmalgamation<'a>;
+
+    impl_with_policy!(with_policy, true);
+}
+
+impl<'a> ValidateAmalgamationRelaxed<'a, UserAttribute>
+    for UserAttributeAmalgamation<'a>
+{
+    type V = ValidUserAttributeAmalgamation<'a>;
 
     impl_with_policy!(with_policy_relaxed, valid_cert, valid_cert: bool);
 }
@@ -505,18 +444,25 @@ impl<'a, C, E> ComponentAmalgamation<'a, C, E> {
             extra,
         }
     }
+}
 
-    /// Returns the components's binding signature as of the reference
-    /// time, if any.
-    ///
-    /// Note: this function is not exported.  Users of this interface
-    /// should do: ca.with_policy(policy, time)?.binding_signature().
-    fn binding_signature<T>(&self, policy: &dyn Policy, time: T)
-        -> Result<&'a Signature>
-        where T: Into<Option<time::SystemTime>>
-    {
-        let time = time.into().unwrap_or_else(SystemTime::now);
-        self.bundle.binding_signature(policy, time)
+// We can't do a blanket implementation, because the implementation
+// for the primary key is different.
+macro_rules! impl_binding_signature {
+    () => {
+        /// Returns the components's binding signature as of the
+        /// reference time, if any.
+        ///
+        /// Note: this function is not exported.  Users of this
+        /// interface should do: ca.with_policy(policy,
+        /// time)?.binding_signature().
+        fn binding_signature<T>(&self, policy: &dyn Policy, time: T)
+            -> Result<&'a Signature>
+            where T: Into<Option<time::SystemTime>>
+        {
+            let time = time.into().unwrap_or_else(SystemTime::now);
+            self.bundle.binding_signature(policy, time)
+        }
     }
 }
 
@@ -525,6 +471,8 @@ impl<'a> UserIDAmalgamation<'a> {
     pub fn userid(&self) -> &'a UserID {
         self.component()
     }
+
+    impl_binding_signature!();
 }
 
 impl<'a> UserAttributeAmalgamation<'a> {
@@ -532,6 +480,17 @@ impl<'a> UserAttributeAmalgamation<'a> {
     pub fn user_attribute(&self) -> &'a UserAttribute {
         self.component()
     }
+
+    impl_binding_signature!();
+}
+
+impl<'a> UnknownComponentAmalgamation<'a> {
+    /// Returns a reference to the Unknown component.
+    pub fn unknown(&self) -> &'a Unknown {
+        self.component()
+    }
+
+    impl_binding_signature!();
 }
 
 /// A certificate's component and its associated data.
@@ -595,8 +554,123 @@ impl<'a, C: 'a, E> From<ValidComponentAmalgamation<'a, C, E>>
     }
 }
 
+impl<'a, C, E> ValidComponentAmalgamation<'a, C, E>
+{
+    /// Returns the wrapped `ComponentAmalgamation`.
+    pub(crate) fn into_component_amalgamation(self)
+        -> ComponentAmalgamation<'a, C, E>
+    {
+        self.ca
+    }
+
+    /// Returns a reference to the wrapped `ComponentAmalgamation`.
+    pub(crate) fn component_amalgamation(&self)
+        -> &ComponentAmalgamation<'a, C, E>
+    {
+        &self.ca
+    }
+
+    /// Returns the certificate.
+    pub fn cert(&self) -> &ValidCert<'a> {
+        assert!(std::ptr::eq(self.ca.cert(), self.cert.cert()));
+        &self.cert
+    }
+
+    /// Returns the amalgamation's reference time.
+    ///
+    /// For queries that are with respect to a point in time, this
+    /// determines that point in time.  For instance, if a component is
+    /// created at `t_c` and expires at `t_e`, then
+    /// `ValidComponentAmalgamation::alive` will return true if the reference
+    /// time is greater than or equal to `t_c` and less than `t_e`.
+    pub fn time(&self) -> SystemTime {
+        assert!(std::ptr::eq(self.ca.cert(), self.cert.cert()));
+        self.cert.time
+    }
+
+    /// Returns the amalgamation's policy.
+    pub fn policy(&self) -> &'a dyn Policy
+    {
+        assert!(std::ptr::eq(self.ca.cert(), self.cert.cert()));
+        self.cert.policy
+    }
+
+    /// Returns the component's binding signature as of the reference time.
+    pub fn binding_signature(&self) -> &'a Signature {
+        assert!(std::ptr::eq(self.ca.cert(), self.cert.cert()));
+        self.binding_signature
+    }
+
+    /// Returns the Certificate's direct key signature as of the
+    /// reference time, if any.
+    ///
+    /// Subpackets on direct key signatures apply to all components of
+    /// the certificate.
+    pub fn direct_key_signature(&self) -> Result<&'a Signature> {
+        self.cert().cert.primary.binding_signature(self.policy(), self.time())
+    }
+
+    /// Maps the given function over binding and direct key signature.
+    ///
+    /// Makes `f` consider both the binding signature and the direct
+    /// key signature.  Information in the binding signature takes
+    /// precedence over the direct key signature.  See also [Section
+    /// 5.2.3.3 of RFC 4880].
+    ///
+    ///   [Section 5.2.3.3 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.3
+    pub fn map<F: Fn(&'a Signature) -> Option<T>, T>(&self, f: F) -> Option<T> {
+        f(self.binding_signature())
+            .or_else(|| self.direct_key_signature().ok().and_then(f))
+    }
+
+    /// Returns the value of the Revocation Key subpacket, which
+    /// contains a designated revoker.
+    ///
+    /// Considers both the binding signature and the direct key
+    /// signature.
+    pub fn revocation_keys(&self)
+                       -> Box<dyn Iterator<Item = &'a RevocationKey> + 'a>
+    {
+        if let Some(dk) = self.direct_key_signature().ok() {
+            let bs = self.binding_signature();
+            if std::ptr::eq(dk, bs) {
+                // Avoid unnecessary duplicates.
+                Box::new(bs.revocation_keys())
+            } else {
+                Box::new(bs.revocation_keys().chain(dk.revocation_keys()))
+            }
+        } else {
+            Box::new(self.binding_signature().revocation_keys())
+        }
+    }
+}
+
+impl<'a> ValidUserIDAmalgamation<'a> {
+    /// Returns the component's revocation status as of the amalgamation's
+    /// reference time.
+    ///
+    /// Note: this does not return whether the certificate is valid.
+    pub fn revoked(&self) -> RevocationStatus<'a> {
+        self.bundle._revoked(self.policy(), self.cert.time,
+                              false, Some(self.binding_signature))
+    }
+}
+
+impl<'a> ValidUserAttributeAmalgamation<'a> {
+    /// Returns the component's revocation status as of the amalgamation's
+    /// reference time.
+    ///
+    /// Note: this does not return whether the certificate is valid.
+    pub fn revoked(&self) -> RevocationStatus<'a> {
+        self.bundle._revoked(self.policy(), self.cert.time,
+                              false, Some(self.binding_signature))
+    }
+}
+
 impl<'a, C> ValidComponentAmalgamation<'a, C, ()>
-    where C: Ord
+    where C: Ord,
+          C: 'a,
+          ComponentAmalgamation<'a, C, ()>: ValidateAmalgamationRelaxed<'a, C, V=Self>,
 {
     /// Returns the amalgamated primary component at time `time`
     ///
@@ -711,6 +785,7 @@ impl<'a, C> ValidComponentAmalgamation<'a, C, ()>
 
 impl<'a, C, E> ValidateAmalgamation<'a, C>
     for ValidComponentAmalgamation<'a, C, E>
+    where ComponentAmalgamation<'a, C, E>: ValidateAmalgamation<'a, C, V=Self>
 {
     type V = Self;
 
@@ -721,50 +796,26 @@ impl<'a, C, E> ValidateAmalgamation<'a, C>
         assert!(std::ptr::eq(self.ca.cert(), self.cert.cert()));
 
         let time = time.into().unwrap_or_else(SystemTime::now);
-        self.ca.with_policy(policy, time)
+        self.component_amalgamation().with_policy(policy, time)
     }
 }
 
-impl<'a, C, E> ValidAmalgamation<'a, C>
+impl<'a, C, E> ValidateAmalgamationRelaxed<'a, C>
     for ValidComponentAmalgamation<'a, C, E>
+    where ComponentAmalgamation<'a, C, E>: ValidateAmalgamationRelaxed<'a, C, V=Self>
 {
-    fn cert(&self) -> &ValidCert<'a> {
-        assert!(std::ptr::eq(self.ca.cert(), self.cert.cert()));
-        &self.cert
-    }
+    type V = Self;
 
-    /// Returns the amalgamation's reference time.
-    ///
-    /// For queries that are with respect to a point in time, this
-    /// determines that point in time.  For instance, if a component is
-    /// created at `t_c` and expires at `t_e`, then
-    /// `ValidComponentAmalgamation::alive` will return true if the reference
-    /// time is greater than or equal to `t_c` and less than `t_e`.
-    fn time(&self) -> SystemTime {
-        assert!(std::ptr::eq(self.ca.cert(), self.cert.cert()));
-        self.cert.time
-    }
-
-    /// Returns the amalgamation's policy.
-    fn policy(&self) -> &'a dyn Policy
+    fn with_policy_relaxed<T>(self, policy: &'a dyn Policy, time: T,
+                              valid_cert: bool) -> Result<Self::V>
+        where T: Into<Option<time::SystemTime>>,
+              Self: Sized,
     {
         assert!(std::ptr::eq(self.ca.cert(), self.cert.cert()));
-        self.cert.policy
-    }
 
-    /// Returns the component's binding signature as of the reference time.
-    fn binding_signature(&self) -> &'a Signature {
-        assert!(std::ptr::eq(self.ca.cert(), self.cert.cert()));
-        self.binding_signature
-    }
-
-    /// Returns the component's revocation status as of the amalgamation's
-    /// reference time.
-    ///
-    /// Note: this does not return whether the certificate is valid.
-    fn revoked(&self) -> RevocationStatus<'a> {
-        self.bundle._revoked(self.policy(), self.cert.time,
-                              false, Some(self.binding_signature))
+        let time = time.into().unwrap_or_else(SystemTime::now);
+        self.component_amalgamation()
+            .with_policy_relaxed(policy, time, valid_cert)
     }
 }
 
