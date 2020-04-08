@@ -18,7 +18,12 @@ use std::clone::Clone;
 use crate::{
     cert::prelude::*,
     Error,
-    packet::Signature,
+    packet::{
+        Signature,
+        Unknown,
+        UserAttribute,
+        UserID,
+    },
     Result,
     policy::Policy,
     types::{
@@ -37,7 +42,13 @@ use crate::{
 mod iter;
 pub use iter::{
     ComponentAmalgamationIter,
+    UnknownComponentAmalgamationIter,
+    UserAttributeAmalgamationIter,
+    UserIDAmalgamationIter,
     ValidComponentAmalgamationIter,
+    ValidUnknownComponentAmalgamationIter,
+    ValidUserAttributeAmalgamationIter,
+    ValidUserIDAmalgamationIter,
 };
 
 mod keyiter;
@@ -207,6 +218,23 @@ pub struct ComponentAmalgamation<'a, C> {
     cert: &'a Cert,
     bundle: &'a ComponentBundle<C>,
 }
+
+/// A User ID and its associated data.
+///
+/// This is just a specialized version of `ComponentAmalgamation`.
+pub type UserIDAmalgamation<'a> = ComponentAmalgamation<'a, UserID>;
+
+/// A User Attribute and its associated data.
+///
+/// This is just a specialized version of `ComponentAmalgamation`.
+pub type UserAttributeAmalgamation<'a>
+    = ComponentAmalgamation<'a, UserAttribute>;
+
+/// An Unknown component and its associated data.
+///
+/// This is just a specialized version of `ComponentAmalgamation`.
+pub type UnknownComponentAmalgamation<'a>
+    = ComponentAmalgamation<'a, Unknown>;
 
 // derive(Clone) doesn't work with generic parameters that don't
 // implement clone.  But, we don't need to require that C implements
@@ -509,6 +537,23 @@ pub struct ValidComponentAmalgamation<'a, C> {
     // The binding signature at time `time`.  (This is just a cache.)
     binding_signature: &'a Signature,
 }
+
+/// A User ID and its associated data.
+///
+/// This is just a specialized version of `ValidComponentAmalgamation`.
+pub type ValidUserIDAmalgamation<'a> = ValidComponentAmalgamation<'a, UserID>;
+
+/// A User Attribute and its associated data.
+///
+/// This is just a specialized version of `ValidComponentAmalgamation`.
+pub type ValidUserAttributeAmalgamation<'a>
+    = ValidComponentAmalgamation<'a, UserAttribute>;
+
+/// An Unknown component and its associated data.
+///
+/// This is just a specialized version of `ValidComponentAmalgamation`.
+pub type ValidUnknownComponentAmalgamation<'a>
+    = ValidComponentAmalgamation<'a, Unknown>;
 
 // derive(Clone) doesn't work with generic parameters that don't
 // implement clone.  But, we don't need to require that C implements
