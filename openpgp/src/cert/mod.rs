@@ -661,8 +661,8 @@ impl Cert {
     }
 
     /// Returns an iterator over the Cert's subkeys.
-    pub(crate) fn subkeys(&self) -> ComponentAmalgamationIter<Key<key::PublicParts,
-                                                      key::SubordinateRole>>
+    pub(crate) fn subkeys(&self)
+        -> ComponentAmalgamationIter<Key<key::PublicParts, key::SubordinateRole>>
     {
         ComponentAmalgamationIter::new(self, self.subkeys.iter())
     }
@@ -1487,7 +1487,7 @@ impl<'a> ValidCert<'a> {
 
     /// Returns the amalgamated primary user attribute, if any.
     pub fn primary_user_attribute(&self)
-        -> Result<ValidComponentAmalgamation<'a, UserAttribute>>
+        -> Result<ValidComponentAmalgamation<'a, UserAttribute, ()>>
     {
         self.cert.primary_user_attribute(self.policy, self.time)
     }

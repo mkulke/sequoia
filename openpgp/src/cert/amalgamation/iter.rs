@@ -53,10 +53,10 @@ impl<'a, C> fmt::Debug for ComponentAmalgamationIter<'a, C> {
 
 impl<'a, C> Iterator for ComponentAmalgamationIter<'a, C>
 {
-    type Item = ComponentAmalgamation<'a, C>;
+    type Item = ComponentAmalgamation<'a, C, ()>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next().map(|c| ComponentAmalgamation::new(self.cert, c))
+        self.iter.next().map(|c| ComponentAmalgamation::new(self.cert, c, ()))
     }
 }
 
@@ -145,14 +145,14 @@ impl<'a, C> fmt::Debug for ValidComponentAmalgamationIter<'a, C> {
 impl<'a, C> Iterator for ValidComponentAmalgamationIter<'a, C>
     where C: std::fmt::Debug
 {
-    type Item = ValidComponentAmalgamation<'a, C>;
+    type Item = ValidComponentAmalgamation<'a, C, ()>;
 
     fn next(&mut self) -> Option<Self::Item> {
         tracer!(false, "ValidComponentAmalgamationIter::next", 0);
         t!("ValidComponentAmalgamationIter: {:?}", self);
 
         loop {
-            let ca = ComponentAmalgamation::new(self.cert, self.iter.next()?);
+            let ca = ComponentAmalgamation::new(self.cert, self.iter.next()?, ());
             t!("Considering component: {:?}", ca.component());
 
             let vca = match ca.with_policy(self.policy, self.time) {

@@ -91,7 +91,7 @@ pub struct KeyAmalgamation<'a, P, R, R2>
     where P: 'a + key::KeyParts,
           R: 'a + key::KeyRole,
 {
-    ca: ComponentAmalgamation<'a, Key<P, R>>,
+    ca: ComponentAmalgamation<'a, Key<P, R>, ()>,
     primary: R2,
 }
 
@@ -136,7 +136,7 @@ impl<'a, P, R, R2> Deref for KeyAmalgamation<'a, P, R, R2>
     where P: 'a + key::KeyParts,
           R: 'a + key::KeyRole,
 {
-    type Target = ComponentAmalgamation<'a, Key<P, R>>;
+    type Target = ComponentAmalgamation<'a, Key<P, R>, ()>;
 
     fn deref(&self) -> &Self::Target {
         &self.ca
@@ -372,7 +372,7 @@ impl<'a, P, P2> TryFrom<ErasedKeyAmalgamation<'a, P>>
 impl<'a> PrimaryKeyAmalgamation<'a, key::PublicParts> {
     pub(crate) fn new(cert: &'a Cert) -> Self {
         PrimaryKeyAmalgamation {
-            ca: ComponentAmalgamation::new(cert, &cert.primary),
+            ca: ComponentAmalgamation::new(cert, &cert.primary, ()),
             primary: (),
         }
     }
@@ -384,7 +384,7 @@ impl<'a, P: 'a + key::KeyParts> SubordinateKeyAmalgamation<'a, P> {
         -> Self
     {
         SubordinateKeyAmalgamation {
-            ca: ComponentAmalgamation::new(cert, bundle),
+            ca: ComponentAmalgamation::new(cert, bundle, ()),
             primary: (),
         }
     }
@@ -436,7 +436,7 @@ impl<'a, P, R, R2> KeyAmalgamation<'a, P, R, R2>
 {
     /// Returns the `KeyAmalgamation`'s `ComponentAmalgamation`.
     pub fn component_amalgamation(&self)
-        -> &ComponentAmalgamation<'a, Key<P, R>> {
+        -> &ComponentAmalgamation<'a, Key<P, R>, ()> {
         &self.ca
     }
 

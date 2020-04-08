@@ -214,43 +214,47 @@ pub trait ValidAmalgamation<'a, C: 'a>
 
 /// A certificate's component and its associated data.
 #[derive(Debug, PartialEq)]
-pub struct ComponentAmalgamation<'a, C> {
+pub struct ComponentAmalgamation<'a, C, E> {
     cert: &'a Cert,
     bundle: &'a ComponentBundle<C>,
+    extra: E,
 }
 
 /// A User ID and its associated data.
 ///
 /// This is just a specialized version of `ComponentAmalgamation`.
-pub type UserIDAmalgamation<'a> = ComponentAmalgamation<'a, UserID>;
+pub type UserIDAmalgamation<'a> = ComponentAmalgamation<'a, UserID, ()>;
 
 /// A User Attribute and its associated data.
 ///
 /// This is just a specialized version of `ComponentAmalgamation`.
 pub type UserAttributeAmalgamation<'a>
-    = ComponentAmalgamation<'a, UserAttribute>;
+    = ComponentAmalgamation<'a, UserAttribute, ()>;
 
 /// An Unknown component and its associated data.
 ///
 /// This is just a specialized version of `ComponentAmalgamation`.
 pub type UnknownComponentAmalgamation<'a>
-    = ComponentAmalgamation<'a, Unknown>;
+    = ComponentAmalgamation<'a, Unknown, ()>;
 
 // derive(Clone) doesn't work with generic parameters that don't
 // implement clone.  But, we don't need to require that C implements
 // Clone, because we're not cloning C, just the reference.
 //
 // See: https://github.com/rust-lang/rust/issues/26925
-impl<'a, C> Clone for ComponentAmalgamation<'a, C> {
+impl<'a, C, E> Clone for ComponentAmalgamation<'a, C, E>
+    where E: Clone
+{
     fn clone(&self) -> Self {
         Self {
             cert: self.cert,
             bundle: self.bundle,
+            extra: self.extra.clone(),
         }
     }
 }
 
-impl<'a, C> std::ops::Deref for ComponentAmalgamation<'a, C> {
+impl<'a, C, E> std::ops::Deref for ComponentAmalgamation<'a, C, E> {
     type Target = ComponentBundle<C>;
 
     fn deref(&self) -> &Self::Target {
@@ -258,7 +262,7 @@ impl<'a, C> std::ops::Deref for ComponentAmalgamation<'a, C> {
     }
 }
 
-impl<'a, C> ComponentAmalgamation<'a, C> {
+impl<'a, C, E> ComponentAmalgamation<'a, C, E> {
     /// Returns the certificate that the component came from.
     pub fn cert(&self) -> &'a Cert {
         &self.cert
@@ -479,25 +483,26 @@ macro_rules! impl_with_policy {
     }
 }
 
-impl<'a, C> ValidateAmalgamation<'a, C> for ComponentAmalgamation<'a, C> {
-    type V = ValidComponentAmalgamation<'a, C>;
+impl<'a, C, E> ValidateAmalgamation<'a, C> for ComponentAmalgamation<'a, C, E> {
+    type V = ValidComponentAmalgamation<'a, C, E>;
 
     impl_with_policy!(with_policy, true);
 }
 
-impl<'a, C> ValidateAmalgamationRelaxed<'a, C> for ComponentAmalgamation<'a, C> {
-    type V = ValidComponentAmalgamation<'a, C>;
+impl<'a, C, E> ValidateAmalgamationRelaxed<'a, C> for ComponentAmalgamation<'a, C, E> {
+    type V = ValidComponentAmalgamation<'a, C, E>;
 
     impl_with_policy!(with_policy_relaxed, valid_cert, valid_cert: bool);
 }
 
-impl<'a, C> ComponentAmalgamation<'a, C> {
+impl<'a, C, E> ComponentAmalgamation<'a, C, E> {
     /// Creates a new amalgamation.
-    pub(crate) fn new(cert: &'a Cert, bundle: &'a ComponentBundle<C>) -> Self
+    pub(crate) fn new(cert: &'a Cert, bundle: &'a ComponentBundle<C>, extra: E) -> Self
     {
         Self {
             cert,
             bundle,
+            extra,
         }
     }
 
@@ -531,8 +536,8 @@ impl<'a> UserAttributeAmalgamation<'a> {
 
 /// A certificate's component and its associated data.
 #[derive(Debug)]
-pub struct ValidComponentAmalgamation<'a, C> {
-    ca: ComponentAmalgamation<'a, C>,
+pub struct ValidComponentAmalgamation<'a, C, E> {
+    ca: ComponentAmalgamation<'a, C, E>,
     cert: ValidCert<'a>,
     // The binding signature at time `time`.  (This is just a cache.)
     binding_signature: &'a Signature,
@@ -541,26 +546,28 @@ pub struct ValidComponentAmalgamation<'a, C> {
 /// A User ID and its associated data.
 ///
 /// This is just a specialized version of `ValidComponentAmalgamation`.
-pub type ValidUserIDAmalgamation<'a> = ValidComponentAmalgamation<'a, UserID>;
+pub type ValidUserIDAmalgamation<'a> = ValidComponentAmalgamation<'a, UserID, ()>;
 
 /// A User Attribute and its associated data.
 ///
 /// This is just a specialized version of `ValidComponentAmalgamation`.
 pub type ValidUserAttributeAmalgamation<'a>
-    = ValidComponentAmalgamation<'a, UserAttribute>;
+    = ValidComponentAmalgamation<'a, UserAttribute, ()>;
 
 /// An Unknown component and its associated data.
 ///
 /// This is just a specialized version of `ValidComponentAmalgamation`.
 pub type ValidUnknownComponentAmalgamation<'a>
-    = ValidComponentAmalgamation<'a, Unknown>;
+    = ValidComponentAmalgamation<'a, Unknown, ()>;
 
 // derive(Clone) doesn't work with generic parameters that don't
 // implement clone.  But, we don't need to require that C implements
 // Clone, because we're not cloning C, just the reference.
 //
 // See: https://github.com/rust-lang/rust/issues/26925
-impl<'a, C> Clone for ValidComponentAmalgamation<'a, C> {
+impl<'a, C, E> Clone for ValidComponentAmalgamation<'a, C, E>
+    where E: Clone
+{
     fn clone(&self) -> Self {
         Self {
             ca: self.ca.clone(),
@@ -570,8 +577,8 @@ impl<'a, C> Clone for ValidComponentAmalgamation<'a, C> {
     }
 }
 
-impl<'a, C> std::ops::Deref for ValidComponentAmalgamation<'a, C> {
-    type Target = ComponentAmalgamation<'a, C>;
+impl<'a, C, E> std::ops::Deref for ValidComponentAmalgamation<'a, C, E> {
+    type Target = ComponentAmalgamation<'a, C, E>;
 
     fn deref(&self) -> &Self::Target {
         assert!(std::ptr::eq(self.ca.cert(), self.cert.cert()));
@@ -579,21 +586,21 @@ impl<'a, C> std::ops::Deref for ValidComponentAmalgamation<'a, C> {
     }
 }
 
-impl<'a, C: 'a> From<ValidComponentAmalgamation<'a, C>>
-    for ComponentAmalgamation<'a, C>
+impl<'a, C: 'a, E> From<ValidComponentAmalgamation<'a, C, E>>
+    for ComponentAmalgamation<'a, C, E>
 {
-    fn from(vca: ValidComponentAmalgamation<'a, C>) -> Self {
+    fn from(vca: ValidComponentAmalgamation<'a, C, E>) -> Self {
         assert!(std::ptr::eq(vca.ca.cert(), vca.cert.cert()));
         vca.ca
     }
 }
 
-impl<'a, C> ValidComponentAmalgamation<'a, C>
+impl<'a, C> ValidComponentAmalgamation<'a, C, ()>
     where C: Ord
 {
     /// Returns the amalgamated primary component at time `time`
     ///
-    /// If `time` is None, then the current time is used.
+    /// If `time` is None, then the current time is used.  See
     /// `ValidComponentAmalgamationIter` for the definition of a valid component.
     ///
     /// The primary component is determined by taking the components that
@@ -629,7 +636,7 @@ impl<'a, C> ValidComponentAmalgamation<'a, C>
                           iter: std::slice::Iter<'a, ComponentBundle<C>>,
                           policy: &'a dyn Policy, t: SystemTime,
                           valid_cert: bool)
-        -> Result<ValidComponentAmalgamation<'a, C>>
+        -> Result<Self>
     {
         use std::cmp::Ordering;
 
@@ -697,12 +704,14 @@ impl<'a, C> ValidComponentAmalgamation<'a, C>
                     "No binding signature at time {}", crate::fmt::time(&t))))
                     .unwrap_or(Error::NoBindingSignature(t).into())
             })
-            .and_then(|c| ComponentAmalgamation::new(cert, (c.0).0)
+            .and_then(|c| ComponentAmalgamation::new(cert, (c.0).0, ())
                       .with_policy_relaxed(policy, t, valid_cert))
     }
 }
 
-impl<'a, C> ValidateAmalgamation<'a, C> for ValidComponentAmalgamation<'a, C> {
+impl<'a, C, E> ValidateAmalgamation<'a, C>
+    for ValidComponentAmalgamation<'a, C, E>
+{
     type V = Self;
 
     fn with_policy<T>(self, policy: &'a dyn Policy, time: T) -> Result<Self::V>
@@ -716,7 +725,9 @@ impl<'a, C> ValidateAmalgamation<'a, C> for ValidComponentAmalgamation<'a, C> {
     }
 }
 
-impl<'a, C> ValidAmalgamation<'a, C> for ValidComponentAmalgamation<'a, C> {
+impl<'a, C, E> ValidAmalgamation<'a, C>
+    for ValidComponentAmalgamation<'a, C, E>
+{
     fn cert(&self) -> &ValidCert<'a> {
         assert!(std::ptr::eq(self.ca.cert(), self.cert.cert()));
         &self.cert
@@ -757,8 +768,8 @@ impl<'a, C> ValidAmalgamation<'a, C> for ValidComponentAmalgamation<'a, C> {
     }
 }
 
-impl<'a, C> crate::cert::Preferences<'a>
-    for ValidComponentAmalgamation<'a, C>
+impl<'a, C, E> crate::cert::Preferences<'a>
+    for ValidComponentAmalgamation<'a, C, E>
 {
     fn preferred_symmetric_algorithms(&self)
                                       -> Option<&'a [SymmetricAlgorithm]> {
