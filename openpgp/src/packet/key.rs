@@ -1030,10 +1030,10 @@ impl<R> Key4<SecretParts, R>
                               S: Into<Option<SymmetricAlgorithm>>,
                               T: Into<Option<time::SystemTime>>
     {
-        use crate::crypto::primitives::curve25519::{self, CURVE25519_SIZE};
+        use crate::crypto::primitives::x25519::{self, CURVE25519_SIZE};
 
         let mut public_key = [0x40u8; CURVE25519_SIZE + 1];
-        curve25519::mul_g(&mut public_key[1..], private_key).unwrap();
+        x25519::mul_g(&mut public_key[1..], private_key).unwrap();
 
         let mut private_key = Vec::from(private_key);
         private_key.reverse();
@@ -1144,7 +1144,7 @@ impl<R> Key4<SecretParts, R>
         use crate::crypto::primitives::{
             random::Yarrow,
             ed25519, ed25519::ED25519_KEY_SIZE,
-            curve25519, curve25519::CURVE25519_SIZE,
+            x25519, x25519::CURVE25519_SIZE,
             ecc, ecdh, ecdsa,
         };
         use crate::crypto::mpi::{MPI, PublicKey};
@@ -1176,11 +1176,11 @@ impl<R> Key4<SecretParts, R>
             (Curve::Cv25519, false) => {
                 let mut public = [0u8; CURVE25519_SIZE + 1];
                 let mut private: Protected =
-                    curve25519::private_key(&mut rng).into();
+                    x25519::private_key(&mut rng).into();
 
                 public[0] = 0x40;
 
-                curve25519::mul_g(&mut public[1..], &private)?;
+                x25519::mul_g(&mut public[1..], &private)?;
 
                 // Reverse the scalar.  See
                 // https://lists.gnupg.org/pipermail/gnupg-devel/2018-February/033437.html.
