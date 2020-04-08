@@ -3,4 +3,4 @@
 pub use nettle::dsa::Signature;
 pub use nettle::dsa::Params;
 pub use nettle::dsa::{sign, verify};
-pub use nettle::dsa::{generate_keypair, PrivateKey, PublicKey};
+pub use nettle::dsa::{PrivateKey, PublicKey};
