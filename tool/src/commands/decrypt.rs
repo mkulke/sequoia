@@ -114,15 +114,6 @@ impl<'a> Helper<'a> {
 }
 
 impl<'a> VerificationHelper for Helper<'a> {
-    fn get_certs(&mut self, ids: &[openpgp::KeyHandle]) -> Result<Vec<Cert>> {
-        self.vhelper.get_certs(ids)
-    }
-    fn check(&mut self, structure: MessageStructure) -> Result<()> {
-        self.vhelper.check(structure)
-    }
-}
-
-impl<'a> DecryptionHelper for Helper<'a> {
     fn mapping(&self) -> bool {
         self.hex
     }
@@ -137,6 +128,15 @@ impl<'a> DecryptionHelper for Helper<'a> {
         Ok(())
     }
 
+    fn get_certs(&mut self, ids: &[openpgp::KeyHandle]) -> Result<Vec<Cert>> {
+        self.vhelper.get_certs(ids)
+    }
+    fn check(&mut self, structure: MessageStructure) -> Result<()> {
+        self.vhelper.check(structure)
+    }
+}
+
+impl<'a> DecryptionHelper for Helper<'a> {
     fn decrypt<D>(&mut self, pkesks: &[PKESK], skesks: &[SKESK],
                   sym_algo: Option<SymmetricAlgorithm>,
                   mut decrypt: D) -> openpgp::Result<Option<Fingerprint>>
@@ -327,10 +327,9 @@ pub fn decrypt_unwrap(ctx: &Context, policy: &dyn Policy,
                     helper.decrypt(&pkesks[..], &skesks[..], sym_algo_hint,
                                    decrypt)?;
                 }
-                if ! pp.decrypted() {
-                    // XXX: That is not quite the right error to return.
+                if pp.encrypted() {
                     return Err(
-                        openpgp::Error::InvalidSessionKey(
+                        openpgp::Error::MissingSessionKey(
                             "No session key".into()).into());
                 }
 

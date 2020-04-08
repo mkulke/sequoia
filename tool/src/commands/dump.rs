@@ -124,10 +124,10 @@ pub fn dump<W>(input: &mut dyn io::Read, output: &mut dyn io::Write,
 
                 let mut fields = Vec::new();
                 fields.push(format!("Session key: {}", hex::encode(sk)));
-                if pp.decrypted() {
-                    fields.push("Decryption successful".into());
-                } else {
+                if pp.encrypted() {
                     fields.push("Decryption failed".into());
+                } else {
+                    fields.push("Decryption successful".into());
                 }
                 Some(fields)
             },
@@ -690,9 +690,9 @@ impl PacketDumper {
 
             for field in map.iter() {
                 if field.name() == "body" {
-                    hd.write_ascii(field.data())?;
+                    hd.write_ascii(field.as_bytes())?;
                 } else {
-                    hd.write(field.data(), field.name())?;
+                    hd.write(field.as_bytes(), field.name())?;
                 }
             }
 

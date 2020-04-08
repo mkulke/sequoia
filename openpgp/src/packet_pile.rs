@@ -350,7 +350,12 @@ impl<'a> TryFrom<PacketParserResult<'a>> for PacketPile {
         // it is hard to imagine that that is what the caller wants.
         // Instead of hiding that error, fail fast.
         if let PacketParserResult::Some(ref pp) = ppr {
-            assert_eq!(pp.recursion_depth(), 0);
+            if pp.recursion_depth() != 0 {
+                return Err(Error::InvalidOperation(
+                    format!("Expected top-level packet, \
+                             but the parser is at level {}",
+                            pp.recursion_depth())).into());
+            }
         }
 
         // Create a top-level container.
@@ -544,11 +549,15 @@ mod test {
     // lutz's key is a v3 key.
     #[test]
     fn torture() {
+        use std::convert::TryInto;
+        use crate::parse::PacketPileParser;
+
         let data = crate::tests::key("dkg.gpg");
-        let mut ppp = PacketParserBuilder::from_bytes(data).unwrap()
+        let mut ppp: PacketPileParser =
+            PacketParserBuilder::from_bytes(data).unwrap()
             //.trace()
             .buffer_unread_content()
-            .into_packet_pile_parser().unwrap();
+            .try_into().unwrap();
 
         let mut ppr = ppp.recurse().unwrap();
         while ppr.is_some() {
@@ -559,10 +568,11 @@ mod test {
         assert_eq!(pile.children().len(), 1450);
 
         let data = crate::tests::key("lutz.gpg");
-        let mut ppp = PacketParserBuilder::from_bytes(data).unwrap()
+        let mut ppp: PacketPileParser =
+            PacketParserBuilder::from_bytes(data).unwrap()
             //.trace()
             .buffer_unread_content()
-            .into_packet_pile_parser().unwrap();
+            .try_into().unwrap();
 
         let mut ppr = ppp.recurse().unwrap();
         while let Some(pp) = ppr.as_mut() {
