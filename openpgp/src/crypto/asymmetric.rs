@@ -1,10 +1,10 @@
 //! Asymmetric crypt operations.
 
-use nettle::{dsa, ecc, ecdsa, ed25519, rsa, random::Yarrow};
 
 use crate::packet::{self, key, Key};
 use crate::crypto::SessionKey;
 use crate::crypto::mpi::{self, MPI};
+use crate::crypto::primitives::{dsa, ecc, ecdsa, ed25519, rsa, random::Yarrow};
 use crate::types::{Curve, HashAlgorithm};
 
 use crate::Error;

@@ -90,7 +90,7 @@ impl MPI {
     /// supported, `Error::MalformedMPI` if the point is formatted
     /// incorrectly.
     pub fn decode_point(&self, curve: &Curve) -> Result<(&[u8], &[u8])> {
-        use nettle::{ed25519, curve25519};
+        use crate::crypto::primitives::{ed25519, curve25519};
         use self::Curve::*;
         match &curve {
             Ed25519 | Cv25519 => {

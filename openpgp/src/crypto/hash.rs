@@ -3,6 +3,7 @@
 use std::convert::TryFrom;
 
 use crate::HashAlgorithm;
+use crate::crypto::primitives::hash;
 use crate::packet::Key;
 use crate::packet::UserID;
 use crate::packet::UserAttribute;
@@ -49,7 +50,7 @@ const DUMP_HASHED_VALUES: Option<&str> = None;
 #[derive(Clone)]
 pub struct Context {
     algo: HashAlgorithm,
-    ctx: Box<dyn nettle::hash::Hash>,
+    ctx: Box<dyn hash::Hash>,
 }
 
 impl Context {
@@ -118,14 +119,14 @@ impl HashAlgorithm {
     ///
     ///   [`HashAlgorithm::is_supported`]: #method.is_supported
     pub fn context(self) -> Result<Context> {
-        use nettle::hash::{Sha224, Sha256, Sha384, Sha512};
-        use nettle::hash::insecure_do_not_use::{
+        use crate::crypto::primitives::hash::{Sha224, Sha256, Sha384, Sha512};
+        use crate::crypto::primitives::hash::insecure_do_not_use::{
             Sha1,
             Md5,
             Ripemd160,
         };
 
-        let c: Result<Box<dyn nettle::hash::Hash>> = match self {
+        let c: Result<Box<dyn hash::Hash>> = match self {
             HashAlgorithm::SHA1 => Ok(Box::new(Sha1::default())),
             HashAlgorithm::SHA224 => Ok(Box::new(Sha224::default())),
             HashAlgorithm::SHA256 => Ok(Box::new(Sha256::default())),
@@ -150,7 +151,7 @@ impl HashAlgorithm {
 
     /// Returns the ASN.1 OID of this hash algorithm.
     pub fn oid(self) -> Result<&'static [u8]> {
-        use nettle::rsa;
+        use crate::crypto::primitives::rsa;
 
         match self {
             HashAlgorithm::SHA1 => Ok(rsa::ASN1_OID_SHA1),
@@ -168,14 +169,14 @@ impl HashAlgorithm {
 }
 
 struct HashDumper {
-    h: Box<dyn nettle::hash::Hash>,
+    h: Box<dyn hash::Hash>,
     sink: File,
     filename: String,
     written: usize,
 }
 
 impl HashDumper {
-    fn new(h: Box<dyn nettle::hash::Hash>, prefix: &str) -> Self {
+    fn new(h: Box<dyn hash::Hash>, prefix: &str) -> Self {
         let mut n = 0;
         let mut filename;
         let sink = loop {
@@ -204,7 +205,7 @@ impl Drop for HashDumper {
     }
 }
 
-impl nettle::hash::Hash for HashDumper {
+impl hash::Hash for HashDumper {
     fn digest_size(&self) -> usize {
         self.h.digest_size()
     }
@@ -216,7 +217,7 @@ impl nettle::hash::Hash for HashDumper {
     fn digest(&mut self, digest: &mut [u8]) {
         self.h.digest(digest);
     }
-    fn box_clone(&self) -> Box<dyn nettle::hash::Hash> {
+    fn box_clone(&self) -> Box<dyn hash::Hash> {
         Box::new(Self::new(self.h.box_clone(), &DUMP_HASHED_VALUES.unwrap()))
     }
 }

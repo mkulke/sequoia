@@ -5,7 +5,7 @@ use std::ops::{Deref, DerefMut};
 use std::fmt;
 
 use buffered_reader::BufferedReader;
-use nettle::random::{Random, Yarrow};
+use crate::crypto::primitives::random::{Random, Yarrow};
 
 use crate::types::HashAlgorithm;
 use crate::Result;

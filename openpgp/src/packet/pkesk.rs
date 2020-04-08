@@ -344,7 +344,7 @@ mod tests {
         use crate::types::Curve;
         use crate::packet::key;
         use crate::packet::key::Key4;
-        use nettle::curve25519;
+        use crate::crypto::primitives::curve25519;
 
         // 20 byte sec key
         let mut sec = [
