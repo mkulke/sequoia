@@ -18,7 +18,7 @@
 //! `recurse()` method or the `next()` method, as appropriate.
 //! OpenPGP doesn't impose any restrictions on the amount of nesting.
 //! So, to prevent a denial of service attack, the parsers don't
-//! recurse more than `MAX_RECURSION_DEPTH` times, by default.
+//! recurse more than `DEFAULT_MAX_RECURSION_DEPTH` times, by default.
 //!
 //! Second, packets can contain an effectively unbounded amount of
 //! data.  To avoid errors due to memory exhaustion, the
@@ -227,13 +227,16 @@ macro_rules! impl_parse_generic_packet {
     };
 }
 
-/// The default amount of acceptable nesting.  Typically, we expect a
-/// message to looking like:
+/// The default amount of acceptable nesting.
 ///
-///   [ encryption container: [ signature: [ compressioned data: [ literal data ]]]]
+/// Typically, we expect a message to looking like:
+///
+/// ```text
+/// [ encryption container: [ compressioned data: [ signature: [ literal data ]]]]
+/// ```
 ///
 /// So, this should be more than enough.
-const MAX_RECURSION_DEPTH : u8 = 16;
+pub const DEFAULT_MAX_RECURSION_DEPTH : u8 = 16;
 
 /// The default maximum size of non-container packets.
 ///
@@ -246,7 +249,7 @@ const MAX_RECURSION_DEPTH : u8 = 16;
 /// an AEAD encrypted data packet.
 ///
 /// The default is 1 MiB.
-const MAX_PACKET_SIZE: u32 = 1 << 20; // 1 MiB
+pub const DEFAULT_MAX_PACKET_SIZE: u32 = 1 << 20; // 1 MiB
 
 // Used to parse an OpenPGP packet's header (note: in this case, the
 // header means a Packet's fixed data, not the OpenPGP framing
@@ -858,8 +861,8 @@ struct PacketParserSettings {
 impl Default for PacketParserSettings {
     fn default() -> Self {
         PacketParserSettings {
-            max_recursion_depth: MAX_RECURSION_DEPTH,
-            max_packet_size: MAX_PACKET_SIZE,
+            max_recursion_depth: DEFAULT_MAX_RECURSION_DEPTH,
+            max_packet_size: DEFAULT_MAX_PACKET_SIZE,
             buffer_unread_content: false,
             map: false,
         }
@@ -1813,7 +1816,7 @@ fn one_pass_sig_test () {
         let mut ppr = PacketParserBuilder::from_bytes(
             crate::tests::message(test.filename))
             .expect(&format!("Reading {}", test.filename)[..])
-            .finalize().unwrap();
+            .build().unwrap();
 
         let mut one_pass_sigs = 0;
         let mut sigs = 0;
@@ -2667,7 +2670,7 @@ impl<'a> Parse<'a, Packet> for Packet {
     fn from_reader<R: 'a + Read>(reader: R) -> Result<Self> {
         let ppr =
             PacketParserBuilder::from_reader(reader)
-            ?.buffer_unread_content().finalize()?;
+            ?.buffer_unread_content().build()?;
 
         let (p, ppr) = match ppr {
             PacketParserResult::Some(pp) => {
@@ -3031,7 +3034,7 @@ impl<'a> Parse<'a, PacketParserResult<'a>> for PacketParser<'a> {
     /// the stream.
     fn from_reader<R: io::Read + 'a>(reader: R)
             -> Result<PacketParserResult<'a>> {
-        PacketParserBuilder::from_reader(reader)?.finalize()
+        PacketParserBuilder::from_reader(reader)?.build()
     }
 
     /// Starts parsing an OpenPGP message stored in a file named `path`.
@@ -3040,7 +3043,7 @@ impl<'a> Parse<'a, PacketParserResult<'a>> for PacketParser<'a> {
     /// the stream.
     fn from_file<P: AsRef<Path>>(path: P)
             -> Result<PacketParserResult<'a>> {
-        PacketParserBuilder::from_file(path)?.finalize()
+        PacketParserBuilder::from_file(path)?.build()
     }
 
     /// Starts parsing an OpenPGP message stored in a buffer.
@@ -3049,7 +3052,7 @@ impl<'a> Parse<'a, PacketParserResult<'a>> for PacketParser<'a> {
     /// the stream.
     fn from_bytes<D: AsRef<[u8]> + ?Sized>(data: &'a D)
             -> Result<PacketParserResult<'a>> {
-        PacketParserBuilder::from_bytes(data)?.finalize()
+        PacketParserBuilder::from_bytes(data)?.build()
     }
 }
 
@@ -3061,7 +3064,7 @@ impl <'a> PacketParser<'a> {
     /// the stream.
     pub(crate) fn from_buffered_reader(bio: Box<dyn BufferedReader<Cookie> + 'a>)
             -> Result<PacketParserResult<'a>> {
-        PacketParserBuilder::from_buffered_reader(bio)?.finalize()
+        PacketParserBuilder::from_buffered_reader(bio)?.build()
     }
 
     /// Returns the reader stack, replacing it with a
@@ -4419,7 +4422,7 @@ mod test {
             let ppr = PacketParserBuilder::from_bytes(
                 crate::tests::message(test.filename)).unwrap()
                 .buffer_unread_content()
-                .finalize()
+                .build()
                 .expect(&format!("Error reading {}", test.filename)[..]);
 
             let mut ppr = consume_until(
@@ -4488,7 +4491,7 @@ mod test {
         for test in DECRYPT_TESTS.iter() {
             let mut ppr = PacketParserBuilder::from_bytes(
                 crate::tests::message(test.filename)).unwrap()
-                .finalize()
+                .build()
                 .expect(&format!("Error reading {}", test.filename)[..]);
 
             // Make sure we actually decrypted...
@@ -4531,7 +4534,7 @@ mod test {
             let mut ppr = PacketParserBuilder::from_reader(
                 Cursor::new(crate::tests::key("testy.pgp")).chain(
                     Cursor::new(crate::tests::key(test)))).unwrap()
-                .finalize()
+                .build()
                 .expect(&format!("Error reading {:?}", test));
 
             while let PacketParserResult::Some(pp) = ppr {
@@ -4556,7 +4559,7 @@ mod test {
         {
             let mut ppr = PacketParserBuilder::from_bytes(crate::tests::key(test))
                 .unwrap()
-                .finalize()
+                .build()
                 .expect(&format!("Error reading {:?}", test));
 
             while let PacketParserResult::Some(pp) = ppr {
@@ -4580,7 +4583,7 @@ mod test {
         for test in DECRYPT_TESTS.iter() {
             let mut ppr = PacketParserBuilder::from_bytes(
                 crate::tests::message(test.filename)).unwrap()
-                .finalize()
+                .build()
                 .expect(&format!("Error reading {}", test.filename)[..]);
 
             let mut saw_literal = false;
@@ -4614,7 +4617,7 @@ mod test {
 
             let mut ppr = PacketParserBuilder::from_bytes(
                 crate::tests::message(test.filename)).unwrap()
-                .finalize()
+                .build()
                 .expect(&format!("Error reading {}", test.filename)[..]);
 
             let mut last_path = vec![];
@@ -4705,7 +4708,7 @@ mod test {
 
         let ppr = PacketParserBuilder::from_bytes(msg).unwrap()
             .dearmor(packet_parser_builder::Dearmor::Disabled)
-            .finalize();
+            .build();
         assert_match!(Ok(PacketParserResult::Some(ref _pp)) = ppr);
 
 
@@ -4719,7 +4722,7 @@ mod test {
 
         let ppr = PacketParserBuilder::from_bytes(&msg2[..]).unwrap()
             .dearmor(packet_parser_builder::Dearmor::Disabled)
-            .finalize();
+            .build();
         assert_match!(Err(_) = ppr);
     }
 
@@ -4732,14 +4735,14 @@ mod test {
             // Make sure we can read the first packet.
             let ppr = PacketParserBuilder::from_bytes(msg).unwrap()
                 .dearmor(packet_parser_builder::Dearmor::Disabled)
-                .finalize();
+                .build();
             assert_match!(Ok(PacketParserResult::Some(ref _pp)) = ppr);
 
             // Now truncate the packet.
             let msg2 = &msg[..msg.len() - 1];
             let ppr = PacketParserBuilder::from_bytes(msg2).unwrap()
                 .dearmor(packet_parser_builder::Dearmor::Disabled)
-                .finalize().unwrap();
+                .build().unwrap();
             if let PacketParserResult::Some(pp) = ppr {
                 let err = pp.next().err().unwrap();
                 assert_match!(Some(&Error::MalformedPacket(_))
@@ -4759,7 +4762,7 @@ mod test {
 
         // Make sure we can read it.
         let ppr = PacketParserBuilder::from_bytes(&buf).unwrap()
-            .finalize().unwrap();
+            .build().unwrap();
         if let PacketParserResult::Some(pp) = ppr {
             assert_eq!(Packet::UserID("foobar".into()), pp.packet);
         } else {
@@ -4770,7 +4773,7 @@ mod test {
         // into a unknown packet.
         let ppr = PacketParserBuilder::from_bytes(&buf).unwrap()
             .max_packet_size(5)
-            .finalize().unwrap();
+            .build().unwrap();
         if let PacketParserResult::Some(pp) = ppr {
             if let Packet::Unknown(ref u) = pp.packet {
                 assert_eq!(u.tag(), Tag::UserID);

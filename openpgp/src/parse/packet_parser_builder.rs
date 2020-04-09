@@ -88,8 +88,8 @@ impl<'a> PacketParserBuilder<'a> {
     /// recurse; it will only parse the top-level packets.
     ///
     /// This is a u8, because recursing more than 255 times makes no
-    /// sense.  The default is `MAX_RECURSION_DEPTH`.  (GnuPG defaults
-    /// to a maximum recursion depth of 32.)
+    /// sense.  The default is `DEFAULT_MAX_RECURSION_DEPTH`.  (GnuPG
+    /// defaults to a maximum recursion depth of 32.)
     pub fn max_recursion_depth(mut self, value: u8) -> Self {
         self.settings.max_recursion_depth = value;
         self
@@ -112,7 +112,7 @@ impl<'a> PacketParserBuilder<'a> {
         self
     }
 
-    /// Causes `PacketParser::finish()` to buffer any unread content.
+    /// Causes `PacketParser::build()` to buffer any unread content.
     ///
     /// The unread content is stored in the `Packet::content` Option.
     pub fn buffer_unread_content(mut self) -> Self {
@@ -156,11 +156,11 @@ impl<'a> PacketParserBuilder<'a> {
     /// #
     /// # fn f(message_data: &[u8])
     /// #     -> Result<PacketParserResult> {
-    /// let ppr = PacketParserBuilder::from_bytes(message_data)?.finalize()?;
+    /// let ppr = PacketParserBuilder::from_bytes(message_data)?.build()?;
     /// # return Ok(ppr);
     /// # }
     /// ```
-    pub fn finalize(mut self)
+    pub fn build(mut self)
         -> Result<PacketParserResult<'a>>
         where Self: 'a
     {
@@ -230,17 +230,17 @@ mod tests {
         // Make sure we can read the first packet.
         let ppr = PacketParserBuilder::from_bytes(msg).unwrap()
             .dearmor(Dearmor::Disabled)
-            .finalize();
+            .build();
         assert_match!(Ok(PacketParserResult::Some(ref _pp)) = ppr);
 
         let ppr = PacketParserBuilder::from_bytes(msg).unwrap()
             .dearmor(Dearmor::Auto(Default::default()))
-            .finalize();
+            .build();
         assert_match!(Ok(PacketParserResult::Some(ref _pp)) = ppr);
 
         let ppr = PacketParserBuilder::from_bytes(msg).unwrap()
             .dearmor(Dearmor::Enabled(Default::default()))
-            .finalize();
+            .build();
         assert_match!(Err(_) = ppr);
 
         // ASCII armor encoded data.
@@ -249,17 +249,17 @@ mod tests {
         // Make sure we can read the first packet.
         let ppr = PacketParserBuilder::from_bytes(msg).unwrap()
             .dearmor(Dearmor::Disabled)
-            .finalize();
+            .build();
         assert_match!(Err(_) = ppr);
 
         let ppr = PacketParserBuilder::from_bytes(msg).unwrap()
             .dearmor(Dearmor::Auto(Default::default()))
-            .finalize();
+            .build();
         assert_match!(Ok(PacketParserResult::Some(ref _pp)) = ppr);
 
         let ppr = PacketParserBuilder::from_bytes(msg).unwrap()
             .dearmor(Dearmor::Enabled(Default::default()))
-            .finalize();
+            .build();
         assert_match!(Ok(PacketParserResult::Some(ref _pp)) = ppr);
     }
 }
