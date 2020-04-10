@@ -5,7 +5,7 @@ use std::ops::{Deref, DerefMut};
 use std::fmt;
 
 use buffered_reader::BufferedReader;
-use nettle::random::{Random, Yarrow};
+use crate::crypto::primitives::random::{Random, Yarrow};
 
 use crate::types::HashAlgorithm;
 use crate::Result;
@@ -19,6 +19,7 @@ mod keygrip;
 pub use self::keygrip::Keygrip;
 pub mod mem;
 pub mod mpi;
+pub(crate) mod primitives;
 mod s2k;
 pub use s2k::S2K;
 pub mod sexp;

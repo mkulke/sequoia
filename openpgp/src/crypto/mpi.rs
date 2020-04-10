@@ -90,19 +90,19 @@ impl MPI {
     /// supported, `Error::MalformedMPI` if the point is formatted
     /// incorrectly.
     pub fn decode_point(&self, curve: &Curve) -> Result<(&[u8], &[u8])> {
-        use nettle::{ed25519, curve25519};
+        use crate::crypto::primitives::{ed25519, x25519};
         use self::Curve::*;
         match &curve {
             Ed25519 | Cv25519 => {
-                assert_eq!(curve25519::CURVE25519_SIZE,
+                assert_eq!(x25519::CURVE25519_SIZE,
                            ed25519::ED25519_KEY_SIZE);
                 // This curve uses a custom compression format which
                 // only contains the X coordinate.
-                if self.value().len() != 1 + curve25519::CURVE25519_SIZE {
+                if self.value().len() != 1 + x25519::CURVE25519_SIZE {
                     return Err(Error::MalformedMPI(
                         format!("Bad size of Curve25519 key: {} expected: {}",
                                 self.value().len(),
-                                1 + curve25519::CURVE25519_SIZE)).into());
+                                1 + x25519::CURVE25519_SIZE)).into());
                 }
 
                 if self.value().get(0).map(|&b| b != 0x40).unwrap_or(true) {

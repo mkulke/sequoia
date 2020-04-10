@@ -344,7 +344,7 @@ mod tests {
         use crate::types::Curve;
         use crate::packet::key;
         use crate::packet::key::Key4;
-        use nettle::curve25519;
+        use crate::crypto::primitives::x25519;
 
         // 20 byte sec key
         let mut sec = [
@@ -353,8 +353,8 @@ mod tests {
             0x1,0x2,0x2,0x2,0x2,0x2,0x2,0x2,0x2,0x2,
             0x1,0x2,0x2,0x2,0x2,0x2,0x2,0x2,0x0,0x0
         ];
-        let mut pnt = [0x40u8; curve25519::CURVE25519_SIZE + 1];
-        curve25519::mul_g(&mut pnt[1..], &sec[..]).unwrap();
+        let mut pnt = [0x40u8; x25519::CURVE25519_SIZE + 1];
+        x25519::mul_g(&mut pnt[1..], &sec[..]).unwrap();
         sec.reverse();
 
         let public_mpis = mpi::PublicKey::ECDH {

@@ -11,8 +11,8 @@ use crate::vec_truncate;
 
 use buffered_reader::BufferedReader;
 
-use nettle::cipher::{self, Cipher};
-use nettle::mode::{self, Mode};
+use crate::crypto::primitives::cipher::{self, Cipher};
+use crate::crypto::primitives::mode::{self, Mode};
 
 impl SymmetricAlgorithm {
     /// Length of a key for this algorithm in bytes.  Fails if Sequoia

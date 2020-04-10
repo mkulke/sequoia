@@ -2,7 +2,6 @@ use std::cmp;
 use std::fmt;
 use std::io;
 
-use nettle::{aead, cipher};
 use buffered_reader::BufferedReader;
 
 use crate::types::{
@@ -16,6 +15,7 @@ use crate::Error;
 use crate::Result;
 use crate::crypto::SessionKey;
 use crate::crypto::mem::secure_cmp;
+use crate::crypto::primitives::{aead, cipher};
 use crate::parse::Cookie;
 
 /// Disables authentication checks.

@@ -20,7 +20,7 @@ use crate::utils::{
 use crate::crypto::SessionKey;
 use crate::crypto::mem::Protected;
 use crate::crypto::mpi::{MPI, PublicKey, SecretKeyMaterial, Ciphertext};
-use nettle::{cipher, curve25519, mode, mode::Mode, ecc, ecdh, random::Yarrow};
+use crate::crypto::primitives::{cipher, x25519, mode, mode::Mode, ecc, ecdh, random::Yarrow};
 
 /// Wraps a session key using Elliptic Curve Diffie-Hellman.
 #[allow(non_snake_case)]
@@ -41,19 +41,19 @@ pub fn encrypt<R>(recipient: &Key<key::PublicParts, R>,
 
                 // Generate an ephemeral key pair {v, V=vG}
                 let v: Protected =
-                    curve25519::private_key(&mut rng).into();
+                    x25519::private_key(&mut rng).into();
 
                 // Compute the public key.  We need to add an encoding
                 // octet in front of the key.
-                let mut VB = [0x40; 1 + curve25519::CURVE25519_SIZE];
-                curve25519::mul_g(&mut VB[1..], &v)
+                let mut VB = [0x40; 1 + x25519::CURVE25519_SIZE];
+                x25519::mul_g(&mut VB[1..], &v)
                     .expect("buffers are of the wrong size");
                 let VB = MPI::new(&VB);
 
                 // Compute the shared point S = vR;
                 let mut S: Protected =
-                    vec![0; curve25519::CURVE25519_SIZE].into();
-                curve25519::mul(&mut S, &v, R)
+                    vec![0; x25519::CURVE25519_SIZE].into();
+                x25519::mul(&mut S, &v, R)
                     .expect("buffers are of the wrong size");
 
                 encrypt_shared(recipient, session_key, VB, &S)
@@ -204,9 +204,9 @@ pub fn decrypt<R>(recipient: &Key<key::PublicParts, R>,
                     //
                     // Reverse the scalar.  See
                     // https://lists.gnupg.org/pipermail/gnupg-devel/2018-February/033437.html.
-                    let missing = curve25519::CURVE25519_SIZE
+                    let missing = x25519::CURVE25519_SIZE
                         .saturating_sub(scalar.value().len());
-                    let mut r = [0u8; curve25519::CURVE25519_SIZE];
+                    let mut r = [0u8; x25519::CURVE25519_SIZE];
 
                     r[missing..].copy_from_slice(scalar.value());
                     r.reverse();
@@ -214,12 +214,12 @@ pub fn decrypt<R>(recipient: &Key<key::PublicParts, R>,
                     // Compute the shared point S = rV = rvG, where (r, R)
                     // is the recipient's key pair.
                     let mut S: Protected =
-                        vec![0; curve25519::CURVE25519_SIZE].into();
-                    let res = curve25519::mul(&mut S, &r[..], V);
+                        vec![0; x25519::CURVE25519_SIZE].into();
+                    let res = x25519::mul(&mut S, &r[..], V);
 
                     unsafe {
                         memsec::memzero(r.as_mut_ptr(),
-                        curve25519::CURVE25519_SIZE);
+                        x25519::CURVE25519_SIZE);
                     }
                     res.expect("buffers are of the wrong size");
                     S

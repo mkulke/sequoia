@@ -1030,10 +1030,10 @@ impl<R> Key4<SecretParts, R>
                               S: Into<Option<SymmetricAlgorithm>>,
                               T: Into<Option<time::SystemTime>>
     {
-        use nettle::curve25519::{self, CURVE25519_SIZE};
+        use crate::crypto::primitives::x25519::{self, CURVE25519_SIZE};
 
         let mut public_key = [0x40u8; CURVE25519_SIZE + 1];
-        curve25519::mul_g(&mut public_key[1..], private_key).unwrap();
+        x25519::mul_g(&mut public_key[1..], private_key).unwrap();
 
         let mut private_key = Vec::from(private_key);
         private_key.reverse();
@@ -1061,7 +1061,7 @@ impl<R> Key4<SecretParts, R>
     pub fn import_secret_ed25519<T>(private_key: &[u8], ctime: T)
         -> Result<Self> where T: Into<Option<time::SystemTime>>
     {
-        use nettle::ed25519::{self, ED25519_KEY_SIZE};
+        use crate::crypto::primitives::ed25519::{self, ED25519_KEY_SIZE};
 
         let mut public_key = [0x40u8; ED25519_KEY_SIZE + 1];
         ed25519::public_key(&mut public_key[1..], private_key).unwrap();
@@ -1086,7 +1086,7 @@ impl<R> Key4<SecretParts, R>
     pub fn import_secret_rsa<T>(d: &[u8], p: &[u8], q: &[u8], ctime: T)
         -> Result<Self> where T: Into<Option<time::SystemTime>>
     {
-        use nettle::rsa;
+        use crate::crypto::primitives::rsa;
 
         let sec = rsa::PrivateKey::new(d, p, q, None)?;
         let key = sec.public_key()?;
@@ -1109,7 +1109,7 @@ impl<R> Key4<SecretParts, R>
 
     /// Generates a new RSA key with a public modulos of size `bits`.
     pub fn generate_rsa(bits: usize) -> Result<Self> {
-        use nettle::{rsa, random::Yarrow};
+        use crate::crypto::primitives::{rsa, random::Yarrow};
         use crate::crypto::mpi::{MPI, PublicKey};
 
         let mut rng = Yarrow::default();
@@ -1141,10 +1141,10 @@ impl<R> Key4<SecretParts, R>
     /// `for_signing == false` and `curve == Ed25519`.
     /// signing/encryption
     pub fn generate_ecc(for_signing: bool, curve: Curve) -> Result<Self> {
-        use nettle::{
+        use crate::crypto::primitives::{
             random::Yarrow,
             ed25519, ed25519::ED25519_KEY_SIZE,
-            curve25519, curve25519::CURVE25519_SIZE,
+            x25519, x25519::CURVE25519_SIZE,
             ecc, ecdh, ecdsa,
         };
         use crate::crypto::mpi::{MPI, PublicKey};
@@ -1176,11 +1176,11 @@ impl<R> Key4<SecretParts, R>
             (Curve::Cv25519, false) => {
                 let mut public = [0u8; CURVE25519_SIZE + 1];
                 let mut private: Protected =
-                    curve25519::private_key(&mut rng).into();
+                    x25519::private_key(&mut rng).into();
 
                 public[0] = 0x40;
 
-                curve25519::mul_g(&mut public[1..], &private)?;
+                x25519::mul_g(&mut public[1..], &private)?;
 
                 // Reverse the scalar.  See
                 // https://lists.gnupg.org/pipermail/gnupg-devel/2018-February/033437.html.

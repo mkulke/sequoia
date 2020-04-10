@@ -1495,6 +1495,7 @@ mod test {
 
     #[test]
     fn sign_with_short_ed25519_secret_key() {
+        use crate::crypto::primitives::ed25519;
         // 20 byte sec key
         let sec = [
             0x0,0x0,
@@ -1502,8 +1503,8 @@ mod test {
             0x1,0x2,0x2,0x2,0x2,0x2,0x2,0x2,0x2,0x2,
             0x1,0x2,0x2,0x2,0x2,0x2,0x2,0x2,0x2,0x2
         ];
-        let mut pnt = [0x40u8; nettle::ed25519::ED25519_KEY_SIZE + 1];
-        nettle::ed25519::public_key(&mut pnt[1..], &sec[..]).unwrap();
+        let mut pnt = [0x40u8; ed25519::ED25519_KEY_SIZE + 1];
+        ed25519::public_key(&mut pnt[1..], &sec[..]).unwrap();
 
         let public_mpis = mpi::PublicKey::EdDSA {
             curve: Curve::Ed25519,
