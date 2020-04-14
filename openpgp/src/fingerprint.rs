@@ -7,14 +7,22 @@ use quickcheck::{Arbitrary, Gen};
 /// about how a fingerprint is generated, see [Section 12.2 of RFC
 /// 4880].
 ///
+/// See also [`Fingerprint`], [`KeyHandle`].
+///
 ///   [Section 12.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-12.2
+///
+///   [`Fingerprint`]: ./Enum.Fingerprint.html
+///   [`KeyHandle`]: ./Enum.KeyHandle.html
+///
+/// # Example
+/// TODO: signature.issuer
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
 pub enum Fingerprint {
-    /// 20 byte SHA-1 hash.
+    /// A 20 byte SHA-1 hash of the public key packet as defined in the RFC.
     V4([u8;20]),
-    /// Used for holding fingerprints that we don't understand.  For
-    /// instance, we don't grok v3 fingerprints.  And, it is possible
-    /// that the Issuer subpacket contains the wrong number of bytes.
+    /// Used for holding fingerprint data that does not conform to
+    /// the specification of a V4 fingerprint, e.g. a V3 fingerprint
+    /// (deprecated) or otherwise wrong-length data.
     Invalid(Box<[u8]>)
 }
 
@@ -60,7 +68,7 @@ impl Fingerprint {
     /// # Examples
     ///
     /// ```rust
-    /// # extern crate sequoia_openpgp as openpgp;
+    /// # use sequoia_openpgp as openpgp;
     /// # use openpgp::Result;
     /// use openpgp::Fingerprint;
     ///
@@ -88,7 +96,7 @@ impl Fingerprint {
     /// # Examples
     ///
     /// ```rust
-    /// # extern crate sequoia_openpgp as openpgp;
+    /// # use sequoia_openpgp as openpgp;
     /// # use openpgp::Result;
     /// use openpgp::Fingerprint;
     ///
@@ -211,7 +219,7 @@ impl Fingerprint {
     /// # Examples
     ///
     /// ```rust
-    /// # extern crate sequoia_openpgp as openpgp;
+    /// # use sequoia_openpgp as openpgp;
     /// # use openpgp::Result;
     /// use openpgp::Fingerprint;
     ///

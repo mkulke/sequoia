@@ -12,7 +12,43 @@ use crate::{
 
 /// Identifies certificates and keys.
 ///
-/// A `KeyHandle` is either a `Fingerprint` or a `KeyID`.
+/// A `KeyHandle` is either a [`Fingerprint`] or a [`KeyHandle`].
+///
+///   [Section 12.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-12.2
+///
+///   [`Fingerprint`]: ./Enum.Fingerprint.html
+///   [`KeyHandle`]: ./Enum.KeyHandle.html
+/// # Examples
+///
+/// ```ignore
+/// # use sequoia_openpgp as openpgp;
+/// # use openpgp::Result;
+/// # use openpgp::{Fingerprint, KeyHandle};
+/// # use openpgp::crypto::KeyPair;
+/// # use openpgp::types::{Curve, SignatureType};
+/// # use openpgp::packet::signature::Builder;
+/// #
+/// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+/// # fn load_certs() -> Vec<openpgp::Cert> {
+/// #   Vec::new()
+/// # }
+/// # fn load_signature() -> openpgp::packet::Signature {
+/// # panic!()
+/// # }
+///
+/// let key: Fingerprint = "0123 4567 89AB CDEF 0123 4567 89AB CDEF 0123 4567".parse()?;
+///
+/// let signature = load_signature();
+/// let certs: Vec<openpgp::Cert> = load_certs();
+///
+/// let issuers = signature.get_issuers();
+///
+/// let foo = certs
+///   .iter()
+///   .filter(|cert| issuers.iter().any(|issuer_kh| issuer_kh.aliases(&cert.key_handle())));
+/// # return Ok(());
+/// # }
+/// ```
 #[derive(Debug, Clone, Hash)]
 pub enum KeyHandle {
     /// A Fingerprint.
@@ -146,7 +182,7 @@ impl PartialEq for KeyHandle {
 }
 
 impl KeyHandle {
-    /// Returns a reference to the raw identifier.
+    /// Returns the raw identifier as a byte slice.
     pub fn as_bytes(&self) -> &[u8] {
         match self {
             KeyHandle::Fingerprint(i) => i.as_bytes(),

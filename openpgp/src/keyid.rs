@@ -11,7 +11,12 @@ use crate::Result;
 /// but is easy to forge.  For more details about how a `KeyID` is
 /// generated, see [Section 12.2 of RFC 4880].
 ///
+/// See also [`Fingerprint`], [`KeyHandle`].
+///
 ///   [Section 12.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-12.2
+///
+///   [`Fingerprint`]: ./Enum.Fingerprint.html
+///   [`KeyHandle`]: ./Enum.KeyHandle.html
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
 pub enum KeyID {
     /// Lower 8 byte SHA-1 hash.
@@ -138,9 +143,9 @@ impl KeyID {
     /// # extern crate sequoia_openpgp as openpgp;
     /// use openpgp::KeyID;
     ///
-    /// let keyid = KeyID::new(0x123456789ABCDEF1);
+    /// let keyid = KeyID::new(0x0123456789ABCDEF);
     ///
-    /// assert_eq!(keyid.as_u64().unwrap(), 0x123456789ABCDEF1);
+    /// assert_eq!(keyid.as_u64().unwrap(), 0x0123456789ABCDEF);
     /// ```
     pub fn as_u64(&self) -> Result<u64> {
         match &self {
@@ -159,10 +164,13 @@ impl KeyID {
     /// # extern crate sequoia_openpgp as openpgp;
     /// use openpgp::KeyID;
     ///
-    /// let bytes = [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF1];
-    /// let keyid = KeyID::from_bytes(&bytes);
+    /// # fn main() -> sequoia_openpgp::Result<()> {
+    /// let keyid: KeyID = "0123 4567 89AB CDEF".parse()?;
     ///
-    /// assert_eq!(keyid, KeyID::new(0x123456789ABCDEF1u64));
+    /// let bytes = [0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF];
+    /// assert_eq!(KeyID::from_bytes(&bytes), keyid);
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn from_bytes(raw: &[u8]) -> KeyID {
         if raw.len() == 8 {
@@ -180,13 +188,15 @@ impl KeyID {
     /// # Examples
     ///
     /// ```rust
-    /// # extern crate sequoia_openpgp as openpgp;
-    /// # use openpgp::Result;
+    /// # use sequoia_openpgp as openpgp;
     /// use openpgp::KeyID;
     ///
-    /// let keyid = KeyID::new(0x123456789ABCDEF1);
+    /// # fn main() -> sequoia_openpgp::Result<()> {
+    /// let keyid: KeyID = "0123 4567 89AB CDEF".parse()?;
     ///
-    /// assert_eq!(keyid.as_bytes(), [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF1]);
+    /// assert_eq!(keyid.as_bytes(), [0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF]);
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn as_bytes(&self) -> &[u8] {
         match self {
@@ -204,7 +214,7 @@ impl KeyID {
     /// # Examples
     ///
     /// ```rust
-    /// # extern crate sequoia_openpgp as openpgp;
+    /// # use sequoia_openpgp as openpgp;
     /// # use openpgp::Result;
     /// use openpgp::KeyID;
     ///
@@ -225,7 +235,7 @@ impl KeyID {
     /// # Examples
     ///
     /// ```rust
-    /// # extern crate sequoia_openpgp as openpgp;
+    /// # use sequoia_openpgp as openpgp;
     /// # use openpgp::Result;
     /// use openpgp::KeyID;
     ///
