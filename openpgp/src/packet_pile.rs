@@ -18,7 +18,7 @@ use crate::parse::PacketParserBuilder;
 use crate::parse::Parse;
 use crate::parse::Cookie;
 
-/// An unstructured packet sequence.
+/// An unstructured [packet] sequence.
 ///
 /// To deserialize an OpenPGP packet stream, use either
 /// [`PacketParser`], [`PacketPileParser`], or
@@ -27,9 +27,76 @@ use crate::parse::Cookie;
 /// Normally, you'll want to convert the `PacketPile` to a Cert or a
 /// `Message`.
 ///
+/// # Example
+///
+/// This example shows how to modify packets in PacketPile using [`pathspec`]s.
+///
+/// ```rust
+/// # extern crate sequoia_openpgp as openpgp;
+/// use openpgp::{Packet, PacketPile};
+/// use openpgp::packet::signature::Signature4;
+/// use openpgp::packet::Signature;
+/// use openpgp::cert::prelude::*;
+/// use openpgp::parse::Parse;
+/// use openpgp::serialize::Serialize;
+/// use openpgp::policy::StandardPolicy;
+/// use openpgp::crypto::mpi;
+/// use openpgp::types::RevocationStatus::{Revoked, CouldBe};
+///
+/// # fn main() { f().unwrap(); }
+/// # fn f() -> openpgp::Result<()> {
+/// let (cert, revocation) = CertBuilder::new().generate()?;
+///
+/// let mut buffer = Vec::new();
+/// cert.serialize(&mut buffer)?;
+/// let packet: Packet = revocation.into();
+/// packet.serialize(&mut buffer)?;
+///
+/// let policy = &StandardPolicy::new();
+///
+/// // Certificate is considered revoked because it is accompanied with its
+/// // revocation signature
+/// let pp: PacketPile = PacketPile::from_bytes(&buffer)?;
+/// let cert = Cert::from_packet_pile(pp)?;
+/// if let Revoked(_) = cert.revoked(policy, None) {
+///     // cert is considered revoked
+/// }
+/// # else {
+/// #     unreachable!();
+/// # }
+///
+/// // Breaking the revocation signature changes certificate's status
+/// let mut pp: PacketPile = PacketPile::from_bytes(&buffer)?;
+/// if let Some(Packet::Signature(ref mut sig)) = pp.path_ref_mut(&[2]) {
+///     *sig = Signature4::new(
+///         sig.typ(),
+///         sig.pk_algo(),
+///         sig.hash_algo(),
+///         sig.hashed_area().clone(),
+///         sig.unhashed_area().clone(),
+///         *sig.digest_prefix(),
+///         // MPI is replaced with a dummy one
+///         mpi::Signature::RSA {
+///             s: mpi::MPI::from(vec![1, 2, 3])
+///         }).into();
+/// }
+///
+/// let cert = Cert::from_packet_pile(pp)?;
+/// if let CouldBe(_) = cert.revoked(policy, None) {
+///     // revocation signature is broken and the key is not definitely revoked
+/// }
+/// # else {
+/// #   unreachable!();
+/// # }
+/// #     Ok(())
+/// # }
+/// ```
+///
+///   [packet]: https://tools.ietf.org/html/rfc4880#section-4
 ///   [`PacketParser`]: parse/struct.PacketParser.html
 ///   [`PacketPileParser`]: parse/struct.PacketPileParser.html
 ///   [`PacketPile::from_file`]: struct.PacketPile.html#method.from_file
+///   [`pathspec`]: struct.PacketPile.html#method.path_ref
 #[derive(PartialEq, Clone, Default)]
 pub struct PacketPile {
     /// At the top level, we have a sequence of packets, which may be
@@ -153,6 +220,36 @@ impl PacketPile {
     ///
     /// Note: there is no packet at the root.  Thus, the path `[]`
     /// returns None.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # extern crate sequoia_openpgp as openpgp;
+    /// # use openpgp::{Result, types::{CompressionAlgorithm, DataFormat},
+    /// #     Packet, PacketPile, packet::Literal, packet::CompressedData};
+    /// # fn main() { f().unwrap(); }
+    /// # fn f() -> Result<()> {
+    /// # let mut lit = Literal::new(DataFormat::Text);
+    /// # lit.set_body(b"test".to_vec());
+    /// # let packets = vec![ lit.into() ];
+    /// let pile = PacketPile::from(packets);
+    ///
+    /// if let Some(packet) = pile.path_ref(&[0]) {
+    ///     // There is a packet at this path.
+    /// }
+    /// # else {
+    /// #     unreachable!();
+    /// # }
+    ///
+    /// if let None = pile.path_ref(&[0, 1, 2]) {
+    ///     // But none here.
+    /// }
+    /// # else {
+    /// #     unreachable!();
+    /// # }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn path_ref(&self, pathspec: &[usize]) -> Option<&Packet> {
         let mut packet : Option<&Packet> = None;
 
@@ -178,6 +275,36 @@ impl PacketPile {
     /// described by `pathspec`.
     ///
     /// See the description of the `path_spec` for more details.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # extern crate sequoia_openpgp as openpgp;
+    /// # use openpgp::{Result, types::{CompressionAlgorithm, DataFormat},
+    /// #     Packet, PacketPile, packet::Literal, packet::CompressedData};
+    /// # fn main() { f().unwrap(); }
+    /// # fn f() -> Result<()> {
+    /// # let mut lit = Literal::new(DataFormat::Text);
+    /// # lit.set_body(b"test".to_vec());
+    /// # let packets = vec![ lit.into() ];
+    /// let mut pile = PacketPile::from(packets);
+    ///
+    /// if let Some(ref packet) = pile.path_ref_mut(&[0]) {
+    ///     // There is a packet at this path.
+    /// }
+    /// # else {
+    /// #     unreachable!();
+    /// # }
+    ///
+    /// if let None = pile.path_ref_mut(&[0, 1, 2]) {
+    ///     // But none here.
+    /// }
+    /// # else {
+    /// #     unreachable!();
+    /// # }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn path_ref_mut(&mut self, pathspec: &[usize]) -> Option<&mut Packet> {
         let mut container = &mut self.top_level;
 
@@ -216,7 +343,6 @@ impl PacketPile {
     /// # extern crate sequoia_openpgp as openpgp;
     /// # use openpgp::{Result, types::{CompressionAlgorithm, DataFormat},
     /// #     Packet, PacketPile, packet::Literal, packet::CompressedData};
-    ///
     /// # fn main() { f().unwrap(); }
     /// # fn f() -> Result<()> {
     /// // A compressed data packet that contains a literal data packet.
@@ -300,11 +426,46 @@ impl PacketPile {
 
     /// Returns an iterator over all of the packet's descendants, in
     /// depth-first order.
+    ///
+    /// ```rust
+    /// # extern crate sequoia_openpgp as openpgp;
+    /// # use openpgp::{Result, types::{CompressionAlgorithm, DataFormat},
+    /// #     Packet, PacketPile, packet::Literal, packet::Tag};
+    /// # use std::iter::Iterator;
+    /// # fn main() { f().unwrap(); }
+    /// # fn f() -> Result<()> {
+    /// let mut lit = Literal::new(DataFormat::Text);
+    /// lit.set_body(b"test".to_vec());
+    ///
+    /// let pile = PacketPile::from(vec![ lit.into() ]);
+    ///
+    /// for packet in pile.descendants() {
+    ///     assert_eq!(packet.tag(), Tag::Literal);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn descendants(&self) -> packet::Iter {
         self.top_level.descendants().expect("toplevel is a container")
     }
 
     /// Returns an iterator over the top-level packets.
+    ///
+    /// ```rust
+    /// # extern crate sequoia_openpgp as openpgp;
+    /// # use openpgp::{Result, types::{CompressionAlgorithm, DataFormat},
+    /// #     Packet, PacketPile, packet::Literal, packet::CompressedData};
+    /// # fn main() { f().unwrap(); }
+    /// # fn f() -> Result<()> {
+    /// let mut lit = Literal::new(DataFormat::Text);
+    /// lit.set_body(b"test".to_vec());
+    ///
+    /// let pile = PacketPile::from(vec![ lit.into() ]);
+    ///
+    /// assert_eq!(pile.children().len(), 1);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn children(&self)
         -> impl Iterator<Item=&Packet> + ExactSizeIterator
     {
@@ -312,6 +473,24 @@ impl PacketPile {
     }
 
     /// Returns an `IntoIter` over the top-level packets.
+    ///
+    /// ```rust
+    /// # extern crate sequoia_openpgp as openpgp;
+    /// # use openpgp::{Result, types::{CompressionAlgorithm, DataFormat},
+    /// #     Packet, PacketPile, packet::Literal, packet::Tag};
+    /// # fn main() { f().unwrap(); }
+    /// # fn f() -> Result<()> {
+    /// let mut lit = Literal::new(DataFormat::Text);
+    /// lit.set_body(b"test".to_vec());
+    ///
+    /// let pile = PacketPile::from(vec![ lit.into() ]);
+    ///
+    /// for packet in pile.into_children() {
+    ///     assert_eq!(packet.tag(), Tag::Literal);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn into_children(self)
         -> impl Iterator<Item=Packet> + ExactSizeIterator
     {
