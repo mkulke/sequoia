@@ -8,11 +8,11 @@
 //!
 //!   [Section 11.3 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-11.3
 //!
-//! To use this interface, a sink implementing [`io::Write`] is wrapped
-//! by [`Message::new`] returning an [`writer::Stack`].  The writer
-//! stack is a structure to compose filters that create the desired
-//! message structure.  There are a number of filters that can be
-//! freely combined:
+//! To use this interface, a sink implementing [`io::Write`] is
+//! wrapped by [`Message::new`] returning a streaming [`Message`].
+//! The writer stack is a structure to compose filters that create the
+//! desired message structure.  There are a number of filters that can
+//! be freely combined:
 //!
 //!   - [`Encryptor`] encrypts data fed into it,
 //!   - [`Compressor`] compresses data,
@@ -25,7 +25,7 @@
 //!
 //!   [`io::Write`]: https://doc.rust-lang.org/nightly/std/io/trait.Write.html
 //!   [`Message::new`]: struct.Message.html#method.new
-//!   [`writer::Stack`]: ../writer/struct.Stack.html
+//!   [`Message`]: struct.Message.html
 //!   [`Encryptor`]: struct.Encryptor.html
 //!   [`Compressor`]: struct.Compressor.html
 //!   [`Padder`]: padding/struct.Padder.html
@@ -355,6 +355,7 @@ impl<'a> ArbitraryWriter<'a> {
     ///     message.write_all(b"\x00")?;                // filename length
     ///     message.write_all(b"\x00\x00\x00\x00")?;    // date
     ///     message.write_all(b"Hello world.")?;        // body
+    ///     message.finalize()?;
     /// }
     /// assert_eq!(b"\xcb\x12t\x00\x00\x00\x00\x00Hello world.",
     ///            sink.as_slice());
@@ -896,12 +897,6 @@ impl<'a> Signer<'a> {
             }
         }
         Ok(())
-    }
-}
-
-impl<'a> Drop for Signer<'a> {
-    fn drop(&mut self) {
-        let _ = self.emit_signatures();
     }
 }
 
@@ -1769,6 +1764,11 @@ impl<'a> Recipient<'a> {
 /// will be encrypted using the given passwords, and for all given
 /// recipients.
 pub struct Encryptor<'a> {
+    // XXX: Opportunity for optimization.  Previously, this writer
+    // implemented `Drop`, so we could not move the inner writer out
+    // of this writer.  We therefore wrapped it with `Option` so that
+    // we can `take()` it.  This writer no longer implements Drop, so
+    // we could avoid the Option here.
     inner: Option<writer::BoxStack<'a, Cookie>>,
     recipients: Vec<Recipient<'a>>,
     passwords: Vec<Password>,
@@ -2313,12 +2313,6 @@ impl<'a> Encryptor<'a> {
     }
 }
 
-impl<'a> Drop for Encryptor<'a> {
-    fn drop(&mut self) {
-        let _ = self.emit_mdc();
-    }
-}
-
 impl<'a> fmt::Debug for Encryptor<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("Encryptor")
@@ -2402,6 +2396,7 @@ mod test {
             ustr.write_all(b"\x00").unwrap(); // fn length
             ustr.write_all(b"\x00\x00\x00\x00").unwrap(); // date
             ustr.write_all(b"Hello world.").unwrap(); // body
+            ustr.finalize().unwrap();
         }
 
         let mut pp = PacketParser::from_bytes(&o).unwrap().unwrap();
@@ -2458,6 +2453,7 @@ mod test {
             let c = c.finalize_one().unwrap().unwrap(); // Pop the Compressor.
             let mut ls = LiteralWriter::new(c).format(T).build().unwrap();
             write!(ls, "three").unwrap();
+            ls.finalize().unwrap();
         }
 
         let pile = PacketPile::from(reference);
@@ -2524,6 +2520,7 @@ mod test {
             let c = ls.finalize_one().unwrap().unwrap();
             let mut ls = LiteralWriter::new(c).format(T).build().unwrap();
             write!(ls, "four").unwrap();
+            ls.finalize().unwrap();
         }
 
         let pile = PacketPile::from(reference);
@@ -2623,6 +2620,7 @@ mod test {
             let mut literal = LiteralWriter::new(encryptor).build()
                 .unwrap();
             literal.write_all(message).unwrap();
+            literal.finalize().unwrap();
         }
 
         // ... and recover it...
@@ -2809,7 +2807,7 @@ mod test {
                     let mut literal = LiteralWriter::new(encryptor).build()
                         .unwrap();
                     literal.write_all(&content).unwrap();
-                    // literal.finalize().unwrap();
+                    literal.finalize().unwrap();
                 }
 
                 for &read_len in &[

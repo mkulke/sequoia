@@ -140,7 +140,7 @@ impl Kind {
 
 /// A filter that applies ASCII Armor to the data written to it.
 pub struct Writer<W: Write> {
-    sink: Option<W>,
+    sink: W,
     kind: Kind,
     stash: Vec<u8>,
     column: usize,
@@ -152,12 +152,33 @@ pub struct Writer<W: Write> {
 impl<W: Write> Writer<W> {
     /// Constructs a new filter for the given type of data.
     ///
-    /// Note: To ensure that we can handle errors during writing of
-    /// the armor footer, this object must be consumed by calling
-    /// [`Writer::finalize()`].  If the object is dropped without
-    /// being finalized, we will panic in debug builds.
+    /// # Example
     ///
-    ///   [`Writer::finalize()`]: #method.finalize
+    /// ```
+    /// use std::io::{Read, Write, Cursor};
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::armor::{Writer, Kind};
+    /// # fn main() { f().unwrap(); }
+    /// # fn f() -> std::io::Result<()> {
+    /// let mut writer = Writer::new(Vec::new(), Kind::File)?;
+    /// writer.write_all(b"Hello world!")?;
+    /// let buffer = writer.finalize()?;
+    /// assert_eq!(
+    ///     String::from_utf8_lossy(&buffer),
+    ///     "-----BEGIN PGP ARMORED FILE-----
+    ///
+    /// SGVsbG8gd29ybGQh
+    /// =s4Gu
+    /// -----END PGP ARMORED FILE-----
+    /// ");
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn new(inner: W, kind: Kind) -> Result<Self> {
+        Self::with_headers(inner, kind, Option::<(&str, &str)>::None)
+    }
+
+    /// Constructs a new filter for the given type of data.
     ///
     /// # Example
     ///
@@ -167,8 +188,8 @@ impl<W: Write> Writer<W> {
     /// use openpgp::armor::{Writer, Kind};
     /// # fn main() { f().unwrap(); }
     /// # fn f() -> std::io::Result<()> {
-    /// let mut writer = Writer::new(Vec::new(), Kind::File,
-    ///     &[ ("Key", "Value") ][..])?;
+    /// let mut writer = Writer::with_headers(Vec::new(), Kind::File,
+    ///     vec![ ("Key", "Value") ])?;
     /// writer.write_all(b"Hello world!")?;
     /// let buffer = writer.finalize()?;
     /// assert_eq!(
@@ -183,9 +204,14 @@ impl<W: Write> Writer<W> {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn new(inner: W, kind: Kind, headers: &[(&str, &str)]) -> Result<Self> {
+    pub fn with_headers<I, K, V>(inner: W, kind: Kind, headers: I)
+                                 -> Result<Self>
+        where I: IntoIterator<Item = (K, V)>,
+              K: AsRef<str>,
+              V: AsRef<str>,
+    {
         let mut w = Writer {
-            sink: Some(inner),
+            sink: inner,
             kind,
             stash: Vec::<u8>::with_capacity(2),
             column: 0,
@@ -199,7 +225,8 @@ impl<W: Write> Writer<W> {
             write!(&mut cur, "{}{}", kind.begin(), LINE_ENDING)?;
 
             for h in headers {
-                write!(&mut cur, "{}: {}{}", h.0, h.1, LINE_ENDING)?;
+                write!(&mut cur, "{}: {}{}", h.0.as_ref(), h.1.as_ref(),
+                       LINE_ENDING)?;
             }
 
             // A blank line separates the headers from the body.
@@ -209,15 +236,10 @@ impl<W: Write> Writer<W> {
         Ok(w)
     }
 
-    fn e_finalized() -> Error {
-        Error::new(ErrorKind::BrokenPipe, "Writer is finalized.")
-    }
-
     fn finalize_headers(&mut self) -> Result<()> {
         if ! self.dirty {
             self.dirty = true;
-            self.sink.as_mut().ok_or_else(Self::e_finalized)?
-                .write_all(&self.header)?;
+            self.sink.write_all(&self.header)?;
             // Release memory.
             crate::vec_truncate(&mut self.header, 0);
             self.header.shrink_to_fit();
@@ -233,20 +255,10 @@ impl<W: Write> Writer<W> {
     pub fn finalize(mut self) -> Result<W> {
         if ! self.dirty {
             // No data was written to us, don't emit anything.
-            return Ok(self.sink.take().ok_or_else(Self::e_finalized)?);
+            return Ok(self.sink);
         }
-
-        // We need to clear self.sink if this succeeds or not, so be
-        // careful with the result here.  Otherwise, self.sink may
-        // still be present when the object is really dropped,
-        // invoking finalize_armor again.
-        let r = self.finalize_armor();
-        let sink = self.sink.take();
-        if let Err(e) = r {
-            Err(e)
-        } else {
-            sink.ok_or(Self::e_finalized())
-        }
+        self.finalize_armor()?;
+        Ok(self.sink)
     }
 
     /// Writes the footer.
@@ -256,55 +268,51 @@ impl<W: Write> Writer<W> {
             return Ok(());
         }
         self.finalize_headers()?;
-        if let Some(sink) = self.sink.as_mut() {
-            // Write any stashed bytes and pad.
-            if self.stash.len() > 0 {
-                sink.write_all(base64::encode_config(
-                    &self.stash, base64::STANDARD).as_bytes())?;
-                self.column += 4;
-            }
 
-            // Inserts a line break if necessary.
-            //
-            // Unfortunately, we cannot use
-            //self.linebreak()?;
-            //
-            // Therefore, we inline it here.  This is a bit sad.
-            assert!(self.column <= LINE_LENGTH);
-            if self.column == LINE_LENGTH {
-                write!(sink, "{}", LINE_ENDING)?;
-                self.column = 0;
-            }
-
-            if self.column > 0 {
-                write!(sink, "{}", LINE_ENDING)?;
-            }
-
-            let crc = self.crc.finalize();
-            let bytes: [u8; 3] = [
-                (crc >> 16) as u8,
-                (crc >>  8) as u8,
-                (crc >>  0) as u8,
-            ];
-
-            // CRC and footer.
-            write!(sink, "={}{}{}{}",
-                   base64::encode_config(&bytes, base64::STANDARD_NO_PAD),
-                   LINE_ENDING, self.kind.end(), LINE_ENDING)?;
-
-            self.dirty = false;
-            Ok(())
-        } else {
-            Err(Self::e_finalized())
+        // Write any stashed bytes and pad.
+        if self.stash.len() > 0 {
+            self.sink.write_all(base64::encode_config(
+                &self.stash, base64::STANDARD).as_bytes())?;
+            self.column += 4;
         }
+
+        // Inserts a line break if necessary.
+        //
+        // Unfortunately, we cannot use
+        //self.linebreak()?;
+        //
+        // Therefore, we inline it here.  This is a bit sad.
+        assert!(self.column <= LINE_LENGTH);
+        if self.column == LINE_LENGTH {
+            write!(self.sink, "{}", LINE_ENDING)?;
+            self.column = 0;
+        }
+
+        if self.column > 0 {
+            write!(self.sink, "{}", LINE_ENDING)?;
+        }
+
+        let crc = self.crc.finalize();
+        let bytes: [u8; 3] = [
+            (crc >> 16) as u8,
+            (crc >>  8) as u8,
+            (crc >>  0) as u8,
+        ];
+
+        // CRC and footer.
+        write!(self.sink, "={}{}{}{}",
+               base64::encode_config(&bytes, base64::STANDARD_NO_PAD),
+               LINE_ENDING, self.kind.end(), LINE_ENDING)?;
+
+        self.dirty = false;
+        Ok(())
     }
 
     /// Inserts a line break if necessary.
     fn linebreak(&mut self) -> Result<()> {
         assert!(self.column <= LINE_LENGTH);
         if self.column == LINE_LENGTH {
-            write!(self.sink.as_mut().ok_or_else(Self::e_finalized)?,
-                   "{}", LINE_ENDING)?;
+            write!(self.sink, "{}", LINE_ENDING)?;
             self.column = 0;
         }
         Ok(())
@@ -341,7 +349,7 @@ impl<W: Write> Write for Writer<W> {
 
             // If this fails for some reason, and the caller retries
             // the write, we might end up with a stash of size 3.
-            self.sink.as_mut().ok_or_else(Self::e_finalized)?
+            self.sink
                 .write_all(base64::encode_config(
                     &self.stash, base64::STANDARD_NO_PAD).as_bytes())?;
             self.column += 4;
@@ -367,7 +375,7 @@ impl<W: Write> Write for Writer<W> {
         let mut enc = encoded.as_bytes();
         while enc.len() > 0 {
             let n = cmp::min(LINE_LENGTH - self.column, enc.len());
-            self.sink.as_mut().ok_or_else(Self::e_finalized)?
+            self.sink
                 .write_all(&enc[..n])?;
             enc = &enc[n..];
             self.column += n;
@@ -379,16 +387,7 @@ impl<W: Write> Write for Writer<W> {
     }
 
     fn flush(&mut self) -> Result<()> {
-        self.sink.as_mut().ok_or_else(Self::e_finalized)?.flush()
-    }
-}
-
-impl<W: Write> Drop for Writer<W> {
-    fn drop(&mut self) {
-        debug_assert!(self.sink.is_none(),
-                      "armor writer dropped without being finalized, \
-                       use armor::Writer::finalize()");
-        let _ = self.finalize_armor();
+        self.sink.flush()
     }
 }
 
@@ -1329,7 +1328,7 @@ mod test {
     fn enarmor() {
         for (bin, asc) in TEST_BIN.iter().zip(TEST_ASC.iter()) {
             let mut w =
-                Writer::new(Vec::new(), Kind::File, &[]).unwrap();
+                Writer::new(Vec::new(), Kind::File).unwrap();
             w.write(&[]).unwrap();  // Avoid zero-length optimization.
             w.write_all(bin).unwrap();
             let buf = w.finalize().unwrap();
@@ -1341,7 +1340,7 @@ mod test {
     #[test]
     fn enarmor_bytewise() {
         for (bin, asc) in TEST_BIN.iter().zip(TEST_ASC.iter()) {
-            let mut w = Writer::new(Vec::new(), Kind::File, &[]).unwrap();
+            let mut w = Writer::new(Vec::new(), Kind::File).unwrap();
             w.write(&[]).unwrap();  // Avoid zero-length optimization.
             for b in bin.iter() {
                 w.write(&[*b]).unwrap();
@@ -1356,12 +1355,12 @@ mod test {
     fn drop_writer() {
         // No ASCII frame shall be emitted if the writer is dropped
         // unused.
-        assert!(Writer::new(Vec::new(), Kind::File, &[]).unwrap()
+        assert!(Writer::new(Vec::new(), Kind::File).unwrap()
                 .finalize().unwrap().is_empty());
 
         // However, if the user insists, we will encode a zero-byte
         // string.
-        let mut w = Writer::new(Vec::new(), Kind::File, &[]).unwrap();
+        let mut w = Writer::new(Vec::new(), Kind::File).unwrap();
         w.write(&[]).unwrap();
         let buf = w.finalize().unwrap();
         assert_eq!(
@@ -1602,7 +1601,7 @@ mod test {
                 return true;
             }
 
-            let mut w = Writer::new(Vec::new(), kind, &[]).unwrap();
+            let mut w = Writer::new(Vec::new(), kind).unwrap();
             w.write_all(&payload).unwrap();
             let encoded = w.finalize().unwrap();
 
