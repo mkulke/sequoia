@@ -1,8 +1,9 @@
 //! ASCII Armor.
 //!
-//! This module deals with ASCII Armored data (see [RFC 4880, section 6]).
+//! This module deals with ASCII Armored data (see [Section 6 of RFC
+//! 4880]).
 //!
-//! [RFC 4880, section 6]: https://tools.ietf.org/html/rfc4880#section-6
+//!   [Section 6 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-6
 //!
 //! # Scope
 //!
@@ -234,6 +235,16 @@ impl<W: Write> Writer<W> {
         }
 
         Ok(w)
+    }
+
+    /// Returns a reference to the inner writer.
+    pub fn get_ref(&self) -> &W {
+        &self.sink
+    }
+
+    /// Returns a mutable reference to the inner writer.
+    pub fn get_mut(&mut self) -> &mut W {
+        &mut self.sink
     }
 
     fn finalize_headers(&mut self) -> Result<()> {

@@ -85,17 +85,13 @@ fn get_signing_keys(certs: &[openpgp::Cert], p: &dyn Policy,
     Ok(keys)
 }
 
-pub fn encrypt(policy: &dyn Policy,
-               mapping: &mut store::Mapping,
-               input: &mut dyn io::Read, output: &mut dyn io::Write,
-               npasswords: usize, recipients: Vec<&str>,
-               mut certs: Vec<openpgp::Cert>, signers: Vec<openpgp::Cert>,
-               mode: openpgp::types::KeyFlags, compression: &str,
-               time: Option<SystemTime>)
-               -> Result<()> {
-    for r in recipients {
-        certs.push(mapping.lookup(r).context("No such key found")?.cert()?);
-    }
+pub fn encrypt<'a>(policy: &'a dyn Policy,
+                   input: &mut dyn io::Read, message: Message<'a>,
+                   npasswords: usize, recipients: &'a [openpgp::Cert],
+                   signers: Vec<openpgp::Cert>,
+                   mode: openpgp::types::KeyFlags, compression: &str,
+                   time: Option<SystemTime>)
+                   -> Result<()> {
     let mut passwords: Vec<crypto::Password> = Vec::with_capacity(npasswords);
     for n in 0..npasswords {
         let nprompt = format!("Enter password {}: ", n + 1);
@@ -107,19 +103,16 @@ pub fn encrypt(policy: &dyn Policy,
             }))?.into());
     }
 
-    if certs.len() + passwords.len() == 0 {
+    if recipients.len() + passwords.len() == 0 {
         return Err(anyhow::anyhow!(
             "Neither recipient nor password given"));
     }
 
     let mut signers = get_signing_keys(&signers, policy, time)?;
 
-    // Build a vector of references to hand to Signer.
-    let recipients: Vec<&openpgp::Cert> = certs.iter().collect();
-
     // Build a vector of recipients to hand to Encryptor.
     let mut recipient_subkeys: Vec<Recipient> = Vec::new();
-    for cert in certs.iter() {
+    for cert in recipients.iter() {
         let mut count = 0;
         for key in cert.keys().with_policy(policy, None).alive().revoked(false)
             .key_flags(&mode).map(|ka| ka.key())
@@ -132,9 +125,6 @@ pub fn encrypt(policy: &dyn Policy,
                 "Key {} has no suitable encryption key", cert));
         }
     }
-
-    // Stream an OpenPGP message.
-    let message = Message::new(output);
 
     // We want to encrypt a literal data packet.
     let mut encryptor =
@@ -167,7 +157,7 @@ pub fn encrypt(policy: &dyn Policy,
                 signer = signer.creation_time(time);
             }
         }
-        for r in recipients {
+        for r in recipients.iter() {
             signer = signer.add_intended_recipient(r);
         }
         sink = signer.build()?;
