@@ -3,16 +3,18 @@ use quickcheck::{Arbitrary, Gen};
 
 /// A long identifier for certificates and keys.
 ///
-/// A fingerprint uniquely identifies a public key.  For more details
-/// about how a fingerprint is generated, see [Section 12.2 of RFC
-/// 4880].
+/// A `Fingerprint` uniquely identifies a public key.
+/// Essentially, it is a SHA-1 digest over the key's public key packet.
 ///
-/// See also [`Fingerprint`], [`KeyHandle`].
+/// For more details about how a fingerprint is generated, see
+/// [Section 12.2 of RFC 4880].
+///
+/// See also [`KeyID`], [`KeyHandle`].
 ///
 ///   [Section 12.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-12.2
 ///
-///   [`Fingerprint`]: ./Enum.Fingerprint.html
-///   [`KeyHandle`]: ./Enum.KeyHandle.html
+///   [`KeyID`]: ./enum.KeyID.html
+///   [`KeyHandle`]: ./enum.KeyHandle.html
 ///
 /// # Example
 /// TODO: signature.issuer
@@ -20,7 +22,7 @@ use quickcheck::{Arbitrary, Gen};
 pub enum Fingerprint {
     /// A 20 byte SHA-1 hash of the public key packet as defined in the RFC.
     V4([u8;20]),
-    /// Used for holding fingerprint data that does not conform to
+    /// Used for holding fingerprint data that does not match
     /// the specification of a V4 fingerprint, e.g. a V3 fingerprint
     /// (deprecated) or otherwise wrong-length data.
     Invalid(Box<[u8]>)
@@ -283,18 +285,6 @@ impl Arbitrary for Fingerprint {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn icao() {
-        let fpr = "0123 4567 89AB CDEF 0123 4567 89AB CDEF 0123 4567"
-            .parse::<Fingerprint>().unwrap();
-        let expected = "\
-Zero One Two Three Four Five Six Seven Eight Niner Alfa Bravo Charlie Delta \
-Echo Foxtrot Zero One Two Three Four Five Six Seven Eight Niner Alfa Bravo \
-Charlie Delta Echo Foxtrot Zero One Two Three Four Five Six Seven";
-
-        assert_eq!(fpr.to_icao(), expected);
-    }
 
     #[test]
     fn hex_formatting() {

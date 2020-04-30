@@ -7,16 +7,24 @@ use crate::Result;
 
 /// A short identifier for certificates and keys.
 ///
-/// A `KeyID` is a fingerprint fragment.  It identifies a public key,
-/// but is easy to forge.  For more details about how a `KeyID` is
-/// generated, see [Section 12.2 of RFC 4880].
+/// A `KeyID` identifies a public key.
+/// It is defined as a fragment (the lower 8 bytes) of the fingerprint,
+/// thus, it is easier to forge.
+///
+/// For more details about how a KeyID is generated, see [Section 12.2 of RFC 4880].
+///
+/// In previous versions of OpenPGP, the KeyID used to be called "long KeyID",
+/// as there even was a "short KeyID" with 4 bytes length.
+/// Both are easily forged, thus, fingerprints should be
+/// preferred where possible.
+//Right now, it is easy to create a long Key ID collision by exploiting the birthday paradox.  But cloning a long Key ID is still expensive (although almost certainly within the reach of state actors).
 ///
 /// See also [`Fingerprint`], [`KeyHandle`].
 ///
 ///   [Section 12.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-12.2
 ///
-///   [`Fingerprint`]: ./Enum.Fingerprint.html
-///   [`KeyHandle`]: ./Enum.KeyHandle.html
+///   [`Fingerprint`]: ./enum.Fingerprint.html
+///   [`KeyHandle`]: ./enum.KeyHandle.html
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
 pub enum KeyID {
     /// Lower 8 byte SHA-1 hash.

@@ -10,14 +10,15 @@ use crate::{
     Result,
 };
 
-/// Identifies certificates and keys.
+/// Enum representing an identifier for certificates and keys.
 ///
-/// A `KeyHandle` is either a [`Fingerprint`] or a [`KeyHandle`].
+/// A `KeyHandle` contains either a [`Fingerprint`] or a [`KeyID`], as defined in
+/// [Section 12.2 of RFC 4880]
 ///
 ///   [Section 12.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-12.2
 ///
-///   [`Fingerprint`]: ./Enum.Fingerprint.html
-///   [`KeyHandle`]: ./Enum.KeyHandle.html
+///   [`Fingerprint`]: ./enum.Fingerprint.html
+///   [`KeyID`]: ./enum.KeyID.html
 /// # Examples
 ///
 /// ```ignore
@@ -48,6 +49,35 @@ use crate::{
 ///   .filter(|cert| issuers.iter().any(|issuer_kh| issuer_kh.aliases(&cert.key_handle())));
 /// # return Ok(());
 /// # }
+/// ```
+///
+///
+/// ```ignore
+/// # use sequoia_openpgp as openpgp;
+/// # use openpgp::Result;
+/// # use openpgp::{Fingerprint, KeyHandle};
+/// # use openpgp::crypto::KeyPair;
+/// # use openpgp::types::{Curve, SignatureType};
+/// # use openpgp::packet::signature::Builder;
+/// # use openpgp::cert::CertParser;
+/// # use sequoia_openpgp::parse::Parse;
+/// # use crate::policy::StandardPolicy as P;
+///
+/// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+// TODO generate key, use test macros to read files
+/// let mut key_for_sig = CertParser::from_file("/home/nora/Projects/sequoia/openpgp/tests/data/keys/emmelie-dorothea-dina-samantha-awina-ed25519.pgp")?;
+///
+/// let foo = &key_for_sig.next().unwrap()?;
+/// let self_sig = &foo.userids().self_signatures()[0];
+/// let keyring = CertParser::from_file("/home/nora/Projects/sequoia/openpgp/tests/data/keys/emmelie-dorothea-dina-samantha-awina-ed25519.pgp")?;
+/// keyring.unvalidated_cert_filter(|cert, _| {
+///     cert.keys().key_handle(self_sig.issuer().unwrap()).next().is_some()
+/// });
+///
+/// //self_sig.verify(keyhandle);
+/// //assert_eq!(keyhandle, self_sig.issuer())
+/// Ok(())
+/// }
 /// ```
 #[derive(Debug, Clone, Hash)]
 pub enum KeyHandle {
@@ -288,6 +318,41 @@ mod tests {
 
         let handle = KeyHandle::KeyID(KeyID::Invalid(Box::new([10, 2])));
         assert_eq!(format!("{:x}", handle), "0a02");
+    }
+
+    #[test]
+    fn for_development() -> crate::Result<()> {
+        //use sequoia_openpgp as openpgp;
+        use crate::Result;
+        use crate::{Fingerprint, KeyHandle};
+        use crate::crypto::KeyPair;
+        use crate::Packet;
+        use crate::types::{Curve, SignatureType};
+        use crate::packet::signature::Builder;
+        use crate::cert::CertParser;
+        use crate::parse::Parse;
+        use crate::policy::StandardPolicy as P;
+
+        let mut sig_packet: Packet = Packet::from_file("/home/nora/Projects/sequoia/openpgp/tests/data/messages/emmelie-dorothea-dina-samantha-awina-detached-signature-of-100MB-of-zeros.sig")?;
+        //let Packet::Signature(ref mut self_sig) = sig_packet;
+        let detached_sig = match sig_packet {
+            Packet::Signature(ref mut self_sig) => self_sig,
+            _ => panic!(),
+        };
+
+        let key_handle = detached_sig.issuer().unwrap();
+
+        //let foo = &key_for_sig.next().unwrap()?;
+        //let sig = &foo.userids().self_signatures()[0];
+
+        let keyring = CertParser::from_file("/home/nora/Projects/sequoia/openpgp/tests/data/keys/emmelie-dorothea-dina-samantha-awina-ed25519.pgp")?;
+        keyring.unvalidated_cert_filter(|cert, _| {
+            cert.keys().key_handle(key_handle).next().is_some()
+        });
+
+        let foo = detached_sig.verify(&keyring);
+        //assert_eq!(keyhandle, self_sig.issuer())
+        Ok(())
     }
 
 }
