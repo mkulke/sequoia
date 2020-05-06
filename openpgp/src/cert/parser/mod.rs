@@ -31,19 +31,22 @@ use low_level::{
 
 use super::TRACE;
 
-/// Whether a packet sequence is a valid key ring.
+/// Whether a packet sequence is a valid keyring.
+///
+/// This is used
 #[derive(Debug)]
-pub enum KeyringValidity {
-    /// The packet sequence is a valid key ring.
+pub(crate) enum KeyringValidity {
+    /// The packet sequence is a valid keyring.
     Keyring,
-    /// The packet sequence is a valid key ring prefix.
+    /// The packet sequence is a valid keyring prefix.
     KeyringPrefix,
-    /// The packet sequence is definitely not a key ring.
+    /// The packet sequence is definitely not a keyring.
     Error(anyhow::Error),
 }
 
+#[allow(unused)]
 impl KeyringValidity {
-    /// Returns whether the packet sequence is a valid key ring.
+    /// Returns whether the packet sequence is a valid keyring.
     ///
     /// Note: a `KeyringValidator` will only return this after
     /// `KeyringValidator::finish` has been called.
@@ -68,7 +71,7 @@ impl KeyringValidity {
     }
 
     /// Returns whether the packet sequence is definitely not a valid
-    /// key ring.
+    /// keyring.
     pub fn is_err(&self) -> bool {
         if let KeyringValidity::Error(_) = self {
             true
@@ -78,9 +81,9 @@ impl KeyringValidity {
     }
 }
 
-/// Used to help validate that a packet sequence is a valid key ring.
+/// Used to help validate that a packet sequence is a valid keyring.
 #[derive(Debug)]
-pub struct KeyringValidator {
+pub(crate) struct KeyringValidator {
     tokens: Vec<Token>,
     n_keys: usize,
     n_packets: usize,
@@ -96,6 +99,7 @@ impl Default for KeyringValidator {
     }
 }
 
+#[allow(unused)]
 impl KeyringValidator {
     /// Instantiates a new `KeyringValidator`.
     pub fn new() -> Self {
@@ -240,7 +244,8 @@ impl KeyringValidator {
 
 /// Whether a packet sequence is a valid Cert.
 #[derive(Debug)]
-pub enum CertValidity {
+#[allow(unused)]
+pub(crate) enum CertValidity {
     /// The packet sequence is a valid Cert.
     Cert,
     /// The packet sequence is a valid Cert prefix.
@@ -249,6 +254,7 @@ pub enum CertValidity {
     Error(anyhow::Error),
 }
 
+#[allow(unused)]
 impl CertValidity {
     /// Returns whether the packet sequence is a valid Cert.
     ///
@@ -635,8 +641,8 @@ impl<'a, I: Iterator<Item=Packet>> CertParser<'a, I> {
 
 /// Splits the signatures in b.certifications into the correct
 /// vectors.
-pub fn split_sigs<C>(primary: &KeyHandle, primary_keyid: &KeyHandle,
-                     b: &mut ComponentBundle<C>)
+pub(crate) fn split_sigs<C>(primary: &KeyHandle, primary_keyid: &KeyHandle,
+                            b: &mut ComponentBundle<C>)
 {
     let mut self_signatures = vec![];
     let mut certifications = vec![];
