@@ -172,7 +172,8 @@ fn real_main() -> Result<()> {
                                       not_after.map(|d| d.into()),
                                       certs);
             let mut v =
-                DetachedVerifier::from_reader(p, signatures, helper, None)?;
+                DetachedVerifierBuilder::from_reader(signatures)?
+                .with_policy(p, None, helper)?;
             v.verify_reader(io::stdin())?;
         },
 
@@ -399,8 +400,8 @@ fn real_main() -> Result<()> {
                                        verify_with);
             let helper = Helper::new(p, vhelper, session_keys, passwords, keys,
                                      session_key_out);
-            let mut v =
-                Decryptor::from_reader(p, io::stdin(), helper, None)?;
+            let mut v =DecryptorBuilder::from_reader(io::stdin())?
+                .with_policy(p, None, helper)?;
             io::copy(&mut v, &mut io::stdout())?;
         },
 

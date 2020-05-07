@@ -71,7 +71,7 @@
 //! use std::io::Read;
 //! use sequoia_openpgp as openpgp;
 //! use openpgp::{KeyHandle, Cert, Result};
-//! use openpgp::parse::stream::*;
+//! use openpgp::parse::{Parse, stream::*};
 //! use openpgp::policy::StandardPolicy;
 //!
 //! let p = &StandardPolicy::new();
@@ -98,7 +98,8 @@
 //!      -----END PGP MESSAGE-----";
 //!
 //! let h = Helper {};
-//! let mut v = Verifier::from_bytes(p, message, h, None)?;
+//! let mut v = VerifierBuilder::from_bytes(&message[..])?
+//!     .with_policy(p, None, h)?;
 //!
 //! let mut content = Vec::new();
 //! v.read_to_end(&mut content)?;
@@ -140,13 +141,30 @@ use crate::parse::{
     PacketParser,
     PacketParserBuilder,
     PacketParserResult,
+    Parse,
 };
 
 /// Whether to trace execution by default (on stderr).
 const TRACE : bool = false;
 
 /// How much data to buffer before giving it to the caller.
-const BUFFER_SIZE: usize = 25 * 1024 * 1024;
+///
+/// Signature verification and detection of ciphertext tampering
+/// requires processing the whole message first.  Therefore, OpenPGP
+/// implementations supporting streaming operations necessarily must
+/// output unverified data.  This has been a source of problems in the
+/// past.  To alleviate this, we buffer the message first (up to 25
+/// megabytes of net message data by default), and verify the
+/// signatures if the message fits into our buffer.  Nevertheless it
+/// is important to treat the data as unverified and untrustworthy
+/// until you have seen a positive verification.
+///
+/// The default can be changed using [`VerifierBuilder::buffer_size`]
+/// and [`DecryptorBuilder::buffer_size`].
+///
+///   [`VerifierBuilder::buffer_size`]: struct.VerifierBuilder.html#method.buffer_size
+///   [`DecryptorBuilder::buffer_size`]: struct.DecryptorBuilder.html#method.buffer_size
+pub const DEFAULT_BUFFER_SIZE: usize = 25 * 1024 * 1024;
 
 /// The result of a signature verification.
 pub type VerificationResult<'a> =
@@ -507,21 +525,6 @@ enum IMessageLayer {
 ///
 ///   [`Map`]: ../map/struct.Map.html
 pub trait VerificationHelper {
-    /// Turns mapping on or off.
-    ///
-    /// If this function returns true, the packet parser will create a
-    /// [`Map`] of the packets.  Note that this buffers the packets
-    /// contents, and is not recommended unless you know that the
-    /// packets are small.  This is called once before parsing the
-    /// first packet.
-    ///
-    ///   [`Map`]: ../map/struct.Map.html
-    ///
-    /// The default implementation returns false.
-    fn mapping(&self) -> bool {
-        false
-    }
-
     /// Inspects the message.
     ///
     /// Called once per packet.  Can be used to inspect and dump
@@ -675,11 +678,14 @@ impl<V: VerificationHelper> DecryptionHelper for NoDecryptionHelper<V> {
 /// Signature verification requires processing the whole message
 /// first.  Therefore, OpenPGP implementations supporting streaming
 /// operations necessarily must output unverified data.  This has been
-/// a source of problems in the past.  To alleviate this, we buffer up
-/// to 25 megabytes of net message data first, and verify the
-/// signatures if the message fits into our buffer.  Nevertheless it
-/// is important to treat the data as unverified and untrustworthy
-/// until you have seen a positive verification.
+/// a source of problems in the past.  To alleviate this, we buffer
+/// the message first (up to 25 megabytes of net message data by
+/// default, see [`DEFAULT_BUFFER_SIZE`]), and verify the signatures
+/// if the message fits into our buffer.  Nevertheless it is important
+/// to treat the data as unverified and untrustworthy until you have
+/// seen a positive verification.
+///
+///   [`DEFAULT_BUFFER_SIZE`]: constant.DEFAULT_BUFFER_SIZE.html
 ///
 /// For a signature to be considered valid: The signature must have a
 /// `Signature Creation Time` subpacket.  The signature must be alive
@@ -760,7 +766,8 @@ impl<V: VerificationHelper> DecryptionHelper for NoDecryptionHelper<V> {
 ///      ";
 ///
 /// let h = Helper {};
-/// let mut v = Verifier::from_bytes(p, message, h, None)?;
+/// let mut v = VerifierBuilder::from_bytes(&message[..])?
+///     .with_policy(p, None, h)?;
 ///
 /// let mut content = Vec::new();
 /// v.read_to_end(&mut content)?;
@@ -770,60 +777,106 @@ pub struct Verifier<'a, H: VerificationHelper> {
     decryptor: Decryptor<'a, NoDecryptionHelper<H>>,
 }
 
-impl<'a, H: VerificationHelper> Verifier<'a, H> {
-    /// Creates a `Verifier` from the given reader.
-    ///
-    /// Signature verifications are done relative to time `t`, or the
-    /// current time, if `t` is `None`.
-    pub fn from_reader<R, T>(policy: &'a dyn Policy, reader: R, helper: H, t: T)
-        -> Result<Verifier<'a, H>>
-        where R: io::Read + 'a, T: Into<Option<time::SystemTime>>
+/// A builder for `Verifier`.
+///
+/// This allows the customization of [`Verifier`], which can
+/// be built using [`VerifierBuilder::with_policy`].
+///
+///   [`Verifier`]: struct.Verifier.html
+///   [`VerifierBuilder::with_policy`]: struct.VerifierBuilder.html#method.with_policy
+pub struct VerifierBuilder<'a> {
+    message: Box<dyn BufferedReader<Cookie> + 'a>,
+    buffer_size: usize,
+    mapping: bool,
+}
+
+impl<'a> Parse<'a, VerifierBuilder<'a>>
+    for VerifierBuilder<'a>
+{
+    fn from_reader<R>(reader: R) -> Result<VerifierBuilder<'a>>
+        where R: io::Read + 'a,
     {
-        // Do not eagerly map `t` to the current time.
-        let t = t.into();
-        Verifier::from_buffered_reader(
-            policy,
-            Box::new(buffered_reader::Generic::with_cookie(reader, None,
-                                                        Default::default())),
-            helper, t)
+        VerifierBuilder::new(buffered_reader::Generic::with_cookie(
+            reader, None, Default::default()))
     }
 
-    /// Creates a `Verifier` from the given file.
-    ///
-    /// Signature verifications are done relative to time `t`, or the
-    /// current time, if `t` is `None`.
-    pub fn from_file<P, T>(policy: &'a dyn Policy, path: P, helper: H, t: T)
-        -> Result<Verifier<'a, H>>
+    fn from_file<P>(path: P) -> Result<VerifierBuilder<'a>>
         where P: AsRef<Path>,
-              T: Into<Option<time::SystemTime>>
     {
-        // Do not eagerly map `t` to the current time.
-        let t = t.into();
-        Verifier::from_buffered_reader(
-            policy,
-            Box::new(buffered_reader::File::with_cookie(path,
-                                                     Default::default())?),
-            helper, t)
+        VerifierBuilder::new(buffered_reader::File::with_cookie(
+            path, Default::default())?)
     }
 
-    /// Creates a `Verifier` from the given buffer.
+    fn from_bytes<D>(data: &'a D) -> Result<VerifierBuilder<'a>>
+        where D: AsRef<[u8]> + ?Sized,
+    {
+        VerifierBuilder::new(buffered_reader::Memory::with_cookie(
+            data.as_ref(), Default::default()))
+    }
+}
+
+impl<'a> VerifierBuilder<'a> {
+    fn new<B>(signatures: B) -> Result<Self>
+        where B: buffered_reader::BufferedReader<Cookie> + 'a
+    {
+        Ok(VerifierBuilder {
+            message: Box::new(signatures),
+            buffer_size: DEFAULT_BUFFER_SIZE,
+            mapping: false,
+        })
+    }
+
+    /// Changes the amount of buffered data.
     ///
-    /// Signature verifications are done relative to time `t`, or the
-    /// current time, if `t` is `None`.
-    pub fn from_bytes<T>(policy: &'a dyn Policy,
-                         bytes: &'a [u8], helper: H, t: T)
-        -> Result<Verifier<'a, H>>
-        where T: Into<Option<time::SystemTime>>
-    {
-        // Do not eagerly map `t` to the current time.
-        let t = t.into();
-        Verifier::from_buffered_reader(
-            policy,
-            Box::new(buffered_reader::Memory::with_cookie(bytes,
-                                                       Default::default())),
-            helper, t)
+    /// By default, we buffer up to 25 megabytes of net message data
+    /// (see [`DEFAULT_BUFFER_SIZE`]).  This changes the default.
+    ///
+    ///   [`DEFAULT_BUFFER_SIZE`]: constant.DEFAULT_BUFFER_SIZE.html
+    pub fn buffer_size(mut self, size: usize) -> Self {
+        self.buffer_size = size;
+        self
     }
 
+    /// Enables mapping.
+    ///
+    /// If mapping is enabled, the packet parser will create a [`Map`]
+    /// of the packets that can be inspected in
+    /// [`VerificationHelper::inspect`].  Note that this buffers the
+    /// packets contents, and is not recommended unless you know that
+    /// the packets are small.
+    ///
+    ///   [`Map`]: ../map/struct.Map.html
+    ///   [`VerificationHelper::inspect`]: trait.VerificationHelper.html#tymethod.inspect
+    pub fn mapping(mut self, enabled: bool) -> Self {
+        self.mapping = enabled;
+        self
+    }
+
+    /// Creates the `Verifier`.
+    ///
+    /// Signature verifications are done under the given `policy` and
+    /// relative to time `time`, or the current time, if `time` is
+    /// `None`.  `helper` is the [`VerificationHelper`] to use.
+    ///
+    ///   [`VerificationHelper`]: trait.VerificationHelper.html
+    pub fn with_policy<T, H>(self, policy: &'a dyn Policy, time: T, helper: H)
+                             -> Result<Verifier<'a, H>>
+        where H: VerificationHelper,
+              T: Into<Option<time::SystemTime>>,
+    {
+        // Do not eagerly map `t` to the current time.
+        let t = time.into();
+        Ok(Verifier {
+            decryptor: Decryptor::from_buffered_reader(
+                policy,
+                self.message,
+                NoDecryptionHelper { v: helper, },
+                t, Mode::Verify, self.buffer_size, self.mapping)?,
+        })
+    }
+}
+
+impl<'a, H: VerificationHelper> Verifier<'a, H> {
     /// Returns a reference to the helper.
     pub fn helper_ref(&self) -> &H {
         &self.decryptor.helper_ref().v
@@ -846,25 +899,7 @@ impl<'a, H: VerificationHelper> Verifier<'a, H> {
     /// internal buffer and **unverified** data must be `read()` from
     /// the instance until EOF.
     pub fn message_processed(&self) -> bool {
-        // oppr is only None after we've processed the packet sequence.
         self.decryptor.message_processed()
-    }
-
-    /// Creates the `Verifier`, and buffers the data up to `BUFFER_SIZE`.
-    ///
-    /// Signature verifications are done relative to time `t`, or the
-    /// current time, if `t` is `None`.
-    pub(crate) fn from_buffered_reader<T>(policy: &'a dyn Policy,
-                                          bio: Box<dyn BufferedReader<Cookie> + 'a>,
-                                          helper: H, time: T)
-        -> Result<Verifier<'a, H>>
-        where T: Into<Option<time::SystemTime>>
-    {
-        Ok(Verifier {
-            decryptor: Decryptor::from_buffered_reader(
-                policy, bio, NoDecryptionHelper { v: helper, }, time,
-                Mode::Verify)?,
-        })
     }
 }
 
@@ -877,15 +912,6 @@ impl<'a, H: VerificationHelper> io::Read for Verifier<'a, H> {
 
 /// Verifies a detached signature.
 ///
-/// Signature verification requires processing the whole message
-/// first.  Therefore, OpenPGP implementations supporting streaming
-/// operations necessarily must output unverified data.  This has been
-/// a source of problems in the past.  To alleviate this, we buffer up
-/// to 25 megabytes of net message data first, and verify the
-/// signatures if the message fits into our buffer.  Nevertheless it
-/// is important to treat the data as unverified and untrustworthy
-/// until you have seen a positive verification.
-///
 /// # Examples
 ///
 /// ```
@@ -893,7 +919,7 @@ impl<'a, H: VerificationHelper> io::Read for Verifier<'a, H> {
 /// use std::io::{self, Read};
 /// use sequoia_openpgp as openpgp;
 /// use openpgp::{KeyHandle, Cert, Result};
-/// use openpgp::parse::stream::*;
+/// use openpgp::parse::{Parse, stream::*};
 /// use sequoia_openpgp::policy::StandardPolicy;
 ///
 /// let p = &StandardPolicy::new();
@@ -920,98 +946,101 @@ impl<'a, H: VerificationHelper> io::Read for Verifier<'a, H> {
 ///
 /// let data = b"Hello World!";
 /// let h = Helper {};
-/// let mut v = DetachedVerifier::from_bytes(p, signature, h, None)?;
+/// let mut v = DetachedVerifierBuilder::from_bytes(&signature[..])?
+///     .with_policy(p, None, h)?;
 /// v.verify_bytes(data)?;
 /// # Ok(()) }
 pub struct DetachedVerifier<'a, H: VerificationHelper> {
     decryptor: Decryptor<'a, NoDecryptionHelper<H>>,
 }
 
-impl<'a, H: VerificationHelper> DetachedVerifier<'a, H> {
-    /// Creates a `Verifier` from the given readers.
-    ///
-    /// Signature verifications are done relative to time `t`, or the
-    /// current time, if `t` is `None`.
-    pub fn from_reader<S, T>(policy: &'a dyn Policy,
-                             signature_reader: S,
-                             helper: H, t: T)
-        -> Result<DetachedVerifier<'a, H>>
-        where S: io::Read + 'a,
-              H: VerificationHelper,
-              T: Into<Option<time::SystemTime>>
+/// A builder for `DetachedVerifier`.
+///
+/// This allows the customization of [`DetachedVerifier`], which can
+/// be built using [`DetachedVerifierBuilder::with_policy`].
+///
+///   [`DetachedVerifier`]: struct.DetachedVerifier.html
+///   [`DetachedVerifierBuilder::with_policy`]: struct.DetachedVerifierBuilder.html#method.with_policy
+pub struct DetachedVerifierBuilder<'a> {
+    signatures: Box<dyn BufferedReader<Cookie> + 'a>,
+    mapping: bool,
+}
+
+impl<'a> Parse<'a, DetachedVerifierBuilder<'a>>
+    for DetachedVerifierBuilder<'a>
+{
+    fn from_reader<R>(reader: R) -> Result<DetachedVerifierBuilder<'a>>
+        where R: io::Read + 'a,
     {
-        // Do not eagerly map `t` to the current time.
-        let t = t.into();
-        Self::from_buffered_reader(
-            policy,
-            Box::new(buffered_reader::Generic::with_cookie(signature_reader, None,
-                                                        Default::default())),
-            helper, t)
+        DetachedVerifierBuilder::new(buffered_reader::Generic::with_cookie(
+            reader, None, Default::default()))
     }
 
-    /// Creates a `Verifier` from the given files.
-    ///
-    /// Signature verifications are done relative to time `t`, or the
-    /// current time, if `t` is `None`.
-    pub fn from_file<S, T>(policy: &'a dyn Policy,
-                           signature_path: S,
-                           helper: H, t: T)
-        -> Result<DetachedVerifier<'a, H>>
-        where S: AsRef<Path>,
-              H: VerificationHelper,
-              T: Into<Option<time::SystemTime>>
+    fn from_file<P>(path: P) -> Result<DetachedVerifierBuilder<'a>>
+        where P: AsRef<Path>,
     {
-        // Do not eagerly map `t` to the current time.
-        let t = t.into();
-        Self::from_buffered_reader(
-            policy,
-            Box::new(buffered_reader::File::with_cookie(signature_path,
-                                                        Default::default())?),
-            helper, t)
+        DetachedVerifierBuilder::new(buffered_reader::File::with_cookie(
+            path, Default::default())?)
     }
 
-    /// Creates a `Verifier` from the given buffers.
-    ///
-    /// Signature verifications are done relative to time `t`, or the
-    /// current time, if `t` is `None`.
-    pub fn from_bytes<T>(policy: &'a dyn Policy,
-                         signature_bytes: &'a [u8],
-                         helper: H, t: T)
-        -> Result<DetachedVerifier<'a, H>>
-        where H: VerificationHelper, T: Into<Option<time::SystemTime>>
+    fn from_bytes<D>(data: &'a D) -> Result<DetachedVerifierBuilder<'a>>
+        where D: AsRef<[u8]> + ?Sized,
     {
-        // Do not eagerly map `t` to the current time.
-        let t = t.into();
-        Self::from_buffered_reader(
-            policy,
-            Box::new(buffered_reader::Memory::with_cookie(signature_bytes,
-                                                          Default::default())),
-            helper, t)
+        DetachedVerifierBuilder::new(buffered_reader::Memory::with_cookie(
+            data.as_ref(), Default::default()))
     }
+}
 
-    /// Creates the `Verifier`, and buffers the data up to `BUFFER_SIZE`.
-    ///
-    /// Signature verifications are done relative to time `t`, or the
-    /// current time, if `t` is `None`.
-    pub(crate) fn from_buffered_reader<T>
-        (policy: &'a dyn Policy,
-         signature_bio: Box<dyn BufferedReader<Cookie> + 'a>,
-         helper: H, t: T)
-         -> Result<DetachedVerifier<'a, H>>
-        where H: VerificationHelper,
-              T: Into<Option<time::SystemTime>>
+impl<'a> DetachedVerifierBuilder<'a> {
+    fn new<B>(signatures: B) -> Result<Self>
+        where B: buffered_reader::BufferedReader<Cookie> + 'a
     {
-        // Do not eagerly map `t` to the current time.
-        let t = t.into();
-        Ok(Self {
-            decryptor: Decryptor::from_buffered_reader(
-                policy,
-                signature_bio,
-                NoDecryptionHelper { v: helper, },
-                t, Mode::VerifyDetached)?,
+        Ok(DetachedVerifierBuilder {
+            signatures: Box::new(signatures),
+            mapping: false,
         })
     }
 
+    /// Enables mapping.
+    ///
+    /// If mapping is enabled, the packet parser will create a [`Map`]
+    /// of the packets that can be inspected in
+    /// [`VerificationHelper::inspect`].  Note that this buffers the
+    /// packets contents, and is not recommended unless you know that
+    /// the packets are small.
+    ///
+    ///   [`Map`]: ../map/struct.Map.html
+    ///   [`VerificationHelper::inspect`]: trait.VerificationHelper.html#tymethod.inspect
+    pub fn mapping(mut self, enabled: bool) -> Self {
+        self.mapping = enabled;
+        self
+    }
+
+    /// Creates the `DetachedVerifier`.
+    ///
+    /// Signature verifications are done under the given `policy` and
+    /// relative to time `time`, or the current time, if `time` is
+    /// `None`.  `helper` is the [`VerificationHelper`] to use.
+    ///
+    ///   [`VerificationHelper`]: trait.VerificationHelper.html
+    pub fn with_policy<T, H>(self, policy: &'a dyn Policy, time: T, helper: H)
+                             -> Result<DetachedVerifier<'a, H>>
+        where H: VerificationHelper,
+              T: Into<Option<time::SystemTime>>,
+    {
+        // Do not eagerly map `t` to the current time.
+        let t = time.into();
+        Ok(DetachedVerifier {
+            decryptor: Decryptor::from_buffered_reader(
+                policy,
+                self.signatures,
+                NoDecryptionHelper { v: helper, },
+                t, Mode::VerifyDetached, 0, self.mapping)?,
+        })
+    }
+}
+
+impl<'a, H: VerificationHelper> DetachedVerifier<'a, H> {
     /// Verifies the given data.
     pub fn verify_reader<R: io::Read>(&mut self, reader: R) -> Result<()> {
         self.verify(buffered_reader::Generic::with_cookie(
@@ -1065,14 +1094,18 @@ enum Mode {
 /// Decrypts and verifies an encrypted and optionally signed OpenPGP
 /// message.
 ///
-/// Signature verification requires processing the whole message
-/// first.  Therefore, OpenPGP implementations supporting streaming
-/// operations necessarily must output unverified data.  This has been
-/// a source of problems in the past.  To alleviate this, we buffer up
-/// to 25 megabytes of net message data first, and verify the
-/// signatures if the message fits into our buffer.  Nevertheless it
-/// is important to treat the data as unverified and untrustworthy
-/// until you have seen a positive verification.
+/// Signature verification and detection of ciphertext tampering
+/// requires processing the whole message first.  Therefore, OpenPGP
+/// implementations supporting streaming operations necessarily must
+/// output unverified data.  This has been a source of problems in the
+/// past.  To alleviate this, we buffer the message first (up to 25
+/// megabytes of net message data by default, see
+/// [`DEFAULT_BUFFER_SIZE`]), and verify the signatures if the message
+/// fits into our buffer.  Nevertheless it is important to treat the
+/// data as unverified and untrustworthy until you have seen a
+/// positive verification.
+///
+///   [`DEFAULT_BUFFER_SIZE`]: constant.DEFAULT_BUFFER_SIZE.html
 ///
 /// # Examples
 ///
@@ -1083,7 +1116,7 @@ enum Mode {
 /// use openpgp::crypto::SessionKey;
 /// use openpgp::types::SymmetricAlgorithm;
 /// use openpgp::{KeyID, Cert, Result, packet::{Key, PKESK, SKESK}};
-/// use openpgp::parse::stream::*;
+/// use openpgp::parse::{Parse, stream::*};
 /// use sequoia_openpgp::policy::StandardPolicy;
 ///
 /// let p = &StandardPolicy::new();
@@ -1120,7 +1153,8 @@ enum Mode {
 ///      -----END PGP MESSAGE-----";
 ///
 /// let h = Helper {};
-/// let mut v = Decryptor::from_bytes(p, message, h, None)?;
+/// let mut v = DecryptorBuilder::from_bytes(&message[..])?
+///     .with_policy(p, None, h)?;
 ///
 /// let mut content = Vec::new();
 /// v.read_to_end(&mut content)?;
@@ -1136,6 +1170,7 @@ pub struct Decryptor<'a, H: VerificationHelper + DecryptionHelper> {
     /// We want to hold back some data until the signatures checked
     /// out.  We buffer this here, cursor is the offset of unread
     /// bytes in the buffer.
+    buffer_size: usize,
     reserve: Option<Vec<u8>>,
     cursor: usize,
 
@@ -1167,6 +1202,105 @@ pub struct Decryptor<'a, H: VerificationHelper + DecryptionHelper> {
     clock_skew_tolerance: time::Duration,
 
     policy: &'a dyn Policy,
+}
+
+/// A builder for `Decryptor`.
+///
+/// This allows the customization of [`Decryptor`], which can
+/// be built using [`DecryptorBuilder::with_policy`].
+///
+///   [`Decryptor`]: struct.Decryptor.html
+///   [`DecryptorBuilder::with_policy`]: struct.DecryptorBuilder.html#method.with_policy
+pub struct DecryptorBuilder<'a> {
+    message: Box<dyn BufferedReader<Cookie> + 'a>,
+    buffer_size: usize,
+    mapping: bool,
+}
+
+impl<'a> Parse<'a, DecryptorBuilder<'a>>
+    for DecryptorBuilder<'a>
+{
+    fn from_reader<R>(reader: R) -> Result<DecryptorBuilder<'a>>
+        where R: io::Read + 'a,
+    {
+        DecryptorBuilder::new(buffered_reader::Generic::with_cookie(
+            reader, None, Default::default()))
+    }
+
+    fn from_file<P>(path: P) -> Result<DecryptorBuilder<'a>>
+        where P: AsRef<Path>,
+    {
+        DecryptorBuilder::new(buffered_reader::File::with_cookie(
+            path, Default::default())?)
+    }
+
+    fn from_bytes<D>(data: &'a D) -> Result<DecryptorBuilder<'a>>
+        where D: AsRef<[u8]> + ?Sized,
+    {
+        DecryptorBuilder::new(buffered_reader::Memory::with_cookie(
+            data.as_ref(), Default::default()))
+    }
+}
+
+impl<'a> DecryptorBuilder<'a> {
+    fn new<B>(signatures: B) -> Result<Self>
+        where B: buffered_reader::BufferedReader<Cookie> + 'a
+    {
+        Ok(DecryptorBuilder {
+            message: Box::new(signatures),
+            buffer_size: DEFAULT_BUFFER_SIZE,
+            mapping: false,
+        })
+    }
+
+    /// Changes the amount of buffered data.
+    ///
+    /// By default, we buffer up to 25 megabytes of net message data
+    /// (see [`DEFAULT_BUFFER_SIZE`]).  This changes the default.
+    ///
+    ///   [`DEFAULT_BUFFER_SIZE`]: constant.DEFAULT_BUFFER_SIZE.html
+    pub fn buffer_size(mut self, size: usize) -> Self {
+        self.buffer_size = size;
+        self
+    }
+
+    /// Enables mapping.
+    ///
+    /// If mapping is enabled, the packet parser will create a [`Map`]
+    /// of the packets that can be inspected in
+    /// [`VerificationHelper::inspect`].  Note that this buffers the
+    /// packets contents, and is not recommended unless you know that
+    /// the packets are small.
+    ///
+    ///   [`Map`]: ../map/struct.Map.html
+    ///   [`VerificationHelper::inspect`]: trait.VerificationHelper.html#tymethod.inspect
+    pub fn mapping(mut self, enabled: bool) -> Self {
+        self.mapping = enabled;
+        self
+    }
+
+    /// Creates the `Decryptor`.
+    ///
+    /// Signature verifications are done under the given `policy` and
+    /// relative to time `time`, or the current time, if `time` is
+    /// `None`.  `helper` is the [`VerificationHelper`] and
+    /// [`DecryptionHelper`] to use.
+    ///
+    ///   [`VerificationHelper`]: trait.VerificationHelper.html
+    ///   [`DecryptionHelper`]: trait.DecryptionHelper.html
+    pub fn with_policy<T, H>(self, policy: &'a dyn Policy, time: T, helper: H)
+                             -> Result<Decryptor<'a, H>>
+        where H: VerificationHelper + DecryptionHelper,
+              T: Into<Option<time::SystemTime>>,
+    {
+        // Do not eagerly map `t` to the current time.
+        let t = time.into();
+        Decryptor::from_buffered_reader(
+            policy,
+            self.message,
+            helper,
+            t, Mode::Decrypt, self.buffer_size, self.mapping)
+    }
 }
 
 /// Helper for decrypting messages.
@@ -1323,59 +1457,6 @@ pub trait DecryptionHelper {
 }
 
 impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
-    /// Creates a `Decryptor` from the given reader.
-    ///
-    /// Signature verifications are done relative to time `t`, or the
-    /// current time, if `t` is `None`.
-    pub fn from_reader<R, T>(policy: &'a dyn Policy,
-                             reader: R, helper: H, t: T)
-        -> Result<Decryptor<'a, H>>
-        where R: io::Read + 'a, T: Into<Option<time::SystemTime>>
-    {
-        // Do not eagerly map `t` to the current time.
-        let t = t.into();
-        Decryptor::from_buffered_reader(
-            policy,
-            Box::new(buffered_reader::Generic::with_cookie(reader, None,
-                                                        Default::default())),
-            helper, t, Mode::Decrypt)
-    }
-
-    /// Creates a `Decryptor` from the given file.
-    ///
-    /// Signature verifications are done relative to time `t`, or the
-    /// current time, if `t` is `None`.
-    pub fn from_file<P, T>(policy: &'a dyn Policy, path: P, helper: H, t: T)
-        -> Result<Decryptor<'a, H>>
-        where P: AsRef<Path>,
-              T: Into<Option<time::SystemTime>>
-    {
-        // Do not eagerly map `t` to the current time.
-        let t = t.into();
-        Decryptor::from_buffered_reader(
-            policy,
-            Box::new(buffered_reader::File::with_cookie(path,
-                                                     Default::default())?),
-            helper, t, Mode::Decrypt)
-    }
-
-    /// Creates a `Decryptor` from the given buffer.
-    ///
-    /// Signature verifications are done relative to time `t`, or the
-    /// current time, if `t` is `None`.
-    pub fn from_bytes<T>(policy: &'a dyn Policy, bytes: &'a [u8], helper: H, t: T)
-        -> Result<Decryptor<'a, H>>
-        where T: Into<Option<time::SystemTime>>
-    {
-        // Do not eagerly map `t` to the current time.
-        let t = t.into();
-        Decryptor::from_buffered_reader(
-            policy,
-            Box::new(buffered_reader::Memory::with_cookie(bytes,
-                                                       Default::default())),
-            helper, t, Mode::Decrypt)
-    }
-
     /// Returns a reference to the helper.
     pub fn helper_ref(&self) -> &H {
         &self.helper
@@ -1399,12 +1480,14 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
         self.oppr.is_none()
     }
 
-    /// Creates the `Decryptor`, and buffers the data up to `BUFFER_SIZE`.
+    /// Creates the `Decryptor`, and buffers the data up to `buffer_size`.
     fn from_buffered_reader<T>(
         policy: &'a dyn Policy,
         bio: Box<dyn BufferedReader<Cookie> + 'a>,
         helper: H, time: T,
-        mode: Mode)
+        mode: Mode,
+        buffer_size: usize,
+        mapping: bool)
         -> Result<Decryptor<'a, H>>
         where T: Into<Option<time::SystemTime>>
     {
@@ -1418,7 +1501,7 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
         let time = time.unwrap_or_else(time::SystemTime::now);
 
         let mut ppr = PacketParserBuilder::from_buffered_reader(bio)?
-            .map(helper.mapping()).build()?;
+            .map(mapping).build()?;
 
         let mut v = Decryptor {
             helper,
@@ -1426,6 +1509,7 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
             oppr: None,
             identity: None,
             structure: IMessageStructure::new(),
+            buffer_size,
             reserve: None,
             cursor: 0,
             mode,
@@ -1619,8 +1703,8 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
     fn finish_maybe(&mut self) -> Result<()> {
         if let Some(PacketParserResult::Some(mut pp)) = self.oppr.take() {
             // Check if we hit EOF.
-            let data_len = pp.data(BUFFER_SIZE + 1)?.len();
-            if data_len <= BUFFER_SIZE {
+            let data_len = pp.data(self.buffer_size + 1)?.len();
+            if data_len <= self.buffer_size {
                 // Stash the reserve.
                 self.reserve = Some(pp.steal_eof()?);
                 self.cursor = 0;
@@ -1873,13 +1957,13 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
         // Read the data from the Literal data packet.
         if let Some(PacketParserResult::Some(mut pp)) = self.oppr.take() {
             // Be careful to not read from the reserve.
-            let data_len = pp.data(BUFFER_SIZE + buf.len())?.len();
-            if data_len <= BUFFER_SIZE {
+            let data_len = pp.data(self.buffer_size + buf.len())?.len();
+            if data_len <= self.buffer_size {
                 self.oppr = Some(PacketParserResult::Some(pp));
                 self.finish_maybe()?;
                 self.read_helper(buf)
             } else {
-                let n = cmp::min(buf.len(), data_len - BUFFER_SIZE);
+                let n = cmp::min(buf.len(), data_len - self.buffer_size);
                 let buf = &mut buf[..n];
                 let result = pp.read(buf);
                 self.oppr = Some(PacketParserResult::Some(pp));
@@ -2004,7 +2088,7 @@ mod test {
     }
 
     #[test]
-    fn verifier() {
+    fn verifier() -> Result<()> {
         let p = P::new();
 
         let keys = [
@@ -2028,8 +2112,8 @@ mod test {
             // Test Verifier.
             let h = VHelper::new(0, 0, 0, 0, keys.clone());
             let mut v =
-                match Verifier::from_bytes(&p, crate::tests::file(f), h,
-                                           crate::frozen_time()) {
+                match VerifierBuilder::from_bytes(crate::tests::file(f))?
+                    .with_policy(&p, crate::frozen_time(), h) {
                     Ok(v) => v,
                     Err(e) => if r.error > 0 || r.unknown > 0 {
                         // Expected error.  No point in trying to read
@@ -2055,9 +2139,8 @@ mod test {
 
             // Test Decryptor.
             let h = VHelper::new(0, 0, 0, 0, keys.clone());
-            let mut v =
-                match Decryptor::from_bytes(&p, crate::tests::file(f), h,
-                                            crate::frozen_time()) {
+            let mut v = match DecryptorBuilder::from_bytes(crate::tests::file(f))?
+                .with_policy(&p, crate::frozen_time(), h) {
                     Ok(v) => v,
                     Err(e) => if r.error > 0 || r.unknown > 0 {
                         // Expected error.  No point in trying to read
@@ -2081,12 +2164,13 @@ mod test {
             assert_eq!(reference.len(), content.len());
             assert_eq!(reference, &content[..]);
         }
+        Ok(())
     }
 
     /// Tests the order of signatures given to
     /// VerificationHelper::check().
     #[test]
-    fn verifier_levels() {
+    fn verifier_levels() -> Result<()> {
         let p = P::new();
 
         struct VHelper(());
@@ -2135,16 +2219,17 @@ mod test {
         }
 
         // Test verifier.
-        let v = Verifier::from_bytes(
-            &p, crate::tests::message("signed-1-notarized-by-ed25519.pgp"),
-            VHelper(()), crate::frozen_time()).unwrap();
+        let v = VerifierBuilder::from_bytes(
+            crate::tests::message("signed-1-notarized-by-ed25519.pgp"))?
+            .with_policy(&p, crate::frozen_time(), VHelper(()))?;
         assert!(v.message_processed());
 
         // Test decryptor.
-        let v = Decryptor::from_bytes(
-            &p, crate::tests::message("signed-1-notarized-by-ed25519.pgp"),
-            VHelper(()), crate::frozen_time()).unwrap();
+        let v = DecryptorBuilder::from_bytes(
+            crate::tests::message("signed-1-notarized-by-ed25519.pgp"))?
+            .with_policy(&p, crate::frozen_time(), VHelper(()))?;
         assert!(v.message_processed());
+        Ok(())
     }
 
     #[test]
@@ -2188,8 +2273,8 @@ mod test {
             let reference = test.reference;
 
             let h = VHelper::new(0, 0, 0, 0, keys.clone());
-            let mut v = DetachedVerifier::from_bytes(
-                &p, sig, h, reference).unwrap();
+            let mut v = DetachedVerifierBuilder::from_bytes(sig).unwrap()
+                .with_policy(&p, reference, h).unwrap();
             v.verify_bytes(content).unwrap();
 
             let h = v.into_helper();
@@ -2199,7 +2284,7 @@ mod test {
     }
 
     #[test]
-    fn verify_long_message() {
+    fn verify_long_message() -> Result<()> {
         use std::io::Write;
         use crate::serialize::stream::{LiteralWriter, Signer, Message};
 
@@ -2210,7 +2295,7 @@ mod test {
             .add_signing_subkey()
             .generate().unwrap();
 
-        // sign 30MiB message
+        // sign 3MiB message
         let mut buf = vec![];
         {
             let key = cert.keys().with_policy(p, None).for_signing().nth(0).unwrap().key();
@@ -2222,13 +2307,15 @@ mod test {
             let signer = Signer::new(m, keypair).build().unwrap();
             let mut ls = LiteralWriter::new(signer).build().unwrap();
 
-            ls.write_all(&mut vec![42u8; 30 * 1024 * 1024]).unwrap();
+            ls.write_all(&mut vec![42u8; 3 * 1024 * 1024]).unwrap();
             ls.finalize().unwrap();
         }
 
         // Test Verifier.
         let h = VHelper::new(0, 0, 0, 0, vec![cert.clone()]);
-        let mut v = Verifier::from_bytes(p, &buf, h, None).unwrap();
+        let mut v = VerifierBuilder::from_bytes(&buf)?
+            .buffer_size(2 * 2usize.pow(20))
+            .with_policy(p, None, h)?;
 
         assert!(!v.message_processed());
         assert!(v.helper_ref().good == 0);
@@ -2241,7 +2328,7 @@ mod test {
         v.read_to_end(&mut message).unwrap();
 
         assert!(v.message_processed());
-        assert_eq!(30 * 1024 * 1024, message.len());
+        assert_eq!(3 * 1024 * 1024, message.len());
         assert!(message.iter().all(|&b| b == 42));
         assert!(v.helper_ref().good == 1);
         assert!(v.helper_ref().bad == 0);
@@ -2251,7 +2338,9 @@ mod test {
         // Try the same, but this time we let .check() fail.
         let h = VHelper::new(0, 0, /* makes check() fail: */ 1, 0,
                              vec![cert.clone()]);
-        let mut v = Verifier::from_bytes(p, &buf, h, None).unwrap();
+        let mut v = VerifierBuilder::from_bytes(&buf)?
+            .buffer_size(2 * 2usize.pow(20))
+            .with_policy(p, None, h)?;
 
         assert!(!v.message_processed());
         assert!(v.helper_ref().good == 0);
@@ -2266,7 +2355,7 @@ mod test {
         // Check that we only got a truncated message.
         assert!(v.message_processed());
         assert!(message.len() > 0);
-        assert!(message.len() <= 5 * 1024 * 1024);
+        assert!(message.len() <= 1 * 1024 * 1024);
         assert!(message.iter().all(|&b| b == 42));
         assert!(v.helper_ref().good == 1);
         assert!(v.helper_ref().bad == 1);
@@ -2275,7 +2364,9 @@ mod test {
 
         // Test Decryptor.
         let h = VHelper::new(0, 0, 0, 0, vec![cert.clone()]);
-        let mut v = Decryptor::from_bytes(p, &buf, h, None).unwrap();
+        let mut v = DecryptorBuilder::from_bytes(&buf)?
+            .buffer_size(2 * 2usize.pow(20))
+            .with_policy(p, None, h)?;
 
         assert!(!v.message_processed());
         assert!(v.helper_ref().good == 0);
@@ -2288,7 +2379,7 @@ mod test {
         v.read_to_end(&mut message).unwrap();
 
         assert!(v.message_processed());
-        assert_eq!(30 * 1024 * 1024, message.len());
+        assert_eq!(3 * 1024 * 1024, message.len());
         assert!(message.iter().all(|&b| b == 42));
         assert!(v.helper_ref().good == 1);
         assert!(v.helper_ref().bad == 0);
@@ -2298,7 +2389,9 @@ mod test {
         // Try the same, but this time we let .check() fail.
         let h = VHelper::new(0, 0, /* makes check() fail: */ 1, 0,
                              vec![cert.clone()]);
-        let mut v = Decryptor::from_bytes(p, &buf, h, None).unwrap();
+        let mut v = DecryptorBuilder::from_bytes(&buf)?
+            .buffer_size(2 * 2usize.pow(20))
+            .with_policy(p, None, h)?;
 
         assert!(!v.message_processed());
         assert!(v.helper_ref().good == 0);
@@ -2313,11 +2406,12 @@ mod test {
         // Check that we only got a truncated message.
         assert!(v.message_processed());
         assert!(message.len() > 0);
-        assert!(message.len() <= 5 * 1024 * 1024);
+        assert!(message.len() <= 1 * 1024 * 1024);
         assert!(message.iter().all(|&b| b == 42));
         assert!(v.helper_ref().good == 1);
         assert!(v.helper_ref().bad == 1);
         assert!(v.helper_ref().unknown == 0);
         assert!(v.helper_ref().error == 0);
+        Ok(())
     }
 }

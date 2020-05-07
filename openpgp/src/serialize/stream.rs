@@ -713,7 +713,8 @@ impl<'a> Signer<'a> {
     ///     }
     /// }
     ///
-    /// let mut verifier = Verifier::from_bytes(p, &sink, Helper(&cert), None)?;
+    /// let mut verifier = VerifierBuilder::from_bytes(&sink)?
+    ///     .with_policy(p, None, Helper(&cert))?;
     ///
     /// let mut message = String::new();
     /// verifier.read_to_string(&mut message)?;
@@ -875,8 +876,8 @@ impl<'a> Signer<'a> {
     ///     }
     /// }
     ///
-    /// let mut verifier =
-    ///     DetachedVerifier::from_bytes(p, &sink, Helper(&cert), None)?;
+    /// let mut verifier = DetachedVerifierBuilder::from_bytes(&sink)?
+    ///     .with_policy(p, None, Helper(&cert))?;
     ///
     /// verifier.verify_bytes(b"Make it so, number one!")?;
     /// # Ok(()) }
@@ -2984,7 +2985,7 @@ mod test {
     }
 
     #[test]
-    fn aead_messages() {
+    fn aead_messages() -> Result<()> {
         // AEAD data is of the form:
         //
         //   [ chunk1 ][ tag1 ] ... [ chunkN ][ tagN ][ tag ]
@@ -3008,7 +3009,7 @@ mod test {
 
         use crate::parse::{
             stream::{
-                Decryptor,
+                DecryptorBuilder,
                 DecryptionHelper,
                 VerificationHelper,
                 MessageStructure,
@@ -3102,7 +3103,9 @@ mod test {
                         let h = Helper { policy: p, tsk: &tsk };
                         // Note: a corrupted message is only guaranteed
                         // to error out before it returns EOF.
-                        let mut v = match Decryptor::from_bytes(p, &msg, h, None) {
+                        let mut v = match DecryptorBuilder::from_bytes(&msg)?
+                            .with_policy(p, None, h)
+                        {
                             Ok(v) => v,
                             Err(_) if do_err => continue,
                             Err(err) => panic!("Decrypting message: {}", err),
@@ -3142,6 +3145,7 @@ mod test {
                 }
             }
         }
+        Ok(())
     }
 
     #[test]

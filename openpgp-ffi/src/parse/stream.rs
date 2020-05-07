@@ -23,13 +23,14 @@ use self::openpgp::{
         PKESK,
         SKESK,
     },
+    parse::Parse,
 };
 use self::openpgp::parse::stream::{
     self,
     DecryptionHelper,
-    Decryptor,
+    DecryptorBuilder,
     VerificationHelper,
-    Verifier,
+    VerifierBuilder,
 };
 
 use crate::Maybe;
@@ -642,10 +643,12 @@ fn pgp_verifier_new<'a>(errp: Option<&mut *mut crate::error::Error>,
                         time: time_t)
                         -> Maybe<io::Reader>
 {
+    ffi_make_fry_from_errp!(errp);
     let policy = policy.ref_raw().as_ref();
     let helper = VHelper::new(inspect, get_certs, check, cookie);
 
-    Verifier::from_reader(policy, input.ref_mut_raw(), helper, maybe_time(time))
+    ffi_try_or!(VerifierBuilder::from_reader(input.ref_mut_raw()), None)
+        .with_policy(policy, maybe_time(time), helper)
         .map(|r| io::ReaderKind::Generic(Box::new(r)))
         .move_into_raw(errp)
 }
@@ -769,12 +772,14 @@ fn pgp_detached_verifier_new<'a>(errp: Option<&mut *mut crate::error::Error>,
                                  time: time_t)
                                  -> Maybe<DetachedVerifier>
 {
+    ffi_make_fry_from_errp!(errp);
     let policy = policy.ref_raw().as_ref();
 
     let helper = VHelper::new(inspect, get_certs, check, cookie);
 
-    openpgp::parse::stream::DetachedVerifier::from_reader(
-        policy, signature_input.ref_mut_raw(), helper, maybe_time(time))
+    ffi_try_or!(openpgp::parse::stream::DetachedVerifierBuilder::from_reader(
+        signature_input.ref_mut_raw()), None)
+        .with_policy(policy, maybe_time(time), helper)
         .move_into_raw(errp)
 }
 
@@ -1052,11 +1057,13 @@ fn pgp_decryptor_new<'a>(errp: Option<&mut *mut crate::error::Error>,
                          time: time_t)
                          -> Maybe<io::Reader>
 {
+    ffi_make_fry_from_errp!(errp);
     let policy = policy.ref_raw().as_ref();
     let helper = DHelper::new(
         get_certs, decrypt, check, inspect, cookie);
 
-    Decryptor::from_reader(policy, input.ref_mut_raw(), helper, maybe_time(time))
+    ffi_try_or!(DecryptorBuilder::from_reader(input.ref_mut_raw()), None)
+        .with_policy(policy, maybe_time(time), helper)
         .map(|r| io::ReaderKind::Generic(Box::new(r)))
         .move_into_raw(errp)
 }
