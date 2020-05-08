@@ -29,7 +29,7 @@ use low_level::{
     parse_error_downcast,
 };
 
-use super::TRACE;
+const TRACE : bool = true;
 
 /// Whether a packet sequence is a valid keyring.
 ///
@@ -356,15 +356,6 @@ impl CertValidator {
     }
 }
 
-// A CertParser can read packets from either an Iterator or a
-// PacketParser.  Ideally, we would just take an iterator, but we
-// want to be able to handle errors, which iterators hide.
-enum PacketSource<'a, I: Iterator<Item=Packet>> {
-    EOF,
-    PacketParser(PacketParser<'a>),
-    Iter(I),
-}
-
 /// An iterator over a sequence of Certs (e.g., an OpenPGP keyring).
 ///
 /// The source of packets can either be a `PacketParser` or an
@@ -400,17 +391,17 @@ enum PacketSource<'a, I: Iterator<Item=Packet>> {
 /// #     Ok(())
 /// # }
 /// ```
-pub struct CertParser<'a, I: Iterator<Item=Packet>> {
-    source: PacketSource<'a, I>,
+pub struct CertParser<'a> {
+    source: Option<Box<dyn Iterator<Item=Result<Packet>> + 'a>>,
     packets: Vec<Packet>,
     saw_error: bool,
     filter: Vec<Box<dyn Fn(&Cert, bool) -> bool + 'a>>,
 }
 
-impl<'a, I: Iterator<Item=Packet>> Default for CertParser<'a, I> {
+impl<'a> Default for CertParser<'a> {
     fn default() -> Self {
         CertParser {
-            source: PacketSource::EOF,
+            source: None,
             packets: vec![],
             saw_error: false,
             filter: vec![],
@@ -421,19 +412,46 @@ impl<'a, I: Iterator<Item=Packet>> Default for CertParser<'a, I> {
 // When using a `PacketParser`, we never use the `Iter` variant.
 // Nevertheless, we need to provide a concrete type.
 // vec::IntoIter<Packet> is about as good as any other.
-impl<'a> From<PacketParserResult<'a>> for CertParser<'a, vec::IntoIter<Packet>> {
+impl<'a> From<PacketParserResult<'a>> for CertParser<'a>
+{
     /// Initializes a `CertParser` from a `PacketParser`.
     fn from(ppr: PacketParserResult<'a>) -> Self {
         let mut parser : Self = Default::default();
         if let PacketParserResult::Some(pp) = ppr {
-            parser.source = PacketSource::PacketParser(pp);
+            let mut ppp : Box<Option<PacketParser>> = Box::new(Some(pp));
+            parser.source = Some(
+                Box::new(std::iter::from_fn(move || {
+                    if let Some(mut pp) = ppp.take() {
+                        if let Packet::Unknown(_) = pp.packet {
+                            // Buffer unknown packets.  This may be a
+                            // signature that we don't understand, and
+                            // keeping it intact is important.
+                            if let Err(e) = pp.buffer_unread_content() {
+                                return Some(Err(e));
+                            }
+                        }
+
+                        match pp.next() {
+                            Ok((packet, ppr)) => {
+                                if let PacketParserResult::Some(pp) = ppr {
+                                    *ppp = Some(pp);
+                                }
+                                Some(Ok(packet))
+                            },
+                            Err(err) => {
+                                Some(Err(err))
+                            }
+                        }
+                    } else {
+                        None
+                    }
+                })));
         }
         parser
     }
 }
 
-impl<'a> Parse<'a, CertParser<'a, vec::IntoIter<Packet>>>
-    for CertParser<'a, vec::IntoIter<Packet>>
+impl<'a> Parse<'a, CertParser<'a>> for CertParser<'a>
 {
     /// Initializes a `CertParser` from a `Read`er.
     fn from_reader<R: 'a + io::Read>(reader: R) -> Result<Self> {
@@ -451,11 +469,14 @@ impl<'a> Parse<'a, CertParser<'a, vec::IntoIter<Packet>>>
     }
 }
 
-impl<'a, I: Iterator<Item=Packet>> CertParser<'a, I> {
-    /// Initializes a CertParser from an iterator over Packets.
-    pub fn from_iter(iter: I) -> Self {
+impl<'a> CertParser<'a> {
+    /// Creates a `CertParser` from a `Result<Packet>` iterator.
+    pub fn from_iter<I, J>(iter: I) -> Self
+        where I: 'a + IntoIterator<Item=J>,
+              J: 'a + Into<Result<Packet>>
+    {
         let mut parser : Self = Default::default();
-        parser.source = PacketSource::Iter(iter);
+        parser.source = Some(Box::new(iter.into_iter().map(Into::into)));
         parser
     }
 
@@ -538,6 +559,7 @@ impl<'a, I: Iterator<Item=Packet>> CertParser<'a, I> {
     // If we complete parsing a Cert, returns the Cert.  Otherwise,
     // returns None.
     fn parse(&mut self, p: Packet) -> Result<Option<Cert>> {
+        tracer!(TRACE, "CertParser::parse", 0);
         if let Packet::Marker(_) = p {
             // Ignore Marker Packet.  RFC4880, section 5.8:
             //
@@ -548,6 +570,7 @@ impl<'a, I: Iterator<Item=Packet>> CertParser<'a, I> {
         if self.packets.len() > 0 {
             match p.tag() {
                 Tag::PublicKey | Tag::SecretKey => {
+                    t!("Start of a new certificate; returning finished cert");
                     return self.cert(Some(p));
                 },
                 _ => {},
@@ -564,13 +587,14 @@ impl<'a, I: Iterator<Item=Packet>> CertParser<'a, I> {
     fn reset(&mut self) -> Self {
         // We need to preserve `source`.
         let mut orig = mem::replace(self, Default::default());
-        self.source = mem::replace(&mut orig.source, PacketSource::EOF);
+        self.source = orig.source.take();
         orig
     }
 
     // Finalizes the current Cert and returns it.  Sets the parser up to
     // begin parsing the next Cert.
     fn cert(&mut self, pk: Option<Packet>) -> Result<Option<Cert>> {
+        tracer!(TRACE, "CertParser::cert", 0);
         let orig = self.reset();
 
         if let Some(pk) = pk {
@@ -578,6 +602,7 @@ impl<'a, I: Iterator<Item=Packet>> CertParser<'a, I> {
         }
 
         let packets = orig.packets.len();
+        t!("Finalizing certificate with {} packets", packets);
         let tokens = orig.packets
             .into_iter()
             .filter_map(|p| p.into())
@@ -585,20 +610,26 @@ impl<'a, I: Iterator<Item=Packet>> CertParser<'a, I> {
         if tokens.len() != packets {
             // There was at least one packet that doesn't belong in a
             // Cert.  Fail now.
-            return Err(Error::UnsupportedCert(
-                "Packet sequence includes non-Cert packets.".into()).into());
+            let err = Error::UnsupportedCert(
+                "Packet sequence includes non-Cert packets.".into());
+            t!("Invalid certificate: {}", err);
+            return Err(err.into());
         }
 
         let certo = match CertLowLevelParser::new()
             .parse(Lexer::from_tokens(&tokens))
         {
             Ok(certo) => certo,
-            Err(e) => return Err(
-                low_level::parse_error_to_openpgp_error(
-                    low_level::parse_error_downcast(e)).into()),
+            Err(err) => {
+                let err = low_level::parse_error_to_openpgp_error(
+                    low_level::parse_error_downcast(err));
+                t!("Low level parser: {}", err);
+                return Err(err.into());
+            }
         }.and_then(|cert| {
             for filter in &self.filter {
                 if !filter(&cert, true) {
+                    t!("Rejected by filter");
                     return None;
                 }
             }
@@ -628,12 +659,17 @@ impl<'a, I: Iterator<Item=Packet>> CertParser<'a, I> {
             // Make sure it is still wanted.
             for filter in &self.filter {
                 if !filter(&cert, true) {
+                    t!("Rejected by filter");
                     return None;
                 }
             }
 
             Some(cert)
         });
+
+        t!("Returning {:?}, constructed from {} packets",
+           certo.as_ref().map(|c| c.fingerprint()),
+           packets);
 
         Ok(certo)
     }
@@ -683,16 +719,16 @@ pub(crate) fn split_sigs<C>(primary: &KeyHandle, primary_keyid: &KeyHandle,
     b.other_revocations = other_revs;
 }
 
-impl<'a, I: Iterator<Item=Packet>> Iterator for CertParser<'a, I> {
+impl<'a> Iterator for CertParser<'a> {
     type Item = Result<Cert>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        tracer!(TRACE, "CertParser::next", 0);
+
         loop {
-            match mem::replace(&mut self.source, PacketSource::EOF) {
-                PacketSource::EOF => {
-                    if TRACE {
-                        eprintln!("CertParser::next: EOF.");
-                    }
+            match self.source.take() {
+                None => {
+                    t!("EOF.");
 
                     if self.packets.len() == 0 {
                         return None;
@@ -703,50 +739,33 @@ impl<'a, I: Iterator<Item=Packet>> Iterator for CertParser<'a, I> {
                         Err(err) => return Some(Err(err)),
                     }
                 },
-                PacketSource::PacketParser(mut pp) => {
-                    if let Packet::Unknown(_) = pp.packet {
-                        // Buffer unknown packets.  This may be a
-                        // signature that we don't understand, and
-                        // keeping it intact is important.
-                        if let Err(e) = pp.buffer_unread_content() {
-                            return Some(Err(e));
+                Some(mut iter) => {
+                    let r = match iter.next() {
+                        Some(Ok(packet)) => {
+                            t!("Got packet #{} ({})",
+                               self.packets.len(), packet.tag());
+                            self.source = Some(iter);
+                            self.parse(packet)
                         }
-                    }
-
-                    match pp.next() {
-                        Ok((packet, ppr)) => {
-                            if let PacketParserResult::Some(pp) = ppr {
-                                self.source = PacketSource::PacketParser(pp);
-                            }
-
-                            match self.parse(packet) {
-                                Ok(Some(cert)) => return Some(Ok(cert)),
-                                Ok(None) => (),
-                                Err(err) => return Some(Err(err)),
-                            }
-                        },
-                        Err(err) => {
+                        Some(Err(err)) => {
+                            t!("Error getting packet: {}", err);
                             self.saw_error = true;
                             return Some(Err(err));
                         }
-                    }
-                },
-                PacketSource::Iter(mut iter) => {
-                    let r = match iter.next() {
-                        Some(packet) => {
-                            self.source = PacketSource::Iter(iter);
-                            self.parse(packet)
+                        None if self.packets.len() == 0 => {
+                            t!("Packet iterator was empty");
+                            Ok(None)
                         }
-                        None if self.packets.len() == 0 => Ok(None),
-                        None => self.cert(None),
+                        None => {
+                            t!("Packet iterator exhausted after {} packets",
+                               self.packets.len());
+                            self.cert(None)
+                        }
                     };
 
                     match r {
                         Ok(Some(cert)) => {
-                            if TRACE {
-                                eprintln!("CertParser::next => {}",
-                                          cert.fingerprint());
-                            }
+                            t!(" => {}", cert.fingerprint());
                             return Some(Ok(cert));
                         }
                         Ok(None) => (),
