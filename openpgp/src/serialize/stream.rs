@@ -103,8 +103,8 @@
 //!     recipient.keys().with_policy(p, None).alive().revoked(false)
 //!     // Or `for_storage_encryption()`, for data at rest.
 //!     .for_transport_encryption()
-//!     .map(|ka| ka.key().into())
-//!     .collect();
+//!     .map(|ka| ka.key())
+//!     .collect::<Vec<_>>();
 //!
 //! # let mut sink = vec![];
 //! let message = Message::new(&mut sink);
@@ -1863,8 +1863,8 @@ impl<'a> Recipient<'a> {
     ///     cert.keys().with_policy(p, None).alive().revoked(false)
     ///     // Or `for_storage_encryption()`, for data at rest.
     ///     .for_transport_encryption()
-    ///     .map(|ka| ka.key().into())
-    ///     .collect();
+    ///     .map(|ka| ka.key())
+    ///     .collect::<Vec<_>>();
     ///
     /// # let mut sink = vec![];
     /// let message = Message::new(&mut sink);
@@ -2018,7 +2018,7 @@ impl<'a> Recipient<'a> {
     ///         r.set_keyid(KeyID::wildcard());
     ///         r
     ///     })
-    ///     .collect();
+    ///     .collect::<Vec<_>>();
     ///
     /// # let mut sink = vec![];
     /// let message = Message::new(&mut sink);
@@ -2122,8 +2122,8 @@ impl<'a> Encryptor<'a> {
     ///     cert.keys().with_policy(p, None).alive().revoked(false)
     ///     // Or `for_storage_encryption()`, for data at rest.
     ///     .for_transport_encryption()
-    ///     .map(|ka| ka.key().into())
-    ///     .collect();
+    ///     .map(|ka| ka.key())
+    ///     .collect::<Vec<_>>();
     ///
     /// # let mut sink = vec![];
     /// let message = Message::new(&mut sink);
@@ -2133,11 +2133,13 @@ impl<'a> Encryptor<'a> {
     /// w.finalize()?;
     /// # Ok(()) }
     /// ```
-    pub fn for_recipients(inner: Message<'a>,
-                          recipients: Vec<Recipient<'a>>) -> Self {
-        Self {
+    pub fn for_recipients<R>(inner: Message<'a>, recipients: R) -> Self
+        where R: IntoIterator,
+              R::Item: Into<Recipient<'a>>,
+    {
+            Self {
             inner: Some(inner.into()),
-            recipients,
+            recipients: recipients.into_iter().map(|r| r.into()).collect(),
             passwords: Vec::new(),
             sym_algo: Default::default(),
             aead_algo: Default::default(),
@@ -2172,18 +2174,20 @@ impl<'a> Encryptor<'a> {
     /// # let mut sink = vec![];
     /// let message = Message::new(&mut sink);
     /// let message = Encryptor::with_passwords(
-    ///     message, vec!["совершенно секретно".into()]).build()?;
+    ///     message, Some("совершенно секретно")).build()?;
     /// let mut w = LiteralWriter::new(message).build()?;
     /// w.write_all(b"Hello world.")?;
     /// w.finalize()?;
     /// # Ok(()) }
     /// ```
-    pub fn with_passwords(inner: Message<'a>,
-                          passwords: Vec<Password>) -> Self {
+    pub fn with_passwords<P>(inner: Message<'a>, passwords: P) -> Self
+        where P: IntoIterator,
+              P::Item: Into<Password>,
+    {
         Self {
             inner: Some(inner.into()),
             recipients: Vec::new(),
-            passwords,
+            passwords: passwords.into_iter().map(|p| p.into()).collect(),
             sym_algo: Default::default(),
             aead_algo: Default::default(),
             hash: HashAlgorithm::SHA1.context().unwrap(),
@@ -2253,24 +2257,27 @@ impl<'a> Encryptor<'a> {
     ///     cert.keys().with_policy(p, None).alive().revoked(false)
     ///     // Or `for_storage_encryption()`, for data at rest.
     ///     .for_transport_encryption()
-    ///     .map(|ka| ka.key().into())
+    ///     .map(|ka| ka.key())
     ///     .collect::<Vec<_>>();
     ///
     /// # let mut sink = vec![];
     /// let message = Message::new(&mut sink);
-    /// let encryptor =
-    ///     Encryptor::with_passwords(message,
-    ///                               vec!["совершенно секретно".into()]);
-    /// let message = recipients.into_iter().fold(encryptor,
-    ///                                           |e, r| e.add_recipient(r))
+    /// let message =
+    ///     Encryptor::with_passwords(message, Some("совершенно секретно"))
+    ///     .add_recipients(recipients)
     ///     .build()?;
     /// let mut message = LiteralWriter::new(message).build()?;
     /// message.write_all(b"Hello world.")?;
     /// message.finalize()?;
     /// # Ok(()) }
     /// ```
-    pub fn add_recipient(mut self, recipient: Recipient<'a>) -> Self {
-        self.recipients.push(recipient);
+    pub fn add_recipients<R>(mut self, recipients: R) -> Self
+        where R: IntoIterator,
+              R::Item: Into<Recipient<'a>>,
+    {
+        for r in recipients {
+            self.recipients.push(r.into());
+        }
         self
     }
 
@@ -2336,22 +2343,27 @@ impl<'a> Encryptor<'a> {
     ///     cert.keys().with_policy(p, None).alive().revoked(false)
     ///     // Or `for_storage_encryption()`, for data at rest.
     ///     .for_transport_encryption()
-    ///     .map(|ka| ka.key().into())
-    ///     .collect();
+    ///     .map(|ka| ka.key())
+    ///     .collect::<Vec<_>>();
     ///
     /// # let mut sink = vec![];
     /// let message = Message::new(&mut sink);
     /// let message =
     ///     Encryptor::for_recipients(message, recipients)
-    ///         .add_password("совершенно секретно".into())
+    ///         .add_passwords(Some("совершенно секретно"))
     ///         .build()?;
     /// let mut message = LiteralWriter::new(message).build()?;
     /// message.write_all(b"Hello world.")?;
     /// message.finalize()?;
     /// # Ok(()) }
     /// ```
-    pub fn add_password(mut self, password: Password) -> Self {
-        self.passwords.push(password);
+    pub fn add_passwords<P>(mut self, passwords: P) -> Self
+        where P: IntoIterator,
+              P::Item: Into<Password>,
+    {
+        for p in passwords {
+            self.passwords.push(p.into());
+        }
         self
     }
 
@@ -2371,8 +2383,7 @@ impl<'a> Encryptor<'a> {
     /// # let mut sink = vec![];
     /// let message = Message::new(&mut sink);
     /// let message =
-    ///     Encryptor::with_passwords(message,
-    ///                               vec!["совершенно секретно".into()])
+    ///     Encryptor::with_passwords(message, Some("совершенно секретно"))
     ///         .symmetric_algo(SymmetricAlgorithm::AES128)
     ///         .build()?;
     /// let mut message = LiteralWriter::new(message).build()?;
@@ -2403,8 +2414,7 @@ impl<'a> Encryptor<'a> {
     /// # let mut sink = vec![];
     /// let message = Message::new(&mut sink);
     /// let message =
-    ///     Encryptor::with_passwords(message,
-    ///                               vec!["совершенно секретно".into()])
+    ///     Encryptor::with_passwords(message, Some("совершенно секретно"))
     ///         .aead_algo(AEADAlgorithm::EAX)
     ///         .build()?;
     /// let mut message = LiteralWriter::new(message).build()?;
@@ -2447,8 +2457,7 @@ impl<'a> Encryptor<'a> {
     /// # let mut sink = vec![];
     /// let message = Message::new(&mut sink);
     /// let message =
-    ///     Encryptor::with_passwords(message,
-    ///                               vec!["совершенно секретно".into()])
+    ///     Encryptor::with_passwords(message, Some("совершенно секретно"))
     ///         // Customize the `Encryptor` here.
     ///         .build()?;
     ///
@@ -3073,7 +3082,7 @@ mod test {
                     let recipients = tsk
                         .keys().with_policy(p, None)
                         .for_storage_encryption().for_transport_encryption()
-                        .map(|ka| ka.key().into()).collect();
+                        .map(|ka| ka.key()).collect::<Vec<_>>();
                     let encryptor = Encryptor::for_recipients(m, recipients)
                         .aead_algo(AEADAlgorithm::EAX)
                         .build().unwrap();
