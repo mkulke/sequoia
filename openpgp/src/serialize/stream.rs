@@ -97,14 +97,12 @@
 //!
 //! let recipient: Cert = // ...
 //! #     sender.clone();
-//! // Build a vector of recipients to hand to the `Encryptor`.
 //! // Note: One certificate may contain several suitable encryption keys.
 //! let recipients =
 //!     recipient.keys().with_policy(p, None).alive().revoked(false)
 //!     // Or `for_storage_encryption()`, for data at rest.
 //!     .for_transport_encryption()
-//!     .map(|ka| ka.key())
-//!     .collect::<Vec<_>>();
+//!     .map(|ka| ka.key());
 //!
 //! # let mut sink = vec![];
 //! let message = Message::new(&mut sink);
@@ -138,10 +136,7 @@ use crate::{
     crypto::SessionKey,
     packet::prelude::*,
     packet::signature,
-    packet::key::{
-        PublicParts,
-        UnspecifiedRole,
-    },
+    packet::key,
     cert::prelude::*,
 };
 use crate::packet::header::CTB;
@@ -1793,17 +1788,35 @@ impl<'a> writer::Stackable<'a, Cookie> for Compressor<'a> {
 #[derive(Debug)]
 pub struct Recipient<'a> {
     keyid: KeyID,
-    key: &'a Key<PublicParts, UnspecifiedRole>,
+    key: &'a Key<key::PublicParts, key::UnspecifiedRole>,
 }
 
-impl<'a> From<&'a Key<PublicParts, UnspecifiedRole>> for Recipient<'a> {
-    fn from(key: &'a Key<PublicParts, UnspecifiedRole>) -> Self {
-        Self::new(key.keyid(), key)
+impl<'a, P, R> From<&'a Key<P, R>> for Recipient<'a>
+    where P: key::KeyParts,
+          R: key::KeyRole,
+{
+    fn from(key: &'a Key<P, R>) -> Self {
+        Self::new(key.keyid(), key.parts_as_public().role_as_unspecified())
+    }
+}
+
+impl<'a, P, R, R2> From<ValidKeyAmalgamation<'a, P, R, R2>>
+    for Recipient<'a>
+    where P: key::KeyParts,
+          R: key::KeyRole,
+          R2: Copy,
+{
+    fn from(ka: ValidKeyAmalgamation<'a, P, R, R2>) -> Self {
+        ka.key().into()
     }
 }
 
 impl<'a> Recipient<'a> {
     /// Creates a new recipient with an explicit recipient keyid.
+    ///
+    /// Note: If you don't want to change the recipient keyid,
+    /// `Recipient`s can be created from `Key` and
+    /// `ValidKeyAmalgamation` using `From`.
     ///
     /// # Example
     ///
@@ -1858,13 +1871,11 @@ impl<'a> Recipient<'a> {
     /// #    */
     /// )?;
     ///
-    /// // Build a vector of recipients to hand to the `Encryptor`.
     /// let recipients =
     ///     cert.keys().with_policy(p, None).alive().revoked(false)
     ///     // Or `for_storage_encryption()`, for data at rest.
     ///     .for_transport_encryption()
-    ///     .map(|ka| ka.key())
-    ///     .collect::<Vec<_>>();
+    ///     .map(|ka| Recipient::new(ka.key().keyid(), ka.key()));
     ///
     /// # let mut sink = vec![];
     /// let message = Message::new(&mut sink);
@@ -1935,12 +1946,11 @@ impl<'a> Recipient<'a> {
     /// #    */
     /// )?;
     ///
-    /// // Build a vector of recipients to hand to the `Encryptor`.
     /// let recipients =
     ///     cert.keys().with_policy(p, None).alive().revoked(false)
     ///     // Or `for_storage_encryption()`, for data at rest.
     ///     .for_transport_encryption()
-    ///     .map(|ka| ka.key().into())
+    ///     .map(Into::into)
     ///     .collect::<Vec<Recipient>>();
     ///
     /// assert_eq!(recipients[0].keyid(),
@@ -2007,18 +2017,16 @@ impl<'a> Recipient<'a> {
     /// #    */
     /// )?;
     ///
-    /// // Build a vector of recipients to hand to the `Encryptor`.
     /// let recipients =
     ///     cert.keys().with_policy(p, None).alive().revoked(false)
     ///     // Or `for_storage_encryption()`, for data at rest.
     ///     .for_transport_encryption()
     ///     .map(|ka| {
-    ///         let mut r: Recipient = ka.key().into();
+    ///         let mut r: Recipient = ka.into();
     ///         // Set the recipient keyid to the wildcard id.
     ///         r.set_keyid(KeyID::wildcard());
     ///         r
-    ///     })
-    ///     .collect::<Vec<_>>();
+    ///     });
     ///
     /// # let mut sink = vec![];
     /// let message = Message::new(&mut sink);
@@ -2052,7 +2060,7 @@ pub struct Encryptor<'a> {
 }
 
 impl<'a> Encryptor<'a> {
-    /// Creates a new encryptor for the given recipient.
+    /// Creates a new encryptor for the given recipients.
     ///
     /// To add more recipients, use [`Encryptor::add_recipient`].  To
     /// add a password, use [`Encryptor::add_password`].  To change
@@ -2117,13 +2125,10 @@ impl<'a> Encryptor<'a> {
     /// #    */
     /// )?;
     ///
-    /// // Build a vector of recipients to hand to the `Encryptor`.
     /// let recipients =
     ///     cert.keys().with_policy(p, None).alive().revoked(false)
     ///     // Or `for_storage_encryption()`, for data at rest.
-    ///     .for_transport_encryption()
-    ///     .map(|ka| ka.key())
-    ///     .collect::<Vec<_>>();
+    ///     .for_transport_encryption();
     ///
     /// # let mut sink = vec![];
     /// let message = Message::new(&mut sink);
@@ -2148,7 +2153,7 @@ impl<'a> Encryptor<'a> {
         }
     }
 
-    /// Creates a new encryptor for the given password.
+    /// Creates a new encryptor for the given passwords.
     ///
     /// To add more passwords, use [`Encryptor::add_password`].  To
     /// add an recipient, use [`Encryptor::add_recipient`].  To change
@@ -2195,7 +2200,7 @@ impl<'a> Encryptor<'a> {
         }
     }
 
-    /// Adds a recipient.
+    /// Adds recipients.
     ///
     /// The resulting message can be encrypted by any recipient and
     /// with any password.
@@ -2252,13 +2257,10 @@ impl<'a> Encryptor<'a> {
     /// #    */
     /// )?;
     ///
-    /// // Build a vector of recipients to hand to the `Encryptor`.
     /// let recipients =
     ///     cert.keys().with_policy(p, None).alive().revoked(false)
     ///     // Or `for_storage_encryption()`, for data at rest.
-    ///     .for_transport_encryption()
-    ///     .map(|ka| ka.key())
-    ///     .collect::<Vec<_>>();
+    ///     .for_transport_encryption();
     ///
     /// # let mut sink = vec![];
     /// let message = Message::new(&mut sink);
@@ -2281,7 +2283,7 @@ impl<'a> Encryptor<'a> {
         self
     }
 
-    /// Adds a password to encrypt with.
+    /// Adds passwords to encrypt with.
     ///
     /// The resulting message can be encrypted with any password and
     /// by any recipient.
@@ -2338,13 +2340,10 @@ impl<'a> Encryptor<'a> {
     /// #    */
     /// )?;
     ///
-    /// // Build a vector of recipients to hand to the `Encryptor`.
     /// let recipients =
     ///     cert.keys().with_policy(p, None).alive().revoked(false)
     ///     // Or `for_storage_encryption()`, for data at rest.
-    ///     .for_transport_encryption()
-    ///     .map(|ka| ka.key())
-    ///     .collect::<Vec<_>>();
+    ///     .for_transport_encryption();
     ///
     /// # let mut sink = vec![];
     /// let message = Message::new(&mut sink);
@@ -3081,8 +3080,7 @@ mod test {
                     let m = Message::new(&mut msg);
                     let recipients = tsk
                         .keys().with_policy(p, None)
-                        .for_storage_encryption().for_transport_encryption()
-                        .map(|ka| ka.key()).collect::<Vec<_>>();
+                        .for_storage_encryption().for_transport_encryption();
                     let encryptor = Encryptor::for_recipients(m, recipients)
                         .aead_algo(AEADAlgorithm::EAX)
                         .build().unwrap();
