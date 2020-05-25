@@ -874,6 +874,7 @@ pub struct Subpacket {
 #[cfg(any(test, feature = "quickcheck"))]
 impl ArbitraryBounded for Subpacket {
     fn arbitrary_bounded<G: Gen>(g: &mut G, depth: usize) -> Self {
+        use rand::Rng;
 
         fn encode_non_optimal(length: usize) -> SubpacketLength {
             // Calculate length the same way as Subpacket::new.
@@ -906,17 +907,15 @@ impl ArbitraryBounded for Subpacket {
             SubpacketValue::arbitrary_bounded(g, depth)
         };
 
-        let value = ArbitraryBounded::arbitrary_bounded(g, depth);
-        let critical = Arbitrary::arbitrary(g);
-
-        if use_optimal_length {
-            Subpacket::new(value, critical).unwrap()
-        } else {
+        if use_nonoptimal_encoding
+            && SubpacketLength::len_optimal_encoding(value.serialized_len() as u32) != 5
+        {
             let length = encode_non_optimal(value.serialized_len());
             Subpacket::with_length(length, value, critical)
+        } else {
+            Subpacket::new(value, critical).unwrap()
         }
     }
-
 }
 
 #[cfg(any(test, feature = "quickcheck"))]
