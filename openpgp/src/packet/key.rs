@@ -1434,6 +1434,36 @@ impl<R> Key4<SecretParts, R>
         (self.parts_into_secret().expect("secret just set"),
          old.expect("Key<SecretParts, _> has a secret key material"))
     }
+
+    /// Decrypts the secret key material using `password`.
+    ///
+    /// In OpenPGP, secret key material can be [protected with a
+    /// password].  The password is usually hardened using a [KDF].
+    ///
+    /// Refer to the documentation of [`Key::decrypt_secret`] for
+    /// details.
+    ///
+    /// This function returns an error if the secret key material is
+    /// not encrypted or the password is incorrect.
+    ///
+    /// [protected with a password]: https://tools.ietf.org/html/rfc4880#section-3.7
+    /// [`Key::decrypt_secret`]: enum.Key.html#method.decrypt_secret
+    pub fn decrypt_secret(mut self, password: &Password) -> Result<Self> {
+        let pk_algo = self.pk_algo;
+        self.secret_mut().decrypt_in_place(pk_algo, password)?;
+        Ok(self)
+    }
+
+    /// Encrypts the secret key material using `password`.
+    ///
+    /// This returns an error if the secret key material is already
+    /// encrypted.
+    pub fn encrypt_secret(mut self, password: &Password)
+        -> Result<Key4<SecretParts, R>>
+    {
+        self.secret_mut().encrypt_in_place(password)?;
+        Ok(self)
+    }
 }
 
 impl<P, R> From<Key4<P, R>> for super::Key<P, R>
@@ -1475,10 +1505,27 @@ impl From<Encrypted> for SecretKeyMaterial {
 }
 
 impl SecretKeyMaterial {
-    /// Decrypts this secret key using `password`.
+    /// Decrypts the secret key material using `password`.
     ///
-    /// The `SecretKeyMaterial` type does not know what kind of key it is, so
-    /// `pk_algo` is needed to parse the correct number of MPIs.
+    /// The `SecretKeyMaterial` type does not know what kind of key it
+    /// contains.  So, in order to know how many MPIs to parse, the
+    /// public key algorithm needs to be provided explicitly.
+    ///
+    /// This returns an error if the secret key material is not
+    /// encrypted or the password is incorrect.
+    pub fn decrypt(mut self, pk_algo: PublicKeyAlgorithm,
+                   password: &Password)
+        -> Result<Self>
+    {
+        self.decrypt_in_place(pk_algo, password)?;
+        Ok(self)
+    }
+
+    /// Decrypts the secret key material using `password`.
+    ///
+    /// The `SecretKeyMaterial` type does not know what kind of key it
+    /// contains.  So, in order to know how many MPIs to parse, the
+    /// public key algorithm needs to be provided explicitly.
     ///
     /// This returns an error if the secret key material is not
     /// encrypted or the password is incorrect.
@@ -1495,6 +1542,18 @@ impl SecretKeyMaterial {
                 Err(Error::InvalidArgument(
                     "secret key is not encrypted".into()).into()),
         }
+    }
+
+    /// Encrypts the secret key material using `password`.
+    ///
+    /// The `SecretKeyMaterial` type does not know what kind of key it
+    /// contains.  So, in order to know how many MPIs to parse, the
+    /// public key algorithm needs to be provided explicitly.
+    ///
+    /// This returns an error if the secret key material is encrypted.
+    pub fn encrypt(mut self, password: &Password) -> Result<Self> {
+        self.encrypt_in_place(password)?;
+        Ok(self)
     }
 
     /// Encrypts the secret key material using `password`.
