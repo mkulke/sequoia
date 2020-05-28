@@ -2626,8 +2626,16 @@ impl AED1 {
             php_try!(php.parse_u8("sym_algo")).into();
         let aead: AEADAlgorithm =
             php_try!(php.parse_u8("aead_algo")).into();
-        let chunk_size: usize =
-            1 << (php_try!(php.parse_u8("chunk_size")) as usize + 6);
+        let chunk_size = php_try!(php.parse_u8("chunk_size"));
+
+        // DRAFT 4880bis-08, section 5.16: "An implementation MUST
+        // support chunk size octets with values from 0 to 56.  Chunk
+        // size octets with other values are reserved for future
+        // extensions."
+        if chunk_size > 56 {
+            return php.fail("unsupported chunk size");
+        }
+        let chunk_size: u64 = 1 << (chunk_size + 6);
 
         let iv_size = php_try!(aead.iv_size());
         let iv = php_try!(php.parse_bytes("iv", iv_size));
@@ -4851,6 +4859,9 @@ impl<'a> PacketParser<'a> {
             },
 
             Packet::AED(AED::V1(aed)) => {
+                let chunk_size =
+                    aead::chunk_size_usize(aed.chunk_size())?;
+
                 // Read the first chunk and check whether we can
                 // decrypt it using the provided key.  Don't actually
                 // consume them in case we can't.
@@ -4859,11 +4870,13 @@ impl<'a> PacketParser<'a> {
                     // `aead::Decryptor` won't see EOF and think that
                     // it has a partial block and it needs to verify
                     // the final chunk.
-                    let amount
-                        = aed.chunk_digest_size()? + aed.aead().digest_size()?;
+                    let amount = aead::chunk_size_usize(
+                        aed.chunk_digest_size()?
+                        + aed.aead().digest_size()? as u64)?;
+
                     let data = self.data(amount)?;
                     let dec = aead::Decryptor::new(
-                        1, aed.symmetric_algo(), aed.aead(), aed.chunk_size(),
+                        1, aed.symmetric_algo(), aed.aead(), chunk_size,
                         aed.iv(), key,
                         &data[..cmp::min(data.len(), amount)])?;
                     let mut chunk = Vec::new();
@@ -4877,7 +4890,7 @@ impl<'a> PacketParser<'a> {
                 // above with the same parameters.
                 let reader = self.take_reader();
                 let mut reader = aead::BufferedReaderDecryptor::with_cookie(
-                    1, aed.symmetric_algo(), aed.aead(), aed.chunk_size(),
+                    1, aed.symmetric_algo(), aed.aead(), chunk_size,
                     aed.iv(), key, reader, Cookie::default()).unwrap();
                 reader.cookie_mut().level = Some(self.recursion_depth());
 
@@ -5481,5 +5494,18 @@ mod test {
             panic!("failed to parse userid");
         }
 
+    }
+
+    /// Crash in the AED parser due to missing chunk size validation.
+    #[test]
+    fn issue_514() -> Result<()> {
+        let data = &[212, 43, 1, 0, 0, 125, 212, 0, 10, 10, 10];
+        let ppr = PacketParser::from_bytes(&data)?;
+        let packet = &ppr.unwrap().packet;
+        if let Packet::Unknown(_) = packet {
+            Ok(())
+        } else {
+            panic!("expected unknown packet, got: {:?}", packet);
+        }
     }
 }
