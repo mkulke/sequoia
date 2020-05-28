@@ -2626,8 +2626,14 @@ impl AED1 {
             php_try!(php.parse_u8("sym_algo")).into();
         let aead: AEADAlgorithm =
             php_try!(php.parse_u8("aead_algo")).into();
-        let chunk_size: usize =
-            1 << (php_try!(php.parse_u8("chunk_size")) as usize + 6);
+        let shift_size = match (php_try!(php.parse_u8("chunk_size")) as u32).checked_add(6) {
+            Some(num) => num,
+            None => return php.fail("Illegal shift size")
+        };
+        let chunk_size: usize = match 1_usize.checked_shl(shift_size) {
+            Some(num) => num,
+            None => return php.fail("Illegal size")
+        };
 
         let iv_size = php_try!(aead.iv_size());
         let iv = php_try!(php.parse_bytes("iv", iv_size));
