@@ -8,8 +8,13 @@ use crate::Result;
 /// A short identifier for certificates and keys.
 ///
 /// A `KeyID` identifies a public key.
-/// It is defined as a fragment (the lower 8 bytes) of the fingerprint,
-/// thus, it is easier to forge.
+/// It is defined as a fragment (the lower 8 bytes) of the key's fingerprint,
+/// which in turn is essentially a SHA-1 hash of the public key packet.
+/// As a general rule of thumb, you should prefer the fingerprint as it is
+/// possible to create keys with a colliding KeyID using a [birthday attack].
+///
+/// KeyIds are used for example to reference the issuing key of a signature in
+/// its Issuer subpacket.
 ///
 /// For more details about how a KeyID is generated, see [Section 12.2 of RFC 4880].
 ///
@@ -25,13 +30,14 @@ use crate::Result;
 ///
 ///   [`Fingerprint`]: ./enum.Fingerprint.html
 ///   [`KeyHandle`]: ./enum.KeyHandle.html
+///   [birthday attack]: https://nullprogram.com/blog/2019/07/22/
+///
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
 pub enum KeyID {
     /// Lower 8 byte SHA-1 hash.
     V4([u8;8]),
-    /// Used for holding fingerprints that we don't understand.  For
-    /// instance, we don't grok v3 fingerprints.  And, it is possible
-    /// that the Issuer subpacket contains the wrong number of bytes.
+    /// Used for holding keyids encountered during parsing that do not match
+    /// the specification, e.g. wrong number of bytes.
     Invalid(Box<[u8]>)
 }
 

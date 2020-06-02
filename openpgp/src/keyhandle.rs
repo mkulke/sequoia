@@ -12,13 +12,31 @@ use crate::{
 
 /// Enum representing an identifier for certificates and keys.
 ///
-/// A `KeyHandle` contains either a [`Fingerprint`] or a [`KeyID`], as defined in
-/// [Section 12.2 of RFC 4880]
+/// A `KeyHandle` represents either a [`Fingerprint`] or a [`KeyID`].
+/// This is needed because signatures can reference their issuer either by
+/// `Fingerprint` or by `KeyID`.
+///
+/// , as defined in
+/// [Section 12.2 of RFC 4880].
+///
+///
+/// A fingerprint is, essentially, a 20-byte SHA-1 hash over the key's public key packet.
+/// A keyid is defined as the fingerprint's lower 8 bytes.
+/// Both are used to identify a key, e.g., the issuer of a signature.
 ///
 ///   [Section 12.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-12.2
 ///
 ///   [`Fingerprint`]: ./enum.Fingerprint.html
 ///   [`KeyID`]: ./enum.KeyID.html
+///
+/// ## Implementation of `PartialEq` for `KeyHandle`
+/// * The relationship 
+/// * Determining if two keyhandles are equal
+/// * trivial if comparing two fingerprints or two keyids
+/// * 
+/// * difficult if f is a fingerprint and k is 
+/// * if f = 1234 1234 1234 1234 1234  1234 1234 1234 1234 1234
+///
 /// # Examples
 ///
 /// ```ignore
