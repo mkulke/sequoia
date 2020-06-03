@@ -16,26 +16,32 @@ use crate::{
 /// This is needed because signatures can reference their issuer either by
 /// `Fingerprint` or by `KeyID`.
 ///
-/// , as defined in
-/// [Section 12.2 of RFC 4880].
-///
-///
 /// A fingerprint is, essentially, a 20-byte SHA-1 hash over the key's public key packet.
 /// A keyid is defined as the fingerprint's lower 8 bytes.
-/// Both are used to identify a key, e.g., the issuer of a signature.
+///
+/// For the exact definition, see [Section 12.2 of RFC 4880].
+///
+/// Both fingerprint and keyid are used to identify a key, e.g., the issuer of a
+/// signature.
 ///
 ///   [Section 12.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-12.2
 ///
 ///   [`Fingerprint`]: ./enum.Fingerprint.html
 ///   [`KeyID`]: ./enum.KeyID.html
 ///
+/// KeyHandle
+/// - enum representing either Fingerprint or keyID
+/// - either can be used to reference the issuer of a signature
+/// - definition:
+///   - fingerprint: 20byte sha-1 hash of (essentially) public key packet
+///   - keyid: lower 8 bytes of fingerprint
+/// - keyid vulnerable to birthday attacks
+/// - advice: prefer fingerprint over keyid (necessary here at keyHandle? confusing?)
+///
 /// ## Implementation of `PartialEq` for `KeyHandle`
-/// * The relationship 
-/// * Determining if two keyhandles are equal
-/// * trivial if comparing two fingerprints or two keyids
-/// * 
-/// * difficult if f is a fingerprint and k is 
-/// * if f = 1234 1234 1234 1234 1234  1234 1234 1234 1234 1234
+/// - Determining if two keyhandles are equal
+/// - trivial if comparing two fingerprints or two keyids
+/// - problem: if a is a fingerprint and b is a keyid, and b is the end of a
 ///
 /// # Examples
 ///
@@ -69,8 +75,7 @@ use crate::{
 /// # }
 /// ```
 ///
-///
-/// ```ignore
+/// ```
 /// # use sequoia_openpgp as openpgp;
 /// # use openpgp::Result;
 /// # use openpgp::{Fingerprint, KeyHandle};
@@ -92,7 +97,7 @@ use crate::{
 ///     cert.keys().key_handle(self_sig.issuer().unwrap()).next().is_some()
 /// });
 ///
-/// //self_sig.verify(keyhandle);
+/// self_sig.verify(keyhandle);
 /// //assert_eq!(keyhandle, self_sig.issuer())
 /// Ok(())
 /// }
@@ -346,7 +351,6 @@ mod tests {
         use crate::crypto::KeyPair;
         use crate::Packet;
         use crate::types::{Curve, SignatureType};
-        use crate::packet::signature::Builder;
         use crate::cert::CertParser;
         use crate::parse::Parse;
         use crate::policy::StandardPolicy as P;

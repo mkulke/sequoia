@@ -13,7 +13,7 @@ use crate::Result;
 /// As a general rule of thumb, you should prefer the fingerprint as it is
 /// possible to create keys with a colliding KeyID using a [birthday attack].
 ///
-/// KeyIds are used for example to reference the issuing key of a signature in
+/// KeyIds are used, for example, to reference the issuing key of a signature in
 /// its Issuer subpacket.
 ///
 /// For more details about how a KeyID is generated, see [Section 12.2 of RFC 4880].
@@ -36,8 +36,8 @@ use crate::Result;
 pub enum KeyID {
     /// Lower 8 byte SHA-1 hash.
     V4([u8;8]),
-    /// Used for holding keyids encountered during parsing that do not match
-    /// the specification, e.g. wrong number of bytes.
+    /// Used for holding invalid keyids encountered during parsing
+    /// e.g. wrong number of bytes.
     Invalid(Box<[u8]>)
 }
 

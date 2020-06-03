@@ -9,6 +9,11 @@ use quickcheck::{Arbitrary, Gen};
 /// For more details about how a fingerprint is generated, see
 /// [Section 12.2 of RFC 4880].
 ///
+/// Fingerprints are used, for example, to reference the issuing key of a signature in
+/// its IssuerFingerprint subpacket.
+/// As a general rule of thumb, you should prefer using fingerprints instead of
+/// keyids because they are vulnerable to [birthday attack]s.
+///
 /// See also [`KeyID`], [`KeyHandle`].
 ///
 ///   [Section 12.2 of RFC 4880]:
@@ -17,8 +22,6 @@ use quickcheck::{Arbitrary, Gen};
 ///   [`KeyID`]: ./enum.KeyID.html
 ///   [`KeyHandle`]: ./enum.KeyHandle.html
 ///
-/// # Example
-/// TODO: signature.issuer
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
 pub enum Fingerprint {
     /// A 20 byte SHA-1 hash of the public key packet as defined in the RFC.
