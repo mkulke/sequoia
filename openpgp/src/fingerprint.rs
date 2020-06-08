@@ -4,23 +4,26 @@ use quickcheck::{Arbitrary, Gen};
 /// A long identifier for certificates and keys.
 ///
 /// A `Fingerprint` uniquely identifies a public key.
-/// Essentially, it is a SHA-1 hash over the key's public key packet.
 ///
-/// For more details about how a fingerprint is generated, see
-/// [Section 12.2 of RFC 4880].
+/// Currently, sequoia supports *version 4* fingerprints and Key IDs only.
+/// *Version 3* fingerprints and Key IDs were deprecated by [RFC 4880] in 2007.
+///
+/// Essentially, a *v4* fingerprint is a SHA-1 hash over the key's public key packet.
+/// For details, see [Section 12.2 of RFC 4880].
 ///
 /// Fingerprints are used, for example, to reference the issuing key of a signature in
-/// its IssuerFingerprint subpacket.
+/// its `IssuerFingerprint` subpacket.
 /// As a general rule of thumb, you should prefer using fingerprints instead of
-/// keyids because they are vulnerable to [birthday attack]s.
+/// Key IDs because they are vulnerable to [birthday attack]s.
 ///
-/// See also [`KeyID`], [`KeyHandle`].
+/// See also [`KeyID`] and [`KeyHandle`].
 ///
-///   [Section 12.2 of RFC 4880]:
-///   https://tools.ietf.org/html/rfc4880#section-12.2
+///   [RFC 4880]: https://tools.ietf.org/html/rfc4880
+///   [Section 12.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-12.2
 ///
 ///   [`KeyID`]: ./enum.KeyID.html
 ///   [`KeyHandle`]: ./enum.KeyHandle.html
+///   [birthday attack]: https://nullprogram.com/blog/2019/07/22/
 ///
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
 pub enum Fingerprint {

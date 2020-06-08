@@ -8,24 +8,27 @@ use crate::Result;
 /// A short identifier for certificates and keys.
 ///
 /// A `KeyID` identifies a public key.
-/// It is defined as a fragment (the lower 8 bytes) of the key's fingerprint,
+/// It is used, for example, to reference the issuing key of a signature in
+/// its `Issuer` subpacket.
+///
+/// Currently, sequoia supports *version 4* fingerprints and Key IDs only.
+/// *Version 3* fingerprints and Key IDs were deprecated by [RFC 4880] in 2007.
+///
+/// A *v4* `KeyID` is defined as a fragment (the lower 8 bytes) of the key's fingerprint,
 /// which in turn is essentially a SHA-1 hash of the public key packet.
 /// As a general rule of thumb, you should prefer the fingerprint as it is
 /// possible to create keys with a colliding KeyID using a [birthday attack].
 ///
-/// KeyIds are used, for example, to reference the issuing key of a signature in
-/// its Issuer subpacket.
+/// For more details about how a `KeyID` is generated, see [Section 12.2 of RFC 4880].
 ///
-/// For more details about how a KeyID is generated, see [Section 12.2 of RFC 4880].
+/// In previous versions of OpenPGP, the Key ID used to be called "long Key ID",
+/// as there even was a "short Key ID". At only 4 bytes length, short Key IDs
+/// vulnerable to preimage attacks. That is, an attacker can create a key with
+/// any given short key ID in short amount of time.
 ///
-/// In previous versions of OpenPGP, the KeyID used to be called "long KeyID",
-/// as there even was a "short KeyID" with 4 bytes length.
-/// Both are easily forged, thus, fingerprints should be
-/// preferred where possible.
-//Right now, it is easy to create a long Key ID collision by exploiting the birthday paradox.  But cloning a long Key ID is still expensive (although almost certainly within the reach of state actors).
+/// See also [`Fingerprint`] and [`KeyHandle`].
 ///
-/// See also [`Fingerprint`], [`KeyHandle`].
-///
+///   [RFC 4880]: https://tools.ietf.org/html/rfc4880
 ///   [Section 12.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-12.2
 ///
 ///   [`Fingerprint`]: ./enum.Fingerprint.html

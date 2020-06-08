@@ -12,36 +12,27 @@ use crate::{
 
 /// Enum representing an identifier for certificates and keys.
 ///
-/// A `KeyHandle` represents either a [`Fingerprint`] or a [`KeyID`].
+/// A `KeyHandle` contains either a [`Fingerprint`] or a [`KeyID`].
 /// This is needed because signatures can reference their issuer either by
 /// `Fingerprint` or by `KeyID`.
 ///
-/// A fingerprint is, essentially, a 20-byte SHA-1 hash over the key's public key packet.
-/// A keyid is defined as the fingerprint's lower 8 bytes.
+/// Currently, sequoia supports *version 4* fingerprints and Key ID only.
+/// *Version 3* fingerprints and Key ID were deprecated by [RFC 4880] in 2007.
+///
+/// A *v4* fingerprint is, essentially, a 20-byte SHA-1 hash over the key's public
+/// key packet.
+/// A *v4* Key ID is defined as the fingerprint's lower 8 bytes.
 ///
 /// For the exact definition, see [Section 12.2 of RFC 4880].
 ///
-/// Both fingerprint and keyid are used to identify a key, e.g., the issuer of a
+/// Both fingerprint and Key ID are used to identify a key, e.g., the issuer of a
 /// signature.
 ///
+///   [RFC 4880]: https://tools.ietf.org/html/rfc4880
 ///   [Section 12.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-12.2
 ///
 ///   [`Fingerprint`]: ./enum.Fingerprint.html
 ///   [`KeyID`]: ./enum.KeyID.html
-///
-/// KeyHandle
-/// - enum representing either Fingerprint or keyID
-/// - either can be used to reference the issuer of a signature
-/// - definition:
-///   - fingerprint: 20byte sha-1 hash of (essentially) public key packet
-///   - keyid: lower 8 bytes of fingerprint
-/// - keyid vulnerable to birthday attacks
-/// - advice: prefer fingerprint over keyid (necessary here at keyHandle? confusing?)
-///
-/// ## Implementation of `PartialEq` for `KeyHandle`
-/// - Determining if two keyhandles are equal
-/// - trivial if comparing two fingerprints or two keyids
-/// - problem: if a is a fingerprint and b is a keyid, and b is the end of a
 ///
 /// # Examples
 ///
