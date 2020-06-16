@@ -9,6 +9,7 @@ use crate::openpgp::cert::prelude::*;
 use openpgp::packet::key::PublicParts;
 use crate::openpgp::parse::{Parse, PacketParserResult};
 use crate::openpgp::policy::Policy;
+use crate::openpgp::packet::key::SecretKeyMaterial;
 
 use super::dump::Convert;
 
@@ -248,6 +249,15 @@ fn inspect_key(policy: &dyn Policy,
     if let Some(bits) = key.mpis().bits() {
         writeln!(output, "{}Public-key size: {} bits", indent, bits)?;
     }
+    if let Some(secret) = key.optional_secret() {
+        writeln!(output, "{}     Secret key: {}",
+                 indent,
+                 if let SecretKeyMaterial::Unencrypted(_) = secret {
+                     "Unencrypted"
+                 } else {
+                     "Encrypted"
+                 })?;
+    }
     writeln!(output, "{}  Creation time: {}", indent,
              key.creation_time().convert())?;
     if let Some(vka) = vka {
@@ -260,7 +270,7 @@ fn inspect_key(policy: &dyn Policy,
         }
 
         if let Some(flags) = vka.key_flags().and_then(inspect_key_flags) {
-            writeln!(output, "{}       Key flags: {}", indent, flags)?;
+            writeln!(output, "{}      Key flags: {}", indent, flags)?;
         }
     }
     inspect_certifications(output, bundle.certifications(),
