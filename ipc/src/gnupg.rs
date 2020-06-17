@@ -3,6 +3,7 @@
 #![warn(missing_docs)]
 
 use std::collections::BTreeMap;
+use std::convert::TryFrom;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -285,7 +286,7 @@ impl Agent {
     pub fn sign<'a, R>(&'a mut self,
                        key: &'a Key<key::PublicParts, R>,
                        algo: HashAlgorithm, digest: &'a [u8])
-        -> impl Future<Item = crypto::mpis::Signature,
+        -> impl Future<Item = crypto::mpi::Signature,
                        Error = anyhow::Error> + 'a
         where R: key::KeyRole
     {
@@ -296,7 +297,7 @@ impl Agent {
     /// by the agent.
     pub fn decrypt<'a, R>(&'a mut self,
                           key: &'a Key<key::PublicParts, R>,
-                          ciphertext: &'a crypto::mpis::Ciphertext)
+                          ciphertext: &'a crypto::mpi::Ciphertext)
         -> impl Future<Item = crypto::SessionKey,
                        Error = anyhow::Error> + 'a
         where R: key::KeyRole
@@ -307,14 +308,15 @@ impl Agent {
     /// Computes options that we want to communicate.
     fn options() -> Vec<String> {
         use std::env::var;
-        use std::ffi::CStr;
 
         let mut r = Vec::new();
 
         if let Ok(tty) = var("GPG_TTY") {
             r.push(format!("OPTION ttyname={}", tty));
         } else {
+            #[cfg(unix)]
             unsafe {
+                use std::ffi::CStr;
                 let tty = libc::ttyname(0);
                 if ! tty.is_null() {
                     if let Ok(tty) = CStr::from_ptr(tty).to_str() {
@@ -404,7 +406,7 @@ fn protocol_error<T>(response: &assuan::Response) -> Result<T> {
 impl<'a, 'b, 'c, R> Future for SigningRequest<'a, 'b, 'c, R>
     where R: key::KeyRole
 {
-    type Item = crypto::mpis::Signature;
+    type Item = crypto::mpi::Signature;
     type Error = anyhow::Error;
 
     fn poll(&mut self) -> std::result::Result<Async<Self::Item>, Self::Error> {
@@ -518,7 +520,7 @@ struct DecryptionRequest<'a, 'b, 'c, R>
 {
     c: &'a mut assuan::Client,
     key: &'b Key<key::PublicParts, R>,
-    ciphertext: &'c crypto::mpis::Ciphertext,
+    ciphertext: &'c crypto::mpi::Ciphertext,
     options: Vec<String>,
     state: DecryptionRequestState,
 }
@@ -528,7 +530,7 @@ impl<'a, 'b, 'c, R> DecryptionRequest<'a, 'b, 'c, R>
 {
     fn new(c: &'a mut assuan::Client,
            key: &'b Key<key::PublicParts, R>,
-           ciphertext: &'c crypto::mpis::Ciphertext)
+           ciphertext: &'c crypto::mpi::Ciphertext)
            -> Self {
         Self {
             c,
@@ -629,7 +631,7 @@ impl<'a, 'b, 'c, R> Future for DecryptionRequest<'a, 'b, 'c, R>
                     },
                     Async::Ready(None) => {
                         let mut buf = Vec::new();
-                        Sexp::from_ciphertext(&self.ciphertext)?
+                        Sexp::try_from(self.ciphertext)?
                             .serialize(&mut buf)?;
                         self.c.data(&buf)?;
                         self.state = Inquire(Vec::new(), true);
@@ -699,7 +701,7 @@ impl<'a> KeyPair<'a> {
         where R: key::KeyRole
     {
         Ok(KeyPair {
-            public: key.mark_role_unspecified_ref(),
+            public: key.role_as_unspecified(),
             agent_socket: ctx.socket("agent")?.into(),
         })
     }
@@ -711,10 +713,10 @@ impl<'a> crypto::Signer for KeyPair<'a> {
     }
 
     fn sign(&mut self, hash_algo: HashAlgorithm, digest: &[u8])
-            -> openpgp::Result<openpgp::crypto::mpis::Signature>
+            -> openpgp::Result<openpgp::crypto::mpi::Signature>
     {
         use crate::openpgp::types::PublicKeyAlgorithm::*;
-        use crate::openpgp::crypto::mpis::PublicKey;
+        use crate::openpgp::crypto::mpi::PublicKey;
 
         #[allow(deprecated)]
         match (self.public.pk_algo(), self.public.mpis())
@@ -741,11 +743,11 @@ impl<'a> crypto::Decryptor for KeyPair<'a> {
         self.public
     }
 
-    fn decrypt(&mut self, ciphertext: &crypto::mpis::Ciphertext,
+    fn decrypt(&mut self, ciphertext: &crypto::mpi::Ciphertext,
                _plaintext_len: Option<usize>)
                -> openpgp::Result<crypto::SessionKey>
     {
-        use crate::openpgp::crypto::mpis::{PublicKey, Ciphertext};
+        use crate::openpgp::crypto::mpi::{PublicKey, Ciphertext};
 
         match (self.public.mpis(), ciphertext) {
             (PublicKey::RSA { .. }, Ciphertext::RSA { .. })

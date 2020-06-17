@@ -1,7 +1,49 @@
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
+#[cfg(any(test, feature = "quickcheck"))]
+use quickcheck::{Arbitrary, Gen};
+
 /// Describes features supported by an OpenPGP implementation.
+///
+/// The features are defined in [Section 5.2.3.24 of RFC 4880], and
+/// [Section 5.2.3.25 of RFC 4880bis].
+///
+/// [Section 5.2.3.24 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.24
+/// [Section 5.2.3.25 of RFC 4880bis]: https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-09#section-5.2.3.25
+///
+/// # A note on equality
+///
+/// `PartialEq` is implements semantic equality, i.e. it ignores
+/// padding.
+///
+/// # Examples
+///
+/// ```
+/// use sequoia_openpgp as openpgp;
+/// # use openpgp::Result;
+/// use openpgp::cert::prelude::*;
+/// use openpgp::policy::StandardPolicy;
+///
+/// # fn main() -> Result<()> {
+/// let p = &StandardPolicy::new();
+///
+/// # let (cert, _) =
+/// #     CertBuilder::general_purpose(None, Some("alice@example.org"))
+/// #     .generate()?;
+/// match cert.with_policy(p, None)?.primary_userid()?.features() {
+///     Some(features) => {
+///         println!("Certificate holder's supported features:");
+///         assert!(features.supports_mdc());
+///         assert!(!features.supports_aead());
+///     }
+///     None => {
+///         println!("Certificate Holder did not specify any features.");
+/// #       unreachable!();
+///     }
+/// }
+/// # Ok(()) }
+/// ```
 #[derive(Clone)]
 pub struct Features{
     mdc: bool,
@@ -90,7 +132,7 @@ impl Features {
         };
 
         Features{
-            mdc: mdc, aead: aead, unknown: unk, pad_to,
+            mdc, aead, unknown: unk, pad_to,
         }
     }
 
@@ -167,14 +209,21 @@ const FEATURE_FLAG_AEAD: u8 = 0x02;
 /// Number of bytes with known flags.
 const FEATURE_FLAGS_N_KNOWN_BYTES: usize = 1;
 
+#[cfg(any(test, feature = "quickcheck"))]
+impl Arbitrary for Features {
+    fn arbitrary<G: Gen>(g: &mut G) -> Self {
+        Self::new(Vec::arbitrary(g))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     quickcheck! {
-        fn roundtrip(raw: Vec<u8>) -> bool {
-            let val = Features::new(&raw);
-            assert_eq!(raw, val.to_vec());
+        fn roundtrip(val: Features) -> bool {
+            let q = Features::new(&val.to_vec());
+            assert_eq!(val, q);
 
             // Check that equality ignores padding.
             let mut val_without_padding = val.clone();

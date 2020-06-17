@@ -1,9 +1,16 @@
-//! OpenPGP packet serializer.
+//! Packet serialization infrastructure.
+//!
+//! OpenPGP defines a binary representation suitable for storing and
+//! communicating OpenPGP data structures (see [Section 3 ff. of RFC
+//! 4880]).  Serialization is the process of creating the binary
+//! representation.
+//!
+//!   [Section 3 ff. of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-3
 //!
 //! There are two interfaces to serialize OpenPGP data.  Which one is
 //! applicable depends on whether or not the packet structure is
 //! already assembled in memory, with all information already in place
-//! (e.g. because it was parsed).
+//! (e.g. because it was previously parsed).
 //!
 //! If it is, you can use the [`Serialize`] or [`SerializeInto`]
 //! trait.  Otherwise, please use our [streaming serialization
@@ -12,6 +19,120 @@
 //!   [`Serialize`]: trait.Serialize.html
 //!   [`SerializeInto`]: trait.SerializeInto.html
 //!   [streaming serialization interface]: stream/index.html
+//!
+//! # Streaming serialization
+//!
+//! The [streaming serialization interface] is the preferred way to
+//! create OpenPGP messages (see [Section 11.3 of RFC 4880]).  It is
+//! ergonomic, yet flexible enough to accommodate most use cases.  It
+//! requires little buffering, minimizing the memory footprint of the
+//! operation.
+//!
+//! This example demonstrates how to create the simplest possible
+//! OpenPGP message (see [Section 11.3 of RFC 4880]) containing just a
+//! literal data packet (see [Section 5.9 of RFC 4880]):
+//!
+//!   [Section 11.3 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-11.3
+//!   [Section 5.9 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.9
+//!
+//! ```
+//! # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+//! use std::io::Write;
+//! use sequoia_openpgp as openpgp;
+//! use openpgp::serialize::stream::{Message, LiteralWriter};
+//!
+//! let mut o = vec![];
+//! {
+//!     let message = Message::new(&mut o);
+//!     let mut w = LiteralWriter::new(message).build()?;
+//!     w.write_all(b"Hello world.")?;
+//!     w.finalize()?;
+//! }
+//! assert_eq!(b"\xcb\x12b\x00\x00\x00\x00\x00Hello world.", o.as_slice());
+//! # Ok(()) }
+//! ```
+//!
+//! For a more complete example, see the [streaming examples].
+//!
+//!   [streaming examples]: streaming/index.html#examples
+//!
+//! # Serializing objects
+//!
+//! The traits [`Serialize`] and [`SerializeInto`] provide a mechanism
+//! to serialize OpenPGP data structures.  [`Serialize`] writes to
+//! [`io::Write`]rs, while [`SerializeInto`] writes into pre-allocated
+//! buffers, computes the size of the serialized representation, and
+//! provides a convenient method to create byte vectors with the
+//! serialized form.
+//!
+//!   [`io::Write`]: https://doc.rust-lang.org/nightly/std/io/trait.Write.html
+//!
+//! To prevent accidentally serializing data structures that are not
+//! commonly exchanged between OpenPGP implementations, [`Serialize`]
+//! and [`SerializeInto`] is only implemented for types like
+//! [`Packet`], [`Cert`], and [`Message`], but not for packet bodies
+//! like [`Signature`].
+//!
+//!   [`Packet`]: ../enum.Packet.html
+//!   [`Cert`]: ../struct.Cert.html
+//!   [`Message`]: ../struct.Message.html
+//!   [`Signature`]: ../packet/enum.Signature.html
+//!
+//! This example demonstrates how to serialize a literal data packet
+//! (see [Section 5.9 of RFC 4880]):
+//!
+//! ```
+//! # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+//! use sequoia_openpgp as openpgp;
+//! use openpgp::packet::{Literal, Packet};
+//! use openpgp::serialize::{Serialize, SerializeInto};
+//!
+//! let mut l = Literal::default();
+//! l.set_body(b"Hello world.".to_vec());
+//!
+//! // Add packet framing.
+//! let p = Packet::from(l);
+//!
+//! // Using Serialize.
+//! let mut b = vec![];
+//! p.serialize(&mut b)?;
+//! assert_eq!(b"\xcb\x12b\x00\x00\x00\x00\x00Hello world.", b.as_slice());
+//!
+//! // Using SerializeInto.
+//! let b = p.to_vec()?;
+//! assert_eq!(b"\xcb\x12b\x00\x00\x00\x00\x00Hello world.", b.as_slice());
+//! # Ok(()) }
+//! ```
+//!
+//! # Marshalling objects
+//!
+//! The traits [`Marshal`] and [`MarshalInto`] provide a mechanism to
+//! serialize all OpenPGP data structures in this crate, even those
+//! not commonly interchanged between OpenPGP implementations.  For
+//! example, it allows the serialization of unframed packet bodies:
+//!
+//!   [`Marshal`]: trait.Marshal.html
+//!   [`MarshalInto`]: trait.MarshalInto.html
+//!
+//! ```
+//! # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+//! use sequoia_openpgp as openpgp;
+//! use openpgp::packet::Literal;
+//! use openpgp::serialize::{Marshal, MarshalInto};
+//!
+//! let mut l = Literal::default();
+//! l.set_body(b"Hello world.".to_vec());
+//!
+//! // Using Marshal.
+//! let mut b = vec![];
+//! l.serialize(&mut b)?;
+//! assert_eq!(b"b\x00\x00\x00\x00\x00Hello world.", b.as_slice());
+//!
+//! // Using MarshalInto.
+//! let b = l.to_vec()?;
+//! assert_eq!(b"b\x00\x00\x00\x00\x00Hello world.", b.as_slice());
+//! # Ok(()) }
+//! ```
 
 use std::io::{self, Write};
 use std::cmp;
@@ -19,16 +140,11 @@ use std::convert::TryFrom;
 
 use super::*;
 
-mod partial_body;
 mod sexp;
 mod cert;
 pub use self::cert::TSK;
 mod cert_armored;
-use self::partial_body::PartialBodyFilter;
-pub mod writer;
 pub mod stream;
-#[cfg(feature = "compression-deflate")]
-pub mod padding;
 use crate::crypto::S2K;
 use crate::packet::header::{
     BodyLength,
@@ -50,9 +166,11 @@ const TRACE : bool = false;
 
 /// Serializes OpenPGP data structures.
 ///
-/// This trait provides the same interface as the `Marshal` trait (in
+/// This trait provides the same interface as the [`Marshal`] trait (in
 /// fact, it is just a wrapper around that trait), but only data
 /// structures that it makes sense to export implement it.
+///
+///   [`Marshal`]: trait.Marshal.html
 ///
 /// Having a separate trait for data structures that it makes sense to
 /// export avoids an easy-to-make and hard-to-debug bug: inadvertently
@@ -89,9 +207,9 @@ const TRACE : bool = false;
 /// # }
 /// ```
 ///
-/// Note: if you `use` both `Serialize` and `Marshal`, then, because
+/// Note: if you `use` both `Serialize` and [`Marshal`], then, because
 /// they both have the same methods, and all data structures that
-/// implement `Serialize` also implement `Marshal`, you will have to
+/// implement `Serialize` also implement [`Marshal`], you will have to
 /// use the Universal Function Call Syntax (UFCS) to call the methods
 /// on those objects, for example:
 ///
@@ -114,7 +232,7 @@ const TRACE : bool = false;
 /// # }
 /// ```
 ///
-/// If you really needed `Marshal`, we strongly recommend importing it
+/// If you really needed [`Marshal`], we strongly recommend importing it
 /// in as small a scope as possible to avoid this, and to avoid
 /// accidentally exporting data without the required framing.
 pub trait Serialize : Marshal {
@@ -143,12 +261,14 @@ pub trait Serialize : Marshal {
 
 /// Serializes OpenPGP data structures.
 ///
-/// This trait provides the same interface as `Serialize`, but is
+/// This trait provides the same interface as [`Serialize`], but is
 /// implemented for all data structures that can be serialized.
 ///
-/// In general, you should prefer the `Serialize` trait, as it is only
+///   [`Serialize`]: trait.Serialize.html
+///
+/// In general, you should prefer the [`Serialize`] trait, as it is only
 /// implemented for data structures that are normally exported.  See
-/// the documentation for `Serialize` for more details.
+/// the documentation for [`Serialize`] for more details.
 pub trait Marshal {
     /// Writes a serialized version of the object to `o`.
     fn serialize(&self, o: &mut dyn std::io::Write) -> Result<()>;
@@ -173,12 +293,16 @@ pub trait Marshal {
 
 /// Serializes OpenPGP data structures into pre-allocated buffers.
 ///
-/// This trait provides the same interface as `MarshalInto`, but is
+/// This trait provides the same interface as [`MarshalInto`], but is
 /// only implemented for data structures that can be serialized.
 ///
-/// In general, you should prefer this trait to `MarshalInto`, as it
+///   [`MarshalInto`]: trait.MarshalInto.html
+///
+/// In general, you should prefer this trait to [`MarshalInto`], as it
 /// is only implemented for data structures that are normally
-/// exported.  See the documentation for `Serialize` for more details.
+/// exported.  See the documentation for [`Serialize`] for more details.
+///
+///   [`Serialize`]: trait.Serialize.html
 pub trait SerializeInto : MarshalInto {
     /// Computes the maximal length of the serialized representation.
     ///
@@ -254,12 +378,16 @@ pub trait SerializeInto : MarshalInto {
 
 /// Serializes OpenPGP data structures into pre-allocated buffers.
 ///
-/// This trait provides the same interface as `SerializeInto`, but is
+/// This trait provides the same interface as [`SerializeInto`], but is
 /// implemented for all data structures that can be serialized.
 ///
-/// In general, you should prefer the `SerializeInto` trait, as it is
+///   [`SerializeInto`]: trait.SerializeInto.html
+///
+/// In general, you should prefer the [`SerializeInto`] trait, as it is
 /// only implemented for data structures that are normally exported.
-/// See the documentation for `Serialize` for more details.
+/// See the documentation for [`Serialize`] for more details.
+///
+///   [`Serialize`]: trait.Serialize.html
 pub trait MarshalInto {
     /// Computes the maximal length of the serialized representation.
     ///
@@ -382,6 +510,8 @@ fn generic_serialize_into<T: Marshal + MarshalInto>(o: &T, buf: &mut [u8])
                     false
                 };
             return if short_write {
+                assert!(buf_len < o.serialized_len(),
+                        "o.serialized_len() underestimated the required space");
                 Err(Error::InvalidArgument(
                     format!("Invalid buffer size, expected {}, got {}",
                             o.serialized_len(), buf_len)).into())
@@ -412,6 +542,8 @@ fn generic_export_into<T: Marshal + MarshalInto>(o: &T, buf: &mut [u8])
                     false
                 };
             return if short_write {
+                assert!(buf_len < o.serialized_len(),
+                        "o.serialized_len() underestimated the required space");
                 Err(Error::InvalidArgument(
                     format!("Invalid buffer size, expected {}, got {}",
                             o.serialized_len(), buf_len)).into())
@@ -448,19 +580,15 @@ fn test_generic_export_into() {
 }
 
 fn write_byte(o: &mut dyn std::io::Write, b: u8) -> io::Result<()> {
-    let b : [u8; 1] = [b; 1];
-    o.write_all(&b[..])
+    o.write_all(&[b])
 }
 
 fn write_be_u16(o: &mut dyn std::io::Write, n: u16) -> io::Result<()> {
-    let b : [u8; 2] = [ ((n >> 8) & 0xFF) as u8, (n & 0xFF) as u8 ];
-    o.write_all(&b[..])
+    o.write_all(&n.to_be_bytes())
 }
 
 fn write_be_u32(o: &mut dyn std::io::Write, n: u32) -> io::Result<()> {
-    let b : [u8; 4] = [ (n >> 24) as u8, ((n >> 16) & 0xFF) as u8,
-                         ((n >> 8) & 0xFF) as u8, (n & 0xFF) as u8 ];
-    o.write_all(&b[..])
+    o.write_all(&n.to_be_bytes())
 }
 
 // Compute the log2 of an integer.  (This is simply the most
@@ -627,7 +755,7 @@ impl MarshalInto for CTBNew {
 impl Marshal for CTBOld {
     fn serialize(&self, o: &mut dyn std::io::Write) -> Result<()> {
         let tag: u8 = self.tag().into();
-        let length_type: u8 = self.length_type.into();
+        let length_type: u8 = self.length_type().into();
         o.write_all(&[0b1000_0000u8 | (tag << 2) | length_type])?;
         Ok(())
     }
@@ -673,6 +801,7 @@ impl Marshal for KeyID {
         let raw = match self {
             &KeyID::V4(ref fp) => &fp[..],
             &KeyID::Invalid(ref fp) => &fp[..],
+            KeyID::__Nonexhaustive => unreachable!(),
         };
         o.write_all(raw)?;
         Ok(())
@@ -685,6 +814,7 @@ impl MarshalInto for KeyID {
         match self {
             &KeyID::V4(_) => 8,
             &KeyID::Invalid(ref fp) => fp.len(),
+            KeyID::__Nonexhaustive => unreachable!(),
         }
     }
 
@@ -696,7 +826,7 @@ impl MarshalInto for KeyID {
 impl Serialize for Fingerprint {}
 impl Marshal for Fingerprint {
     fn serialize(&self, o: &mut dyn std::io::Write) -> Result<()> {
-        o.write_all(self.as_slice())?;
+        o.write_all(self.as_bytes())?;
         Ok(())
     }
 }
@@ -707,6 +837,7 @@ impl MarshalInto for Fingerprint {
         match self {
             Fingerprint::V4(_) => 20,
             Fingerprint::Invalid(ref fp) => fp.len(),
+            Fingerprint::__Nonexhaustive => unreachable!(),
         }
     }
 
@@ -715,7 +846,7 @@ impl MarshalInto for Fingerprint {
     }
 }
 
-impl Marshal for crypto::mpis::MPI {
+impl Marshal for crypto::mpi::MPI {
     fn serialize(&self, w: &mut dyn std::io::Write) -> Result<()> {
         write_be_u16(w, self.bits() as u16)?;
         w.write_all(self.value())?;
@@ -723,7 +854,7 @@ impl Marshal for crypto::mpis::MPI {
     }
 }
 
-impl MarshalInto for crypto::mpis::MPI {
+impl MarshalInto for crypto::mpi::MPI {
     fn serialized_len(&self) -> usize {
         2 + self.value().len()
     }
@@ -733,7 +864,7 @@ impl MarshalInto for crypto::mpis::MPI {
     }
 }
 
-impl Marshal for crypto::mpis::ProtectedMPI {
+impl Marshal for crypto::mpi::ProtectedMPI {
     fn serialize(&self, w: &mut dyn std::io::Write) -> Result<()> {
         write_be_u16(w, self.bits() as u16)?;
         w.write_all(self.value())?;
@@ -741,7 +872,7 @@ impl Marshal for crypto::mpis::ProtectedMPI {
     }
 }
 
-impl MarshalInto for crypto::mpis::ProtectedMPI {
+impl MarshalInto for crypto::mpi::ProtectedMPI {
     fn serialized_len(&self) -> usize {
         2 + self.value().len()
     }
@@ -751,9 +882,9 @@ impl MarshalInto for crypto::mpis::ProtectedMPI {
     }
 }
 
-impl Marshal for crypto::mpis::PublicKey {
+impl Marshal for crypto::mpi::PublicKey {
     fn serialize(&self, w: &mut dyn std::io::Write) -> Result<()> {
-        use crate::crypto::mpis::PublicKey::*;
+        use crate::crypto::mpi::PublicKey::*;
 
         match self {
             &RSA { ref e, ref n } => {
@@ -807,9 +938,9 @@ impl Marshal for crypto::mpis::PublicKey {
     }
 }
 
-impl MarshalInto for crypto::mpis::PublicKey {
+impl MarshalInto for crypto::mpi::PublicKey {
     fn serialized_len(&self) -> usize {
-        use crate::crypto::mpis::PublicKey::*;
+        use crate::crypto::mpi::PublicKey::*;
         match self {
             &RSA { ref e, ref n } => {
                 n.serialized_len() + e.serialized_len()
@@ -850,9 +981,9 @@ impl MarshalInto for crypto::mpis::PublicKey {
     }
 }
 
-impl Marshal for crypto::mpis::SecretKeyMaterial {
+impl Marshal for crypto::mpi::SecretKeyMaterial {
     fn serialize(&self, w: &mut dyn std::io::Write) -> Result<()> {
-        use crate::crypto::mpis::SecretKeyMaterial::*;
+        use crate::crypto::mpi::SecretKeyMaterial::*;
 
         match self {
             &RSA{ ref d, ref p, ref q, ref u } => {
@@ -896,9 +1027,9 @@ impl Marshal for crypto::mpis::SecretKeyMaterial {
     }
 }
 
-impl MarshalInto for crypto::mpis::SecretKeyMaterial {
+impl MarshalInto for crypto::mpi::SecretKeyMaterial {
     fn serialized_len(&self) -> usize {
-        use crate::crypto::mpis::SecretKeyMaterial::*;
+        use crate::crypto::mpi::SecretKeyMaterial::*;
         match self {
             &RSA{ ref d, ref p, ref q, ref u } => {
                 d.serialized_len() + p.serialized_len() + q.serialized_len()
@@ -939,7 +1070,7 @@ impl MarshalInto for crypto::mpis::SecretKeyMaterial {
     }
 }
 
-impl crypto::mpis::SecretKeyMaterial {
+impl crypto::mpi::SecretKeyMaterial {
     /// Writes this secret key with a checksum to `w`.
     pub fn serialize_chksumd<W: io::Write>(&self, w: &mut W) -> Result<()> {
         // First, the MPIs.
@@ -956,9 +1087,9 @@ impl crypto::mpis::SecretKeyMaterial {
     }
 }
 
-impl Marshal for crypto::mpis::Ciphertext {
+impl Marshal for crypto::mpi::Ciphertext {
     fn serialize(&self, w: &mut dyn std::io::Write) -> Result<()> {
-        use crate::crypto::mpis::Ciphertext::*;
+        use crate::crypto::mpi::Ciphertext::*;
 
         match self {
             &RSA{ ref c } => {
@@ -991,9 +1122,9 @@ impl Marshal for crypto::mpis::Ciphertext {
     }
 }
 
-impl MarshalInto for crypto::mpis::Ciphertext {
+impl MarshalInto for crypto::mpi::Ciphertext {
     fn serialized_len(&self) -> usize {
-        use crate::crypto::mpis::Ciphertext::*;
+        use crate::crypto::mpi::Ciphertext::*;
         match self {
             &RSA{ ref c } => {
                 c.serialized_len()
@@ -1021,9 +1152,9 @@ impl MarshalInto for crypto::mpis::Ciphertext {
     }
 }
 
-impl Marshal for crypto::mpis::Signature {
+impl Marshal for crypto::mpi::Signature {
     fn serialize(&self, w: &mut dyn std::io::Write) -> Result<()> {
-        use crate::crypto::mpis::Signature::*;
+        use crate::crypto::mpi::Signature::*;
 
         match self {
             &RSA { ref s } => {
@@ -1060,9 +1191,9 @@ impl Marshal for crypto::mpis::Signature {
     }
 }
 
-impl MarshalInto for crypto::mpis::Signature {
+impl MarshalInto for crypto::mpi::Signature {
     fn serialized_len(&self) -> usize {
-        use crate::crypto::mpis::Signature::*;
+        use crate::crypto::mpi::Signature::*;
         match self {
             &RSA { ref s } => {
                 s.serialized_len()
@@ -1227,7 +1358,7 @@ impl Marshal for SubpacketValue {
                 },
             RevocationKey(rk) => rk.serialize(o)?,
             Issuer(ref id) =>
-                o.write_all(id.as_slice())?,
+                o.write_all(id.as_bytes())?,
             NotationData(nd) => {
                 write_be_u32(o, nd.flags().raw())?;
                 write_be_u16(o, nd.name().len() as u16)?;
@@ -1269,7 +1400,7 @@ impl Marshal for SubpacketValue {
             IssuerFingerprint(ref fp) => match fp {
                 Fingerprint::V4(_) => {
                     o.write_all(&[4])?;
-                    o.write_all(fp.as_slice())?;
+                    o.write_all(fp.as_bytes())?;
                 },
                 _ => return Err(Error::InvalidArgument(
                     "Unknown kind of fingerprint".into()).into()),
@@ -1281,7 +1412,7 @@ impl Marshal for SubpacketValue {
             IntendedRecipient(ref fp) => match fp {
                 Fingerprint::V4(_) => {
                     o.write_all(&[4])?;
-                    o.write_all(fp.as_slice())?;
+                    o.write_all(fp.as_bytes())?;
                 },
                 _ => return Err(Error::InvalidArgument(
                     "Unknown kind of fingerprint".into()).into()),
@@ -1325,14 +1456,16 @@ impl MarshalInto for SubpacketValue {
                 Fingerprint::V4(_) =>
                     1 + (fp as &dyn MarshalInto).serialized_len(),
                 // Educated guess for unknown versions.
-                Fingerprint::Invalid(_) => 1 + fp.as_slice().len(),
+                Fingerprint::Invalid(_) => 1 + fp.as_bytes().len(),
+                Fingerprint::__Nonexhaustive => unreachable!(),
             },
             PreferredAEADAlgorithms(ref p) => p.len(),
             IntendedRecipient(ref fp) => match fp {
                 Fingerprint::V4(_) =>
                     1 + (fp as &dyn MarshalInto).serialized_len(),
                 // Educated guess for unknown versions.
-                Fingerprint::Invalid(_) => 1 + fp.as_slice().len(),
+                Fingerprint::Invalid(_) => 1 + fp.as_bytes().len(),
+                Fingerprint::__Nonexhaustive => unreachable!(),
             },
             Unknown { body, .. } => body.len(),
             __Nonexhaustive => unreachable!(),
@@ -1348,14 +1481,14 @@ impl Marshal for RevocationKey {
     fn serialize(&self, o: &mut dyn std::io::Write) -> Result<()> {
         let (pk_algo, fp) = self.revoker();
         o.write_all(&[self.class(), (pk_algo).into()])?;
-        o.write_all(fp.as_slice())?;
+        o.write_all(fp.as_bytes())?;
         Ok(())
     }
 }
 
 impl MarshalInto for RevocationKey {
     fn serialized_len(&self) -> usize {
-        1 + 1 + self.revoker().1.as_slice().len()
+        1 + 1 + self.revoker().1.as_bytes().len()
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
@@ -1530,7 +1663,7 @@ impl Marshal for OnePassSig3 {
         write_byte(o, self.typ().into())?;
         write_byte(o, self.hash_algo().into())?;
         write_byte(o, self.pk_algo().into())?;
-        o.write_all(self.issuer().as_slice())?;
+        o.write_all(self.issuer().as_bytes())?;
         write_byte(o, self.last_raw())?;
 
         Ok(())
@@ -1919,42 +2052,72 @@ impl Marshal for CompressedData {
     /// This function works recursively: if the `CompressedData` packet
     /// contains any packets, they are also serialized.
     fn serialize(&self, o: &mut dyn std::io::Write) -> Result<()> {
-        if TRACE {
-            eprintln!("CompressedData::serialize(\
-                       algo: {}, {:?} children, {:?} bytes)",
-                      self.algo(),
-                      self.children().count(),
-                      self.body().len());
+        match self.body() {
+            Body::Unprocessed(bytes) => {
+                if TRACE {
+                    eprintln!("CompressedData::serialize(\
+                               algo: {}, {} bytes of unprocessed body)",
+                              self.algo(), bytes.len());
+                }
+
+                o.write_all(&[self.algo().into()])?;
+                o.write_all(bytes)?;
+            },
+
+            Body::Processed(bytes) => {
+                if TRACE {
+                    eprintln!("CompressedData::serialize(\
+                               algo: {}, {} bytes of processed body)",
+                              self.algo(), bytes.len());
+                }
+
+                let o = stream::Message::new(o);
+                let mut o = stream::Compressor::new_naked(
+                    o, self.algo(), Default::default(), 0)?;
+                o.write_all(bytes)?;
+                o.finalize()?;
+            },
+
+            Body::Structured(children) => {
+                if TRACE {
+                    eprintln!("CompressedData::serialize(\
+                               algo: {}, {:?} children)",
+                              self.algo(), children.len());
+                }
+
+                let o = stream::Message::new(o);
+                let mut o = stream::Compressor::new_naked(
+                    o, self.algo(), Default::default(), 0)?;
+
+                // Serialize the packets.
+                for p in children {
+                    (p as &dyn Marshal).serialize(&mut o)?;
+                }
+
+                o.finalize()?;
+            },
         }
-
-        let o = stream::Message::new(o);
-        let mut o = stream::Compressor::new_naked(
-            o, self.algo(), Default::default(), 0)?;
-
-        // Serialize the packets.
-        for p in self.children() {
-            (p as &dyn Marshal).serialize(&mut o)?;
-        }
-
-        // Append the data.
-        o.write_all(self.body())?;
-        o.finalize()
+        Ok(())
     }
 }
 
 impl NetLength for CompressedData {
     fn net_len(&self) -> usize {
-        let inner_length =
-            self.children().map(|p| {
-                (p as &dyn MarshalInto).serialized_len()
-            }).sum::<usize>()
-            + self.body().len();
-
         // Worst case, the data gets larger.  Account for that.
-        let inner_length = inner_length + cmp::max(inner_length / 2, 128);
+        // Experiments suggest that the overhead of compressing random
+        // data is worse for BZIP2, but it converges to 20% starting
+        // at ~2k of random data.
+        let compressed = |l| l + cmp::max(l / 5, 4096);
 
-        1 // Algorithm.
-            + inner_length // Compressed data.
+        match self.body() {
+            Body::Unprocessed(bytes) => 1 /* Algo */ + bytes.len(),
+            Body::Processed(bytes) => 1 /* Algo */ + compressed(bytes.len()),
+            Body::Structured(packets) =>
+                1 // Algo
+                + compressed(packets.iter().map(|p| {
+                    (p as &dyn MarshalInto).serialized_len()
+                }).sum::<usize>()),
+        }
     }
 }
 
@@ -2153,33 +2316,31 @@ impl Marshal for SEIP {
     /// To construct an encrypted message, use
     /// `serialize::stream::Encryptor`.
     fn serialize(&self, o: &mut dyn std::io::Write) -> Result<()> {
-        if self.children().next().is_some() {
-            return Err(Error::InvalidOperation(
+        match self.body() {
+            Body::Unprocessed(bytes) => {
+                o.write_all(&[self.version()])?;
+                o.write_all(bytes)?;
+                Ok(())
+            },
+            _ => Err(Error::InvalidOperation(
                 "Cannot encrypt, use serialize::stream::Encryptor".into())
-                       .into());
-        } else {
-            o.write_all(&[self.version()])?;
-            o.write_all(self.body())?;
+                     .into()),
         }
-
-        Ok(())
     }
 }
 
 impl NetLength for SEIP {
     fn net_len(&self) -> usize {
-        1 // Version.
-            + self.body().len()
+        match self.body() {
+            Body::Unprocessed(bytes) => 1 /* Version */ + bytes.len(),
+            _ => 0,
+        }
     }
 }
 
 impl MarshalInto for SEIP {
     fn serialized_len(&self) -> usize {
-        if self.children().next().is_some() {
-            0 // XXX
-        } else {
-            self.gross_len()
-        }
+        self.gross_len()
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
@@ -2257,34 +2418,34 @@ impl Marshal for AED1 {
     /// To construct an encrypted message, use
     /// `serialize::stream::Encryptor`.
     fn serialize(&self, o: &mut dyn std::io::Write) -> Result<()> {
-        if self.children().next().is_some() {
-            return Err(Error::InvalidOperation(
+        match self.body() {
+            Body::Unprocessed(bytes) => {
+                self.serialize_headers(o)?;
+                o.write_all(bytes)?;
+                Ok(())
+            },
+            _ => Err(Error::InvalidOperation(
                 "Cannot encrypt, use serialize::stream::Encryptor".into())
-                       .into());
-        } else {
-            self.serialize_headers(o)?;
-            o.write_all(self.body())?;
+                     .into()),
         }
-
-        Ok(())
     }
 }
 
 impl NetLength for AED1 {
     fn net_len(&self) -> usize {
-        if self.children().next().is_some() {
-            0
-        } else {
-            4 // Headers.
+        match self.body() {
+            Body::Unprocessed(bytes) =>
+                4 // Headers.
                 + self.iv().len()
-                + self.body().len()
+                + bytes.len(),
+            _ => 0,
         }
     }
 }
 
 impl MarshalInto for AED1 {
     fn serialized_len(&self) -> usize {
-        self.net_len()
+        self.gross_len()
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
@@ -2936,14 +3097,14 @@ mod test {
                     eprintln!("Orig:");
                     let p = pile.children().next().unwrap();
                     eprintln!("{:?}", p);
-                    let body = p.body().unwrap();
+                    let body = p.processed_body().unwrap();
                     eprintln!("Body: {}", body.len());
                     eprintln!("{}", binary_pp(body));
 
                     eprintln!("Reparsed:");
                     let p = pile2.children().next().unwrap();
                     eprintln!("{:?}", p);
-                    let body = p.body().unwrap();
+                    let body = p.processed_body().unwrap();
                     eprintln!("Body: {}", body.len());
                     eprintln!("{}", binary_pp(body));
 
@@ -3152,14 +3313,14 @@ mod test {
         use crate::cert::prelude::*;
 
         let (cert, _) = CertBuilder::new().generate().unwrap();
-        let mut keypair = cert.primary_key().key().clone().mark_parts_secret()
+        let mut keypair = cert.primary_key().key().clone().parts_into_secret()
             .unwrap().into_keypair().unwrap();
         let uid = UserID::from("foo");
 
         // Make a signature w/o an exportable certification subpacket.
         let sig = uid.bind(
             &mut keypair, &cert,
-            signature::Builder::new(SignatureType::GenericCertification))
+            signature::SignatureBuilder::new(SignatureType::GenericCertification))
             .unwrap();
 
         // The signature is exportable.  Try to export it in
@@ -3192,7 +3353,7 @@ mod test {
         // Make a signature that is explicitly marked as exportable.
         let sig = uid.bind(
             &mut keypair, &cert,
-            signature::Builder::new(SignatureType::GenericCertification)
+            signature::SignatureBuilder::new(SignatureType::GenericCertification)
                 .set_exportable_certification(true).unwrap()).unwrap();
 
         // The signature is exportable.  Try to export it in
@@ -3227,7 +3388,7 @@ mod test {
         // Make a non-exportable signature.
         let sig = uid.bind(
             &mut keypair, &cert,
-            signature::Builder::new(SignatureType::GenericCertification)
+            signature::SignatureBuilder::new(SignatureType::GenericCertification)
                 .set_exportable_certification(false).unwrap()).unwrap();
 
         // The signature is not exportable.  Try to export it in

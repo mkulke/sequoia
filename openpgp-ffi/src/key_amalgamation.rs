@@ -11,22 +11,25 @@ use libc::{size_t, time_t};
 extern crate sequoia_openpgp as openpgp;
 use self::openpgp::packet::key;
 use self::openpgp::cert::amalgamation::ValidAmalgamation;
+use self::openpgp::cert::amalgamation::ValidateAmalgamation;
 use self::openpgp::crypto;
 
 use super::packet::key::Key;
 use super::packet::signature::Signature;
-use super::packet::Packet;
+use super::policy::Policy;
 use super::revocation_status::RevocationStatus;
 
 use crate::error::Status;
+use crate::Maybe;
 use crate::MoveIntoRaw;
 use crate::MoveResultIntoRaw;
 use crate::RefRaw;
+use crate::MoveFromRaw;
 use crate::maybe_time;
 
 /// A local alias to appease the proc macro transformation.
 type ErasedKeyAmalgamation<'a> =
-    openpgp::cert::key_amalgamation::ErasedKeyAmalgamation<'a, key::UnspecifiedParts>;
+    openpgp::cert::amalgamation::key::ErasedKeyAmalgamation<'a, key::UnspecifiedParts>;
 
 /// A `KeyAmalgamation` holds a `Key` and associated data.
 ///
@@ -39,7 +42,7 @@ pub struct KeyAmalgamation<'a>(ErasedKeyAmalgamation<'a>);
 
 /// A local alias to appease the proc macro transformation.
 type ValidErasedKeyAmalgamation<'a> =
-    openpgp::cert::key_amalgamation::ValidErasedKeyAmalgamation<'a, key::UnspecifiedParts>;
+    openpgp::cert::amalgamation::key::ValidErasedKeyAmalgamation<'a, key::UnspecifiedParts>;
 
 /// Returns a reference to the `Key`.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle]
@@ -48,7 +51,7 @@ pub extern "C" fn pgp_key_amalgamation_key<'a>(ka: *const KeyAmalgamation<'a>)
 {
     let ka = ka.ref_raw();
 
-    ka.key().mark_parts_unspecified_ref().mark_role_unspecified_ref()
+    ka.key().parts_as_unspecified().role_as_unspecified()
         .move_into_raw()
 }
 
@@ -69,7 +72,7 @@ pub extern "C" fn pgp_valid_key_amalgamation_key<'a>(ka: *const ValidKeyAmalgama
 {
     let ka = ka.ref_raw();
 
-    ka.key().mark_parts_unspecified_ref().mark_role_unspecified_ref()
+    ka.key().parts_as_unspecified().role_as_unspecified()
         .move_into_raw()
 }
 
@@ -79,7 +82,7 @@ pub extern "C" fn pgp_valid_key_amalgamation_revocation_status<'a>(ka: *const Va
     -> *mut RevocationStatus<'a>
 {
     ka.ref_raw()
-        .revoked()
+        .revocation_status()
         .move_into_raw()
 }
 
@@ -103,7 +106,7 @@ fn pgp_valid_key_amalgamation_set_expiration_time(
     ka: *const ValidKeyAmalgamation,
     primary_signer: *mut Box<dyn crypto::Signer>,
     expiry: time_t,
-    packets: *mut *mut *mut Packet, packet_count: *mut size_t)
+    sigs: *mut *mut *mut Signature, sig_count: *mut size_t)
     -> Status
 {
     ffi_make_fry_from_errp!(errp);
@@ -111,26 +114,45 @@ fn pgp_valid_key_amalgamation_set_expiration_time(
     let ka = ka.ref_raw();
     let signer = ffi_param_ref_mut!(primary_signer);
     let expiry = maybe_time(expiry);
-    let packets = ffi_param_ref_mut!(packets);
-    let packet_count = ffi_param_ref_mut!(packet_count);
+    let sigs = ffi_param_ref_mut!(sigs);
+    let sig_count = ffi_param_ref_mut!(sig_count);
 
     match ka.set_expiration_time(signer.as_mut(), expiry) {
-        Ok(sigs) => {
+        Ok(new_sigs) => {
             let buffer = unsafe {
-                libc::calloc(sigs.len(), std::mem::size_of::<*mut Packet>())
-                    as *mut *mut Packet
+                libc::calloc(new_sigs.len(), std::mem::size_of::<*mut Signature>())
+                    as *mut *mut Signature
             };
             let sl = unsafe {
-                slice::from_raw_parts_mut(buffer, sigs.len())
+                slice::from_raw_parts_mut(buffer, new_sigs.len())
             };
-            *packet_count = sigs.len();
-            sl.iter_mut().zip(sigs.into_iter())
+            *sig_count = new_sigs.len();
+            sl.iter_mut().zip(new_sigs.into_iter())
                 .for_each(|(e, sig)| *e = sig.move_into_raw());
-            *packets = buffer;
+            *sigs = buffer;
             Status::Success
         }
         Err(err) => {
             Err::<(), anyhow::Error>(err).move_into_raw(errp)
         }
     }
+}
+
+/// Changes the policy applied to the `ValidKeyAmalgamation`.
+///
+/// This consumes the key amalgamation.
+#[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
+fn pgp_valid_key_amalgamation_with_policy<'a>(errp: Option<&mut *mut crate::error::Error>,
+                                              ka: *mut ValidKeyAmalgamation<'a>,
+                                              policy: *const Policy,
+                                              time: time_t)
+    -> Maybe<ValidKeyAmalgamation<'a>>
+{
+    ffi_make_fry_from_errp!(errp);
+
+    let ka = ka.move_from_raw();
+    let policy = policy.ref_raw();
+    let time = maybe_time(time);
+
+    ka.with_policy(&**policy, time).move_into_raw(errp)
 }

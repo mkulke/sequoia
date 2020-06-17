@@ -65,7 +65,10 @@ use std::io;
 use std::cmp;
 use std::time;
 
+#[cfg(any(test, feature = "quickcheck"))]
 use quickcheck::{Arbitrary, Gen};
+#[cfg(any(test, feature = "quickcheck"))]
+use crate::packet::signature::ArbitraryBounded;
 
 use crate::{
     Error,
@@ -203,7 +206,7 @@ pub enum SubpacketTag {
     IssuerFingerprint,
     /// Preferred AEAD Algorithms.
     PreferredAEADAlgorithms,
-    /// Intended Recipient Fingerprint [proposed].
+    /// Intended Recipient Fingerprint (proposed).
     IntendedRecipient,
     /// Reserved subpacket tag.
     Reserved(u8),
@@ -293,6 +296,7 @@ impl From<SubpacketTag> for u8 {
     }
 }
 
+#[cfg(any(test, feature = "quickcheck"))]
 impl Arbitrary for SubpacketTag {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         u8::arbitrary(g).into()
@@ -339,6 +343,23 @@ pub struct SubpacketArea {
     // This is an option, because we parse the subpacket area lazily.
     parsed: Mutex<RefCell<Option<HashMap<SubpacketTag, usize>>>>,
 }
+
+#[cfg(any(test, feature = "quickcheck"))]
+impl ArbitraryBounded for SubpacketArea {
+    fn arbitrary_bounded<G: Gen>(g: &mut G, depth: usize) -> Self {
+        use rand::Rng;
+
+        let mut a = Self::default();
+        for _ in 0..g.gen_range(0, 32) {
+            let _ = a.add(ArbitraryBounded::arbitrary_bounded(g, depth));
+        }
+
+        a
+    }
+}
+
+#[cfg(any(test, feature = "quickcheck"))]
+impl_arbitrary_with_bound!(SubpacketArea);
 
 impl Default for SubpacketArea {
     fn default() -> Self {
@@ -516,6 +537,17 @@ pub struct NotationData {
     value: Vec<u8>,
 }
 
+#[cfg(any(test, feature = "quickcheck"))]
+impl Arbitrary for NotationData {
+    fn arbitrary<G: Gen>(g: &mut G) -> Self {
+        NotationData {
+            flags: Arbitrary::arbitrary(g),
+            name: Arbitrary::arbitrary(g),
+            value: Arbitrary::arbitrary(g),
+        }
+    }
+}
+
 impl NotationData {
     /// Creates a new Notation Data subpacket payload.
     pub fn new<N, V, F>(name: N, value: V, flags: F) -> Self
@@ -559,6 +591,13 @@ impl Default for NotationDataFlags {
 impl From<u32> for NotationDataFlags {
     fn from(v: u32) -> Self {
         Self(v)
+    }
+}
+
+#[cfg(any(test, feature = "quickcheck"))]
+impl Arbitrary for NotationDataFlags {
+    fn arbitrary<G: Gen>(g: &mut G) -> Self {
+        u32::arbitrary(g).into()
     }
 }
 
@@ -708,13 +747,67 @@ pub enum SubpacketValue {
     IssuerFingerprint(Fingerprint),
     /// Preferred AEAD Algorithms.
     PreferredAEADAlgorithms(Vec<AEADAlgorithm>),
-    /// Intended Recipient Fingerprint [proposed].
+    /// Intended Recipient Fingerprint (proposed).
     IntendedRecipient(Fingerprint),
 
     /// This marks this enum as non-exhaustive.  Do not use this
     /// variant.
     #[doc(hidden)] __Nonexhaustive,
 }
+
+#[cfg(any(test, feature = "quickcheck"))]
+impl ArbitraryBounded for SubpacketValue {
+    fn arbitrary_bounded<G: Gen>(g: &mut G, depth: usize) -> Self {
+        use rand::Rng;
+        use self::SubpacketValue::*;
+        loop {
+            break match g.gen_range(0, 26) {
+                0 => SignatureCreationTime(Arbitrary::arbitrary(g)),
+                1 => SignatureExpirationTime(Arbitrary::arbitrary(g)),
+                2 => ExportableCertification(Arbitrary::arbitrary(g)),
+                3 => TrustSignature {
+                    level: Arbitrary::arbitrary(g),
+                    trust: Arbitrary::arbitrary(g),
+                },
+                4 => RegularExpression(Arbitrary::arbitrary(g)),
+                5 => Revocable(Arbitrary::arbitrary(g)),
+                6 => KeyExpirationTime(Arbitrary::arbitrary(g)),
+                7 => PreferredSymmetricAlgorithms(Arbitrary::arbitrary(g)),
+                8 => RevocationKey(Arbitrary::arbitrary(g)),
+                9 => Issuer(Arbitrary::arbitrary(g)),
+                10 => NotationData(Arbitrary::arbitrary(g)),
+                11 => PreferredHashAlgorithms(Arbitrary::arbitrary(g)),
+                12 => PreferredCompressionAlgorithms(Arbitrary::arbitrary(g)),
+                13 => KeyServerPreferences(Arbitrary::arbitrary(g)),
+                14 => PreferredKeyServer(Arbitrary::arbitrary(g)),
+                15 => PrimaryUserID(Arbitrary::arbitrary(g)),
+                16 => PolicyURI(Arbitrary::arbitrary(g)),
+                17 => KeyFlags(Arbitrary::arbitrary(g)),
+                18 => SignersUserID(Arbitrary::arbitrary(g)),
+                19 => ReasonForRevocation {
+                    code: Arbitrary::arbitrary(g),
+                    reason: Arbitrary::arbitrary(g),
+                },
+                20 => Features(Arbitrary::arbitrary(g)),
+                21 => SignatureTarget {
+                    pk_algo: Arbitrary::arbitrary(g),
+                    hash_algo: Arbitrary::arbitrary(g),
+                    digest: Arbitrary::arbitrary(g),
+                },
+                22 if depth == 0 => continue, // Don't recurse, try again.
+                22 => EmbeddedSignature(
+                    ArbitraryBounded::arbitrary_bounded(g, depth - 1)),
+                23 => IssuerFingerprint(Arbitrary::arbitrary(g)),
+                24 => PreferredAEADAlgorithms(Arbitrary::arbitrary(g)),
+                25 => IntendedRecipient(Arbitrary::arbitrary(g)),
+                _ => unreachable!(),
+            }
+        }
+    }
+}
+
+#[cfg(any(test, feature = "quickcheck"))]
+impl_arbitrary_with_bound!(SubpacketValue);
 
 impl SubpacketValue {
     /// Returns the subpacket tag for this value.
@@ -778,10 +871,21 @@ pub struct Subpacket {
     value: SubpacketValue,
 }
 
+#[cfg(any(test, feature = "quickcheck"))]
+impl ArbitraryBounded for Subpacket {
+    fn arbitrary_bounded<G: Gen>(g: &mut G, depth: usize) -> Self {
+        Subpacket::new(ArbitraryBounded::arbitrary_bounded(g, depth),
+                       Arbitrary::arbitrary(g)).unwrap()
+    }
+}
+
+#[cfg(any(test, feature = "quickcheck"))]
+impl_arbitrary_with_bound!(Subpacket);
+
 impl fmt::Debug for Subpacket {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut s = f.debug_struct("Subpacket");
-        if self.length.raw.is_some() || true {
+        if self.length.raw.is_some() {
             s.field("length", &self.length);
         }
         if self.critical {
@@ -1553,6 +1657,17 @@ pub struct SubpacketAreas {
     unhashed_area: SubpacketArea,
 }
 
+#[cfg(any(test, feature = "quickcheck"))]
+impl ArbitraryBounded for SubpacketAreas {
+    fn arbitrary_bounded<G: Gen>(g: &mut G, depth: usize) -> Self {
+        SubpacketAreas::new(ArbitraryBounded::arbitrary_bounded(g, depth),
+                            ArbitraryBounded::arbitrary_bounded(g, depth))
+    }
+}
+
+#[cfg(any(test, feature = "quickcheck"))]
+impl_arbitrary_with_bound!(SubpacketAreas);
+
 impl Deref for SubpacketAreas {
     type Target = SubpacketArea;
 
@@ -1572,8 +1687,8 @@ impl SubpacketAreas {
     pub fn new(hashed_area: SubpacketArea,
                unhashed_area: SubpacketArea) ->  Self {
         Self {
-            hashed_area: hashed_area,
-            unhashed_area: unhashed_area,
+            hashed_area,
+            unhashed_area,
         }
     }
 
@@ -1761,8 +1876,7 @@ impl SubpacketAreas {
               R: key::KeyRole,
               T: Into<Option<time::SystemTime>>
     {
-        let t = t.into()
-            .unwrap_or_else(|| time::SystemTime::now());
+        let t = t.into().unwrap_or_else(time::SystemTime::now);
 
         match self.key_validity_period() {
             Some(e) if e.as_secs() > 0 && key.creation_time() + e <= t =>
@@ -1845,7 +1959,7 @@ impl SubpacketAreas {
 }
 
 impl Deref for Signature4 {
-    type Target = signature::Builder;
+    type Target = signature::SignatureBuilder;
 
     fn deref(&self) -> &Self::Target {
         &self.fields
@@ -1859,11 +1973,11 @@ impl DerefMut for Signature4 {
 }
 
 // We'd like to implement Deref for Signature4 for both
-// signature::Builder and SubpacketArea.  Unfortunately, it is
+// signature::SignatureBuilder and SubpacketArea.  Unfortunately, it is
 // only possible to implement Deref for one of them.  Since
 // SubpacketArea has more methods with much more documentation,
 // implement deref for that, and write provider forwarders for
-// signature::Builder.
+// signature::SignatureBuilder.
 impl Signature4 {
     /// Gets the version.
     pub fn version(&self) -> u8 {
@@ -1886,7 +2000,7 @@ impl Signature4 {
     }
 }
 
-impl signature::Builder {
+impl signature::SignatureBuilder {
     /// Sets the value of the Creation Time subpacket.
     pub fn set_signature_creation_time<T>(mut self, creation_time: T)
                                           -> Result<Self>
@@ -1959,8 +2073,8 @@ impl signature::Builder {
                                -> Result<Self> {
         self.hashed_area.replace(Subpacket::new(
             SubpacketValue::TrustSignature {
-                level: level,
-                trust: trust,
+                level,
+                trust,
             },
             true)?)?;
 
@@ -2054,10 +2168,13 @@ impl signature::Builder {
 
     /// Sets the value of the Revocation Key subpacket, which contains
     /// a designated revoker.
-    pub fn set_revocation_key(mut self, rk: RevocationKey) -> Result<Self> {
-        self.hashed_area.replace(Subpacket::new(
-            SubpacketValue::RevocationKey(rk),
-            true)?)?;
+    pub fn set_revocation_key(mut self, rk: Vec<RevocationKey>) -> Result<Self> {
+        self.hashed_area.remove_all(SubpacketTag::RevocationKey);
+        for rk in rk.into_iter() {
+            self.hashed_area.add(Subpacket::new(
+                SubpacketValue::RevocationKey(rk),
+                true)?)?;
+        }
 
         Ok(self)
     }
@@ -2244,7 +2361,7 @@ impl signature::Builder {
     {
         self.hashed_area.replace(Subpacket::new(
             SubpacketValue::ReasonForRevocation {
-                code: code,
+                code,
                 reason: reason.as_ref().to_vec(),
             },
             false)?)?;
@@ -2274,8 +2391,8 @@ impl signature::Builder {
     {
         self.hashed_area.replace(Subpacket::new(
             SubpacketValue::SignatureTarget {
-                pk_algo: pk_algo,
-                hash_algo: hash_algo,
+                pk_algo,
+                hash_algo,
                 digest: digest.as_ref().to_vec(),
             },
             true)?)?;
@@ -2341,7 +2458,7 @@ fn accessors() {
     let pk_algo = PublicKeyAlgorithm::EdDSA;
     let hash_algo = HashAlgorithm::SHA512;
     let hash = hash_algo.context().unwrap();
-    let mut sig = signature::Builder::new(crate::types::SignatureType::Binary);
+    let mut sig = signature::SignatureBuilder::new(crate::types::SignatureType::Binary);
     let mut key: crate::packet::key::SecretKey =
         crate::packet::key::Key4::generate_ecc(true, Curve::Ed25519).unwrap().into();
     let mut keypair = key.clone().into_keypair().unwrap();
@@ -2439,7 +2556,7 @@ fn accessors() {
 
     let fp = Fingerprint::from_bytes(b"bbbbbbbbbbbbbbbbbbbb");
     let rk = RevocationKey::new(pk_algo, fp.clone(), true);
-    sig = sig.set_revocation_key(rk.clone()).unwrap();
+    sig = sig.set_revocation_key(vec![ rk.clone() ]).unwrap();
     let sig_ =
         sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.revocation_keys().nth(0).unwrap(), &rk);
@@ -2797,7 +2914,7 @@ fn subpacket_test_2() {
                            Features::default().set_mdc(true))
                    }));
 
-        let keyid = KeyID::from_hex("F004 B9A4 5C58 6126").unwrap();
+        let keyid = "F004 B9A4 5C58 6126".parse().unwrap();
         assert_eq!(sig.issuer(), Some(&keyid));
         assert_eq!(sig.subpacket(SubpacketTag::Issuer),
                    Some(&Subpacket {
@@ -2806,8 +2923,7 @@ fn subpacket_test_2() {
                        value: SubpacketValue::Issuer(keyid)
                    }));
 
-        let fp = Fingerprint::from_hex(
-            "361A96BDE1A65B6D6C25AE9FF004B9A45C586126").unwrap();
+        let fp = "361A96BDE1A65B6D6C25AE9FF004B9A45C586126".parse().unwrap();
         assert_eq!(sig.issuer_fingerprint(), Some(&fp));
         assert_eq!(sig.subpacket(SubpacketTag::IssuerFingerprint),
                    Some(&Subpacket {
@@ -2906,10 +3022,9 @@ fn subpacket_test_2() {
                        value: SubpacketValue::Revocable(false)
                    }));
 
-        let fp = Fingerprint::from_hex(
-            "361A96BDE1A65B6D6C25AE9FF004B9A45C586126").unwrap();
+        let fp = "361A96BDE1A65B6D6C25AE9FF004B9A45C586126".parse().unwrap();
         let rk = RevocationKey::new(PublicKeyAlgorithm::RSAEncryptSign,
-                                    fp.clone(), false);
+                                    fp, false);
         assert_eq!(sig.revocation_keys().nth(0).unwrap(), &rk);
         assert_eq!(sig.subpacket(SubpacketTag::RevocationKey),
                    Some(&Subpacket {
@@ -2919,7 +3034,7 @@ fn subpacket_test_2() {
                    }));
 
 
-        let keyid = KeyID::from_hex("CEAD 0621 0934 7957").unwrap();
+        let keyid = "CEAD 0621 0934 7957".parse().unwrap();
         assert_eq!(sig.issuer(), Some(&keyid));
         assert_eq!(sig.subpacket(SubpacketTag::Issuer),
                    Some(&Subpacket {
@@ -2928,8 +3043,7 @@ fn subpacket_test_2() {
                        value: SubpacketValue::Issuer(keyid)
                    }));
 
-        let fp = Fingerprint::from_hex(
-            "B59B8817F519DCE10AFD85E4CEAD062109347957").unwrap();
+        let fp = "B59B8817F519DCE10AFD85E4CEAD062109347957".parse().unwrap();
         assert_eq!(sig.issuer_fingerprint(), Some(&fp));
         assert_eq!(sig.subpacket(SubpacketTag::IssuerFingerprint),
                    Some(&Subpacket {
@@ -3123,7 +3237,7 @@ fn subpacket_test_2() {
                            63072000.into())
                    }));
 
-        let keyid = KeyID::from_hex("CEAD 0621 0934 7957").unwrap();
+        let keyid = "CEAD 0621 0934 7957".parse().unwrap();
         assert_eq!(sig.issuer(), Some(&keyid));
         assert_eq!(sig.subpacket(SubpacketTag::Issuer),
                    Some(&Subpacket {
@@ -3132,8 +3246,7 @@ fn subpacket_test_2() {
                        value: SubpacketValue::Issuer(keyid)
                    }));
 
-        let fp = Fingerprint::from_hex(
-            "B59B8817F519DCE10AFD85E4CEAD062109347957").unwrap();
+        let fp = "B59B8817F519DCE10AFD85E4CEAD062109347957".parse().unwrap();
         assert_eq!(sig.issuer_fingerprint(), Some(&fp));
         assert_eq!(sig.subpacket(SubpacketTag::IssuerFingerprint),
                    Some(&Subpacket {
@@ -3156,7 +3269,8 @@ fn subpacket_test_2() {
 //                 }
 //             }
 //         }
-//     }
+    //     }
+    ()
 }
 
 #[test]
@@ -3165,7 +3279,7 @@ fn issuer_default() -> Result<()> {
 
     let hash_algo = HashAlgorithm::SHA512;
     let hash = hash_algo.context()?;
-    let sig = signature::Builder::new(crate::types::SignatureType::Binary);
+    let sig = signature::SignatureBuilder::new(crate::types::SignatureType::Binary);
     let key: crate::packet::key::SecretKey =
         crate::packet::key::Key4::generate_ecc(true, Curve::Ed25519)?.into();
     let mut keypair = key.into_keypair()?;
@@ -3179,7 +3293,7 @@ fn issuer_default() -> Result<()> {
     let fp = Fingerprint::from_bytes(b"bbbbbbbbbbbbbbbbbbbb");
 
     // issuer subpacket present, do not override
-    let mut sig = signature::Builder::new(crate::types::SignatureType::Binary);
+    let mut sig = signature::SignatureBuilder::new(crate::types::SignatureType::Binary);
 
     sig = sig.set_issuer(fp.clone().into())?;
     let sig_ = sig.clone().sign_hash(&mut keypair, hash.clone())?;
@@ -3188,7 +3302,7 @@ fn issuer_default() -> Result<()> {
     assert!(sig_.issuer_fingerprint().is_none());
 
     // issuer_fingerprint subpacket present, do not override
-    let mut sig = signature::Builder::new(crate::types::SignatureType::Binary);
+    let mut sig = signature::SignatureBuilder::new(crate::types::SignatureType::Binary);
 
     sig = sig.set_issuer_fingerprint(fp.clone())?;
     let sig_ = sig.clone().sign_hash(&mut keypair, hash.clone())?;

@@ -19,7 +19,7 @@ use crate::utils::{
 };
 use crate::crypto::SessionKey;
 use crate::crypto::mem::Protected;
-use crate::crypto::mpis::{MPI, PublicKey, SecretKeyMaterial, Ciphertext};
+use crate::crypto::mpi::{MPI, PublicKey, SecretKeyMaterial, Ciphertext};
 use nettle::{cipher, curve25519, mode, mode::Mode, ecc, ecdh, random::Yarrow};
 
 /// Wraps a session key using Elliptic Curve Diffie-Hellman.
@@ -343,7 +343,7 @@ fn make_param<P, R>(recipient: &Key<P, R>,
             + 1                      // Public key algorithm ID,
             + 4                      // KDF parameters,
             + 20                     // "Anonymous Sender    ",
-            + fp.as_slice().len());  // Recipients key fingerprint.
+            + fp.as_bytes().len());  // Recipients key fingerprint.
 
     param.push(curve.oid().len() as u8);
     param.extend_from_slice(curve.oid());
@@ -353,13 +353,13 @@ fn make_param<P, R>(recipient: &Key<P, R>,
     param.push((*hash).into());
     param.push((*sym).into());
     param.extend_from_slice(b"Anonymous Sender    ");
-    param.extend_from_slice(fp.as_slice());
+    param.extend_from_slice(fp.as_bytes());
     assert_eq!(param.len(),
                1 + curve.oid().len()    // Length and Curve OID,
                + 1                      // Public key algorithm ID,
                + 4                      // KDF parameters,
                + 20                     // "Anonymous Sender    ",
-               + fp.as_slice().len());  // Recipients key fingerprint.
+               + fp.as_bytes().len());  // Recipients key fingerprint.
 
     param
 }
@@ -581,9 +581,9 @@ pub fn aes_key_unwrap(algo: SymmetricAlgorithm, key: &Protected,
         let mut iv: Protected = vec![0; cipher.block_size()].into();
 
         // For j = 5 to 0
-        for j in (0..6_usize).into_iter().map(|x| 5 - x) {
+        for j in (0..=5).rev() {
             // For i = n to 1
-            for i in (0..n).into_iter().map(|x| n - 1 - x) {
+            for i in (0..=n-1).rev() {
                 // B = AES-1(K, (A ^ t) | R[i]) where t = n*j+i
                 write_be_u64(&mut tmp[..8], a ^ ((n * j) + i + 1) as u64);
                 &mut tmp[8..].copy_from_slice(&r[8 * i..8 * (i + 1)]);

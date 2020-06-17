@@ -7,6 +7,8 @@ use crate::Result;
 pub mod hex {
     use std::io;
 
+    use crate::Result;
+
     /// Encodes the given buffer as hexadecimal number.
     pub fn encode<B: AsRef<[u8]>>(buffer: B) -> String {
         super::to_hex(buffer.as_ref(), false)
@@ -18,13 +20,19 @@ pub mod hex {
     }
 
     /// Decodes the given hexadecimal number.
-    pub fn decode<H: AsRef<str>>(hex: H) -> crate::Result<Vec<u8>> {
+    pub fn decode<H: AsRef<str>>(hex: H) -> Result<Vec<u8>> {
         super::from_hex(hex.as_ref(), false)
     }
 
     /// Decodes the given hexadecimal number, ignoring whitespace.
-    pub fn decode_pretty<H: AsRef<str>>(hex: H) -> crate::Result<Vec<u8>> {
+    pub fn decode_pretty<H: AsRef<str>>(hex: H) -> Result<Vec<u8>> {
         super::from_hex(hex.as_ref(), true)
+    }
+
+    /// Dumps binary data, like `hd(1)`.
+    pub fn dump<W: io::Write, B: AsRef<[u8]>>(sink: W, data: B)
+                                              -> io::Result<()> {
+        Dumper::new(sink, "").write_ascii(data)
     }
 
     /// Writes annotated hex dumps, like hd(1).
@@ -60,7 +68,7 @@ pub mod hex {
         /// `indent`.
         pub fn new<I: AsRef<str>>(inner: W, indent: I) -> Self {
             Dumper {
-                inner: inner,
+                inner,
                 indent: indent.as_ref().into(),
                 offset: 0,
             }
@@ -91,7 +99,7 @@ pub mod hex {
 
         /// Writes a chunk of data with ASCII-representation.
         ///
-        /// This produces output similar to `hexdump(1)`.
+        /// This produces output similar to `hd(1)`.
         pub fn write_ascii<B>(&mut self, buf: B) -> io::Result<()>
             where B: AsRef<[u8]>,
         {
@@ -255,6 +263,48 @@ pub(crate) fn from_hex(hex: &str, pretty: bool) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// Formats the given time using ISO 8601.
+///
+/// This is a no-dependency, best-effort mechanism.  If the given time
+/// is not representable using unsigned UNIX time, we return the debug
+/// formatting.
+pub(crate) fn time(t: &std::time::SystemTime) -> String {
+    extern "C" {
+        fn strftime(
+            s: *mut libc::c_char,
+            max: libc::size_t,
+            format: *const libc::c_char,
+            tm: *const libc::tm,
+        ) -> usize;
+    }
+
+    let t = match t.duration_since(std::time::UNIX_EPOCH) {
+        Ok(t) => t.as_secs() as libc::time_t,
+        Err(_) => return format!("{:?}", t),
+    };
+    let fmt = b"%Y-%m-%dT%H:%M:%SZ\x00";
+    assert_eq!(b"2020-03-26T10:08:10Z\x00".len(), 21);
+    let mut s = [0u8; 21];
+
+    unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+
+        #[cfg(unix)]
+        libc::gmtime_r(&t, &mut tm);
+        #[cfg(windows)]
+        libc::gmtime_s(&mut tm, &t);
+
+        strftime(s.as_mut_ptr() as *mut libc::c_char,
+                 s.len(),
+                 fmt.as_ptr() as *const libc::c_char,
+                 &tm);
+    }
+
+    std::ffi::CStr::from_bytes_with_nul(&s)
+        .expect("strftime nul terminates string")
+        .to_string_lossy().into()
+}
+
 #[cfg(test)]
 mod test {
     #[test]
@@ -382,5 +432,15 @@ mod test {
              00000004              00                                     \
              type\n\
              ");
+    }
+
+    #[test]
+    fn time() {
+        use super::time;
+        use crate::types::Timestamp;
+        let t = |epoch| -> std::time::SystemTime {
+            Timestamp::from(epoch).into()
+        };
+        assert_eq!(&time(&t(1585217290)), "2020-03-26T10:08:10Z");
     }
 }

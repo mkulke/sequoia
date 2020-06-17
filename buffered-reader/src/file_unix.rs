@@ -134,7 +134,7 @@ impl<'a, C> File<'a, C> {
             mmap(ptr::null_mut(), length, PROT_READ, MAP_PRIVATE,
                  fd, 0)
         };
-        if addr.is_null() {
+        if addr == libc::MAP_FAILED {
             return generic(file, cookie);
         }
 
@@ -144,8 +144,8 @@ impl<'a, C> File<'a, C> {
 
         Ok(File(
             Imp::MMAP {
-                addr: addr,
-                length: length,
+                addr,
+                length,
                 reader: Memory::with_cookie(slice, cookie),
             }
         ))

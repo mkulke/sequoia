@@ -22,6 +22,30 @@ use std::io::{self, Write};
 const DUMP_HASHED_VALUES: Option<&str> = None;
 
 /// State of a hash function.
+///
+/// This provides an abstract interface to the hash functions used in
+/// OpenPGP.
+///
+/// ```rust
+/// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+/// use sequoia_openpgp::types::HashAlgorithm;
+///
+/// // Create a context and feed data to it.
+/// let mut ctx = HashAlgorithm::SHA512.context()?;
+/// ctx.update(&b"The quick brown fox jumps over the lazy dog."[..]);
+///
+/// // Extract the digest.
+/// let mut digest = vec![0; ctx.digest_size()];
+/// ctx.digest(&mut digest);
+///
+/// use sequoia_openpgp::fmt::hex;
+/// assert_eq!(&hex::encode(digest),
+///            "91EA1245F20D46AE9A037A989F54F1F7\
+///             90F0A47607EEB8A14D12890CEA77A1BB\
+///             C6C7ED9CF205E67B7F2B8FD4C7DFD3A7\
+///             A8617E45F3C463D481C7E586C39AC1ED");
+/// # Ok(()) }
+/// ```
 #[derive(Clone)]
 pub struct Context {
     algo: HashAlgorithm,
@@ -84,7 +108,7 @@ impl HashAlgorithm {
         }
     }
 
-    /// Creates a new Nettle hash context for this algorithm.
+    /// Creates a new hash context for this algorithm.
     ///
     /// # Errors
     ///
@@ -114,16 +138,14 @@ impl HashAlgorithm {
             HashAlgorithm::__Nonexhaustive => unreachable!(),
         };
 
-        if let Some(prefix) = DUMP_HASHED_VALUES {
-            c.map(|c: Box<dyn nettle::hash::Hash>| {
-                Context {
-                    algo: self,
-                    ctx: Box::new(HashDumper::new(c, prefix)),
-                }
-            })
-        } else {
-            c.map(|c| Context { algo: self, ctx: c })
-        }
+        c.map(|ctx| Context {
+            algo: self,
+            ctx: if let Some(prefix) = DUMP_HASHED_VALUES {
+                Box::new(HashDumper::new(ctx, prefix))
+            } else {
+                ctx
+            },
+        })
     }
 
     /// Returns the ASN.1 OID of this hash algorithm.
@@ -167,9 +189,9 @@ impl HashDumper {
         };
         eprintln!("HashDumper: Writing to {}...", &filename);
         HashDumper {
-            h: h,
-            sink: sink,
-            filename: filename,
+            h,
+            sink,
+            filename,
             written: 0,
         }
     }
@@ -208,16 +230,13 @@ pub trait Hash {
 impl Hash for UserID {
     /// Update the Hash with a hash of the user id.
     fn hash(&self, hash: &mut Context) {
-        let mut header = [0; 5];
-
-        header[0] = 0xB4;
         let len = self.value().len() as u32;
-        header[1] = (len >> 24) as u8;
-        header[2] = (len >> 16) as u8;
-        header[3] = (len >> 8) as u8;
-        header[4] = (len) as u8;
 
-        hash.update(&header[..]);
+        let mut header = [0; 5];
+        header[0] = 0xB4;
+        header[1..5].copy_from_slice(&len.to_be_bytes());
+
+        hash.update(header);
         hash.update(self.value());
     }
 }
@@ -225,16 +244,13 @@ impl Hash for UserID {
 impl Hash for UserAttribute {
     /// Update the Hash with a hash of the user attribute.
     fn hash(&self, hash: &mut Context) {
-        let mut header = [0; 5];
-
-        header[0] = 0xD1;
         let len = self.value().len() as u32;
-        header[1] = (len >> 24) as u8;
-        header[2] = (len >> 16) as u8;
-        header[3] = (len >> 8) as u8;
-        header[4] = (len) as u8;
 
-        hash.update(&header[..]);
+        let mut header = [0; 5];
+        header[0] = 0xD1;
+        header[1..5].copy_from_slice(&len.to_be_bytes());
+
+        hash.update(&header);
         hash.update(self.value());
     }
 }
@@ -247,18 +263,17 @@ impl<P, R> Hash for Key4<P, R>
     fn hash(&self, hash: &mut Context) {
         use crate::serialize::MarshalInto;
 
-        // We hash 8 bytes plus the MPIs.  But, the len doesn't
+        // We hash 9 bytes plus the MPIs.  But, the len doesn't
         // include the tag (1 byte) or the length (2 bytes).
-        let len = (9 - 3) + self.mpis().serialized_len();
+        let len = (9 - 3) + self.mpis().serialized_len() as u16;
 
-        let mut header : Vec<u8> = Vec::with_capacity(9);
+        let mut header: Vec<u8> = Vec::with_capacity(9);
 
         // Tag.  Note: we use this whether
         header.push(0x99);
 
-        // Length (big endian).
-        header.push(((len >> 8) & 0xFF) as u8);
-        header.push((len & 0xFF) as u8);
+        // Length (2 bytes, big endian).
+        header.extend_from_slice(&len.to_be_bytes());
 
         // Version.
         header.push(4);
@@ -266,12 +281,9 @@ impl<P, R> Hash for Key4<P, R>
         // Creation time.
         let creation_time: u32 =
             Timestamp::try_from(self.creation_time())
-            .unwrap_or_else(|_| Timestamp::try_from(0).unwrap())
+            .unwrap_or_else(|_| Timestamp::from(0))
             .into();
-        header.push((creation_time >> 24) as u8);
-        header.push((creation_time >> 16) as u8);
-        header.push((creation_time >> 8) as u8);
-        header.push((creation_time >> 0) as u8);
+        header.extend_from_slice(&creation_time.to_be_bytes());
 
         // Algorithm.
         header.push(self.pk_algo().into());
@@ -300,7 +312,7 @@ impl Hash for Signature4 {
     }
 }
 
-impl Hash for signature::Builder {
+impl Hash for signature::SignatureBuilder {
     /// Adds the `Signature` to the provided hash context.
     fn hash(&self, hash: &mut Context) {
         use crate::serialize::MarshalInto;
@@ -328,10 +340,9 @@ impl Hash for signature::Builder {
         header[2] = self.pk_algo().into();
         header[3] = self.hash_algo().into();
 
-        // The length of the hashed area, as a 16-bit endian number.
-        let len = hashed_area.len();
-        header[4] = (len >> 8) as u8;
-        header[5] = len as u8;
+        // The length of the hashed area, as a 16-bit big endian number.
+        let len = hashed_area.len() as u16;
+        header[4..6].copy_from_slice(&len.to_be_bytes());
 
         hash.update(&header[..]);
         hash.update(&hashed_area);
@@ -349,15 +360,12 @@ impl Hash for signature::Builder {
         // See https://tools.ietf.org/html/rfc4880#section-5.2.4
         let mut trailer = [0u8; 6];
 
-        trailer[0] = 0x4;
+        trailer[0] = 4;
         trailer[1] = 0xff;
         // The signature packet's length, not including the previous
         // two bytes and the length.
-        let len = header.len() + hashed_area.len();
-        trailer[2] = (len >> 24) as u8;
-        trailer[3] = (len >> 16) as u8;
-        trailer[4] = (len >> 8) as u8;
-        trailer[5] = len as u8;
+        let len = (header.len() + hashed_area.len()) as u32;
+        trailer[2..6].copy_from_slice(&len.to_be_bytes());
 
         hash.update(&trailer[..]);
     }
@@ -367,7 +375,7 @@ impl Hash for signature::Builder {
 impl Signature {
     /// Computes the message digest of standalone signatures.
     pub fn hash_standalone<'a, S>(sig: S) -> Result<Vec<u8>>
-        where S: Into<&'a signature::Builder>
+        where S: Into<&'a signature::SignatureBuilder>
     {
         let sig = sig.into();
         let mut h = sig.hash_algo().context()?;
@@ -381,7 +389,7 @@ impl Signature {
 
     /// Computes the message digest of timestamp signatures.
     pub fn hash_timestamp<'a, S>(sig: S) -> Result<Vec<u8>>
-        where S: Into<&'a signature::Builder>
+        where S: Into<&'a signature::SignatureBuilder>
     {
         Self::hash_standalone(sig)
     }
@@ -391,7 +399,7 @@ impl Signature {
     pub fn hash_direct_key<'a, P, S>(sig: S, key: &Key<P, key::PrimaryRole>)
         -> Result<Vec<u8>>
         where P: key::KeyParts,
-              S: Into<&'a signature::Builder>,
+              S: Into<&'a signature::SignatureBuilder>,
     {
 
         let sig = sig.into();
@@ -414,7 +422,7 @@ impl Signature {
         -> Result<Vec<u8>>
         where P: key::KeyParts,
               Q: key::KeyParts,
-              S: Into<&'a signature::Builder>
+              S: Into<&'a signature::SignatureBuilder>
     {
 
         let sig = sig.into();
@@ -438,7 +446,7 @@ impl Signature {
         -> Result<Vec<u8>>
         where P: key::KeyParts,
               Q: key::KeyParts,
-              S: Into<&'a signature::Builder>
+              S: Into<&'a signature::SignatureBuilder>
     {
         Self::hash_subkey_binding(sig.into(), key, subkey)
     }
@@ -450,7 +458,7 @@ impl Signature {
                                          userid: &UserID)
         -> Result<Vec<u8>>
         where P: key::KeyParts,
-              S: Into<&'a signature::Builder>
+              S: Into<&'a signature::SignatureBuilder>
     {
         let sig = sig.into();
         let mut h = sig.hash_algo().context()?;
@@ -472,7 +480,7 @@ impl Signature {
         ua: &UserAttribute)
         -> Result<Vec<u8>>
         where P: key::KeyParts,
-              S: Into<&'a signature::Builder>,
+              S: Into<&'a signature::SignatureBuilder>,
     {
 
         let sig = sig.into();

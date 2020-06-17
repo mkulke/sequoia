@@ -16,7 +16,7 @@ extern crate sequoia_openpgp as openpgp;
 use openpgp::cert::prelude::*;
 use openpgp::serialize::stream::*;
 use openpgp::packet::prelude::*;
-use openpgp::parse::stream::*;
+use openpgp::parse::{Parse, stream::*};
 use openpgp::policy::Policy;
 use openpgp::policy::StandardPolicy as P;
 
@@ -92,7 +92,8 @@ fn main() {
 #     };
 #
 #     // Now, create a verifier with a helper using the given Certs.
-#     let mut verifier = Verifier::from_bytes(policy, signed_message, helper, None)?;
+#     let mut verifier = VerifierBuilder::from_bytes(signed_message)?
+#         .with_policy(policy, None, helper)?;
 #
 #     // Verify the data.
 #     io::copy(&mut verifier, sink)?;
@@ -105,7 +106,7 @@ fn main() {
 # }
 #
 # impl<'a> VerificationHelper for Helper<'a> {
-#     fn get_public_keys(&mut self, _ids: &[openpgp::KeyHandle])
+#     fn get_certs(&mut self, _ids: &[openpgp::KeyHandle])
 #                        -> openpgp::Result<Vec<openpgp::Cert>> {
 #         // Return public keys for signature verification here.
 #         Ok(vec![self.cert.clone()])
@@ -164,7 +165,7 @@ create it:
 # use openpgp::cert::prelude::*;
 # use openpgp::serialize::stream::*;
 # use openpgp::packet::prelude::*;
-# use openpgp::parse::stream::*;
+# use openpgp::parse::{Parse, stream::*};
 # use openpgp::policy::Policy;
 # use openpgp::policy::StandardPolicy as P;
 #
@@ -240,7 +241,8 @@ fn generate() -> openpgp::Result<openpgp::Cert> {
 #     };
 #
 #     // Now, create a verifier with a helper using the given Certs.
-#     let mut verifier = Verifier::from_bytes(policy, signed_message, helper, None)?;
+#     let mut verifier = VerifierBuilder::from_bytes(signed_message)?
+#         .with_policy(policy, None, helper)?;
 #
 #     // Verify the data.
 #     io::copy(&mut verifier, sink)?;
@@ -253,7 +255,7 @@ fn generate() -> openpgp::Result<openpgp::Cert> {
 # }
 #
 # impl<'a> VerificationHelper for Helper<'a> {
-#     fn get_public_keys(&mut self, _ids: &[openpgp::KeyHandle])
+#     fn get_certs(&mut self, _ids: &[openpgp::KeyHandle])
 #                        -> openpgp::Result<Vec<openpgp::Cert>> {
 #         // Return public keys for signature verification here.
 #         Ok(vec![self.cert.clone()])
@@ -312,7 +314,7 @@ implements [`io::Write`], and we simply write the plaintext to it.
 # use openpgp::cert::prelude::*;
 # use openpgp::serialize::stream::*;
 # use openpgp::packet::prelude::*;
-# use openpgp::parse::stream::*;
+# use openpgp::parse::{Parse, stream::*};
 # use openpgp::policy::Policy;
 # use openpgp::policy::StandardPolicy as P;
 #
@@ -388,7 +390,8 @@ fn sign(policy: &dyn Policy,
 #     };
 #
 #     // Now, create a verifier with a helper using the given Certs.
-#     let mut verifier = Verifier::from_bytes(policy, signed_message, helper, None)?;
+#     let mut verifier = VerifierBuilder::from_bytes(signed_message)?
+#         .with_policy(policy, None, helper)?;
 #
 #     // Verify the data.
 #     io::copy(&mut verifier, sink)?;
@@ -401,7 +404,7 @@ fn sign(policy: &dyn Policy,
 # }
 #
 # impl<'a> VerificationHelper for Helper<'a> {
-#     fn get_public_keys(&mut self, _ids: &[openpgp::KeyHandle])
+#     fn get_certs(&mut self, _ids: &[openpgp::KeyHandle])
 #                        -> openpgp::Result<Vec<openpgp::Cert>> {
 #         // Return public keys for signature verification here.
 #         Ok(vec![self.cert.clone()])
@@ -452,12 +455,12 @@ control flow is determined by the message being processed.
 
 To use Sequoia's low-level streaming verifier, we need to provide an
 object that implements [`VerificationHelper`].  This object provides
-public and for the signature verification, and implements the
+certificates for the signature verification, and implements the
 signature verification policy.
 
 [`VerificationHelper`]: ../../sequoia_openpgp/parse/stream/trait.VerificationHelper.html
 
-To decrypt messages, we create a [`Verifier`] with our helper.
+To verify messages, we create a [`Verifier`] with our helper.
 Verified data can be read from this using [`io::Read`].
 
 [`Verifier`]: ../../sequoia_openpgp/parse/stream/struct.Verifier.html
@@ -471,7 +474,7 @@ Verified data can be read from this using [`io::Read`].
 # use openpgp::cert::prelude::*;
 # use openpgp::serialize::stream::*;
 # use openpgp::packet::prelude::*;
-# use openpgp::parse::stream::*;
+# use openpgp::parse::{Parse, stream::*};
 # use openpgp::policy::Policy;
 # use openpgp::policy::StandardPolicy as P;
 # 
@@ -547,7 +550,8 @@ fn verify(policy: &dyn Policy,
     };
 
     // Now, create a verifier with a helper using the given Certs.
-    let mut verifier = Verifier::from_bytes(policy, signed_message, helper, None)?;
+    let mut verifier = VerifierBuilder::from_bytes(signed_message)?
+        .with_policy(policy, None, helper)?;
 
     // Verify the data.
     io::copy(&mut verifier, sink)?;
@@ -560,7 +564,7 @@ struct Helper<'a> {
 }
 
 impl<'a> VerificationHelper for Helper<'a> {
-    fn get_public_keys(&mut self, _ids: &[openpgp::KeyHandle])
+    fn get_certs(&mut self, _ids: &[openpgp::KeyHandle])
                        -> openpgp::Result<Vec<openpgp::Cert>> {
         // Return public keys for signature verification here.
         Ok(vec![self.cert.clone()])

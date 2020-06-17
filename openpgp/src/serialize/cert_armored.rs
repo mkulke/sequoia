@@ -36,7 +36,7 @@ impl Cert {
         let mut headers: Vec<String> = self.userids().with_policy(p, None)
             // Ignore revoked userids.
             .filter_map(|uidb| {
-                if let RevocationStatus::Revoked(_) = uidb.revoked() {
+                if let RevocationStatus::Revoked(_) = uidb.revocation_status() {
                     None
                 } else {
                     Some(uidb)
@@ -101,7 +101,7 @@ impl<'a> Encoder<'a> {
     /// Returns a new Encoder to enarmor and serialize a `Cert`.
     fn new(cert: &'a Cert) -> Self {
         Self {
-            cert: cert,
+            cert,
         }
     }
 
@@ -116,7 +116,8 @@ impl<'a> Encoder<'a> {
             .map(|value| ("Comment", value.as_str()))
             .collect();
 
-        let mut w = armor::Writer::new(o, armor::Kind::PublicKey, &headers)?;
+        let mut w =
+            armor::Writer::with_headers(o, armor::Kind::PublicKey, headers)?;
         if export {
             self.cert.export(&mut w)?;
         } else {

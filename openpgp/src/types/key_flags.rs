@@ -3,8 +3,45 @@ use std::fmt;
 use std::cmp;
 use std::ops::{BitAnd, BitOr};
 
-/// Describes how a key may be used, and stores additional
-/// information.
+#[cfg(any(test, feature = "quickcheck"))]
+use quickcheck::{Arbitrary, Gen};
+
+/// Describes how a key may be used, and stores additional information.
+///
+/// Key flags are described in [Section 5.2.3.21 of RFC 4880] and [Section 5.2.3.22
+/// of RFC 4880bis].
+///
+/// [Section 5.2.3.21 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.21
+/// [Section 5.2.3.22 of RFC 4880bis]: https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-09#section-5.2.3.22
+///
+/// # A note on equality
+///
+/// `PartialEq` is implements semantic equality, i.e. it ignores
+/// padding.
+///
+/// # Examples
+///
+/// ```
+/// use sequoia_openpgp as openpgp;
+/// # use openpgp::Result;
+/// use openpgp::cert::prelude::*;
+/// use openpgp::policy::StandardPolicy;
+///
+/// # fn main() -> Result<()> {
+/// let p = &StandardPolicy::new();
+///
+/// let (cert, _) =
+///     CertBuilder::new()
+///         .add_userid("Alice <alice@example.com>")
+///         .add_transport_encryption_subkey()
+///         .generate()?;
+///
+/// for subkey in cert.with_policy(p, None)?.keys().subkeys() {
+///     // Key contains one Encryption subkey:
+///     assert!(subkey.key_flags().unwrap().for_transport_encryption());
+/// }
+/// # Ok(()) }
+/// ```
 #[derive(Clone)]
 pub struct KeyFlags{
     for_certification: bool,
@@ -330,6 +367,13 @@ const KEY_FLAG_GROUP_KEY: u8 = 0x80;
 /// Number of bytes with known flags.
 const KEY_FLAGS_N_KNOWN_BYTES: usize = 1;
 
+#[cfg(any(test, feature = "quickcheck"))]
+impl Arbitrary for KeyFlags {
+    fn arbitrary<G: Gen>(g: &mut G) -> Self {
+        Self::new(Vec::arbitrary(g))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -359,9 +403,9 @@ mod tests {
     }
 
     quickcheck! {
-        fn roundtrip(raw: Vec<u8>) -> bool {
-            let val = KeyFlags::new(&raw);
-            assert_eq!(raw, val.to_vec());
+        fn roundtrip(val: KeyFlags) -> bool {
+            let q = KeyFlags::new(&val.to_vec());
+            assert_eq!(val, q);
 
             // Check that equality ignores padding.
             let mut val_without_padding = val.clone();

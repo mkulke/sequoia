@@ -3,7 +3,7 @@ use std::fmt;
 use crate::Error;
 use crate::Packet;
 use crate::packet::Tag;
-use crate::cert::components::{
+use crate::cert::bundle::{
     SubkeyBundle,
     UserIDBundle,
     UserAttributeBundle,
@@ -127,7 +127,7 @@ impl From<Packet> for Option<Token> {
 
 impl fmt::Display for Token {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str(&format!("{:?}", self)[..])
+        write!(f, "{:?}", self)
     }
 }
 

@@ -233,6 +233,7 @@ use std::io;
 use std::io::{Error, ErrorKind};
 use std::cmp;
 use std::fmt;
+use std::convert::TryInto;
 
 mod generic;
 mod memory;
@@ -603,15 +604,16 @@ pub trait BufferedReader<C> : io::Read + fmt::Debug + fmt::Display {
     /// in big endian format.
     fn read_be_u16(&mut self) -> Result<u16, std::io::Error> {
         let input = self.data_consume_hard(2)?;
-        return Ok(((input[0] as u16) << 8) + (input[1] as u16));
+        // input holds at least 2 bytes, so this cannot fail.
+        Ok(u16::from_be_bytes(input[..2].try_into().unwrap()))
     }
 
     /// A convenience function for reading a 32-bit unsigned integer
     /// in big endian format.
     fn read_be_u32(&mut self) -> Result<u32, std::io::Error> {
         let input = self.data_consume_hard(4)?;
-        return Ok(((input[0] as u32) << 24) + ((input[1] as u32) << 16)
-                  + ((input[2] as u32) << 8) + (input[3] as u32));
+        // input holds at least 4 bytes, so this cannot fail.
+        Ok(u32::from_be_bytes(input[..4].try_into().unwrap()))
     }
 
     /// Reads until either `terminal` is encountered or EOF.
@@ -799,19 +801,12 @@ pub trait BufferedReader<C> : io::Read + fmt::Debug + fmt::Display {
     fn drop_eof(&mut self) -> Result<bool, std::io::Error> {
         let mut at_least_one_byte = false;
         loop {
-            match self.data_consume(DEFAULT_BUF_SIZE) {
-                Ok(ref buffer) => {
-                    if buffer.len() > 0 {
-                        at_least_one_byte = true;
-                    }
-
-                    if buffer.len() < DEFAULT_BUF_SIZE {
-                        // EOF.
-                        break;
-                    }
-                }
-                Err(err) =>
-                    return Err(err),
+            let n = self.data(DEFAULT_BUF_SIZE)?.len();
+            at_least_one_byte |= n > 0;
+            self.consume(n);
+            if n < DEFAULT_BUF_SIZE {
+                // EOF.
+                break;
             }
         }
 
@@ -886,7 +881,7 @@ pub trait BufferedReader<C> : io::Read + fmt::Debug + fmt::Display {
 /// impl <T: BufferedReader> std::io::Read for T { ... }
 /// ```
 ///
-/// but, alas, Rust doesn't like that ("error[E0119]: conflicting
+/// but, alas, Rust doesn't like that ("error\[E0119\]: conflicting
 /// implementations of trait `std::io::Read` for type `&mut _`").
 pub fn buffered_reader_generic_read_impl<T: BufferedReader<C>, C>
         (bio: &mut T, buf: &mut [u8]) -> Result<usize, io::Error> {

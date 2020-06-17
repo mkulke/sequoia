@@ -1,6 +1,8 @@
-//! Cipher Type Byte.
+//! Cipher Type Byte (CTB).
 //!
-//! See [Section 4.2 of RFC 4880] for more details.
+//! The CTB encodes the packet's type and some length information.  It
+//! has two variants: the so-called old format and the so-called new
+//! format.  See [Section 4.2 of RFC 4880] for more details.
 //!
 //!   [Section 4.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-4.2
 
@@ -13,8 +15,10 @@ use crate::{
 };
 use crate::packet::header::BodyLength;
 
-/// OpenPGP defines two packet formats: the old and the new format.
-/// They both include the packet's so-called tag.
+/// Data common to all CTB formats.
+///
+/// OpenPGP defines two packet formats: an old format and a new
+/// format.  They both include the packet's so-called tag.
 ///
 /// See [Section 4.2 of RFC 4880] for more details.
 ///
@@ -25,7 +29,7 @@ struct CTBCommon {
     tag: Tag,
 }
 
-/// The new CTB format.
+/// A CTB using the new format encoding.
 ///
 /// See [Section 4.2 of RFC 4880] for more details.
 ///
@@ -41,7 +45,7 @@ impl CTBNew {
     pub fn new(tag: Tag) -> Self {
         CTBNew {
             common: CTBCommon {
-                tag: tag,
+                tag,
             },
         }
     }
@@ -52,25 +56,38 @@ impl CTBNew {
     }
 }
 
-/// The PacketLengthType is used as part of the [old CTB], and is
+/// The length encoded for an old style CTB.
+///
+/// The `PacketLengthType` is only part of the [old CTB], and is
 /// partially used to determine the packet's size.
 ///
 /// See [Section 4.2.1 of RFC 4880] for more details.
 ///
-///   [Section 4.2.1 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-4.2.1
 ///   [old CTB]: struct.CTBOld.html
+///   [Section 4.2.1 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-4.2.1
 #[derive(Debug)]
 #[derive(Clone, Copy, PartialEq)]
 pub enum PacketLengthType {
     /// A one-octet Body Length header encodes a length of 0 to 191 octets.
+    ///
+    /// The header is 2 octets long.  It contains the one byte CTB
+    /// followed by the one octet length.
     OneOctet,
     /// A two-octet Body Length header encodes a length of 192 to 8383 octets.
+    ///
+    /// The header is 3 octets long.  It contains the one byte CTB
+    /// followed by the two octet length.
     TwoOctets,
-    /// A five-octet Body Length header consists of a single octet holding
-    /// the value 255, followed by a four-octet scalar.
+    /// A four-octet Body Length.
+    ///
+    /// The header is 5 octets long.  It contains the one byte CTB
+    /// followed by the four octet length.
     FourOctets,
-    /// A Partial Body Length header is one octet long and encodes the length
-    /// of only part of the data packet.
+    /// The packet is of indeterminate length.
+    ///
+    /// Neither the packet header nor the packet itself contain any
+    /// information about the length.  The end of the packet is clear
+    /// from the context, e.g., EOF.
     Indeterminate,
 }
 
@@ -100,7 +117,7 @@ impl From<PacketLengthType> for u8 {
     }
 }
 
-/// The old CTB format.
+/// A CTB using the old format encoding.
 ///
 /// See [Section 4.2 of RFC 4880] for more details.
 ///
@@ -110,16 +127,16 @@ pub struct CTBOld {
     /// Common CTB fields.
     common: CTBCommon,
     /// Type of length specifier.
-    pub length_type: PacketLengthType,
+    length_type: PacketLengthType,
 }
 
 impl CTBOld {
-    /// Constructs a old-style CTB.
+    /// Constructs an old-style CTB.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::InvalidArgument`] if the tag or body length
-    /// cannot be expressed using an old-style CTB.
+    /// Returns [`Error::InvalidArgument`] if the tag or the body
+    /// length cannot be expressed using an old-style CTB.
     ///
     /// [`Error::InvalidArgument`]: ../../enum.Error.html#variant.InvalidArgument
     pub fn new(tag: Tag, length: BodyLength) -> Result<Self> {
@@ -151,11 +168,12 @@ impl CTBOld {
             BodyLength::Indeterminate =>
                 PacketLengthType::Indeterminate,
         };
+
         Ok(CTBOld {
             common: CTBCommon {
-                tag: tag,
+                tag,
             },
-            length_type: length_type,
+            length_type,
         })
     }
 
@@ -163,9 +181,14 @@ impl CTBOld {
     pub fn tag(&self) -> Tag {
         self.common.tag
     }
+
+    /// Returns the packet's length type.
+    pub fn length_type(&self) -> PacketLengthType {
+        self.length_type
+    }
 }
 
-/// A sum type for the different CTB variants.
+/// The CTB variants.
 ///
 /// There are two CTB variants: the [old CTB format] and the [new CTB
 /// format].
@@ -188,11 +211,23 @@ impl CTB {
         CTB::New(CTBNew::new(tag))
     }
 
+    /// Returns the packet's tag.
+    pub fn tag(&self) -> Tag {
+        match self {
+            CTB::New(c) => c.tag(),
+            CTB::Old(c) => c.tag(),
+        }
+    }
+}
+
+impl TryFrom<u8> for CTB {
+    type Error = anyhow::Error;
+
     /// Parses a CTB as described in [Section 4.2 of RFC 4880].  This
     /// function parses both new and old format CTBs.
     ///
     ///   [Section 4.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-4.2
-    pub fn from_ptag(ptag: u8) -> Result<CTB> {
+    fn try_from(ptag: u8) -> Result<CTB> {
         // The top bit of the ptag must be set.
         if ptag & 0b1000_0000 == 0 {
             return Err(
@@ -228,20 +263,12 @@ impl CTB {
 
         Ok(ctb)
     }
-
-    /// Returns the packet's tag.
-    pub fn tag(&self) -> Tag {
-        match self {
-            CTB::New(c) => c.tag(),
-            CTB::Old(c) => c.tag(),
-        }
-    }
 }
 
 #[test]
 fn ctb() {
     // 0x99 = public key packet
-    if let CTB::Old(ctb) = CTB::from_ptag(0x99).unwrap() {
+    if let CTB::Old(ctb) = CTB::try_from(0x99).unwrap() {
         assert_eq!(ctb.tag(), Tag::PublicKey);
         assert_eq!(ctb.length_type, PacketLengthType::TwoOctets);
     } else {
@@ -249,7 +276,7 @@ fn ctb() {
     }
 
     // 0xa3 = old compressed packet
-    if let CTB::Old(ctb) = CTB::from_ptag(0xa3).unwrap() {
+    if let CTB::Old(ctb) = CTB::try_from(0xa3).unwrap() {
         assert_eq!(ctb.tag(), Tag::CompressedData);
         assert_eq!(ctb.length_type, PacketLengthType::Indeterminate);
     } else {
@@ -257,7 +284,7 @@ fn ctb() {
     }
 
     // 0xcb: new literal
-    if let CTB::New(ctb) = CTB::from_ptag(0xcb).unwrap() {
+    if let CTB::New(ctb) = CTB::try_from(0xcb).unwrap() {
         assert_eq!(ctb.tag(), Tag::Literal);
     } else {
         panic!("Expected a new format packet.");

@@ -1,10 +1,35 @@
 use std::fmt;
+
+#[cfg(any(test, feature = "quickcheck"))]
 use quickcheck::{Arbitrary, Gen};
 
 use crate::Error;
 use crate::Fingerprint;
-use crate::KeyID;
 use crate::Result;
+
+/// A short identifier for certificates and keys.
+///
+/// A KeyID is a fingerprint fragment.  It identifies a public key,
+/// but is easy to forge.  For more details about how a KeyID is
+/// generated, see [Section 12.2 of RFC 4880].
+///
+///   [Section 12.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-12.2
+///
+/// Note: This enum cannot be exhaustively matched to allow future
+/// extensions.
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
+pub enum KeyID {
+    /// Lower 8 byte SHA-1 hash.
+    V4([u8;8]),
+    /// Used for holding keyids that we don't understand.  For
+    /// instance, we don't grok v3 keyids.  And, it is possible that
+    /// the Issuer subpacket contains the wrong number of bytes.
+    Invalid(Box<[u8]>),
+
+    /// This marks this enum as non-exhaustive.  Do not use this
+    /// variant.
+    #[doc(hidden)] __Nonexhaustive,
+}
 
 impl fmt::Display for KeyID {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -38,7 +63,16 @@ impl std::str::FromStr for KeyID {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        Self::from_hex(s)
+        let bytes = crate::fmt::hex::decode_pretty(s)?;
+
+        // A KeyID is exactly 8 bytes long.
+        if bytes.len() == 8 {
+            Ok(KeyID::from_bytes(&bytes[..]))
+        } else {
+            // Maybe a fingerprint was given.  Try to parse it and
+            // convert it to a KeyID.
+            Ok(s.parse::<Fingerprint>()?.into())
+        }
     }
 }
 
@@ -48,6 +82,7 @@ impl From<KeyID> for Vec<u8> {
         match id {
             KeyID::V4(ref b) => r.extend_from_slice(b),
             KeyID::Invalid(ref b) => r.extend_from_slice(b),
+            KeyID::__Nonexhaustive => unreachable!(),
         }
         r
     }
@@ -73,6 +108,7 @@ impl From<&Fingerprint> for KeyID {
             Fingerprint::Invalid(fp) => {
                 KeyID::Invalid(fp.clone())
             }
+            Fingerprint::__Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -85,6 +121,7 @@ impl From<Fingerprint> for KeyID {
             Fingerprint::Invalid(fp) => {
                 KeyID::Invalid(fp)
             }
+            Fingerprint::__Nonexhaustive => unreachable!(),
         }
     }
 }
@@ -92,16 +129,7 @@ impl From<Fingerprint> for KeyID {
 impl KeyID {
     /// Converts a u64 to a KeyID.
     pub fn new(data: u64) -> KeyID {
-        let bytes = [
-            (data >> (7 * 8)) as u8,
-            (data >> (6 * 8)) as u8,
-            (data >> (5 * 8)) as u8,
-            (data >> (4 * 8)) as u8,
-            (data >> (3 * 8)) as u8,
-            (data >> (2 * 8)) as u8,
-            (data >> (1 * 8)) as u8,
-            (data >> (0 * 8)) as u8
-        ];
+        let bytes = data.to_be_bytes();
         Self::from_bytes(&bytes[..])
     }
 
@@ -109,17 +137,10 @@ impl KeyID {
     pub fn as_u64(&self) -> Result<u64> {
         match &self {
             KeyID::V4(ref b) =>
-                Ok(0u64
-                   | ((b[0] as u64) << (7 * 8))
-                   | ((b[1] as u64) << (6 * 8))
-                   | ((b[2] as u64) << (5 * 8))
-                   | ((b[3] as u64) << (4 * 8))
-                   | ((b[4] as u64) << (3 * 8))
-                   | ((b[5] as u64) << (2 * 8))
-                   | ((b[6] as u64) << (1 * 8))
-                   | ((b[7] as u64) << (0 * 8))),
+                Ok(u64::from_be_bytes(*b)),
             KeyID::Invalid(_) =>
                 Err(Error::InvalidArgument("Invalid KeyID".into()).into()),
+            KeyID::__Nonexhaustive => unreachable!(),
         }
     }
 
@@ -134,25 +155,12 @@ impl KeyID {
         }
     }
 
-    /// Reads a hex-encoded Key ID.
-    pub fn from_hex(hex: &str) -> Result<KeyID> {
-        let bytes = crate::fmt::from_hex(hex, true)?;
-
-        // A KeyID is exactly 8 bytes long.
-        if bytes.len() == 8 {
-            Ok(KeyID::from_bytes(&bytes[..]))
-        } else {
-            // Maybe a fingerprint was given.  Try to parse it and
-            // convert it to a KeyID.
-            Ok(Fingerprint::from_hex(hex)?.into())
-        }
-    }
-
     /// Returns a reference to the raw KeyID.
-    pub fn as_slice(&self) -> &[u8] {
+    pub fn as_bytes(&self) -> &[u8] {
         match self {
             &KeyID::V4(ref id) => id,
             &KeyID::Invalid(ref id) => id,
+            KeyID::__Nonexhaustive => unreachable!(),
         }
     }
 
@@ -163,7 +171,46 @@ impl KeyID {
 
     /// Returns true if this is a wild card ID.
     pub fn is_wildcard(&self) -> bool {
-        self.as_slice().iter().all(|b| *b == 0)
+        self.as_bytes().iter().all(|b| *b == 0)
+    }
+
+    /// Converts this key ID to its canonical hexadecimal representation.
+    ///
+    /// This representation is always uppercase and without spaces and is
+    /// suitable for stable key identifiers.
+    ///
+    /// The output of this function is exactly the same as formatting this
+    /// object with the `:X` format specifier.
+    ///
+    /// ```rust
+    /// # extern crate sequoia_openpgp as openpgp;
+    /// use openpgp::KeyID;
+    ///
+    /// let keyid = "fb3751f1587daef1".parse::<KeyID>().unwrap();
+    ///
+    /// assert_eq!("FB3751F1587DAEF1", keyid.to_hex());
+    /// assert_eq!(format!("{:X}", keyid), keyid.to_hex());
+    /// ```
+    pub fn to_hex(&self) -> String {
+        format!("{:X}", self)
+    }
+
+    /// Parses the hexadecimal representation of an OpenPGP key ID.
+    ///
+    /// This function is the reverse of `to_hex`. It also accepts other variants
+    /// of the key ID notation including lower-case letters, spaces and optional
+    /// leading `0x`.
+    ///
+    /// ```rust
+    /// # extern crate sequoia_openpgp as openpgp;
+    /// use openpgp::KeyID;
+    ///
+    /// let keyid = KeyID::from_hex("0xfb3751f1587daef1").unwrap();
+    ///
+    /// assert_eq!("FB3751F1587DAEF1", keyid.to_hex());
+    /// ```
+    pub fn from_hex(s: &str) -> std::result::Result<Self, anyhow::Error> {
+        std::str::FromStr::from_str(s)
     }
 
     /// Common code for the above functions.
@@ -171,6 +218,7 @@ impl KeyID {
         let raw = match self {
             &KeyID::V4(ref fp) => &fp[..],
             &KeyID::Invalid(ref fp) => &fp[..],
+            KeyID::__Nonexhaustive => unreachable!(),
         };
 
         // We currently only handle V4 key IDs, which look like:
@@ -214,6 +262,7 @@ impl KeyID {
     }
 }
 
+#[cfg(any(test, feature = "quickcheck"))]
 impl Arbitrary for KeyID {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         KeyID::new(u64::arbitrary(g))
@@ -231,26 +280,25 @@ mod test {
 
     #[test]
     fn from_hex() {
-        KeyID::from_hex("FB3751F1587DAEF1").unwrap();
-        KeyID::from_hex("39D100AB67D5BD8C04010205FB3751F1587DAEF1")
+        "FB3751F1587DAEF1".parse::<KeyID>().unwrap();
+        "39D100AB67D5BD8C04010205FB3751F1587DAEF1".parse::<KeyID>()
             .unwrap();
-        KeyID::from_hex("0xFB3751F1587DAEF1").unwrap();
-        KeyID::from_hex("0x39D100AB67D5BD8C04010205FB3751F1587DAEF1")
+        "0xFB3751F1587DAEF1".parse::<KeyID>().unwrap();
+        "0x39D100AB67D5BD8C04010205FB3751F1587DAEF1".parse::<KeyID>()
             .unwrap();
-        KeyID::from_hex("FB37 51F1 587D AEF1").unwrap();
-        KeyID::from_hex("39D1 00AB 67D5 BD8C 0401  0205 FB37 51F1 587D AEF1")
+        "FB37 51F1 587D AEF1".parse::<KeyID>().unwrap();
+        "39D1 00AB 67D5 BD8C 0401  0205 FB37 51F1 587D AEF1".parse::<KeyID>()
             .unwrap();
-        KeyID::from_hex("GB3751F1587DAEF1").unwrap_err();
-        KeyID::from_hex("EFB3751F1587DAEF1").unwrap_err();
-        KeyID::from_hex("%FB3751F1587DAEF1").unwrap_err();
-        assert_match!(KeyID::Invalid(_) = KeyID::from_hex("587DAEF1").unwrap());
-        assert_match!(KeyID::Invalid(_) =
-                      KeyID::from_hex("0x587DAEF1").unwrap());
+        "GB3751F1587DAEF1".parse::<KeyID>().unwrap_err();
+        "EFB3751F1587DAEF1".parse::<KeyID>().unwrap_err();
+        "%FB3751F1587DAEF1".parse::<KeyID>().unwrap_err();
+        assert_match!(KeyID::Invalid(_) = "587DAEF1".parse().unwrap());
+        assert_match!(KeyID::Invalid(_) = "0x587DAEF1".parse().unwrap());
     }
 
     #[test]
     fn hex_formatting() {
-        let keyid = KeyID::from_hex("FB3751F1587DAEF1").unwrap();
+        let keyid = "FB3751F1587DAEF1".parse::<KeyID>().unwrap();
         assert_eq!(format!("{:X}", keyid), "FB3751F1587DAEF1");
         assert_eq!(format!("{:x}", keyid), "fb3751f1587daef1");
     }
@@ -258,6 +306,6 @@ mod test {
     #[test]
     fn keyid_is_send_and_sync() {
         fn f<T: Send + Sync>(_: T) {}
-        f(KeyID::from_hex("89AB CDEF 0123 4567").unwrap());
+        f("89AB CDEF 0123 4567".parse::<KeyID>().unwrap());
     }
 }

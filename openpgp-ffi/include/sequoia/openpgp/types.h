@@ -1,6 +1,8 @@
 #ifndef SEQUOIA_OPENPGP_TYPES_H
 #define SEQUOIA_OPENPGP_TYPES_H
 
+#include <stdbool.h>
+
 /*/
 /// Holds a session key.
 ///
@@ -364,14 +366,24 @@ typedef struct pgp_packet_parser_eof *pgp_packet_parser_eof_t;
 typedef struct pgp_packet_pile *pgp_packet_pile_t;
 
 /*/
-/// A `UserIDBinding`.
+/// An iterator over User IDs in a Cert.
 /*/
-typedef struct pgp_user_id_bundle *pgp_user_id_bundle_t;
+typedef struct pgp_cert_user_id_iter *pgp_cert_user_id_iter_t;
 
 /*/
-/// An iterator over `UserIDBinding`s.
+/// An iterator over valid User IDs in a Cert.
 /*/
-typedef struct pgp_user_id_bundle_iter *pgp_user_id_bundle_iter_t;
+typedef struct pgp_cert_valid_user_id_iter *pgp_cert_valid_user_id_iter_t;
+
+/*/
+/// A `UserIDAmalgmation`.
+/*/
+typedef struct pgp_user_id_amalgamation *pgp_user_id_amalgamation_t;
+
+/*/
+/// A `UserIDAmalgmation`.
+/*/
+typedef struct pgp_valid_user_id_amalgamation *pgp_valid_user_id_amalgamation_t;
 
 /*/
 /// An iterator over keys in a Cert.
@@ -509,12 +521,12 @@ typedef enum pgp_verification_result_variant {
   PGP_VERIFICATION_RESULT_CODE_FORCE_WIDTH = INT_MAX,
 } pgp_verification_result_variant_t;
 
-typedef pgp_status_t (*pgp_decryptor_get_public_keys_cb_t) (void *,
+typedef pgp_status_t (*pgp_decryptor_get_certs_cb_t) (void *,
     pgp_keyid_t *, size_t,
     pgp_cert_t **, size_t *,
     void (**free)(void *));
 
-typedef pgp_status_t (pgp_decryptor_do_decrypt_cb_t) (
+typedef bool (pgp_decryptor_do_decrypt_cb_t) (
     void *,
     uint8_t,
     pgp_session_key_t);
@@ -532,6 +544,11 @@ typedef pgp_status_t (*pgp_decryptor_check_cb_t) (void *,
 
 typedef pgp_status_t (*pgp_decryptor_inspect_cb_t) (void *,
     pgp_packet_parser_t);
+
+/*/
+/// Verifies a detached signature.
+/*/
+typedef struct pgp_detached_verifier *pgp_detached_verifier_t;
 
 /*/
 /// An OpenPGP policy.

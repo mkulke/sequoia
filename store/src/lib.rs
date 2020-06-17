@@ -123,11 +123,7 @@ impl Store {
         let core = Core::new()?;
         let handle = core.handle();
 
-        let mut rpc_system
-            = match descriptor.connect(&handle) {
-                Ok(r) => r,
-                Err(e) => return Err(e.into()),
-            };
+        let mut rpc_system = descriptor.connect(&handle)?;
 
         let client: node::Client = rpc_system.bootstrap(Side::Server);
         handle.spawn(rpc_system.map_err(|_e| ()));
@@ -891,7 +887,7 @@ impl Key {
     /// # let new = Cert::from_bytes(
     /// #     &include_bytes!("../../openpgp/tests/data/keys/testy-new.pgp")[..]).unwrap();
     /// let mapping = Mapping::open(&ctx, REALM_CONTACTS, "default")?;
-    /// let fp = Fingerprint::from_hex("3E8877C877274692975189F5D03F6F865226FE8B").unwrap();
+    /// let fp = "3E8877C877274692975189F5D03F6F865226FE8B".parse().unwrap();
     /// let binding = mapping.add("Testy McTestface", &fp)?;
     /// let key = binding.key()?;
     /// let r = key.import(&old)?;
@@ -1085,7 +1081,7 @@ impl Iterator for BundleIter {
                 self.core.borrow_mut(), request,
                 |r: node::binding_iter::item::Reader|
                 Ok((String::from(r.get_label()?),
-                    openpgp::Fingerprint::from_hex(r.get_fingerprint()?).unwrap(),
+                    r.get_fingerprint().unwrap().parse()?,
                     Binding::new(self.core.clone(), Some(r.get_label()?),
                                  r.get_binding()?))))
         };
@@ -1108,7 +1104,7 @@ impl Iterator for KeyIter {
             make_request_map!(
                 self.core.borrow_mut(), request,
                 |r: node::key_iter::item::Reader|
-                Ok((openpgp::Fingerprint::from_hex(r.get_fingerprint()?).unwrap(),
+                Ok((r.get_fingerprint().unwrap().parse()?,
                     Key::new(self.core.clone(), r.get_key()?))))
         };
         doit().ok()

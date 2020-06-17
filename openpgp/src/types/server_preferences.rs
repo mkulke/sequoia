@@ -1,7 +1,49 @@
 use std::hash::{Hash, Hasher};
 use std::fmt;
 
+#[cfg(any(test, feature = "quickcheck"))]
+use quickcheck::{Arbitrary, Gen};
+
 /// Describes preferences regarding key servers.
+///
+/// Key server preferences are specified in [Section 5.2.3.17 of RFC 4880] and
+/// [Section 5.2.3.18 of RFC 4880bis].
+///
+/// [Section 5.2.3.17 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.17
+/// [Section 5.2.3.18 of RFC 4880bis]: https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-09#section-5.2.3.18
+///
+/// # A note on equality
+///
+/// `PartialEq` is implements semantic equality, i.e. it ignores
+/// padding.
+///
+/// # Examples
+///
+/// ```
+/// use sequoia_openpgp as openpgp;
+/// # use openpgp::Result;
+/// use openpgp::cert::prelude::*;
+/// use openpgp::policy::StandardPolicy;
+///
+/// # fn main() -> Result<()> {
+/// let p = &StandardPolicy::new();
+///
+/// let (cert, _) =
+///     CertBuilder::general_purpose(None, Some("alice@example.org"))
+///     .generate()?;
+///
+/// match cert.with_policy(p, None)?.primary_userid()?.key_server_preferences() {
+///     Some(preferences) => {
+///         println!("Certificate holder's keyserver preferences:");
+///         assert!(preferences.no_modify());
+/// #       unreachable!();
+///     }
+///     None => {
+///         println!("Certificate Holder did not specify any key server preferences.");
+///     }
+/// }
+/// # Ok(()) }
+/// ```
 #[derive(Clone)]
 pub struct KeyServerPreferences{
     no_modify: bool,
@@ -44,6 +86,7 @@ impl fmt::Debug for KeyServerPreferences {
 impl PartialEq for KeyServerPreferences {
     fn eq(&self, other: &Self) -> bool {
         self.no_modify == other.no_modify
+            && self.unknown == other.unknown
     }
 }
 
@@ -52,6 +95,7 @@ impl Eq for KeyServerPreferences {}
 impl Hash for KeyServerPreferences {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.no_modify.hash(state);
+        self.unknown.hash(state);
     }
 }
 
@@ -106,7 +150,7 @@ impl KeyServerPreferences {
 
     /// Whether or not keyservers are allowed to modify this key.
     pub fn no_modify(&self) -> bool {
-        !self.no_modify
+        self.no_modify
     }
 
     /// Sets whether or not keyservers are allowed to modify this key.
@@ -123,14 +167,32 @@ const KEYSERVER_PREFERENCE_NO_MODIFY: u8 = 0x80;
 /// Number of bytes with known flags.
 const KEYSERVER_PREFERENCES_N_KNOWN_BYTES: usize = 1;
 
+#[cfg(any(test, feature = "quickcheck"))]
+impl Arbitrary for KeyServerPreferences {
+    fn arbitrary<G: Gen>(g: &mut G) -> Self {
+        Self::new(Vec::arbitrary(g))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[test]
+    fn basics() -> crate::Result<()> {
+        let p = KeyServerPreferences::default();
+        assert_eq!(p.no_modify(), false);
+        let p = KeyServerPreferences::new(&[]);
+        assert_eq!(p.no_modify(), false);
+        let p = KeyServerPreferences::new(&[0xff]);
+        assert_eq!(p.no_modify(), true);
+        Ok(())
+    }
+
     quickcheck! {
-        fn roundtrip(raw: Vec<u8>) -> bool {
-            let val = KeyServerPreferences::new(&raw);
-            assert_eq!(raw, val.to_vec());
+        fn roundtrip(val: KeyServerPreferences) -> bool {
+            let q = KeyServerPreferences::new(&val.to_vec());
+            assert_eq!(val, q);
 
             // Check that equality ignores padding.
             let mut val_without_padding = val.clone();

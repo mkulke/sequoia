@@ -8,7 +8,7 @@
 //! considered weak (e.g. SHA-1).  When dealing with data from an
 //! untrusted source, for instance, callers will often prefer to
 //! ignore signatures that rely on these algorithms even though [RFC
-//! 4880] says that "[i]mplementations MUST implement SHA-1."  When
+//! 4880] says that "\[i\]mplementations MUST implement SHA-1."  When
 //! trying to decrypt old archives, however, users probably don't want
 //! to ignore keys using MD5, even though [RFC 4880] deprecates MD5.
 //!
@@ -19,7 +19,7 @@
 //! `StandardPolicy`'s parameters.
 //!
 //! When implementing the `Policy` trait, it is *essential* that the
-//! functions are [idempotent].  That is, if the same `Policy` is used
+//! functions are [pure].  That is, if the same `Policy` is used
 //! to determine whether a given `Signature` is valid, it must always
 //! return the same value.
 //!
@@ -729,21 +729,24 @@ impl<'a> Policy for StandardPolicy<'a> {
                 | t @ SignatureType::CertificationRevocation =>
             {
                 self.hash_algos_revocation.check(sig.hash_algo(), time)
-                    .context(format!("revocation signature ({})", t))?
+                    .context(format!(
+                        "Policy rejected revocation signature ({})", t))?
             }
             t =>
             {
                 self.hash_algos_normal.check(sig.hash_algo(), time)
-                    .context(format!("non-revocation signature ({})", t))?
+                    .context(format!(
+                        "Policy rejected non-revocation signature ({})", t))?
             }
         }
 
         for csp in sig.hashed_area().iter().filter(|sp| sp.critical()) {
-            self.critical_subpackets.check(csp.tag(), time)?;
+            self.critical_subpackets.check(csp.tag(), time)
+                .context("Policy rejected critical signature subpacket")?;
             if let SubpacketValue::NotationData(n) = csp.value() {
                 if ! self.good_critical_notations.contains(&n.name()) {
                     return Err(Error::PolicyViolation(
-                        format!("Critical notation {:?} rejected",
+                        format!("Policy rejected critical notation {:?}",
                                 n.name()), None).into());
                 }
             }
@@ -757,7 +760,7 @@ impl<'a> Policy for StandardPolicy<'a> {
     {
         use self::AsymmetricAlgorithm::{*, Unknown};
         use crate::types::PublicKeyAlgorithm::*;
-        use crate::crypto::mpis::PublicKey;
+        use crate::crypto::mpi::PublicKey;
 
         #[allow(deprecated)]
         let a = match (ka.pk_algo(), ka.mpis().bits()) {
@@ -824,21 +827,25 @@ impl<'a> Policy for StandardPolicy<'a> {
 
         let time = self.time.unwrap_or_else(Timestamp::now);
         self.asymmetric_algos.check(a, time)
+            .context("Policy rejected encryption algorithm")
     }
 
     fn packet(&self, packet: &Packet) -> Result<()> {
         let time = self.time.unwrap_or_else(Timestamp::now);
         self.packet_tags.check(packet.tag(), time)
+            .context("Policy rejected packet type")
     }
 
     fn symmetric_algorithm(&self, algo: SymmetricAlgorithm) -> Result<()> {
         let time = self.time.unwrap_or_else(Timestamp::now);
         self.symmetric_algos.check(algo, time)
+            .context("Policy rejected symmetric encryption algorithm")
     }
 
     fn aead_algorithm(&self, algo: AEADAlgorithm) -> Result<()> {
         let time = self.time.unwrap_or_else(Timestamp::now);
         self.aead_algos.check(algo, time)
+            .context("Policy rejected authenticated encryption algorithm")
     }
 }
 
@@ -970,12 +977,12 @@ mod test {
     use crate::packet::{PKESK, SKESK};
     use crate::parse::Parse;
     use crate::parse::stream::DecryptionHelper;
-    use crate::parse::stream::Decryptor;
-    use crate::parse::stream::DetachedVerifier;
+    use crate::parse::stream::DecryptorBuilder;
+    use crate::parse::stream::DetachedVerifierBuilder;
     use crate::parse::stream::MessageLayer;
     use crate::parse::stream::MessageStructure;
     use crate::parse::stream::VerificationHelper;
-    use crate::parse::stream::Verifier;
+    use crate::parse::stream::VerifierBuilder;
     use crate::policy::StandardPolicy as P;
     use crate::types::Curve;
     use crate::types::KeyFlags;
@@ -1069,7 +1076,7 @@ mod test {
 
         // Revoke it.
         let mut keypair = cert.primary_key().key().clone()
-            .mark_parts_secret()?.into_keypair()?;
+            .parts_into_secret()?.into_keypair()?;
         let ca = cert.userids().nth(0).unwrap();
 
         // Generate the revocation for the first and only UserID.
@@ -1082,7 +1089,7 @@ mod test {
         assert_eq!(revocation.typ(), SignatureType::CertificationRevocation);
 
         // Now merge the revocation signature into the Cert.
-        let cert = cert.merge_packets(vec![revocation.clone().into()])?;
+        let cert = cert.merge_packets(revocation.clone())?;
 
         // Check that it is revoked.
         assert_eq!(cert.userids().with_policy(p, None).revoked(false).count(), 0);
@@ -1118,7 +1125,7 @@ mod test {
 
         // Now merge the revocation signature into the Cert.
         assert_eq!(cert.keys().with_policy(p, None).revoked(false).count(), 3);
-        let cert = cert.merge_packets(vec![revocation.clone().into()])?;
+        let cert = cert.merge_packets(revocation.clone())?;
         assert_eq!(cert.keys().with_policy(p, None).revoked(false).count(), 2);
 
         // Reject all subkey revocations.
@@ -1144,7 +1151,7 @@ mod test {
 
 
     #[test]
-    fn binary_signature() {
+    fn binary_signature() -> Result<()> {
         #[derive(PartialEq, Debug)]
         struct VHelper {
             good: usize,
@@ -1157,13 +1164,13 @@ mod test {
                 VHelper {
                     good: 0,
                     errors: 0,
-                    keys: keys,
+                    keys,
                 }
             }
         }
 
         impl VerificationHelper for VHelper {
-            fn get_public_keys(&mut self, _ids: &[crate::KeyHandle])
+            fn get_certs(&mut self, _ids: &[crate::KeyHandle])
                 -> Result<Vec<Cert>>
             {
                 Ok(self.keys.clone())
@@ -1171,7 +1178,7 @@ mod test {
 
             fn check(&mut self, structure: MessageStructure) -> Result<()>
             {
-                for layer in structure.iter() {
+                for layer in structure {
                     match layer {
                         MessageLayer::SignatureGroup { ref results } =>
                             for result in results {
@@ -1194,7 +1201,7 @@ mod test {
             fn decrypt<D>(&mut self, _: &[PKESK], _: &[SKESK],
                           _: Option<SymmetricAlgorithm>,_: D)
                           -> Result<Option<Fingerprint>>
-                where D: FnMut(SymmetricAlgorithm, &SessionKey) -> Result<()>
+                where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool
             {
                 unreachable!();
             }
@@ -1248,12 +1255,8 @@ mod test {
 
         // Standard policy => ok.
         let h = VHelper::new(keys.clone());
-        let mut v =
-            match Verifier::from_bytes(standard, crate::tests::file(data), h,
-                                       crate::frozen_time()) {
-                Ok(v) => v,
-                Err(e) => panic!("{}", e),
-            };
+        let mut v = VerifierBuilder::from_bytes(crate::tests::file(data))?
+            .with_policy(standard, crate::frozen_time(), h)?;
         assert!(v.message_processed());
         assert_eq!(v.helper_ref().good, 1);
         assert_eq!(v.helper_ref().errors, 0);
@@ -1266,12 +1269,8 @@ mod test {
 
         // Kill the subkey.
         let h = VHelper::new(keys.clone());
-        let mut v = match Verifier::from_bytes(no_subkey_signatures,
-                                   crate::tests::file(data), h,
-                                   crate::frozen_time()) {
-            Ok(v) => v,
-            Err(e) => panic!("{}", e),
-        };
+        let mut v = VerifierBuilder::from_bytes(crate::tests::file(data))?
+            .with_policy(no_subkey_signatures, crate::frozen_time(), h)?;
         assert!(v.message_processed());
         assert_eq!(v.helper_ref().good, 0);
         assert_eq!(v.helper_ref().errors, 1);
@@ -1284,13 +1283,8 @@ mod test {
 
         // Kill the data signature.
         let h = VHelper::new(keys.clone());
-        let mut v =
-            match Verifier::from_bytes(no_binary_signatures,
-                                       crate::tests::file(data), h,
-                                       crate::frozen_time()) {
-                Ok(v) => v,
-                Err(e) => panic!("{}", e),
-            };
+        let mut v = VerifierBuilder::from_bytes(crate::tests::file(data))?
+            .with_policy(no_binary_signatures, crate::frozen_time(), h)?;
         assert!(v.message_processed());
         assert_eq!(v.helper_ref().good, 0);
         assert_eq!(v.helper_ref().errors, 1);
@@ -1306,12 +1300,8 @@ mod test {
 
         // Standard policy.
         let h = VHelper::new(keys.clone());
-        let mut v =
-            match Decryptor::from_bytes(standard, crate::tests::file(data), h,
-                                        crate::frozen_time()) {
-                Ok(v) => v,
-                Err(e) => panic!("{}", e),
-            };
+        let mut v = DecryptorBuilder::from_bytes(crate::tests::file(data))?
+            .with_policy(standard, crate::frozen_time(), h)?;
         assert!(v.message_processed());
         assert_eq!(v.helper_ref().good, 1);
         assert_eq!(v.helper_ref().errors, 0);
@@ -1324,12 +1314,8 @@ mod test {
 
         // Kill the subkey.
         let h = VHelper::new(keys.clone());
-        let mut v = match Decryptor::from_bytes(no_subkey_signatures,
-                                                crate::tests::file(data), h,
-                                                crate::frozen_time()) {
-            Ok(v) => v,
-            Err(e) => panic!("{}", e),
-        };
+        let mut v = DecryptorBuilder::from_bytes(crate::tests::file(data))?
+            .with_policy(no_subkey_signatures, crate::frozen_time(), h)?;
         assert!(v.message_processed());
         assert_eq!(v.helper_ref().good, 0);
         assert_eq!(v.helper_ref().errors, 1);
@@ -1342,13 +1328,8 @@ mod test {
 
         // Kill the data signature.
         let h = VHelper::new(keys.clone());
-        let mut v =
-            match Decryptor::from_bytes(no_binary_signatures,
-                                        crate::tests::file(data), h,
-                                        crate::frozen_time()) {
-                Ok(v) => v,
-                Err(e) => panic!("{}", e),
-            };
+        let mut v = DecryptorBuilder::from_bytes(crate::tests::file(data))?
+            .with_policy(no_binary_signatures, crate::frozen_time(), h)?;
         assert!(v.message_processed());
         assert_eq!(v.helper_ref().good, 0);
         assert_eq!(v.helper_ref().errors, 1);
@@ -1357,6 +1338,7 @@ mod test {
         v.read_to_end(&mut content).unwrap();
         assert_eq!(reference.len(), content.len());
         assert_eq!(reference, &content[..]);
+        Ok(())
     }
 
     #[test]
@@ -1382,13 +1364,14 @@ mod test {
 
         // Create a revoked version.
         let mut keypair = cert.primary_key().key().clone()
-            .mark_parts_secret()?.into_keypair()?;
-        let cert_revoked = cert.clone().revoke_in_place(
+            .parts_into_secret()?.into_keypair()?;
+        let rev = cert.revoke(
             &mut keypair,
             ReasonForRevocation::KeyCompromised,
             b"It was the maid :/")?;
+        let cert_revoked = cert.clone().merge_packets(rev)?;
 
-        match cert_revoked.revoked(&DEFAULT, None) {
+        match cert_revoked.revocation_status(&DEFAULT, None) {
             RevocationStatus::Revoked(sigs) => {
                 assert_eq!(sigs.len(), 1);
                 assert_eq!(sigs[0].hash_algo(), algo);
@@ -1401,9 +1384,9 @@ mod test {
         let mut reject : StandardPolicy = StandardPolicy::new();
         reject.reject_hash(algo);
         assert!(cert.primary_key()
-                    .binding_signature(&reject, None).is_none());
+                    .binding_signature(&reject, None).is_err());
         assert_match!(RevocationStatus::NotAsFarAsWeKnow
-                      = cert_revoked.revoked(&reject, None));
+                      = cert_revoked.revocation_status(&reject, None));
 
         // Reject the hash algorithm next year.
         let mut reject : StandardPolicy = StandardPolicy::new();
@@ -1411,10 +1394,9 @@ mod test {
             algo,
             SystemTime::now() + Duration::from_secs(SECS_IN_YEAR),
             SystemTime::now() + Duration::from_secs(SECS_IN_YEAR));
-        assert!(cert.primary_key()
-                    .binding_signature(&reject, None).is_some());
+        cert.primary_key().binding_signature(&reject, None)?;
         assert_match!(RevocationStatus::Revoked(_)
-                      = cert_revoked.revoked(&reject, None));
+                      = cert_revoked.revocation_status(&reject, None));
 
         // Reject the hash algorithm last year.
         let mut reject : StandardPolicy = StandardPolicy::new();
@@ -1423,9 +1405,9 @@ mod test {
             SystemTime::now() - Duration::from_secs(SECS_IN_YEAR),
             SystemTime::now() - Duration::from_secs(SECS_IN_YEAR));
         assert!(cert.primary_key()
-                    .binding_signature(&reject, None).is_none());
+                    .binding_signature(&reject, None).is_err());
         assert_match!(RevocationStatus::NotAsFarAsWeKnow
-                      = cert_revoked.revoked(&reject, None));
+                      = cert_revoked.revocation_status(&reject, None));
 
         // Reject the hash algorithm for normal signatures last year,
         // and revocations next year.
@@ -1435,9 +1417,9 @@ mod test {
             SystemTime::now() - Duration::from_secs(SECS_IN_YEAR),
             SystemTime::now() + Duration::from_secs(SECS_IN_YEAR));
         assert!(cert.primary_key()
-                    .binding_signature(&reject, None).is_none());
+                    .binding_signature(&reject, None).is_err());
         assert_match!(RevocationStatus::Revoked(_)
-                      = cert_revoked.revoked(&reject, None));
+                      = cert_revoked.revocation_status(&reject, None));
 
         // Accept algo, but reject the algos with id - 1 and id + 1.
         let mut reject : StandardPolicy = StandardPolicy::new();
@@ -1451,10 +1433,9 @@ mod test {
             (algo_u8 + 1).into(),
             SystemTime::now() - Duration::from_secs(SECS_IN_YEAR),
             SystemTime::now() - Duration::from_secs(SECS_IN_YEAR));
-        assert!(cert.primary_key()
-                    .binding_signature(&reject, None).is_some());
+        cert.primary_key().binding_signature(&reject, None)?;
         assert_match!(RevocationStatus::Revoked(_)
-                      = cert_revoked.revoked(&reject, None));
+                      = cert_revoked.revocation_status(&reject, None));
 
         // Reject the hash algorithm since before the Unix epoch.
         // Since the earliest representable time using a Timestamp is
@@ -1465,9 +1446,9 @@ mod test {
             SystemTime::UNIX_EPOCH - Duration::from_secs(SECS_IN_YEAR),
             SystemTime::UNIX_EPOCH - Duration::from_secs(SECS_IN_YEAR));
         assert!(cert.primary_key()
-                    .binding_signature(&reject, None).is_none());
+                    .binding_signature(&reject, None).is_err());
         assert_match!(RevocationStatus::NotAsFarAsWeKnow
-                      = cert_revoked.revoked(&reject, None));
+                      = cert_revoked.revocation_status(&reject, None));
 
         // Reject the hash algorithm after the end of time that is
         // representable by a Timestamp (2106).  This should accept
@@ -1477,10 +1458,9 @@ mod test {
             algo,
             SystemTime::UNIX_EPOCH + Duration::from_secs(500 * SECS_IN_YEAR),
             SystemTime::UNIX_EPOCH + Duration::from_secs(500 * SECS_IN_YEAR));
-        assert!(cert.primary_key()
-                    .binding_signature(&reject, None).is_some());
+        cert.primary_key().binding_signature(&reject, None)?;
         assert_match!(RevocationStatus::Revoked(_)
-                      = cert_revoked.revoked(&reject, None));
+                      = cert_revoked.revocation_status(&reject, None));
 
         Ok(())
     }
@@ -1526,17 +1506,18 @@ mod test {
             .add_signing_subkey()
             .generate()?;
 
-        let pk = cert.primary_key().key().mark_parts_secret_ref()?;
+        let pk = cert.primary_key().key().parts_as_secret()?;
         let subkey: key::SecretSubkey
             = Key4::generate_rsa(4096)?.into();
-        let binding = signature::Builder::new(SignatureType::SubkeyBinding)
+        let binding = signature::SignatureBuilder::new(SignatureType::SubkeyBinding)
             .set_key_flags(&KeyFlags::default().set_transport_encryption(true))?
             .set_issuer_fingerprint(cert.fingerprint())?
             .set_issuer(cert.keyid())?
             .sign_subkey_binding(&mut pk.clone().into_keypair()?,
                                  &pk, &subkey)?;
 
-        let cert = cert.merge_packets(vec![ subkey.into(), binding.into() ])?;
+        let cert = cert.merge_packets(
+            vec![ Packet::from(subkey), binding.into() ])?;
 
         assert_eq!(cert.keys().with_policy(p, None).count(), 3);
         assert_eq!(cert.keys().with_policy(norsa, None).count(), 2);
@@ -1550,17 +1531,18 @@ mod test {
             .add_signing_subkey()
             .generate()?;
 
-        let pk = cert.primary_key().key().mark_parts_secret_ref()?;
+        let pk = cert.primary_key().key().parts_as_secret()?;
         let subkey: key::SecretSubkey
             = key::Key4::generate_ecc(true, Curve::Ed25519)?.into();
-        let binding = signature::Builder::new(SignatureType::SubkeyBinding)
+        let binding = signature::SignatureBuilder::new(SignatureType::SubkeyBinding)
             .set_key_flags(&KeyFlags::default().set_transport_encryption(true))?
             .set_issuer_fingerprint(cert.fingerprint())?
             .set_issuer(cert.keyid())?
             .sign_subkey_binding(&mut pk.clone().into_keypair()?,
                                  &pk, &subkey)?;
 
-        let cert = cert.merge_packets(vec![ subkey.into(), binding.into() ])?;
+        let cert = cert.merge_packets(
+            vec![ Packet::from(subkey), binding.into() ])?;
 
         assert_eq!(cert.keys().with_policy(p, None).count(), 3);
         assert_eq!(cert.keys().with_policy(norsa, None).count(), 0);
@@ -1622,13 +1604,13 @@ mod test {
                 VHelper {
                     good: 0,
                     errors: 0,
-                    keys: keys,
+                    keys,
                 }
             }
         }
 
         impl VerificationHelper for VHelper {
-            fn get_public_keys(&mut self, _ids: &[crate::KeyHandle])
+            fn get_certs(&mut self, _ids: &[crate::KeyHandle])
                 -> Result<Vec<Cert>>
             {
                 Ok(self.keys.clone())
@@ -1636,7 +1618,7 @@ mod test {
 
             fn check(&mut self, structure: MessageStructure) -> Result<()>
             {
-                for layer in structure.iter() {
+                for layer in structure {
                     match layer {
                         MessageLayer::SignatureGroup { ref results } =>
                             for result in results {
@@ -1658,7 +1640,7 @@ mod test {
             fn decrypt<D>(&mut self, _: &[PKESK], _: &[SKESK],
                           _: Option<SymmetricAlgorithm>,_: D)
                           -> Result<Option<Fingerprint>>
-                where D: FnMut(SymmetricAlgorithm, &SessionKey) -> Result<()>
+                where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool
             {
                 unreachable!();
             }
@@ -1677,11 +1659,11 @@ mod test {
             // We always use the first subkey.
             let key = cert.keys().nth(1).unwrap().key();
             let mut keypair = key.clone()
-                .mark_parts_secret().unwrap()
+                .parts_into_secret().unwrap()
                 .into_keypair().unwrap();
 
             // Create a signature.
-            let sig = signature::Builder::new(SignatureType::Binary)
+            let sig = signature::SignatureBuilder::new(SignatureType::Binary)
                 .set_signature_creation_time(
                     std::time::SystemTime::now()).unwrap()
                 .set_issuer_fingerprint(key.fingerprint()).unwrap()
@@ -1700,19 +1682,11 @@ mod test {
             };
 
             let h = VHelper::new(vec![ cert.clone() ]);
-            let mut v =
-                match DetachedVerifier::from_bytes(p, &sig, msg, h, None) {
-                    Ok(v) => v,
-                    Err(e) => panic!("{}", e),
-                };
-            assert!(v.message_processed());
+            let mut v = DetachedVerifierBuilder::from_bytes(&sig).unwrap()
+                .with_policy(p, None, h).unwrap();
+            v.verify_bytes(msg).unwrap();
             assert_eq!(v.helper_ref().good, if good { 1 } else { 0 });
             assert_eq!(v.helper_ref().errors, if good { 0 } else { 1 });
-
-            let mut content = Vec::new();
-            v.read_to_end(&mut content).unwrap();
-            assert_eq!(msg.len(), content.len());
-            assert_eq!(msg, &content[..]);
         }
 
 
@@ -1771,11 +1745,11 @@ mod test {
     }
 
     #[test]
-    fn reject_seip_packet() {
+    fn reject_seip_packet() -> Result<()> {
         #[derive(PartialEq, Debug)]
         struct Helper {}
         impl VerificationHelper for Helper {
-            fn get_public_keys(&mut self, _: &[crate::KeyHandle])
+            fn get_certs(&mut self, _: &[crate::KeyHandle])
                 -> Result<Vec<Cert>> {
                 unreachable!()
             }
@@ -1789,15 +1763,15 @@ mod test {
             fn decrypt<D>(&mut self, _: &[PKESK], _: &[SKESK],
                           _: Option<SymmetricAlgorithm>, _: D)
                           -> Result<Option<Fingerprint>>
-                where D: FnMut(SymmetricAlgorithm, &SessionKey) -> Result<()> {
+                where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool {
                 Ok(None)
             }
         }
 
         let p = &P::new();
-        let r = Decryptor::from_bytes(
-            p, crate::tests::message("encrypted-to-testy.gpg"),
-            Helper {}, crate::frozen_time());
+        let r = DecryptorBuilder::from_bytes(crate::tests::message(
+                "encrypted-to-testy.gpg"))?
+            .with_policy(p, crate::frozen_time(), Helper {});
         match r {
             Ok(_) => panic!(),
             Err(e) => assert_match!(Error::MissingSessionKey(_)
@@ -1807,21 +1781,22 @@ mod test {
         // Reject the SEIP packet.
         let p = &mut P::new();
         p.reject_packet_tag(Tag::SEIP);
-        let r = Decryptor::from_bytes(
-            p, crate::tests::message("encrypted-to-testy.gpg"),
-            Helper {}, crate::frozen_time());
+        let r = DecryptorBuilder::from_bytes(crate::tests::message(
+                "encrypted-to-testy.gpg"))?
+            .with_policy(p, crate::frozen_time(), Helper {});
         match r {
             Ok(_) => panic!(),
             Err(e) => assert_match!(Error::PolicyViolation(_, _)
                                     = e.downcast().unwrap()),
         }
+        Ok(())
     }
 
     #[test]
-    fn reject_cipher() {
+    fn reject_cipher() -> Result<()> {
         struct Helper {}
         impl VerificationHelper for Helper {
-            fn get_public_keys(&mut self, _: &[crate::KeyHandle])
+            fn get_certs(&mut self, _: &[crate::KeyHandle])
                 -> Result<Vec<Cert>> {
                 Ok(Default::default())
             }
@@ -1835,7 +1810,7 @@ mod test {
             fn decrypt<D>(&mut self, pkesks: &[PKESK], _: &[SKESK],
                           algo: Option<SymmetricAlgorithm>, mut decrypt: D)
                           -> Result<Option<Fingerprint>>
-                where D: FnMut(SymmetricAlgorithm, &SessionKey) -> Result<()>
+                where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool
             {
                 let p = &P::new();
                 let mut pair = Cert::from_bytes(
@@ -1844,27 +1819,28 @@ mod test {
                     .for_transport_encryption().secret().nth(0).unwrap()
                     .key().clone().into_keypair()?;
                 pkesks[0].decrypt(&mut pair, algo)
-                    .and_then(|(algo, session_key)| decrypt(algo, &session_key))
-                    .map(|_| None)
+                    .map(|(algo, session_key)| decrypt(algo, &session_key));
+                Ok(None)
             }
         }
 
         let p = &P::new();
-        Decryptor::from_bytes(
-            p, crate::tests::message("encrypted-to-testy.gpg"),
-            Helper {}, crate::frozen_time()).unwrap();
+        DecryptorBuilder::from_bytes(crate::tests::message(
+                "encrypted-to-testy-no-compression.gpg"))?
+            .with_policy(p, crate::frozen_time(), Helper {})?;
 
         // Reject the AES256.
         let p = &mut P::new();
         p.reject_symmetric_algo(SymmetricAlgorithm::AES256);
-        let r = Decryptor::from_bytes(
-            p, crate::tests::message("encrypted-to-testy.gpg"),
-            Helper {}, crate::frozen_time());
+        let r = DecryptorBuilder::from_bytes(crate::tests::message(
+                "encrypted-to-testy-no-compression.gpg"))?
+            .with_policy(p, crate::frozen_time(), Helper {});
         match r {
             Ok(_) => panic!(),
             Err(e) => assert_match!(Error::PolicyViolation(_, _)
                                     = e.downcast().unwrap()),
         }
+        Ok(())
     }
 
     #[test]

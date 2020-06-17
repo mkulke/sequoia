@@ -1,3 +1,4 @@
+use std::convert::TryFrom;
 use std::io::{self, Read};
 
 use clap;
@@ -8,6 +9,7 @@ use crate::openpgp::cert::prelude::*;
 use openpgp::packet::key::PublicParts;
 use crate::openpgp::parse::{Parse, PacketParserResult};
 use crate::openpgp::policy::Policy;
+use crate::openpgp::packet::key::SecretKeyMaterial;
 
 use super::dump::Convert;
 
@@ -43,7 +45,7 @@ pub fn inspect(m: &clap::ArgMatches, policy: &dyn Policy, output: &mut dyn io::W
                     }
                     let pp = openpgp::PacketPile::from(
                         ::std::mem::replace(&mut packets, Vec::new()));
-                    let cert = openpgp::Cert::from_packet_pile(pp)?;
+                    let cert = openpgp::Cert::try_from(pp)?;
                     inspect_cert(policy, output, &cert, print_keygrips,
                                  print_certifications)?;
                 }
@@ -102,7 +104,7 @@ pub fn inspect(m: &clap::ArgMatches, policy: &dyn Policy, output: &mut dyn io::W
 
         } else if is_cert.is_ok() || is_keyring.is_ok() {
             let pp = openpgp::PacketPile::from(packets);
-            let cert = openpgp::Cert::from_packet_pile(pp)?;
+            let cert = openpgp::Cert::try_from(pp)?;
             inspect_cert(policy, output, &cert,
                          print_keygrips, print_certifications)?;
         } else if packets.is_empty() && ! sigs.is_empty() {
@@ -137,28 +139,38 @@ fn inspect_cert(policy: &dyn Policy,
     }
     writeln!(output)?;
     writeln!(output, "    Fingerprint: {}", cert.fingerprint())?;
-    inspect_revocation(output, "", cert.revoked(policy, None))?;
+    inspect_revocation(output, "", cert.revocation_status(policy, None))?;
     inspect_key(policy, output, "", cert.keys().nth(0).unwrap(),
                 print_keygrips, print_certifications)?;
     writeln!(output)?;
 
     for vka in cert.keys().subkeys().with_policy(policy, None) {
         writeln!(output, "         Subkey: {}", vka.key().fingerprint())?;
-        inspect_revocation(output, "", vka.revoked())?;
+        inspect_revocation(output, "", vka.revocation_status())?;
         inspect_key(policy, output, "", vka.into_key_amalgamation().into(),
                     print_keygrips, print_certifications)?;
         writeln!(output)?;
     }
 
+    fn print_error_chain(output: &mut dyn io::Write, err: &anyhow::Error)
+                         -> Result<()> {
+        writeln!(output, "                 Invalid: {}", err)?;
+        for cause in err.chain().skip(1) {
+            writeln!(output, "                 because: {}", cause)?;
+        }
+        Ok(())
+    }
+
     for uidb in cert.userids() {
         writeln!(output, "         UserID: {}", uidb.userid())?;
-        inspect_revocation(output, "", uidb.revoked(policy, None))?;
-        if let Some(sig) = uidb.binding_signature(policy, None) {
-            if let Err(e) =
+        inspect_revocation(output, "", uidb.revocation_status(policy, None))?;
+        match uidb.binding_signature(policy, None) {
+            Ok(sig) => if let Err(e) =
                 sig.signature_alive(None, std::time::Duration::new(0, 0))
             {
-                writeln!(output, "                 Invalid: {}", e)?;
+                print_error_chain(output, &e)?;
             }
+            Err(e) => print_error_chain(output, &e)?,
         }
         inspect_certifications(output,
                                uidb.certifications(),
@@ -168,13 +180,14 @@ fn inspect_cert(policy: &dyn Policy,
 
     for uab in cert.user_attributes() {
         writeln!(output, "         UserID: {:?}", uab.user_attribute())?;
-        inspect_revocation(output, "", uab.revoked(policy, None))?;
-        if let Some(sig) = uab.binding_signature(policy, None) {
-            if let Err(e) =
+        inspect_revocation(output, "", uab.revocation_status(policy, None))?;
+        match uab.binding_signature(policy, None) {
+            Ok(sig) => if let Err(e) =
                 sig.signature_alive(None, std::time::Duration::new(0, 0))
             {
-                writeln!(output, "                 Invalid: {}", e)?;
+                print_error_chain(output, &e)?;
             }
+            Err(e) => print_error_chain(output, &e)?,
         }
         inspect_certifications(output,
                                uab.certifications(),
@@ -184,12 +197,13 @@ fn inspect_cert(policy: &dyn Policy,
 
     for ub in cert.unknowns() {
         writeln!(output, "         Unknown component: {:?}", ub.unknown())?;
-        if let Some(sig) = ub.binding_signature(policy, None) {
-            if let Err(e) =
+        match ub.binding_signature(policy, None) {
+            Ok(sig) => if let Err(e) =
                 sig.signature_alive(None, std::time::Duration::new(0, 0))
             {
-                writeln!(output, "                 Invalid: {}", e)?;
+                print_error_chain(output, &e)?;
             }
+            Err(e) => print_error_chain(output, &e)?,
         }
         inspect_certifications(output,
                                ub.certifications(),
@@ -235,6 +249,15 @@ fn inspect_key(policy: &dyn Policy,
     if let Some(bits) = key.mpis().bits() {
         writeln!(output, "{}Public-key size: {} bits", indent, bits)?;
     }
+    if let Some(secret) = key.optional_secret() {
+        writeln!(output, "{}     Secret key: {}",
+                 indent,
+                 if let SecretKeyMaterial::Unencrypted(_) = secret {
+                     "Unencrypted"
+                 } else {
+                     "Encrypted"
+                 })?;
+    }
     writeln!(output, "{}  Creation time: {}", indent,
              key.creation_time().convert())?;
     if let Some(vka) = vka {
@@ -247,7 +270,7 @@ fn inspect_key(policy: &dyn Policy,
         }
 
         if let Some(flags) = vka.key_flags().and_then(inspect_key_flags) {
-            writeln!(output, "{}       Key flags: {}", indent, flags)?;
+            writeln!(output, "{}      Key flags: {}", indent, flags)?;
         }
     }
     inspect_certifications(output, bundle.certifications(),

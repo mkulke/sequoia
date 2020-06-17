@@ -60,7 +60,7 @@ char *pgp_keyid_to_hex (const pgp_keyid_t keyid);
 /*/
 /// Compares KeyIDs.
 /*/
-int pgp_keyid_equal (const pgp_keyid_t a, const pgp_keyid_t b);
+bool pgp_keyid_equal (const pgp_keyid_t a, const pgp_keyid_t b);
 
 
 /* sequoia::openpgp::Fingerprint.  */
@@ -122,7 +122,7 @@ pgp_keyid_t pgp_fingerprint_to_keyid (const pgp_fingerprint_t fp);
 /*/
 /// Compares Fingerprints.
 /*/
-int pgp_fingerprint_equal (const pgp_fingerprint_t a, const pgp_fingerprint_t b);
+bool pgp_fingerprint_equal (const pgp_fingerprint_t a, const pgp_fingerprint_t b);
 
 /* sequoia::openpgp::RevocationStatus.  */
 
@@ -570,38 +570,110 @@ pgp_packet_t pgp_literal_into_packet (pgp_literal_t literal);
 /*/
 void pgp_literal_free (pgp_literal_t literal);
 
-/* openpgp::cert::UserIDBundle.  */
+/* openpgp::amalgamation::UserIDAmalgamation.  */
 
 /*/
-/// Returns the user id.
-///
-/// This function may fail and return NULL if the user id contains an
-/// interior NUL byte.  We do this rather than complicate the API, as
-/// there is no valid use for such user ids; they must be malicious.
+/// Returns a copy of the user id.
 ///
 /// The caller must free the returned value.
 /*/
-char *pgp_user_id_bundle_user_id (pgp_user_id_bundle_t binding);
+pgp_packet_t pgp_user_id_amalgamation_user_id (pgp_user_id_amalgamation_t ua);
 
 /*/
-/// Returns a reference to the self-signature, if any.
+/// Frees the User ID Amalgamation.
 /*/
-pgp_signature_t pgp_user_id_bundle_selfsig(pgp_user_id_bundle_t binding,
-                                            pgp_policy_t policy);
+void pgp_user_id_amalgamation_free (pgp_user_id_amalgamation_t ua);
 
-/* openpgp::cert::UserIDBundleIter.  */
+/*/
+/// Clones the UserID Amalgamation.
+/*/
+pgp_user_id_amalgamation_t pgp_user_id_amalgamation_clone (pgp_user_id_amalgamation_t ua);
+
+/*/
+/// Returns a human readable description of this object suitable for
+/// debugging.
+/*/
+char *pgp_user_id_amalgamation_debug (const pgp_user_id_amalgamation_t ua);
+
+/*/
+/// Returns a copy of the user id.
+///
+/// The caller must free the returned value.
+/*/
+pgp_packet_t pgp_valid_user_id_amalgamation_user_id
+    (pgp_valid_user_id_amalgamation_t ua);
+
+/*/
+/// Returns the Valid UserID Amalgamation's revocation status.
+/*/
+pgp_revocation_status_t pgp_valid_user_id_amalgamation_revocation_status
+    (pgp_valid_user_id_amalgamation_t ua);
+
+/*/
+/// Returns a reference to the self-signature.
+/*/
+pgp_signature_t pgp_valid_user_id_amalgamation_binding_signature
+    (pgp_valid_user_id_amalgamation_t ua);
+
+/*/
+/// Changes the policy applied to the `ValidUserIDAmalgamation`.
+///
+/// This consumes the UserID amalgamation.
+/*/
+pgp_valid_user_id_amalgamation_t pgp_valid_user_id_amalgamation_with_policy
+    (pgp_error_t *errp,
+     pgp_valid_user_id_amalgamation_t ua,
+     pgp_policy_t policy,
+     time_t time);
+
+/*/
+/// Frees the User ID Amalgamation.
+/*/
+void pgp_valid_user_id_amalgamation_free (pgp_valid_user_id_amalgamation_t ua);
+
+/*/
+/// Clones the UserID Amalgamation.
+/*/
+pgp_valid_user_id_amalgamation_t pgp_valid_user_id_amalgamation_clone (pgp_valid_user_id_amalgamation_t ua);
+
+/*/
+/// Returns a human readable description of this object suitable for
+/// debugging.
+/*/
+char *pgp_valid_user_id_amalgamation_debug (const pgp_valid_user_id_amalgamation_t ua);
+
+/* openpgp::cert::UserIDIter.  */
 
 /*/
 /// Returns the next element in the iterator.
 /*/
-pgp_user_id_bundle_t pgp_user_id_bundle_iter_next (pgp_user_id_bundle_iter_t iter);
+pgp_user_id_amalgamation_t pgp_cert_user_id_iter_next (pgp_cert_user_id_iter_t iter);
 
 /*/
-/// Frees an pgp_user_id_bundle_iter_t.
+/// Sets a policy.
+///
+/// Only User IDs that are valid according to the policy at the
+/// specified time are returned.
 /*/
-void pgp_user_id_bundle_iter_free (pgp_user_id_bundle_iter_t iter);
+pgp_cert_valid_user_id_iter_t pgp_cert_user_id_iter_policy
+    (pgp_cert_user_id_iter_t iter, pgp_policy_t policy, time_t when);
 
-/* openpgp::cert::KeyIter.  */
+/*/
+/// Frees a pgp_cert_user_id_iter_t.
+/*/
+void pgp_cert_user_id_iter_free (pgp_cert_user_id_iter_t iter);
+
+/*/
+/// Returns the next element in the iterator.
+/*/
+pgp_valid_user_id_amalgamation_t pgp_cert_valid_user_id_iter_next (pgp_cert_valid_user_id_iter_t iter);
+
+/*/
+/// Frees a pgp_cert_valid_user_id_iter_t.
+/*/
+void pgp_cert_valid_user_id_iter_free (pgp_cert_valid_user_id_iter_t iter);
+
+/* openpgp::cert::KeyAmalgamationIter.  */
 
 /*/
 /// Changes the iterator to only return keys that have secret keys.
@@ -619,10 +691,10 @@ void pgp_cert_key_iter_secret (pgp_cert_key_iter_t iter);
 void pgp_cert_key_iter_unencrypted_secret (pgp_cert_key_iter_t iter);
 
 /*/
-/// Changes the iterator to only return keys that have unencrypted
-/// secret keys.
+/// Sets a policy.
 ///
-/// Note: you may not call this function after starting to iterate.
+/// Only keys that are valid according to the policy at the specified
+/// time are returned.
 /*/
 pgp_cert_valid_key_iter_t pgp_cert_key_iter_policy
     (pgp_cert_key_iter_t iter, pgp_policy_t policy, time_t when);
@@ -794,7 +866,7 @@ pgp_cert_t pgp_cert_clone (pgp_cert_t cert);
 /*/
 /// Compares Certs.
 /*/
-int pgp_cert_equal (const pgp_cert_t a, const pgp_cert_t b);
+bool pgp_cert_equal (const pgp_cert_t a, const pgp_cert_t b);
 
 /*/
 /// Returns a human readable description of this object intended for
@@ -874,30 +946,30 @@ pgp_key_t pgp_cert_primary_key (pgp_cert_t cert);
 /// If `when` is 0, then returns the Cert's revocation status as of the
 /// time of the call.
 /*/
-pgp_revocation_status_t pgp_cert_revoked (pgp_cert_t cert,
-                                          pgp_policy_t policy, time_t when);
+pgp_revocation_status_t pgp_cert_revocation_status (pgp_cert_t cert,
+                                                    pgp_policy_t policy, time_t when);
 
 /*/
-/// Writes a revocation certificate to the writer.
+/// Returns a new revocation certificate for the Cert.
 ///
-/// This function consumes the writer.  It does *not* consume cert.
+/// This function does *not* consume `cert`.
 /*/
 pgp_signature_t pgp_cert_revoke (pgp_error_t *errp,
-                              pgp_cert_t cert,
-                              pgp_signer_t primary_signer,
-                              pgp_reason_for_revocation_t code,
-                              const char *reason);
-
-/*/
-/// Adds a revocation certificate to the cert.
-///
-/// This function consumes the cert.
-/*/
-pgp_cert_t pgp_cert_revoke_in_place (pgp_error_t *errp,
                                  pgp_cert_t cert,
                                  pgp_signer_t primary_signer,
                                  pgp_reason_for_revocation_t code,
                                  const char *reason);
+
+/*/
+/// Returns a new revocation certificate for the Cert.
+///
+/// This function consumes `cert` and returns a new `Cert`.
+/*/
+pgp_cert_t pgp_cert_revoke_in_place (pgp_error_t *errp,
+                                     pgp_cert_t cert,
+                                     pgp_signer_t primary_signer,
+                                     pgp_reason_for_revocation_t code,
+                                     const char *reason);
 
 /*/
 /// Returns whether the Cert is alive at the specified time.
@@ -924,9 +996,16 @@ pgp_cert_t pgp_cert_set_expiration_time(pgp_error_t *errp,
 int pgp_cert_is_tsk(pgp_cert_t cert);
 
 /*/
-/// Returns an iterator over the `UserIDBundle`s.
+/// Returns an iterator over the `UserID`s.
 /*/
-pgp_user_id_bundle_iter_t pgp_cert_user_id_bundle_iter (pgp_cert_t cert);
+pgp_cert_user_id_iter_t pgp_cert_user_id_iter (pgp_cert_t cert);
+
+/*/
+/// Returns an iterator over the valid `UserID`s.
+/*/
+pgp_cert_valid_user_id_iter_t pgp_cert_valid_user_id_iter (pgp_cert_t cert,
+                                                           pgp_policy_t policy,
+                                                           time_t when);
 
 /*/
 /// Returns an iterator over all `Key`s in a Cert.
@@ -980,7 +1059,7 @@ pgp_cert_parser_t pgp_cert_parser_from_packet_parser(pgp_packet_parser_result_t 
 pgp_cert_t pgp_cert_parser_next(pgp_error_t *errp, pgp_cert_parser_t parser);
 
 /*/
-/// Frees an pgp_cert_key_iter_t.
+/// Frees an pgp_cert_parser_t.
 /*/
 void pgp_cert_parser_free (pgp_cert_parser_t parser);
 
@@ -1106,8 +1185,19 @@ pgp_status_t pgp_valid_key_amalgamation_set_expiration_time
    pgp_valid_key_amalgamation_t ka,
    pgp_signer_t signer,
    time_t time,
-   pgp_packet_t **packets,
-   size_t *packet_count);
+   pgp_signature_t **sigs,
+   size_t *sig_count);
+
+/*/
+/// Changes the policy applied to the `ValidKeyAmalgamation`.
+///
+/// This consumes the key amalgamation.
+/*/
+pgp_valid_key_amalgamation_t pgp_valid_key_amalgamation_with_policy
+    (pgp_error_t *errp,
+     pgp_valid_key_amalgamation_t ka,
+     pgp_policy_t policy,
+     time_t time);
 
 /*/
 /// Frees the Valid Key Amalgamation.
@@ -1347,6 +1437,27 @@ pgp_status_t pgp_user_id_uri(pgp_error_t *errp, pgp_packet_t uid,
 /*/
 const uint8_t *pgp_user_attribute_value (pgp_packet_t ua,
 					size_t *value_len);
+
+/*/
+/// Frees a pgp_user_id_t.
+/*/
+void pgp_user_id_free (pgp_user_id_t userid);
+
+/*/
+/// Clones the UserID.
+/*/
+pgp_user_id_t pgp_user_id_clone (pgp_user_id_t userid);
+
+/*/
+/// Returns a human readable description of this object suitable for
+/// debugging.
+/*/
+char *pgp_user_id_debug (const pgp_user_id_t userid);
+
+/*/
+/// Compares passwords.
+/*/
+bool pgp_user_id_equal (const pgp_user_id_t a, const pgp_user_id_t b);
 
 /*/
 /// Returns the session key.
@@ -1715,7 +1826,7 @@ void pgp_message_structure_free (pgp_message_structure_t);
 char *pgp_message_structure_debug (const pgp_message_structure_t);
 
 pgp_message_structure_iter_t
-pgp_message_structure_iter (pgp_message_structure_t);
+pgp_message_structure_into_iter (pgp_message_structure_t);
 
 /*/
 /// Frees this object.
@@ -1825,7 +1936,7 @@ bool pgp_verification_result_bad_signature (pgp_verification_result_t,
 pgp_reader_t pgp_decryptor_new (pgp_error_t *errp,
     pgp_policy_t policy,
     pgp_reader_t input,
-    pgp_decryptor_get_public_keys_cb_t get_public_keys,
+    pgp_decryptor_get_certs_cb_t get_certs,
     pgp_decryptor_decrypt_cb_t decrypt,
     pgp_decryptor_check_cb_t check,
     pgp_decryptor_inspect_cb_t inspect,
@@ -1840,25 +1951,33 @@ pgp_reader_t pgp_decryptor_new (pgp_error_t *errp,
 pgp_reader_t pgp_verifier_new (pgp_error_t *errp,
     pgp_policy_t policy,
     pgp_reader_t input,
-    pgp_decryptor_get_public_keys_cb_t get_public_keys,
+    pgp_decryptor_get_certs_cb_t get_certs,
     pgp_decryptor_check_cb_t check,
+    pgp_decryptor_inspect_cb_t inspect,
     void *cookie, time_t time);
 
 /*/
-/// Verifies a detached OpenPGP signature.///
-/// A Certificate (see [RFC 4880, section 11.1]) can be used to verify
-/// signatures and encrypt data.  It can be stored in a keystore and
-/// uploaded to keyservers.
-///
-/// [RFC 4880, section 11.1]: https://tools.ietf.org/html/rfc4880#section-11.1
-
+/// Verifies a detached OpenPGP signature.
 /*/
-pgp_reader_t pgp_detached_verifier_new (pgp_error_t *errp,
+pgp_detached_verifier_t pgp_detached_verifier_new (pgp_error_t *errp,
     pgp_policy_t policy,
-    pgp_reader_t signature_input, pgp_reader_t input,
-    pgp_decryptor_get_public_keys_cb_t get_public_keys,
+    pgp_reader_t signature_input,
+    pgp_decryptor_get_certs_cb_t get_certs,
     pgp_decryptor_check_cb_t check,
+    pgp_decryptor_inspect_cb_t inspect,
     void *cookie, time_t time);
+
+/*/
+/// Frees this object.
+/*/
+void pgp_detached_verifier_free (pgp_detached_verifier_t);
+
+/*/
+/// Verifies `data` using `verifier`.
+/*/
+pgp_status_t pgp_detached_verifier_verify (pgp_error_t *errp,
+                                           pgp_detached_verifier_t verifier,
+                                           pgp_reader_t data);
 
 /*/
 /// Returns a new standard policy.

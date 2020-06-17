@@ -15,7 +15,7 @@ use crate::openpgp::parse::{
     Parse,
     stream::{
         DecryptionHelper,
-        Decryptor,
+        DecryptorBuilder,
         VerificationHelper,
         GoodChecksum,
         VerificationError,
@@ -56,9 +56,8 @@ fn main() {
         }).collect();
 
     // Now, create a decryptor with a helper using the given Certs.
-    let mut decryptor =
-        Decryptor::from_reader(p, io::stdin(), Helper::new(&ctx, p, certs), None)
-        .unwrap();
+    let mut decryptor = DecryptorBuilder::from_reader(io::stdin()).unwrap()
+        .with_policy(p, None, Helper::new(&ctx, p, certs)).unwrap();
 
     // Finally, stream the decrypted data to stdout.
     io::copy(&mut decryptor, &mut io::stdout())
@@ -101,14 +100,15 @@ impl<'a> DecryptionHelper for Helper<'a> {
                   sym_algo: Option<SymmetricAlgorithm>,
                   mut decrypt: D)
                   -> openpgp::Result<Option<openpgp::Fingerprint>>
-        where D: FnMut(SymmetricAlgorithm, &SessionKey) -> openpgp::Result<()>
+        where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool
     {
         // Try each PKESK until we succeed.
         for pkesk in pkesks {
             if let Some(key) = self.keys.get(pkesk.recipient()) {
                 let mut pair = KeyPair::new(self.ctx, key)?;
-                if let Ok(_) = pkesk.decrypt(&mut pair, sym_algo)
-                    .and_then(|(algo, session_key)| decrypt(algo, &session_key))
+                if pkesk.decrypt(&mut pair, sym_algo)
+                    .map(|(algo, session_key)| decrypt(algo, &session_key))
+                    .unwrap_or(false)
                 {
                     break;
                 }
@@ -121,7 +121,7 @@ impl<'a> DecryptionHelper for Helper<'a> {
 }
 
 impl<'a> VerificationHelper for Helper<'a> {
-    fn get_public_keys(&mut self, _ids: &[openpgp::KeyHandle])
+    fn get_certs(&mut self, _ids: &[openpgp::KeyHandle])
                        -> openpgp::Result<Vec<openpgp::Cert>> {
         Ok(Vec::new()) // Feed the Certs to the verifier here.
     }

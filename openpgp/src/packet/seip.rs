@@ -14,7 +14,15 @@ use crate::Packet;
 /// 4880] for details.
 ///
 /// [Section 5.13 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.13
-#[derive(Clone, Debug)]
+///
+/// # A note on equality
+///
+/// An unprocessed (encrypted) `SEIP` packet is never considered equal
+/// to a processed (decrypted) one.  Likewise, a processed (decrypted)
+/// packet is never considered equal to a structured (parsed) one.
+// IMPORTANT: If you add fields to this struct, you need to explicitly
+// IMPORTANT: implement PartialEq, Eq, and Hash.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SEIP1 {
     /// CTB packet header fields.
     pub(crate) common: packet::Common,
@@ -23,17 +31,16 @@ pub struct SEIP1 {
     container: packet::Container,
 }
 
-impl PartialEq for SEIP1 {
-    fn eq(&self, other: &SEIP1) -> bool {
-        self.container == other.container
+impl std::ops::Deref for SEIP1 {
+    type Target = packet::Container;
+    fn deref(&self) -> &Self::Target {
+        &self.container
     }
 }
 
-impl Eq for SEIP1 {}
-
-impl std::hash::Hash for SEIP1 {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        std::hash::Hash::hash(&self.container, state);
+impl std::ops::DerefMut for SEIP1 {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.container
     }
 }
 
@@ -47,8 +54,6 @@ impl SEIP1 {
     }
 }
 
-impl_container_forwards!(SEIP1);
-
 impl From<SEIP1> for super::SEIP {
     fn from(p: SEIP1) -> Self {
         super::SEIP::V1(p)
@@ -58,18 +63,5 @@ impl From<SEIP1> for super::SEIP {
 impl From<SEIP1> for Packet {
     fn from(s: SEIP1) -> Self {
         Packet::SEIP(s.into())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn deref() {
-        let mut s = SEIP1::new();
-        assert_eq!(s.body(), &[]);
-        s.set_body(vec![0, 1, 2]);
-        assert_eq!(s.body(), &[0, 1, 2]);
     }
 }

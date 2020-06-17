@@ -5,7 +5,8 @@
 //!   [Section 5.4 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.4
 
 use std::fmt;
-use std::hash::{Hash, Hasher};
+
+#[cfg(any(test, feature = "quickcheck"))]
 use quickcheck::{Arbitrary, Gen};
 
 use crate::Error;
@@ -23,7 +24,14 @@ use crate::SignatureType;
 /// See [Section 5.4 of RFC 4880] for details.
 ///
 ///   [Section 5.4 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.4
-#[derive(Clone)]
+///
+/// # A note on equality
+///
+/// The `last` flag is represented as a `u8` and is compared
+/// literally, not semantically.
+// IMPORTANT: If you add fields to this struct, you need to explicitly
+// IMPORTANT: implement PartialEq, Eq, and Hash.
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct OnePassSig3 {
     /// CTB packet header fields.
     pub(crate) common: packet::Common,
@@ -52,34 +60,12 @@ impl fmt::Debug for OnePassSig3 {
     }
 }
 
-impl PartialEq for OnePassSig3 {
-    fn eq(&self, other: &OnePassSig3) -> bool {
-        self.typ == other.typ
-            && self.hash_algo == other.hash_algo
-            && self.pk_algo == other.pk_algo
-            && self.issuer == other.issuer
-            && self.last == other.last
-    }
-}
-
-impl Eq for OnePassSig3 {}
-
-impl Hash for OnePassSig3 {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.typ.hash(state);
-        self.hash_algo.hash(state);
-        self.pk_algo.hash(state);
-        self.issuer.hash(state);
-        self.last.hash(state);
-    }
-}
-
 impl OnePassSig3 {
     /// Returns a new `Signature` packet.
     pub fn new(typ: SignatureType) ->  Self {
         OnePassSig3 {
             common: Default::default(),
-            typ: typ,
+            typ,
             hash_algo: HashAlgorithm::Unknown(0),
             pk_algo: PublicKeyAlgorithm::Unknown(0),
             issuer: KeyID::new(0),
@@ -176,12 +162,20 @@ impl<'a> std::convert::TryFrom<&'a Signature> for OnePassSig3 {
             typ: s.typ(),
             hash_algo: s.hash_algo(),
             pk_algo: s.pk_algo(),
-            issuer: issuer,
+            issuer,
             last: 0,
         })
     }
 }
 
+#[cfg(any(test, feature = "quickcheck"))]
+impl Arbitrary for super::OnePassSig {
+    fn arbitrary<G: Gen>(g: &mut G) -> Self {
+        OnePassSig3::arbitrary(g).into()
+    }
+}
+
+#[cfg(any(test, feature = "quickcheck"))]
 impl Arbitrary for OnePassSig3 {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         let mut ops = OnePassSig3::new(SignatureType::arbitrary(g));

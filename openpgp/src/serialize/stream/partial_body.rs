@@ -8,14 +8,25 @@ use std::cmp;
 use crate::Error;
 use crate::Result;
 use crate::packet::header::BodyLength;
-use super::{writer, write_byte, Marshal};
+use crate::serialize::{
+    log2,
+    stream::{
+        writer,
+        Message,
+        Cookie,
+    },
+    write_byte,
+    Marshal,
+};
 
 pub struct PartialBodyFilter<'a, C: 'a> {
     // The underlying writer.
     //
-    // Because this writer implements `Drop`, we cannot move the inner
-    // writer out of this writer.  We therefore wrap it with `Option`
-    // so that we can `take()` it.
+    // XXX: Opportunity for optimization.  Previously, this writer
+    // implemented `Drop`, so we could not move the inner writer out
+    // of this writer.  We therefore wrapped it with `Option` so that
+    // we can `take()` it.  This writer no longer implements Drop, so
+    // we could avoid the Option here.
     inner: Option<writer::BoxStack<'a, C>>,
 
     // The cookie.
@@ -41,10 +52,10 @@ const PARTIAL_BODY_FILTER_MAX_CHUNK_SIZE : usize = 1 << 30;
 // lots of small partial body packets, which is annoying.
 const PARTIAL_BODY_FILTER_BUFFER_THRESHOLD : usize = 4 * 1024 * 1024;
 
-impl<'a, C: 'a> PartialBodyFilter<'a, C> {
+impl<'a> PartialBodyFilter<'a, Cookie> {
     /// Returns a new partial body encoder.
-    pub fn new(inner: writer::Stack<'a, C>, cookie: C)
-               -> writer::Stack<'a, C> {
+    pub fn new(inner: Message<'a>, cookie: Cookie)
+               -> Message<'a> {
         Self::with_limits(inner, cookie,
                           PARTIAL_BODY_FILTER_BUFFER_THRESHOLD,
                           PARTIAL_BODY_FILTER_MAX_CHUNK_SIZE)
@@ -52,10 +63,10 @@ impl<'a, C: 'a> PartialBodyFilter<'a, C> {
     }
 
     /// Returns a new partial body encoder with the given limits.
-    pub fn with_limits(inner: writer::Stack<'a, C>, cookie: C,
+    pub fn with_limits(inner: Message<'a>, cookie: Cookie,
                        buffer_threshold: usize,
                        max_chunk_size: usize)
-                       -> Result<writer::Stack<'a, C>> {
+                       -> Result<Message<'a>> {
         if buffer_threshold.count_ones() != 1 {
             return Err(Error::InvalidArgument(
                 "buffer_threshold is not a power of two".into()).into());
@@ -71,16 +82,18 @@ impl<'a, C: 'a> PartialBodyFilter<'a, C> {
                 "max_chunk_size exceeds limit".into()).into());
         }
 
-        Ok(writer::Stack::from(Box::new(PartialBodyFilter {
+        Ok(Message::from(Box::new(PartialBodyFilter {
             inner: Some(inner.into()),
-            cookie: cookie,
+            cookie,
             buffer: Vec::with_capacity(buffer_threshold),
-            buffer_threshold: buffer_threshold,
-            max_chunk_size: max_chunk_size,
+            buffer_threshold,
+            max_chunk_size,
             position: 0,
         })))
     }
+}
 
+impl<'a, C: 'a> PartialBodyFilter<'a, C> {
     // Writes out any full chunks between `self.buffer` and `other`.
     // Any extra data is buffered.
     //
@@ -120,9 +133,9 @@ impl<'a, C: 'a> PartialBodyFilter<'a, C> {
 
                 // Write a partial body length header.
                 let chunk_size_log2 =
-                    super::log2(cmp::min(self.max_chunk_size,
-                                         self.buffer.len() + other.len())
-                                as u32);
+                    log2(cmp::min(self.max_chunk_size,
+                                  self.buffer.len() + other.len())
+                         as u32);
                 let chunk_size = (1usize) << chunk_size_log2;
 
                 let size = BodyLength::Partial(chunk_size as u32);
@@ -170,13 +183,6 @@ impl<'a, C: 'a> io::Write for PartialBodyFilter<'a, C> {
     // internal buffers to disk.  We don't do that.
     fn flush(&mut self) -> io::Result<()> {
         self.write_out(&b""[..], false)
-    }
-}
-
-impl<'a, C: 'a> Drop for PartialBodyFilter<'a, C> {
-    // Make sure the internal buffer is flushed.
-    fn drop(&mut self) {
-        let _ = self.write_out(&b""[..], true);
     }
 }
 
@@ -246,6 +252,7 @@ mod test {
                 .unwrap();
             pb.write_all(b"0123").unwrap();
             pb.write_all(b"4567").unwrap();
+            pb.finalize().unwrap();
         }
         assert_eq!(&buf,
                    &[8, // no chunking
@@ -263,6 +270,7 @@ mod test {
                 /*   max_chunk_size: */ 16)
                 .unwrap();
             pb.write_all(b"01234567").unwrap();
+            pb.finalize().unwrap();
         }
         assert_eq!(&buf,
                    &[0xe0 + 3, // first chunk
@@ -282,6 +290,7 @@ mod test {
                 /*   max_chunk_size: */ 16)
                 .unwrap();
             pb.write_all(b"012345670123456701234567").unwrap();
+            pb.finalize().unwrap();
         }
         assert_eq!(&buf,
                    &[0xe0 + 4, // first chunk

@@ -2,7 +2,10 @@ use std::fmt;
 use std::cmp::Ordering;
 use std::hash::{Hash, Hasher};
 
+#[cfg(any(test, feature = "quickcheck"))]
 use quickcheck::{Arbitrary, Gen};
+
+use crate::packet::Packet;
 
 /// The OpenPGP packet tags as defined in [Section 4.3 of RFC 4880].
 ///
@@ -152,6 +155,18 @@ impl From<&Tag> for u8 {
     }
 }
 
+impl From<&Packet> for Tag {
+    fn from(p: &Packet) -> Tag {
+        p.tag()
+    }
+}
+
+impl From<Packet> for Tag {
+    fn from(p: Packet) -> Tag {
+        p.tag()
+    }
+}
+
 impl fmt::Display for Tag {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
@@ -201,6 +216,7 @@ impl fmt::Display for Tag {
     }
 }
 
+#[cfg(any(test, feature = "quickcheck"))]
 impl Arbitrary for Tag {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         u8::arbitrary(g).into()

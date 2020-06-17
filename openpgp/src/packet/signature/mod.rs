@@ -3,10 +3,13 @@
 use std::fmt;
 use std::ops::{Deref, DerefMut};
 
+#[cfg(any(test, feature = "quickcheck"))]
+use quickcheck::{Arbitrary, Gen};
+
 use crate::Error;
 use crate::Result;
 use crate::crypto::{
-    mpis,
+    mpi,
     hash::{self, Hash},
     Signer,
 };
@@ -26,6 +29,31 @@ use crate::packet::signature::subpacket::{
     SubpacketArea,
     SubpacketAreas,
 };
+
+#[cfg(any(test, feature = "quickcheck"))]
+/// Like quickcheck::Arbitrary, but bounded.
+trait ArbitraryBounded {
+    /// Generates an arbitrary value, but only recurses if `depth >
+    /// 0`.
+    fn arbitrary_bounded<G: Gen>(g: &mut G, depth: usize) -> Self;
+}
+
+#[cfg(any(test, feature = "quickcheck"))]
+/// Default depth when implementing Arbitrary using ArbitraryBounded.
+const DEFAULT_ARBITRARY_DEPTH: usize = 2;
+
+#[cfg(any(test, feature = "quickcheck"))]
+macro_rules! impl_arbitrary_with_bound {
+    ($typ:path) => {
+        impl Arbitrary for $typ {
+            fn arbitrary<G: Gen>(g: &mut G) -> Self {
+                Self::arbitrary_bounded(
+                    g,
+                    crate::packet::signature::DEFAULT_ARBITRARY_DEPTH)
+            }
+        }
+    }
+}
 
 pub mod subpacket;
 
@@ -62,8 +90,10 @@ pub mod subpacket;
 /// [`set_signature_creation_time`].
 ///
 ///   [`set_signature_creation_time`]: #method.set_signature_creation_time
+// IMPORTANT: If you add fields to this struct, you need to explicitly
+// IMPORTANT: implement PartialEq, Eq, and Hash.
 #[derive(Clone, Hash, PartialEq, Eq)]
-pub struct Builder {
+pub struct SignatureBuilder {
     /// Version of the signature packet. Must be 4.
     version: u8,
     /// Type of signature.
@@ -76,7 +106,25 @@ pub struct Builder {
     subpackets: SubpacketAreas,
 }
 
-impl Deref for Builder {
+#[cfg(any(test, feature = "quickcheck"))]
+impl ArbitraryBounded for SignatureBuilder {
+    fn arbitrary_bounded<G: Gen>(g: &mut G, depth: usize) -> Self {
+        SignatureBuilder {
+            // XXX: Make this more interesting once we dig other
+            // versions.
+            version: 4,
+            typ: Arbitrary::arbitrary(g),
+            pk_algo: PublicKeyAlgorithm::arbitrary_for_signing(g),
+            hash_algo: Arbitrary::arbitrary(g),
+            subpackets: ArbitraryBounded::arbitrary_bounded(g, depth),
+        }
+    }
+}
+
+#[cfg(any(test, feature = "quickcheck"))]
+impl_arbitrary_with_bound!(SignatureBuilder);
+
+impl Deref for SignatureBuilder {
     type Target = SubpacketAreas;
 
     fn deref(&self) -> &Self::Target {
@@ -84,18 +132,18 @@ impl Deref for Builder {
     }
 }
 
-impl DerefMut for Builder {
+impl DerefMut for SignatureBuilder {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.subpackets
     }
 }
 
-impl Builder {
-    /// Returns a new `Builder` object.
+impl SignatureBuilder {
+    /// Returns a new `SignatureBuilder` object.
     pub fn new(typ: SignatureType) ->  Self {
-        Builder {
+        SignatureBuilder {
             version: 4,
-            typ: typ,
+            typ,
             pk_algo: PublicKeyAlgorithm::Unknown(0),
             hash_algo: HashAlgorithm::default(),
             subpackets: SubpacketAreas::default(),
@@ -182,7 +230,7 @@ impl Builder {
         let digest =
             Signature::hash_direct_key(&self,
                                        signer.public()
-                                       .mark_role_primary_ref())?;
+                                       .role_as_primary())?;
 
         self.sign(signer, digest)
     }
@@ -333,16 +381,16 @@ impl Builder {
 
         Ok(Signature4 {
             common: Default::default(),
-            fields: fields,
+            fields,
             digest_prefix: [digest[0], digest[1]],
-            mpis: mpis,
+            mpis,
             computed_digest: Some(digest),
             level: 0,
         }.into())
     }
 }
 
-impl From<Signature> for Builder {
+impl From<Signature> for SignatureBuilder {
     fn from(sig: Signature) -> Self {
         match sig {
             Signature::V4(sig) => sig.into(),
@@ -351,13 +399,13 @@ impl From<Signature> for Builder {
     }
 }
 
-impl From<Signature4> for Builder {
+impl From<Signature4> for SignatureBuilder {
     fn from(sig: Signature4) -> Self {
         sig.fields
     }
 }
 
-impl<'a> From<&'a Signature> for &'a Builder {
+impl<'a> From<&'a Signature> for &'a SignatureBuilder {
     fn from(sig: &'a Signature) -> Self {
         match sig {
             Signature::V4(ref sig) => sig.into(),
@@ -366,7 +414,7 @@ impl<'a> From<&'a Signature> for &'a Builder {
     }
 }
 
-impl<'a> From<&'a Signature4> for &'a Builder {
+impl<'a> From<&'a Signature4> for &'a SignatureBuilder {
     fn from(sig: &'a Signature4) -> Self {
         &sig.fields
     }
@@ -387,13 +435,13 @@ pub struct Signature4 {
     /// CTB packet header fields.
     pub(crate) common: packet::Common,
 
-    /// Fields as configured using the builder.
-    pub(crate) fields: Builder,
+    /// Fields as configured using the SignatureBuilder.
+    pub(crate) fields: SignatureBuilder,
 
     /// Lower 16 bits of the signed hash value.
     digest_prefix: [u8; 2],
     /// Signature MPIs.
-    mpis: mpis::Signature,
+    mpis: mpi::Signature,
 
     /// When used in conjunction with a one-pass signature, this is the
     /// hash computed over the enclosed message.
@@ -455,11 +503,8 @@ impl PartialEq for Signature4 {
     /// signatures using this predicate.
     fn eq(&self, other: &Signature4) -> bool {
         self.mpis == other.mpis
-            && self.fields.version == other.fields.version
-            && self.fields.typ == other.fields.typ
-            && self.fields.pk_algo == other.fields.pk_algo
-            && self.fields.hash_algo == other.fields.hash_algo
-            && self.fields.hashed_area() == other.fields.hashed_area()
+            && self.fields == other.fields
+            && self.digest_prefix == other.digest_prefix
     }
 }
 
@@ -468,38 +513,35 @@ impl Eq for Signature4 {}
 impl std::hash::Hash for Signature4 {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         use std::hash::Hash as StdHash;
-        self.fields.version.hash(state);
-        self.fields.typ.hash(state);
-        self.fields.pk_algo.hash(state);
-        self.fields.hash_algo.hash(state);
-        self.fields.hashed_area().hash(state);
         StdHash::hash(&self.mpis, state);
+        StdHash::hash(&self.fields, state);
+        self.digest_prefix.hash(state);
     }
 }
 
 impl Signature4 {
     /// Creates a new signature packet.
     ///
-    /// If you want to sign something, consider using the [`Builder`]
+    /// If you want to sign something, consider using the [`SignatureBuilder`]
     /// interface.
     ///
-    /// [`Builder`]: struct.Builder.html
+    /// [`SignatureBuilder`]: struct.SignatureBuilder.html
     pub fn new(typ: SignatureType, pk_algo: PublicKeyAlgorithm,
                hash_algo: HashAlgorithm, hashed_area: SubpacketArea,
                unhashed_area: SubpacketArea,
                digest_prefix: [u8; 2],
-               mpis: mpis::Signature) -> Self {
+               mpis: mpi::Signature) -> Self {
         Signature4 {
             common: Default::default(),
-            fields: Builder {
+            fields: SignatureBuilder {
                 version: 4,
-                typ: typ,
-                pk_algo: pk_algo,
-                hash_algo: hash_algo,
+                typ,
+                pk_algo,
+                hash_algo,
                 subpackets: SubpacketAreas::new(hashed_area, unhashed_area),
             },
-            digest_prefix: digest_prefix,
-            mpis: mpis,
+            digest_prefix,
+            mpis,
             computed_digest: None,
             level: 0,
         }
@@ -517,13 +559,13 @@ impl Signature4 {
     }
 
     /// Gets the signature packet's MPIs.
-    pub fn mpis(&self) -> &mpis::Signature {
+    pub fn mpis(&self) -> &mpi::Signature {
         &self.mpis
     }
 
     /// Sets the signature packet's MPIs.
     #[allow(dead_code)]
-    pub(crate) fn set_mpis(&mut self, mpis: mpis::Signature) -> mpis::Signature
+    pub(crate) fn set_mpis(&mut self, mpis: mpi::Signature) -> mpi::Signature
     {
         ::std::mem::replace(&mut self.mpis, mpis)
     }
@@ -609,49 +651,49 @@ impl crate::packet::Signature {
         issuers
     }
 
+    /// Compares Signatures ignoring the unhashed subpacket area.
+    ///
+    /// We ignore the unhashed subpacket area when comparing
+    /// signatures.  This prevents a malicious party to take valid
+    /// signatures, add subpackets to the unhashed area, yielding
+    /// valid but distinct signatures.
+    ///
+    /// The problem we are trying to avoid here is signature spamming.
+    /// Ignoring the unhashed subpackets means that we can deduplicate
+    /// signatures using this predicate.
+    pub fn normalized_eq(&self, other: &Signature) -> bool {
+        self.mpis() == other.mpis()
+            && self.version() == other.version()
+            && self.typ() == other.typ()
+            && self.pk_algo() == other.pk_algo()
+            && self.hash_algo() == other.hash_algo()
+            && self.hashed_area() == other.hashed_area()
+            && self.digest_prefix() == other.digest_prefix()
+    }
+
     /// Normalizes the signature.
     ///
     /// This function normalizes the *unhashed* signature subpackets.
-    /// All but the following subpackets are removed:
+    /// It removes all but the following self-authenticating
+    /// subpackets:
     ///
-    ///   - `SubpacketValue::Issuer` is left in place, is added, or
-    ///     updated from the *hashed* signature subpackets, and
-    ///   - the first `SubpacketValue::EmbeddedSignature` is left in
-    ///     place.
+    ///   - `SubpacketValue::Issuer`
+    ///   - `SubpacketValue::IssuerFingerprint`
+    ///   - `SubpacketValue::EmbeddedSignature`
     pub fn normalize(&self) -> Self {
-        use crate::packet::signature::subpacket::{Subpacket, SubpacketTag,
-                                           SubpacketValue};
+        use crate::packet::signature::subpacket::SubpacketTag::*;
         let mut sig = self.clone();
         {
             let area = sig.unhashed_area_mut();
             area.clear();
 
-            // First, add an Issuer subpacket derived from information
-            // from the hashed area.
-            if let Some(issuer) = self.issuer_fingerprint() {
-                // Prefer the IssuerFingerprint.
-                area.add(Subpacket::new(
-                    SubpacketValue::Issuer(issuer.into()), false).unwrap())
-                    .unwrap();
-            } else if let Some(issuer) = self.issuer() {
-                // Fall back to the Issuer, which we will also get
-                // from the unhashed area if necessary.
-                area.add(Subpacket::new(
-                    SubpacketValue::Issuer(issuer.clone()), false).unwrap())
-                    .unwrap();
-            }
-
-            // Second, re-add the EmbeddedSignature, if present.
-            if let Some(embedded_sig) =
-                self.unhashed_area().iter().find_map(|v| {
-                    if v.tag() == SubpacketTag::EmbeddedSignature {
-                        Some(v)
-                    } else {
-                        None
-                    }
-                })
+            for spkt in self.unhashed_area().iter()
+                .filter(|s| s.tag() == Issuer
+                        || s.tag() == IssuerFingerprint
+                        || s.tag() == EmbeddedSignature)
             {
-                area.add(embedded_sig.clone()).unwrap();
+                area.add(spkt.clone())
+                    .expect("it did fit into the old area");
             }
         }
         sig
@@ -1177,6 +1219,61 @@ impl From<Signature4> for super::Signature {
     }
 }
 
+#[cfg(any(test, feature = "quickcheck"))]
+impl ArbitraryBounded for super::Signature {
+    fn arbitrary_bounded<G: Gen>(g: &mut G, depth: usize) -> Self {
+        Signature4::arbitrary_bounded(g, depth).into()
+    }
+}
+
+#[cfg(any(test, feature = "quickcheck"))]
+impl_arbitrary_with_bound!(super::Signature);
+
+#[cfg(any(test, feature = "quickcheck"))]
+impl ArbitraryBounded for Signature4 {
+    fn arbitrary_bounded<G: Gen>(g: &mut G, depth: usize) -> Self {
+        use mpi::MPI;
+        use PublicKeyAlgorithm::*;
+
+        let fields = SignatureBuilder::arbitrary_bounded(g, depth);
+        #[allow(deprecated)]
+        let mpis = match fields.pk_algo() {
+            RSAEncryptSign | RSASign => mpi::Signature::RSA  {
+                s: MPI::arbitrary(g),
+            },
+
+            DSA => mpi::Signature::DSA {
+                r: MPI::arbitrary(g),
+                s: MPI::arbitrary(g),
+            },
+
+            EdDSA => mpi::Signature::EdDSA  {
+                r: MPI::arbitrary(g),
+                s: MPI::arbitrary(g),
+            },
+
+            ECDSA => mpi::Signature::ECDSA  {
+                r: MPI::arbitrary(g),
+                s: MPI::arbitrary(g),
+            },
+
+            _ => unreachable!(),
+        };
+
+        Signature4 {
+            common: Arbitrary::arbitrary(g),
+            fields,
+            digest_prefix: [Arbitrary::arbitrary(g),
+                            Arbitrary::arbitrary(g)],
+            mpis,
+            computed_digest: None,
+            level: 0,
+        }
+    }
+}
+
+#[cfg(any(test, feature = "quickcheck"))]
+impl_arbitrary_with_bound!(Signature4);
 
 #[cfg(test)]
 mod test {
@@ -1184,7 +1281,6 @@ mod test {
     use crate::KeyID;
     use crate::cert::prelude::*;
     use crate::crypto;
-    use crate::crypto::mpis::MPI;
     use crate::parse::Parse;
     use crate::packet::Key;
     use crate::packet::key::Key4;
@@ -1348,11 +1444,11 @@ mod test {
         ] {
             let cert = Cert::from_bytes(crate::tests::key(key)).unwrap();
             let mut pair = cert.primary_key().key().clone()
-                .mark_parts_secret().unwrap()
+                .parts_into_secret().unwrap()
                 .into_keypair()
                 .expect("secret key is encrypted/missing");
 
-            let sig = Builder::new(SignatureType::Binary);
+            let sig = SignatureBuilder::new(SignatureType::Binary);
             let hash = hash_algo.context().unwrap();
 
             // Make signature.
@@ -1380,7 +1476,7 @@ mod test {
             .unwrap().into();
         let msg = b"Hello, World";
         let mut pair = key.into_keypair().unwrap();
-        let sig = Builder::new(SignatureType::Binary)
+        let sig = SignatureBuilder::new(SignatureType::Binary)
             .set_signature_creation_time(
                 std::time::SystemTime::now()).unwrap()
             .set_issuer_fingerprint(pair.public().fingerprint()).unwrap()
@@ -1410,35 +1506,23 @@ mod test {
     #[test]
     fn sign_with_short_ed25519_secret_key() {
         // 20 byte sec key
-        let sec = [
+        let secret_key = [
             0x0,0x0,
             0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,
             0x1,0x2,0x2,0x2,0x2,0x2,0x2,0x2,0x2,0x2,
             0x1,0x2,0x2,0x2,0x2,0x2,0x2,0x2,0x2,0x2
         ];
-        let mut pnt = [0x40u8; nettle::ed25519::ED25519_KEY_SIZE + 1];
-        nettle::ed25519::public_key(&mut pnt[1..], &sec[..]).unwrap();
 
-        let public_mpis = mpis::PublicKey::EdDSA {
-            curve: Curve::Ed25519,
-            q: MPI::new(&pnt[..]),
-        };
-        let private_mpis = mpis::SecretKeyMaterial::EdDSA {
-            scalar: MPI::new(&sec[..]).into(),
-        };
-        let key : key::SecretKey
-            = Key4::with_secret(std::time::SystemTime::now(),
-                                PublicKeyAlgorithm::EdDSA,
-                                public_mpis, private_mpis.into())
-            .unwrap()
-            .into();
+        let key: key::SecretKey = Key4::import_secret_ed25519(&secret_key, None)
+            .unwrap().into();
+
         let mut pair = key.into_keypair().unwrap();
         let msg = b"Hello, World";
         let mut hash = HashAlgorithm::SHA256.context().unwrap();
 
         hash.update(&msg[..]);
 
-        Builder::new(SignatureType::Text)
+        SignatureBuilder::new(SignatureType::Text)
             .sign_hash(&mut pair, hash).unwrap();
     }
 
@@ -1481,41 +1565,37 @@ mod test {
         let keyid = KeyID::from(&fp);
 
         // First, make sure any superfluous subpackets are removed,
-        // yet the Issuer and EmbeddedSignature ones are kept.
-        let mut builder = Builder::new(SignatureType::Text);
-        // This subpacket does not belong there, and should be
-        // removed.
+        // yet the Issuer, IssuerFingerprint and EmbeddedSignature
+        // ones are kept.
+        let mut builder = SignatureBuilder::new(SignatureType::Text);
         builder.unhashed_area_mut().add(Subpacket::new(
             SubpacketValue::IssuerFingerprint(fp.clone()), false).unwrap())
             .unwrap();
         builder.unhashed_area_mut().add(Subpacket::new(
             SubpacketValue::Issuer(keyid.clone()), false).unwrap())
             .unwrap();
+        // This subpacket does not belong there, and should be
+        // removed.
+        builder.unhashed_area_mut().add(Subpacket::new(
+            SubpacketValue::PreferredSymmetricAlgorithms(Vec::new()),
+            false).unwrap()).unwrap();
 
         // Build and add an embedded sig.
-        let embedded_sig = Builder::new(SignatureType::PrimaryKeyBinding)
+        let embedded_sig = SignatureBuilder::new(SignatureType::PrimaryKeyBinding)
             .sign_hash(&mut pair, hash.clone()).unwrap();
         builder.unhashed_area_mut().add(Subpacket::new(
             SubpacketValue::EmbeddedSignature(embedded_sig.into()), false)
                                         .unwrap()).unwrap();
         let sig = builder.sign_hash(&mut pair,
                                     hash.clone()).unwrap().normalize();
-        assert_eq!(sig.unhashed_area().iter().count(), 2);
+        assert_eq!(sig.unhashed_area().iter().count(), 3);
         assert_eq!(*sig.unhashed_area().iter().nth(0).unwrap(),
                    Subpacket::new(SubpacketValue::Issuer(keyid.clone()),
                                   false).unwrap());
         assert_eq!(sig.unhashed_area().iter().nth(1).unwrap().tag(),
                    SubpacketTag::EmbeddedSignature);
-
-        // Now, make sure that an Issuer subpacket is synthesized from
-        // the hashed area for compatibility.
-        let sig = Builder::new(SignatureType::Text)
-            .set_issuer_fingerprint(fp).unwrap()
-            .sign_hash(&mut pair,
-                       hash.clone()).unwrap().normalize();
-        assert_eq!(sig.unhashed_area().iter().count(), 1);
-        assert_eq!(*sig.unhashed_area().iter().nth(0).unwrap(),
-                   Subpacket::new(SubpacketValue::Issuer(keyid.clone()),
+        assert_eq!(*sig.unhashed_area().iter().nth(2).unwrap(),
+                   Subpacket::new(SubpacketValue::IssuerFingerprint(fp.clone()),
                                   false).unwrap());
     }
 
@@ -1525,7 +1605,7 @@ mod test {
             = Key4::generate_ecc(true, Curve::Ed25519).unwrap().into();
         let mut pair = key.into_keypair().unwrap();
 
-        let sig = Builder::new(SignatureType::Standalone)
+        let sig = SignatureBuilder::new(SignatureType::Standalone)
             .set_signature_creation_time(
                 std::time::SystemTime::now()).unwrap()
             .set_issuer_fingerprint(pair.public().fingerprint()).unwrap()
@@ -1557,7 +1637,7 @@ mod test {
             = Key4::generate_ecc(true, Curve::Ed25519).unwrap().into();
         let mut pair = key.into_keypair().unwrap();
 
-        let sig = Builder::new(SignatureType::Timestamp)
+        let sig = SignatureBuilder::new(SignatureType::Timestamp)
             .set_signature_creation_time(
                 std::time::SystemTime::now()).unwrap()
             .set_issuer_fingerprint(pair.public().fingerprint()).unwrap()

@@ -26,7 +26,7 @@ struct decrypt_cookie {
 };
 
 static pgp_status_t
-get_public_keys_cb (void *cookie_raw,
+get_certs_cb (void *cookie_raw,
                     pgp_keyid_t *keyids, size_t keyids_len,
                     pgp_cert_t **certs, size_t *cert_len,
                     void (**our_free)(void *))
@@ -41,7 +41,8 @@ get_public_keys_cb (void *cookie_raw,
 static pgp_status_t
 check_cb (void *cookie_opaque, pgp_message_structure_t structure)
 {
-  pgp_message_structure_iter_t iter = pgp_message_structure_iter (structure);
+  pgp_message_structure_iter_t iter =
+    pgp_message_structure_into_iter (structure);
 
   for (pgp_message_layer_t layer = pgp_message_structure_iter_next (iter);
        layer;
@@ -142,7 +143,6 @@ check_cb (void *cookie_opaque, pgp_message_structure_t structure)
   }
 
   pgp_message_structure_iter_free (iter);
-  pgp_message_structure_free (structure);
 
   /* Implement your verification policy here.  */
   return PGP_STATUS_SUCCESS;
@@ -236,7 +236,7 @@ main (int argc, char **argv)
     .decrypt_called = 0,
   };
   plaintext = pgp_decryptor_new (&err, policy, source,
-                                 get_public_keys_cb, decrypt_cb,
+                                 get_certs_cb, decrypt_cb,
                                  check_cb, NULL, &cookie, 0);
   if (! plaintext)
     error (1, 0, "pgp_decryptor_new: %s", pgp_error_to_string (err));

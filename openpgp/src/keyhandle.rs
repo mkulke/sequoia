@@ -10,9 +10,9 @@ use crate::{
     Result,
 };
 
-/// Identifies OpenPGP keys.
+/// Identifies certificates and keys.
 ///
-/// An `KeyHandle` is either a `Fingerprint` or a `KeyID`.
+/// A `KeyHandle` is either a `Fingerprint` or a `KeyID`.
 #[derive(Debug, Clone, Hash)]
 pub enum KeyHandle {
     /// A Fingerprint.
@@ -114,8 +114,8 @@ impl TryFrom<&KeyHandle> for Fingerprint {
 
 impl PartialOrd for KeyHandle {
     fn partial_cmp(&self, other: &KeyHandle) -> Option<Ordering> {
-        let a = self.as_slice();
-        let b = other.as_slice();
+        let a = self.as_bytes();
+        let b = other.as_bytes();
 
         let l = cmp::min(a.len(), b.len());
 
@@ -147,10 +147,10 @@ impl PartialEq for KeyHandle {
 
 impl KeyHandle {
     /// Returns a reference to the raw identifier.
-    pub fn as_slice(&self) -> &[u8] {
+    pub fn as_bytes(&self) -> &[u8] {
         match self {
-            KeyHandle::Fingerprint(i) => i.as_slice(),
-            KeyHandle::KeyID(i) => i.as_slice(),
+            KeyHandle::Fingerprint(i) => i.as_bytes(),
+            KeyHandle::KeyID(i) => i.as_bytes(),
         }
     }
 
@@ -191,16 +191,14 @@ impl KeyHandle {
     /// # use openpgp::KeyHandle;
     /// #
     /// # let fpr1 : KeyHandle
-    /// #     = Fingerprint::from_hex(
-    /// #           "8F17 7771 18A3 3DDA 9BA4  8E62 AACB 3243 6300 52D9")
-    /// #       .unwrap().into();
+    /// #     = "8F17 7771 18A3 3DDA 9BA4  8E62 AACB 3243 6300 52D9"
+    /// #       .parse::<Fingerprint>().unwrap().into();
     /// #
     /// # let fpr2 : KeyHandle
-    /// #     = Fingerprint::from_hex(
-    /// #           "0123 4567 8901 2345 6789  0123 AACB 3243 6300 52D9")
-    /// #       .unwrap().into();
+    /// #     = "0123 4567 8901 2345 6789  0123 AACB 3243 6300 52D9"
+    /// #       .parse::<Fingerprint>().unwrap().into();
     /// #
-    /// # let keyid : KeyHandle = KeyID::from_hex("AACB 3243 6300 52D9")
+    /// # let keyid : KeyHandle = "AACB 3243 6300 52D9".parse::<KeyID>()
     /// #     .unwrap().into();
     /// #
     /// // fpr1 and fpr2 are different fingerprints with the same KeyID.

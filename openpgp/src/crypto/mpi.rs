@@ -3,7 +3,9 @@
 use std::fmt;
 use std::cmp::Ordering;
 
+#[cfg(any(test, feature = "quickcheck"))]
 use quickcheck::{Arbitrary, Gen};
+#[cfg(any(test, feature = "quickcheck"))]
 use rand::Rng;
 
 use crate::types::{
@@ -49,7 +51,7 @@ impl MPI {
         let value = Vec::from(&value[offset..]).into_boxed_slice();
 
         MPI {
-            value: value,
+            value,
         }
     }
 
@@ -177,13 +179,14 @@ impl fmt::Debug for MPI {
 impl Hash for MPI {
     /// Update the Hash with a hash of the MPIs.
     fn hash(&self, hash: &mut hash::Context) {
-        let len = &[(self.bits() >> 8) as u8 & 0xFF, self.bits() as u8];
+        let len = self.bits() as u16;
 
-        hash.update(len);
+        hash.update(&len.to_be_bytes());
         hash.update(&self.value);
     }
 }
 
+#[cfg(any(test, feature = "quickcheck"))]
 impl Arbitrary for MPI {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         loop {
@@ -409,6 +412,7 @@ impl Hash for PublicKey {
     }
 }
 
+#[cfg(any(test, feature = "quickcheck"))]
 impl Arbitrary for PublicKey {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         use self::PublicKey::*;
@@ -465,9 +469,9 @@ pub enum SecretKeyMaterial {
     RSA {
         /// Secret exponent, inverse of e in Phi(N).
         d: ProtectedMPI,
-        /// Larger secret prime.
-        p: ProtectedMPI,
         /// Smaller secret prime.
+        p: ProtectedMPI,
+        /// Larger secret prime.
         q: ProtectedMPI,
         /// Inverse of p mod q.
         u: ProtectedMPI,
@@ -678,6 +682,7 @@ impl Hash for SecretKeyMaterial {
     }
 }
 
+#[cfg(any(test, feature = "quickcheck"))]
 impl Arbitrary for SecretKeyMaterial {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         match g.gen_range(0, 6) {
@@ -780,6 +785,7 @@ impl Hash for Ciphertext {
     }
 }
 
+#[cfg(any(test, feature = "quickcheck"))]
 impl Arbitrary for Ciphertext {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         match g.gen_range(0, 3) {
@@ -865,6 +871,7 @@ impl Hash for Signature {
     }
 }
 
+#[cfg(any(test, feature = "quickcheck"))]
 impl Arbitrary for Signature {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         match g.gen_range(0, 4) {

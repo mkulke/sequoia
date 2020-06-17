@@ -1,5 +1,8 @@
 use std::fmt;
 
+#[cfg(any(test, feature = "quickcheck"))]
+use quickcheck::{Arbitrary, Gen};
+
 use crate::packet;
 use crate::Packet;
 use crate::types::CompressionAlgorithm;
@@ -14,7 +17,9 @@ use crate::types::CompressionAlgorithm;
 /// of a `CompressedData` packet.
 ///
 /// [Section 5.6 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.6
-#[derive(Clone)]
+// IMPORTANT: If you add fields to this struct, you need to explicitly
+// IMPORTANT: implement PartialEq, Eq, and Hash.
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct CompressedData {
     /// CTB packet header fields.
     pub(crate) common: packet::Common,
@@ -25,19 +30,16 @@ pub struct CompressedData {
     container: packet::Container,
 }
 
-impl PartialEq for CompressedData {
-    fn eq(&self, other: &CompressedData) -> bool {
-        self.algo == other.algo
-            && self.container == other.container
+impl std::ops::Deref for CompressedData {
+    type Target = packet::Container;
+    fn deref(&self) -> &Self::Target {
+        &self.container
     }
 }
 
-impl Eq for CompressedData {}
-
-impl std::hash::Hash for CompressedData {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        std::hash::Hash::hash(&self.algo, state);
-        std::hash::Hash::hash(&self.container, state);
+impl std::ops::DerefMut for CompressedData {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.container
     }
 }
 
@@ -45,10 +47,7 @@ impl fmt::Debug for CompressedData {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("CompressedData")
             .field("algo", &self.algo)
-            .field("children", &self.container.children_ref())
-            .field("body (bytes)",
-                   &self.container.body().len())
-            .field("body_digest", &self.container.body_digest())
+            .field("container", &self.container)
             .finish()
     }
 }
@@ -58,7 +57,7 @@ impl CompressedData {
     pub fn new(algo: CompressionAlgorithm) -> Self {
         CompressedData {
             common: Default::default(),
-            algo: algo,
+            algo,
             container: Default::default(),
         }
     }
@@ -76,7 +75,7 @@ impl CompressedData {
     /// Adds a new packet to the container.
     #[cfg(test)]
     pub fn push(mut self, packet: Packet) -> Self {
-        self.container.children_mut().push(packet);
+        self.container.children_mut().unwrap().push(packet);
         self
     }
 
@@ -86,15 +85,34 @@ impl CompressedData {
     /// packet, etc.
     #[cfg(test)]
     pub fn insert(mut self, i: usize, packet: Packet) -> Self {
-        self.container.children_mut().insert(i, packet);
+        self.container.children_mut().unwrap().insert(i, packet);
         self
     }
 }
 
-impl_container_forwards!(CompressedData);
-
 impl From<CompressedData> for Packet {
     fn from(s: CompressedData) -> Self {
         Packet::CompressedData(s)
+    }
+}
+
+#[cfg(any(test, feature = "quickcheck"))]
+impl Arbitrary for CompressedData {
+    fn arbitrary<G: Gen>(g: &mut G) -> Self {
+        use rand::Rng;
+        use crate::serialize::SerializeInto;
+        loop {
+            let a = CompressionAlgorithm::from(g.gen_range(0, 4));
+            if a.is_supported() {
+                let mut c = CompressedData::new(a);
+                // We arbitrarily chose to create packets with
+                // processed bodies, so that
+                // Packet::from_bytes(c.to_vec()) will roundtrip them.
+                c.set_body(packet::Body::Processed(
+                    Packet::arbitrary(g).to_vec().unwrap()
+                ));
+                return c;
+            }
+        }
     }
 }

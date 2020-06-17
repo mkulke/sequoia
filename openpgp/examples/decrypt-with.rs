@@ -14,7 +14,7 @@ use crate::openpgp::parse::{
     Parse,
     stream::{
         DecryptionHelper,
-        Decryptor,
+        DecryptorBuilder,
         VerificationHelper,
         GoodChecksum,
         MessageStructure,
@@ -42,7 +42,8 @@ pub fn main() {
 
     // Now, create a decryptor with a helper using the given Certs.
     let mut decryptor =
-        Decryptor::from_reader(p, io::stdin(), Helper::new(p, certs), None).unwrap();
+        DecryptorBuilder::from_reader(io::stdin()).unwrap()
+        .with_policy(p, None, Helper::new(p, certs)).unwrap();
 
     // Finally, stream the decrypted data to stdout.
     io::copy(&mut decryptor, &mut io::stdout())
@@ -71,7 +72,7 @@ impl Helper {
         }
 
         Helper {
-            keys: keys,
+            keys,
         }
     }
 }
@@ -83,13 +84,14 @@ impl DecryptionHelper for Helper {
                   sym_algo: Option<SymmetricAlgorithm>,
                   mut decrypt: D)
                   -> openpgp::Result<Option<openpgp::Fingerprint>>
-        where D: FnMut(SymmetricAlgorithm, &SessionKey) -> openpgp::Result<()>
+        where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool
     {
         // Try each PKESK until we succeed.
         for pkesk in pkesks {
             if let Some(pair) = self.keys.get_mut(pkesk.recipient()) {
-                if let Ok(_) = pkesk.decrypt(pair, sym_algo)
-                    .and_then(|(algo, session_key)| decrypt(algo, &session_key))
+                if pkesk.decrypt(pair, sym_algo)
+                    .map(|(algo, session_key)| decrypt(algo, &session_key))
+                    .unwrap_or(false)
                 {
                     break;
                 }
@@ -102,7 +104,7 @@ impl DecryptionHelper for Helper {
 }
 
 impl VerificationHelper for Helper {
-    fn get_public_keys(&mut self, _ids: &[openpgp::KeyHandle])
+    fn get_certs(&mut self, _ids: &[openpgp::KeyHandle])
                        -> openpgp::Result<Vec<openpgp::Cert>> {
         Ok(Vec::new()) // Feed the Certs to the verifier here.
     }

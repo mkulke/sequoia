@@ -14,7 +14,9 @@ use crate::crypto::SessionKey;
 
 use std::fmt;
 
+#[cfg(any(test, feature = "quickcheck"))]
 use quickcheck::{Arbitrary, Gen};
+#[cfg(any(test, feature = "quickcheck"))]
 use rand::Rng;
 
 /// String-to-Key (S2K) specifiers.
@@ -64,7 +66,7 @@ impl Default for S2K {
             // SHA2-512.  Furthermore, the digest size is large enough
             // for every cipher algorithm currently in use.
             hash: HashAlgorithm::SHA256,
-            salt: salt,
+            salt,
             // This is the largest count that OpenPGP can represent.
             // On moderate machines, like my Intel(R) Core(TM) i5-2400
             // CPU @ 3.10GHz, it takes ~354ms to derive a key.
@@ -262,6 +264,7 @@ impl fmt::Display for S2K {
     }
 }
 
+#[cfg(any(test, feature = "quickcheck"))]
 impl Arbitrary for S2K {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         match g.gen_range(0, 5) {

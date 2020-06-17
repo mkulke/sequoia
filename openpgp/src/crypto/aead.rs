@@ -1,4 +1,5 @@
 use std::cmp;
+use std::convert::TryInto;
 use std::fmt;
 use std::io;
 
@@ -23,6 +24,14 @@ use crate::parse::Cookie;
 /// This is DANGEROUS, and is only useful for debugging problems with
 /// malformed AEAD-encrypted messages.
 const DANGER_DISABLE_AUTHENTICATION: bool = false;
+
+/// Converts a chunk size to a usize.
+pub(crate) fn chunk_size_usize(chunk_size: u64) -> Result<usize> {
+    chunk_size.try_into()
+        .map_err(|_| Error::InvalidOperation(
+            format!("AEAD chunk size exceeds size of \
+                     virtual memory: {}", chunk_size)).into())
+}
 
 impl AEADAlgorithm {
     /// Returns the digest size of the AEAD algorithm.
@@ -54,8 +63,8 @@ impl AEADAlgorithm {
         }
     }
 
-    /// Creates a nettle context.
-    pub fn context(&self, sym_algo: SymmetricAlgorithm, key: &[u8], nonce: &[u8])
+    /// Creates a Nettle context.
+    pub(crate) fn context(&self, sym_algo: SymmetricAlgorithm, key: &[u8], nonce: &[u8])
                    -> Result<Box<dyn aead::Aead>> {
         match self {
             AEADAlgorithm::EAX => match sym_algo {
@@ -133,9 +142,9 @@ impl<'a> Decryptor<'a> {
         -> Result<Self>
     {
         Ok(Decryptor {
-            source: source,
-            sym_algo: sym_algo,
-            aead: aead,
+            source,
+            sym_algo,
+            aead,
             key: key.clone(),
             iv: Vec::from(iv).into_boxed_slice(),
             ad: [
@@ -148,7 +157,7 @@ impl<'a> Decryptor<'a> {
                 0, 0, 0, 0, 0, 0, 0, 0,
             ],
             digest_size: aead.digest_size()?,
-            chunk_size: chunk_size,
+            chunk_size,
             chunk_index: 0,
             bytes_decrypted: 0,
             buffer: Vec::with_capacity(chunk_size),
@@ -551,8 +560,8 @@ impl<W: io::Write> Encryptor<W> {
 
         Ok(Encryptor {
             inner: Some(sink),
-            sym_algo: sym_algo,
-            aead: aead,
+            sym_algo,
+            aead,
             key: key.clone(),
             iv: Vec::from(iv).into_boxed_slice(),
             ad: [
@@ -565,11 +574,11 @@ impl<W: io::Write> Encryptor<W> {
                 0, 0, 0, 0, 0, 0, 0, 0,
             ],
             digest_size: aead.digest_size()?,
-            chunk_size: chunk_size,
+            chunk_size,
             chunk_index: 0,
             bytes_encrypted: 0,
             buffer: Vec::with_capacity(chunk_size),
-            scratch: scratch,
+            scratch,
         })
     }
 

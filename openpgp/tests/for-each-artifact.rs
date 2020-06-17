@@ -170,7 +170,7 @@ fn for_all_packets<F>(src: &Path, mut fun: F) -> openpgp::Result<()>
     where F: FnMut(&openpgp::Packet) -> openpgp::Result<()>
 {
     let ppb = PacketParserBuilder::from_file(src)?.buffer_unread_content();
-    let mut ppr = if let Ok(ppr) = ppb.finalize() {
+    let mut ppr = if let Ok(ppr) = ppb.build() {
         ppr
     } else {
         // Ignore junk.
@@ -193,9 +193,9 @@ fn for_all_packets<F>(src: &Path, mut fun: F) -> openpgp::Result<()>
                         let mut sink = io::stderr();
                         let mut w = openpgp::armor::Writer::new(
                             &mut sink,
-                            openpgp::armor::Kind::File,
-                            &[])?;
+                            openpgp::armor::Kind::File)?;
                         packet.serialize(&mut w)?;
+                        w.finalize()?;
                         return Err(e);
                     },
                 }

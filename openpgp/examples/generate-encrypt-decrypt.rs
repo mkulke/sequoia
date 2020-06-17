@@ -7,7 +7,7 @@ use crate::openpgp::cert::prelude::*;
 use crate::openpgp::crypto::SessionKey;
 use crate::openpgp::types::SymmetricAlgorithm;
 use crate::openpgp::serialize::stream::*;
-use crate::openpgp::parse::stream::*;
+use crate::openpgp::parse::{Parse, stream::*};
 use crate::openpgp::policy::Policy;
 use crate::openpgp::policy::StandardPolicy as P;
 
@@ -47,23 +47,16 @@ fn encrypt(p: &dyn Policy, sink: &mut dyn Write, plaintext: &str,
            recipient: &openpgp::Cert)
     -> openpgp::Result<()>
 {
-    // Build a vector of recipients to hand to Encryptor.
-    let mut recipients =
+    let recipients =
         recipient.keys().with_policy(p, None).alive().revoked(false)
-        .for_transport_encryption()
-        .map(|ka| ka.key().into())
-        .collect::<Vec<_>>();
+        .for_transport_encryption();
 
     // Start streaming an OpenPGP message.
     let message = Message::new(sink);
 
     // We want to encrypt a literal data packet.
-    let mut encryptor = Encryptor::for_recipient(
-        message, recipients.pop().expect("No encryption key found"));
-    for r in recipients {
-        encryptor = encryptor.add_recipient(r)
-    }
-    let encryptor = encryptor.build().expect("Failed to create encryptor");
+    let encryptor = Encryptor::for_recipients(message, recipients)
+        .build()?;
 
     // Emit a literal data packet.
     let mut literal_writer = LiteralWriter::new(encryptor).build()?;
@@ -90,7 +83,8 @@ fn decrypt(p: &dyn Policy,
     };
 
     // Now, create a decryptor with a helper using the given Certs.
-    let mut decryptor = Decryptor::from_bytes(p, ciphertext, helper, None)?;
+    let mut decryptor = DecryptorBuilder::from_bytes(ciphertext)?
+        .with_policy(p, None, helper)?;
 
     // Decrypt the data.
     io::copy(&mut decryptor, sink)?;
@@ -104,7 +98,7 @@ struct Helper<'a> {
 }
 
 impl<'a> VerificationHelper for Helper<'a> {
-    fn get_public_keys(&mut self, _ids: &[openpgp::KeyHandle])
+    fn get_certs(&mut self, _ids: &[openpgp::KeyHandle])
                        -> openpgp::Result<Vec<openpgp::Cert>> {
         // Return public keys for signature verification here.
         Ok(Vec::new())
@@ -124,7 +118,7 @@ impl<'a> DecryptionHelper for Helper<'a> {
                   sym_algo: Option<SymmetricAlgorithm>,
                   mut decrypt: D)
                   -> openpgp::Result<Option<openpgp::Fingerprint>>
-        where D: FnMut(SymmetricAlgorithm, &SessionKey) -> openpgp::Result<()>
+        where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool
     {
         let key = self.secret.keys().unencrypted_secret()
             .with_policy(self.policy, None)
@@ -134,9 +128,10 @@ impl<'a> DecryptionHelper for Helper<'a> {
         let mut pair = key.into_keypair().unwrap();
 
         pkesks[0].decrypt(&mut pair, sym_algo)
-            .and_then(|(algo, session_key)| decrypt(algo, &session_key))
-            .map(|_| None)
+            .map(|(algo, session_key)| decrypt(algo, &session_key));
+
         // XXX: In production code, return the Fingerprint of the
         // recipient's Cert here
+        Ok(None)
     }
 }

@@ -24,10 +24,8 @@ use crate::RefRaw;
 use crate::RefMutRaw;
 
 use self::openpgp::serialize::{
-    writer,
     stream::{
         Message,
-        Cookie,
         ArbitraryWriter,
         Signer,
         LiteralWriter,
@@ -37,18 +35,18 @@ use self::openpgp::serialize::{
 
 use super::keyid::KeyID;
 use super::packet::key::Key;
-use super::cert::KeyIterWrapper;
-use super::cert::ValidKeyIterWrapper;
+use super::cert::KeyAmalgamationIterWrapper;
+use super::cert::ValidKeyAmalgamationIterWrapper;
 
 /// Streams an OpenPGP message.
 ///
-/// The returned `writer::Stack` does not take ownership of the
+/// The returned `Message` does not take ownership of the
 /// `Writer`; the caller must free it after destroying the
-/// `writer::Stack`.
+/// `Message`.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle]
 pub extern "C" fn pgp_writer_stack_message
     (writer: *mut super::io::Writer)
-     -> *mut writer::Stack<'static, Cookie>
+     -> *mut Message<'static>
 {
     box_raw!(Message::new(writer.ref_mut_raw()))
 }
@@ -57,7 +55,7 @@ pub extern "C" fn pgp_writer_stack_message
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle]
 pub extern "C" fn pgp_writer_stack_write
     (errp: Option<&mut *mut crate::error::Error>,
-     writer: *mut writer::Stack<'static, Cookie>,
+     writer: *mut Message<'static>,
      buf: *const u8, len: size_t)
      -> ssize_t
 {
@@ -78,7 +76,7 @@ pub extern "C" fn pgp_writer_stack_write
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle]
 pub extern "C" fn pgp_writer_stack_write_all
     (errp: Option<&mut *mut crate::error::Error>,
-     writer: *mut writer::Stack<'static, Cookie>,
+     writer: *mut Message<'static>,
      buf: *const u8, len: size_t)
      -> Status
 {
@@ -95,8 +93,8 @@ pub extern "C" fn pgp_writer_stack_write_all
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle]
 pub extern "C" fn pgp_writer_stack_finalize_one
     (errp: Option<&mut *mut crate::error::Error>,
-     writer: *mut writer::Stack<'static, Cookie>)
-     -> *mut writer::Stack<'static, Cookie>
+     writer: *mut Message<'static>)
+     -> *mut Message<'static>
 {
     ffi_make_fry_from_errp!(errp);
     if !writer.is_null() {
@@ -111,7 +109,7 @@ pub extern "C" fn pgp_writer_stack_finalize_one
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle]
 pub extern "C" fn pgp_writer_stack_finalize
     (errp: Option<&mut *mut crate::error::Error>,
-     writer: *mut writer::Stack<'static, Cookie>)
+     writer: *mut Message<'static>)
      -> Status
 {
     ffi_make_fry_from_errp!(errp);
@@ -131,9 +129,9 @@ pub extern "C" fn pgp_writer_stack_finalize
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle]
 pub extern "C" fn pgp_arbitrary_writer_new
     (errp: Option<&mut *mut crate::error::Error>,
-     inner: *mut writer::Stack<'static, Cookie>,
+     inner: *mut Message<'static>,
      tag: u8)
-     -> *mut writer::Stack<'static, Cookie>
+     -> *mut Message<'static>
 {
     ffi_make_fry_from_errp!(errp);
     let inner = ffi_param_move!(inner);
@@ -154,11 +152,11 @@ pub extern "C" fn pgp_arbitrary_writer_new
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle]
 pub extern "C" fn pgp_signer_new
     (errp: Option<&mut *mut crate::error::Error>,
-     inner: *mut writer::Stack<'static, Cookie>,
+     inner: *mut Message<'static>,
      signers: *const *mut Box<dyn self::openpgp::crypto::Signer>,
      signers_len: size_t,
      hash_algo: u8)
-     -> *mut writer::Stack<'static, Cookie>
+     -> *mut Message<'static>
 {
     ffi_make_fry_from_errp!(errp);
     let inner = ffi_param_move!(inner);
@@ -191,11 +189,11 @@ pub extern "C" fn pgp_signer_new
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle]
 pub extern "C" fn pgp_signer_new_detached
     (errp: Option<&mut *mut crate::error::Error>,
-     inner: *mut writer::Stack<'static, Cookie>,
+     inner: *mut Message<'static>,
      signers: *const *mut Box<dyn self::openpgp::crypto::Signer>,
      signers_len: size_t,
      hash_algo: u8)
-     -> *mut writer::Stack<'static, Cookie>
+     -> *mut Message<'static>
 {
     ffi_make_fry_from_errp!(errp);
     let inner = ffi_param_move!(inner);
@@ -229,8 +227,8 @@ pub extern "C" fn pgp_signer_new_detached
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle]
 pub extern "C" fn pgp_literal_writer_new
     (errp: Option<&mut *mut crate::error::Error>,
-     inner: *mut writer::Stack<'static, Cookie>)
-     -> *mut writer::Stack<'static, Cookie>
+     inner: *mut Message<'static>)
+     -> *mut Message<'static>
 {
     ffi_make_fry_from_errp!(errp);
     let inner = ffi_param_move!(inner);
@@ -279,7 +277,7 @@ fn pgp_recipient_set_keyid(recipient: *mut Recipient, keyid: *mut KeyID) {
 /// libc's allocator.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
 fn pgp_recipients_from_key_iter<'a>(
-    iter_wrapper: *mut KeyIterWrapper<'a>,
+    iter_wrapper: *mut KeyAmalgamationIterWrapper<'a>,
     result_len: *mut size_t)
     -> *mut *mut Recipient<'a>
 {
@@ -311,7 +309,7 @@ fn pgp_recipients_from_key_iter<'a>(
 /// libc's allocator.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
 fn pgp_recipients_from_valid_key_iter<'a>(
-    iter_wrapper: *mut ValidKeyIterWrapper<'a>,
+    iter_wrapper: *mut ValidKeyAmalgamationIterWrapper<'a>,
     result_len: *mut size_t)
     -> *mut *mut Recipient<'a>
 {
@@ -351,12 +349,12 @@ fn pgp_recipients_from_valid_key_iter<'a>(
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle]
 pub extern "C" fn pgp_encryptor_new<'a>
     (errp: Option<&mut *mut crate::error::Error>,
-     inner: *mut writer::Stack<'a, Cookie>,
+     inner: *mut Message<'a>,
      passwords: Option<&*const c_char>, passwords_len: size_t,
      recipients: Option<&*mut Recipient<'a>>, recipients_len: size_t,
      cipher_algo: u8,
      aead_algo: u8)
-     -> *mut writer::Stack<'a, Cookie>
+     -> *mut Message<'a>
 {
     ffi_make_fry_from_errp!(errp);
     let inner = ffi_param_move!(inner);
@@ -368,7 +366,7 @@ pub extern "C" fn pgp_encryptor_new<'a>
         };
         for password in passwords {
             passwords_.push(ffi_param_cstr!(*password)
-                            .to_bytes().to_owned().into());
+                            .to_bytes().to_owned());
         }
     }
     let mut recipients_ = Vec::new();
@@ -396,19 +394,10 @@ pub extern "C" fn pgp_encryptor_new<'a>
             "Neither recipient nor password given")));
     }
 
-    let mut encryptor = if let Some(p) = passwords_.pop() {
-        Encryptor::with_password(*inner, p)
-    } else {
-        Encryptor::for_recipient(*inner, recipients_.pop().unwrap())
-    };
-    for p in passwords_ {
-        encryptor = encryptor.add_password(p);
-    }
-    for r in recipients_ {
-        encryptor = encryptor.add_recipient(r);
-    }
+    let mut encryptor = Encryptor::for_recipients(*inner, recipients_)
+        .add_passwords(passwords_);
     if let Some(algo) = cipher_algo {
-        encryptor = encryptor.sym_algo(algo);
+        encryptor = encryptor.symmetric_algo(algo);
     }
     if let Some(algo) = aead_algo {
         encryptor = encryptor.aead_algo(algo);

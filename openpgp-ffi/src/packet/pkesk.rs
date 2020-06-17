@@ -43,12 +43,12 @@ pub extern "C" fn pgp_pkesk_decrypt(errp: Option<&mut *mut crate::error::Error>,
     let algo = ffi_param_ref_mut!(algo);
     let key_len = ffi_param_ref_mut!(key_len);
 
-    match ffi_try_or_status!(secret_key.clone().mark_parts_secret())
+    match ffi_try_or_status!(secret_key.clone().parts_into_secret())
         .into_keypair()
     {
         Ok(mut keypair) => {
             match pkesk.decrypt(&mut keypair, None /* XXX */) {
-                Ok((a, k)) => {
+                Some((a, k)) => {
                     *algo = a.into();
                     if !key.is_null() && *key_len >= k.len() {
                         unsafe {
@@ -60,7 +60,9 @@ pub extern "C" fn pgp_pkesk_decrypt(errp: Option<&mut *mut crate::error::Error>,
                     *key_len = k.len();
                     Status::Success
                 },
-                Err(e) => ffi_try_status!(Err::<(), anyhow::Error>(e)),
+                None => ffi_try_status!(Err::<(), anyhow::Error>(
+                    openpgp::Error::InvalidSessionKey(
+                        "Decryption failed".into()).into())),
             }
         },
         Err(e) => {

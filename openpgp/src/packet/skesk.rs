@@ -7,6 +7,8 @@
 //! [Section 5.3 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.3
 
 use std::ops::{Deref, DerefMut};
+
+#[cfg(any(test, feature = "quickcheck"))]
 use quickcheck::{Arbitrary, Gen};
 
 use crate::Result;
@@ -37,6 +39,7 @@ impl SKESK {
     }
 }
 
+#[cfg(any(test, feature = "quickcheck"))]
 impl Arbitrary for SKESK {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         if bool::arbitrary(g) {
@@ -54,7 +57,9 @@ impl Arbitrary for SKESK {
 /// 4880] for details.
 ///
 /// [Section 5.3 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.3
-#[derive(Clone, Debug)]
+// IMPORTANT: If you add fields to this struct, you need to explicitly
+// IMPORTANT: implement PartialEq, Eq, and Hash.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SKESK4 {
     /// CTB header fields.
     pub(crate) common: packet::Common,
@@ -71,26 +76,6 @@ pub struct SKESK4 {
     esk: Option<Vec<u8>>,
 }
 
-impl PartialEq for SKESK4 {
-    fn eq(&self, other: &SKESK4) -> bool {
-        self.version == other.version
-            && self.sym_algo == other.sym_algo
-            && self.s2k == other.s2k
-            && self.esk == other.esk
-    }
-}
-
-impl Eq for SKESK4 {}
-
-impl std::hash::Hash for SKESK4 {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        std::hash::Hash::hash(&self.version, state);
-        std::hash::Hash::hash(&self.sym_algo, state);
-        std::hash::Hash::hash(&self.s2k, state);
-        std::hash::Hash::hash(&self.esk, state);
-    }
-}
-
 impl SKESK4 {
     /// Creates a new SKESK version 4 packet.
     ///
@@ -103,7 +88,7 @@ impl SKESK4 {
             common: Default::default(),
             version: 4,
             sym_algo: cipher,
-            s2k: s2k,
+            s2k,
             esk: esk.and_then(|esk| {
                 if esk.len() == 0 { None } else { Some(esk) }
             }),
@@ -172,10 +157,10 @@ impl SKESK4 {
             }))
     }
 
-    /// Convert the `SKESK4` struct to a `Packet`.
-    /// Derives the key inside this SKESK4 from `password`. Returns a
-    /// tuple of the symmetric cipher to use with the key and the key
-    /// itself.
+    /// Derives the key inside this SKESK4 from `password`.
+    ///
+    /// Returns a tuple of the symmetric cipher to use with the key
+    /// and the key itself.
     pub fn decrypt(&self, password: &Password)
         -> Result<(SymmetricAlgorithm, SessionKey)>
     {
@@ -229,6 +214,7 @@ impl From<SKESK4> for Packet {
     }
 }
 
+#[cfg(any(test, feature = "quickcheck"))]
 impl Arbitrary for SKESK4 {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         SKESK4::new(SymmetricAlgorithm::arbitrary(g),
@@ -247,6 +233,8 @@ impl Arbitrary for SKESK4 {
 /// [Section 5.3 of RFC 4880]: https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-05#section-5.3
 ///
 /// This feature is [experimental](../../index.html#experimental-features).
+// IMPORTANT: If you add fields to this struct, you need to explicitly
+// IMPORTANT: implement PartialEq, Eq, and Hash.
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
 pub struct SKESK5 {
     /// Common fields.
@@ -287,7 +275,7 @@ impl SKESK5 {
                 common: Default::default(),
                 version: 5,
                 sym_algo: cipher,
-                s2k: s2k,
+                s2k,
                 esk: Some(esk),
             },
             aead_algo: aead,
@@ -399,6 +387,7 @@ impl From<SKESK5> for Packet {
     }
 }
 
+#[cfg(any(test, feature = "quickcheck"))]
 impl Arbitrary for SKESK5 {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         let algo = AEADAlgorithm::EAX;  // The only one we dig.

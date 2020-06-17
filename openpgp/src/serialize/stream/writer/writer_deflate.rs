@@ -3,19 +3,20 @@ use std::fmt;
 use std::io;
 
 use crate::Result;
-use super::{Generic, Stack, BoxStack, Stackable, CompressionLevel};
+use crate::types::CompressionLevel;
+use super::{Generic, Message, BoxStack, Stackable, Cookie};
 
 /// ZIPing writer.
 pub struct ZIP<'a, C: 'a> {
     inner: Generic<DeflateEncoder<BoxStack<'a, C>>, C>,
 }
 
-impl<'a, C: 'a> ZIP<'a, C> {
+impl<'a> ZIP<'a, Cookie> {
     /// Makes a ZIP compressing writer.
-    pub fn new<L>(inner: Stack<'a, C>, cookie: C, level: L) -> Stack<'a, C>
+    pub fn new<L>(inner: Message<'a>, cookie: Cookie, level: L) -> Message<'a>
         where L: Into<Option<CompressionLevel>>
     {
-        Stack::from(Box::new(ZIP {
+        Message::from(Box::new(ZIP {
             inner: Generic::new_unboxed(
                 DeflateEncoder::new(inner.into(),
                                     level.into().unwrap_or_default().into()),
@@ -78,12 +79,12 @@ pub struct ZLIB<'a, C: 'a> {
     inner: Generic<ZlibEncoder<BoxStack<'a, C>>, C>,
 }
 
-impl<'a, C: 'a> ZLIB<'a, C> {
+impl<'a> ZLIB<'a, Cookie> {
     /// Makes a ZLIB compressing writer.
-    pub fn new<L>(inner: Stack<'a, C>, cookie: C, level: L) -> Stack<'a, C>
+    pub fn new<L>(inner: Message<'a>, cookie: Cookie, level: L) -> Message<'a>
         where L: Into<Option<CompressionLevel>>
     {
-        Stack::from(Box::new(ZLIB {
+        Message::from(Box::new(ZLIB {
             inner: Generic::new_unboxed(
                 ZlibEncoder::new(inner.into(),
                                  level.into().unwrap_or_default().into()),

@@ -35,7 +35,7 @@ impl<P: key::KeyParts> Key<P, key::SubordinateRole> {
     /// // Generate a Cert, and create a keypair from the primary key.
     /// let (cert, _) = CertBuilder::new().generate()?;
     /// let mut keypair = cert.primary_key().key().clone()
-    ///     .mark_parts_secret()?.into_keypair()?;
+    ///     .parts_into_secret()?.into_keypair()?;
     ///
     /// // Let's add an encryption subkey.
     /// let flags = KeyFlags::default().set_storage_encryption(true);
@@ -47,13 +47,13 @@ impl<P: key::KeyParts> Key<P, key::SubordinateRole> {
     /// let subkey: Key<_, key::SubordinateRole> =
     ///     Key4::generate_ecc(false, Curve::Cv25519)?
     ///     .into();
-    /// let builder = signature::Builder::new(SignatureType::SubkeyBinding)
+    /// let builder = signature::SignatureBuilder::new(SignatureType::SubkeyBinding)
     ///     .set_key_flags(&flags)?;
     /// let binding = subkey.bind(&mut keypair, &cert, builder)?;
     ///
     /// // Now merge the key and binding signature into the Cert.
-    /// let cert = cert.merge_packets(vec![subkey.into(),
-    ///                                  binding.into()])?;
+    /// let cert = cert.merge_packets(vec![Packet::from(subkey),
+    ///                                    binding.into()])?;
     ///
     /// // Check that we have an encryption subkey.
     /// assert_eq!(cert.keys().with_policy(p, None).alive().revoked(false)
@@ -61,7 +61,7 @@ impl<P: key::KeyParts> Key<P, key::SubordinateRole> {
     ///            1);
     /// # Ok(()) }
     pub fn bind(&self, signer: &mut dyn Signer, cert: &Cert,
-                signature: signature::Builder)
+                signature: signature::SignatureBuilder)
         -> Result<Signature>
     {
         signature
@@ -97,23 +97,24 @@ impl UserID {
     /// // Generate a Cert, and create a keypair from the primary key.
     /// let (cert, _) = CertBuilder::new().generate()?;
     /// let mut keypair = cert.primary_key().key().clone()
-    ///     .mark_parts_secret()?.into_keypair()?;
+    ///     .parts_into_secret()?.into_keypair()?;
     /// assert_eq!(cert.userids().len(), 0);
     ///
     /// // Generate a userid and a binding signature.
     /// let userid = UserID::from("test@example.org");
     /// let builder =
-    ///     signature::Builder::new(SignatureType::PositiveCertification);
+    ///     signature::SignatureBuilder::new(SignatureType::PositiveCertification);
     /// let binding = userid.bind(&mut keypair, &cert, builder)?;
     ///
     /// // Now merge the userid and binding signature into the Cert.
-    /// let cert = cert.merge_packets(vec![userid.into(), binding.into()])?;
+    /// let cert = cert.merge_packets(vec![Packet::from(userid),
+    ///                                    binding.into()])?;
     ///
     /// // Check that we have a userid.
     /// assert_eq!(cert.userids().len(), 1);
     /// # Ok(()) }
     pub fn bind(&self, signer: &mut dyn Signer, cert: &Cert,
-                signature: signature::Builder)
+                signature: signature::SignatureBuilder)
                 -> Result<Signature>
     {
         signature
@@ -155,7 +156,7 @@ impl UserID {
     ///     .add_userid("alice@example.org")
     ///     .generate()?;
     /// let mut keypair = alice.primary_key().key().clone()
-    ///     .mark_parts_secret()?.into_keypair()?;
+    ///     .parts_into_secret()?.into_keypair()?;
     ///
     /// // Generate a Cert for Bob.
     /// let (bob, _) = CertBuilder::new()
@@ -170,7 +171,7 @@ impl UserID {
     ///              None, None)?;
     ///
     /// // `certificate` can now be used, e.g. by merging it into `bob`.
-    /// let bob = bob.merge_packets(vec![certificate.into()])?;
+    /// let bob = bob.merge_packets(certificate)?;
     ///
     /// // Check that we have a certification on the userid.
     /// assert_eq!(bob.userids().nth(0).unwrap()
@@ -194,7 +195,7 @@ impl UserID {
                 format!("Invalid signature type: {}", t)).into()),
             None => SignatureType::GenericCertification,
         };
-        let mut sig = signature::Builder::new(typ);
+        let mut sig = signature::SignatureBuilder::new(typ);
         if let Some(algo) = hash_algo.into() {
             sig = sig.set_hash_algo(algo);
         }
@@ -232,7 +233,7 @@ impl UserAttribute {
     /// let (cert, _) = CertBuilder::new()
     ///     .generate()?;
     /// let mut keypair = cert.primary_key().key().clone()
-    ///     .mark_parts_secret()?.into_keypair()?;
+    ///     .parts_into_secret()?.into_keypair()?;
     /// assert_eq!(cert.userids().len(), 0);
     ///
     /// // Generate a user attribute and a binding signature.
@@ -241,17 +242,18 @@ impl UserAttribute {
     ///         Image::Private(100, vec![0, 1, 2].into_boxed_slice())),
     /// ])?;
     /// let builder =
-    ///     signature::Builder::new(SignatureType::PositiveCertification);
+    ///     signature::SignatureBuilder::new(SignatureType::PositiveCertification);
     /// let binding = user_attr.bind(&mut keypair, &cert, builder)?;
     ///
     /// // Now merge the user attribute and binding signature into the Cert.
-    /// let cert = cert.merge_packets(vec![user_attr.into(), binding.into()])?;
+    /// let cert = cert.merge_packets(vec![Packet::from(user_attr),
+    ///                                    binding.into()])?;
     ///
     /// // Check that we have a user attribute.
     /// assert_eq!(cert.user_attributes().count(), 1);
     /// # Ok(()) }
     pub fn bind(&self, signer: &mut dyn Signer, cert: &Cert,
-                signature: signature::Builder)
+                signature: signature::SignatureBuilder)
         -> Result<Signature>
     {
         signature
@@ -293,7 +295,7 @@ impl UserAttribute {
     ///     .add_userid("alice@example.org")
     ///     .generate()?;
     /// let mut keypair = alice.primary_key().key().clone()
-    ///     .mark_parts_secret()?.into_keypair()?;
+    ///     .parts_into_secret()?.into_keypair()?;
     ///
     /// // Generate a Cert for Bob.
     /// let user_attr = UserAttribute::new(&[
@@ -312,7 +314,7 @@ impl UserAttribute {
     ///              None, None)?;
     ///
     /// // `certificate` can now be used, e.g. by merging it into `bob`.
-    /// let bob = bob.merge_packets(vec![certificate.into()])?;
+    /// let bob = bob.merge_packets(certificate)?;
     ///
     /// // Check that we have a certification on the userid.
     /// assert_eq!(bob.user_attributes().nth(0).unwrap()
@@ -337,7 +339,7 @@ impl UserAttribute {
                 format!("Invalid signature type: {}", t)).into()),
             None => SignatureType::GenericCertification,
         };
-        let mut sig = signature::Builder::new(typ);
+        let mut sig = signature::SignatureBuilder::new(typ);
         if let Some(algo) = hash_algo.into() {
             sig = sig.set_hash_algo(algo);
         }

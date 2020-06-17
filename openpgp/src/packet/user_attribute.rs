@@ -5,10 +5,10 @@
 //!   [Section 5.12 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.12
 
 use std::fmt;
-use std::cmp::Ordering;
-use std::hash::{Hash, Hasher};
 
+#[cfg(any(test, feature = "quickcheck"))]
 use quickcheck::{Arbitrary, Gen};
+#[cfg(any(test, feature = "quickcheck"))]
 use rand::Rng;
 
 use buffered_reader::BufferedReader;
@@ -28,7 +28,9 @@ use crate::serialize::MarshalInto;
 /// See [Section 5.12 of RFC 4880] for details.
 ///
 ///   [Section 5.12 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.12
-#[derive(Clone)]
+// IMPORTANT: If you add fields to this struct, you need to explicitly
+// IMPORTANT: implement PartialEq, Eq, and Hash.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct UserAttribute {
     /// CTB packet header fields.
     pub(crate) common: packet::Common,
@@ -51,32 +53,6 @@ impl fmt::Debug for UserAttribute {
         f.debug_struct("UserAttribute")
             .field("value (bytes)", &self.value.len())
             .finish()
-    }
-}
-
-impl PartialEq for UserAttribute {
-    fn eq(&self, other: &UserAttribute) -> bool {
-        self.value == other.value
-    }
-}
-
-impl Eq for UserAttribute {}
-
-impl Hash for UserAttribute {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.value.hash(state);
-    }
-}
-
-impl PartialOrd for UserAttribute {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for UserAttribute {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.value.cmp(&other.value)
     }
 }
 
@@ -127,6 +103,7 @@ impl From<UserAttribute> for Packet {
     }
 }
 
+#[cfg(any(test, feature = "quickcheck"))]
 impl Arbitrary for UserAttribute {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         UserAttribute::new(
@@ -215,6 +192,7 @@ pub enum Subpacket {
     Unknown(u8, Box<[u8]>),
 }
 
+#[cfg(any(test, feature = "quickcheck"))]
 impl Arbitrary for Subpacket {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         match g.gen_range(0, 2) {
@@ -243,6 +221,7 @@ pub enum Image {
     Unknown(u8, Box<[u8]>),
 }
 
+#[cfg(any(test, feature = "quickcheck"))]
 impl Arbitrary for Image {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         match g.gen_range(0, 3) {

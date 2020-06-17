@@ -2,6 +2,8 @@ use std::fmt;
 use std::cmp;
 use std::convert::TryInto;
 use std::time;
+
+#[cfg(any(test, feature = "quickcheck"))]
 use quickcheck::{Arbitrary, Gen};
 
 use crate::types::{DataFormat, Timestamp};
@@ -21,7 +23,9 @@ use crate::Result;
 /// See [Section 5.9 of RFC 4880] for details.
 ///
 ///   [Section 5.9 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.9
-#[derive(Clone)]
+// IMPORTANT: If you add fields to this struct, you need to explicitly
+// IMPORTANT: implement PartialEq, Eq, and Hash.
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Literal {
     /// CTB packet header fields.
     pub(crate) common: packet::Common,
@@ -42,26 +46,6 @@ pub struct Literal {
     /// This is written when serialized, and set by the packet parser
     /// if `buffer_unread_content` is used.
     container: packet::Container,
-}
-
-impl PartialEq for Literal {
-    fn eq(&self, other: &Literal) -> bool {
-        self.format == other.format
-            && self.filename == other.filename
-            && self.date == other.date
-            && self.container == other.container
-    }
-}
-
-impl Eq for Literal {}
-
-impl std::hash::Hash for Literal {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        std::hash::Hash::hash(&self.format, state);
-        std::hash::Hash::hash(&self.filename, state);
-        std::hash::Hash::hash(&self.date, state);
-        std::hash::Hash::hash(&self.container, state);
-    }
 }
 
 impl fmt::Debug for Literal {
@@ -91,15 +75,21 @@ impl fmt::Debug for Literal {
     }
 }
 
+impl Default for Literal {
+    fn default() -> Self {
+        Self::new(Default::default())
+    }
+}
+
 impl Literal {
     /// Returns a new `Literal` packet.
     pub fn new(format: DataFormat) -> Literal {
         Literal {
             common: Default::default(),
-            format: format,
+            format,
             filename: None,
             date: None,
-            container: Default::default(),
+            container: packet::Container::default_unprocessed(),
         }
     }
 
@@ -184,6 +174,7 @@ impl From<Literal> for Packet {
     }
 }
 
+#[cfg(any(test, feature = "quickcheck"))]
 impl Arbitrary for Literal {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         let mut l = Literal::new(DataFormat::arbitrary(g));
@@ -232,7 +223,7 @@ mod tests {
                 if buffer_unread_content {
                     b = b.buffer_unread_content();
                 }
-                let mut pp = b.finalize()?.unwrap();
+                let mut pp = b.build()?.unwrap();
                 let d = pp.steal(read_n)?;
                 d.into_iter().for_each(|b| assert_eq!(b, 0));
                 let l = pp.finish()?;

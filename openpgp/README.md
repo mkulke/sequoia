@@ -20,18 +20,15 @@ We also try hard to avoid dictating how OpenPGP should be used.
 This doesn't mean that we don't have opinions about how OpenPGP
 should be used in a number of common scenarios (for instance,
 message validation).  But, in this crate, we refrain from
-expressing those opinions; we expose an opinionated, high-level
-interface in the [sequoia-core] and related crates.  In our
-opinion, you should generally use those crates instead of this
-one.
+expressing those opinions; we will expose an opinionated, high-level
+interface in the future.
 
 [RFC 4880]: https://tools.ietf.org/html/rfc4880
 [RFC 6637]: https://tools.ietf.org/html/rfc6637
-[sequoia-core]: ../sequoia_core
 
 # Experimental Features
 
-This crate implements functionality from [RFC 4880bis], notable
+This crate implements functionality from [RFC 4880bis], notably
 AEAD encryption containers.  As of this writing, this RFC is still
 a draft and the syntax or semantic defined in it may change or go
 away.  Therefore, all related functionality may change and
@@ -46,3 +43,43 @@ which describes ECC cryptography for OpenPGP, and RFC 4880bis, the
 draft of the next OpenPGP standard).  This includes support for
 unbuffered message processing.
 
+# Feature flags
+
+This crate uses *features* to enable or disable optional
+functionality.  You can tweak the features in your `Cargo.toml` file,
+like so:
+
+```toml
+sequoia-openpgp = { version = "*", default-features = false, features = ["crypto-nettle", ...] }
+```
+
+By default, Sequoia is built using Nettle as cryptographic backend
+with all compression algorithms enabled.
+
+Note that if you use `default-features = false`, you need to
+explicitly enable a crypto backend.
+
+## Crypto backends
+
+Currently, Sequoia only supports the Nettle cryptographic library as
+crypto backend.  To enable it, use the `crypto-nettle` flag.
+
+## Compression algorithms
+
+Use the `compression` flag to enable support for all compression
+algorithms, `compression-deflate` to enable *DEFLATE* and *zlib*
+compression support, and `compression-bzip2` to enable *bzip2*
+support.
+
+## Testing, debugging, and fuzzing
+
+Sequoia uses [`quickcheck`] in tests.  To use it as a downstream user,
+enable the `x-quickcheck` feature (this feature will be called just
+`quickcheck` once [this feature] is implemented).
+
+[`quickcheck`]: https://docs.rs/quickcheck
+[this feature]: https://github.com/rust-lang/cargo/issues/5565
+
+# Minimum Supported Rust Version (MSRV)
+
+`sequoia-openpgp` requires Rust 1.34.

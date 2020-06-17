@@ -1,16 +1,112 @@
 //! Streaming decryption and verification.
 //!
 //! This module provides convenient filters for decryption and
-//! verification of OpenPGP messages.  It is the preferred interface
-//! to process OpenPGP messages.  These implementations use constant
-//! space.
+//! verification of OpenPGP messages (see [Section 11.3 of RFC 4880]).
+//! It is the preferred interface to process OpenPGP messages:
 //!
-//! See the [verification example].
+//!   [Section 11.3 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-11.3
 //!
-//! [verification example]: struct.Verifier.html#example
-
+//!   - Use the [`Verifier`] to verify a signed message,
+//!   - [`DetachedVerifier`] to verify a detached signature,
+//!   - or [`Decryptor`] to decrypt and verify an encrypted and
+//!     possibly signed message.
+//!
+//!   [`Verifier`]: struct.Verifier.html
+//!   [`DetachedVerifier`]: struct.DetachedVerifier.html
+//!   [`Decryptor`]: struct.Decryptor.html
+//!
+//! Consuming OpenPGP messages is more difficult than producing them.
+//! When we produce the message, we control the packet structure being
+//! generated using our programs control flow.  However, when we
+//! consume a message, the control flow is determined by the message
+//! being processed.
+//!
+//! To use Sequoia's streaming [`Verifier`] and [`Decryptor`], you
+//! need to provide an object that implements [`VerificationHelper`],
+//! and for the [`Decryptor`] also [`DecryptionHelper`].
+//!
+//! [`VerificationHelper`]: trait.VerificationHelper.html
+//! [`DecryptionHelper`]: trait.DecryptionHelper.html
+//!
+//! The [`VerificationHelper`] trait give certificates for the
+//! signature verification to the [`Verifier`] or [`Decryptor`], let
+//! you inspect the message structure (see [Section 11.3 of RFC
+//! 4880]), and implements the signature verification policy.
+//!
+//! The [`DecryptionHelper`] trait is concerned with producing the
+//! session key to decrypt a message, most commonly by decrypting one
+//! of the messages' [`PKESK`] or [`SKESK`] packets.  It could also
+//! use a cached session key, or one that has been explicitly provided
+//! to the decryption operation.
+//!
+//!   [`PKESK`]: ../../packet/enum.PKESK.html
+//!   [`SKESK`]: ../../packet/enum.SKESK.html
+//!
+//! The [`Verifier`] and [`Decryptor`] are filters: they consume
+//! OpenPGP data from a reader, file, or bytes, and implement
+//! [`io::Read`] that can be used to read the verified and/or
+//! decrypted data.
+//!
+//!   [`io::Read`]: https://doc.rust-lang.org/std/io/trait.Read.html
+//!
+//! [`DetachedVerifier`] does not provide the [`io::Read`] interface,
+//! because in this case, the data to be verified is easily available
+//! without any transformation.  Not providing a filter-like interface
+//! allows for a very performant implementation of the verification.
+//!
+//! # Examples
+//!
+//! This example demonstrates how to use the streaming interface using
+//! the [`Verifier`].  For brevity, no certificates are fed to the
+//! verifier, and the message structure is not verified, i.e. this
+//! merely extracts the literal data.  See the [`Verifier` examples]
+//! and the [`Decryptor` examples] for how to verify the message and
+//! its structure.
+//!
+//!   [`Verifier` examples]: struct.Verifier.html#examples
+//!   [`Decryptor` examples]: struct.Decryptor.html#examples
+//!
+//! ```
+//! # fn main() -> sequoia_openpgp::Result<()> {
+//! use std::io::Read;
+//! use sequoia_openpgp as openpgp;
+//! use openpgp::{KeyHandle, Cert, Result};
+//! use openpgp::parse::{Parse, stream::*};
+//! use openpgp::policy::StandardPolicy;
+//!
+//! let p = &StandardPolicy::new();
+//!
+//! // This fetches keys and computes the validity of the verification.
+//! struct Helper {};
+//! impl VerificationHelper for Helper {
+//!     fn get_certs(&mut self, _ids: &[KeyHandle]) -> Result<Vec<Cert>> {
+//!         Ok(Vec::new()) // Feed the Certs to the verifier here...
+//!     }
+//!     fn check(&mut self, structure: MessageStructure) -> Result<()> {
+//!         Ok(()) // Implement your verification policy here.
+//!     }
+//! }
+//!
+//! let message =
+//!    b"-----BEGIN PGP MESSAGE-----
+//!
+//!      xA0DAAoWBpwMNI3YLBkByxJiAAAAAABIZWxsbyBXb3JsZCHCdQQAFgoAJwWCW37P
+//!      8RahBI6MM/pGJjN5dtl5eAacDDSN2CwZCZAGnAw0jdgsGQAAeZQA/2amPbBXT96Q
+//!      O7PFms9DRuehsVVrFkaDtjN2WSxI4RGvAQDq/pzNdCMpy/Yo7AZNqZv5qNMtDdhE
+//!      b2WH5lghfKe/AQ==
+//!      =DjuO
+//!      -----END PGP MESSAGE-----";
+//!
+//! let h = Helper {};
+//! let mut v = VerifierBuilder::from_bytes(&message[..])?
+//!     .with_policy(p, None, h)?;
+//!
+//! let mut content = Vec::new();
+//! v.read_to_end(&mut content)?;
+//! assert_eq!(content, b"Hello World!");
+//! # Ok(()) }
+//! ```
 use std::cmp;
-use std::convert::TryFrom;
 use std::io::{self, Read};
 use std::path::Path;
 use std::time;
@@ -22,20 +118,14 @@ use crate::{
     types::{
         AEADAlgorithm,
         CompressionAlgorithm,
-        DataFormat,
         RevocationStatus,
         SymmetricAlgorithm,
     },
     packet::{
-        header::BodyLength,
-        header::CTB,
         key,
-        Literal,
         OnePassSig,
-        one_pass_sig::OnePassSig3,
         PKESK,
         SKESK,
-        Tag,
     },
     KeyID,
     Packet,
@@ -44,7 +134,6 @@ use crate::{
     packet::Signature,
     cert::prelude::*,
     crypto::SessionKey,
-    serialize::Marshal,
     policy::Policy,
 };
 use crate::parse::{
@@ -52,13 +141,30 @@ use crate::parse::{
     PacketParser,
     PacketParserBuilder,
     PacketParserResult,
+    Parse,
 };
 
 /// Whether to trace execution by default (on stderr).
 const TRACE : bool = false;
 
 /// How much data to buffer before giving it to the caller.
-const BUFFER_SIZE: usize = 25 * 1024 * 1024;
+///
+/// Signature verification and detection of ciphertext tampering
+/// requires processing the whole message first.  Therefore, OpenPGP
+/// implementations supporting streaming operations necessarily must
+/// output unverified data.  This has been a source of problems in the
+/// past.  To alleviate this, we buffer the message first (up to 25
+/// megabytes of net message data by default), and verify the
+/// signatures if the message fits into our buffer.  Nevertheless it
+/// is important to treat the data as unverified and untrustworthy
+/// until you have seen a positive verification.
+///
+/// The default can be changed using [`VerifierBuilder::buffer_size`]
+/// and [`DecryptorBuilder::buffer_size`].
+///
+///   [`VerifierBuilder::buffer_size`]: struct.VerifierBuilder.html#method.buffer_size
+///   [`DecryptorBuilder::buffer_size`]: struct.DecryptorBuilder.html#method.buffer_size
+pub const DEFAULT_BUFFER_SIZE: usize = 25 * 1024 * 1024;
 
 /// The result of a signature verification.
 pub type VerificationResult<'a> =
@@ -71,7 +177,9 @@ pub type VerificationResult<'a> =
 ///   - The signature has a Signature Creation Time subpacket.
 ///
 ///   - The signature is alive at the specified time (the time
-///     parameter passed to, e.g., `Verifier::from_reader`).
+///     parameter passed to, e.g., [`Verifier::from_reader`]).
+///
+///       [`Verifier::from_reader`]: struct.Verifier.html#method.from_reader
 ///
 ///   - The certificate is alive and not revoked as of the signature's
 ///     creation time.
@@ -86,10 +194,11 @@ pub type VerificationResult<'a> =
 ///     belongs to the person or entity that the user thinks it
 ///     belongs to.  This property can only be evaluated within a
 ///     trust model, such as the [web of trust] (WoT).  This policy is
-///     normally implemented in the `VerificationHelper::check`
+///     normally implemented in the [`VerificationHelper::check`]
 ///     method.
 ///
-/// [web of trust]: https://en.wikipedia.org/wiki/Web_of_trust
+///       [web of trust]: https://en.wikipedia.org/wiki/Web_of_trust
+///       [`VerificationHelper::check`]: trait.VerificationHelper.html#tymethod.check
 #[derive(Debug)]
 pub struct GoodChecksum<'a> {
     /// The signature.
@@ -191,7 +300,7 @@ impl<'a> MessageStructure<'a> {
 
     fn new_compression_layer(&mut self, algo: CompressionAlgorithm) {
         self.0.push(MessageLayer::Compression {
-            algo: algo,
+            algo,
         })
     }
 
@@ -218,35 +327,22 @@ impl<'a> MessageStructure<'a> {
             panic!("cannot push to encryption or compression layer");
         }
     }
+}
 
-    /// Iterates over the message structure.
-    pub fn iter(&self) -> MessageStructureIter {
-        MessageStructureIter(self.0.iter())
-    }
+impl<'a> std::ops::Deref for MessageStructure<'a> {
+    type Target = [MessageLayer<'a>];
 
-    /// Iterates over the message structure.
-    pub fn into_iter(self) -> impl Iterator<Item = MessageLayer<'a>> {
-        MessageStructureIntoIter(self.0.into_iter())
+    fn deref(&self) -> &Self::Target {
+        &self.0[..]
     }
 }
 
-/// Iterates over the message structure.
-pub struct MessageStructureIter<'a>(::std::slice::Iter<'a, MessageLayer<'a>>);
-
-impl<'a> Iterator for MessageStructureIter<'a> {
-    type Item = &'a MessageLayer<'a>;
-    fn next(&mut self) -> Option<Self::Item> {
-        self.0.next()
-    }
-}
-
-/// Iterates over the message structure.
-struct MessageStructureIntoIter<'a>(::std::vec::IntoIter<MessageLayer<'a>>);
-
-impl<'a> Iterator for MessageStructureIntoIter<'a> {
+impl<'a> IntoIterator for MessageStructure<'a> {
     type Item = MessageLayer<'a>;
-    fn next(&mut self) -> Option<Self::Item> {
-        self.0.next()
+    type IntoIter = std::vec::IntoIter<MessageLayer<'a>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
     }
 }
 
@@ -317,7 +413,7 @@ impl IMessageStructure {
     fn new_compression_layer(&mut self, algo: CompressionAlgorithm) {
         self.insert_missing_signature_group();
         self.layers.push(IMessageLayer::Compression {
-            algo: algo,
+            algo,
         });
     }
 
@@ -412,7 +508,35 @@ enum IMessageLayer {
 }
 
 /// Helper for signature verification.
+///
+/// This trait abstracts over signature and message structure
+/// verification.  It allows us to provide the [`Verifier`],
+/// [`DetachedVerifier`], and [`Decryptor`] without imposing a policy
+/// on how certificates for signature verification are looked up, or
+/// what message structure is considered acceptable.
+///
+///   [`Verifier`]: struct.Verifier.html
+///   [`DetachedVerifier`]: struct.DetachedVerifier.html
+///   [`Decryptor`]: struct.Decryptor.html
+///
+/// It also allows you to inspect each packet that is processed during
+/// verification or decryption, optionally providing a [`Map`] for
+/// each packet.
+///
+///   [`Map`]: ../map/struct.Map.html
 pub trait VerificationHelper {
+    /// Inspects the message.
+    ///
+    /// Called once per packet.  Can be used to inspect and dump
+    /// packets in encrypted messages.
+    ///
+    /// The default implementation does nothing.
+    fn inspect(&mut self, pp: &PacketParser) -> Result<()> {
+        // Do nothing.
+        let _ = pp;
+        Ok(())
+    }
+
     /// Retrieves the certificates containing the specified keys.
     ///
     /// When implementing this method, you should return as many
@@ -429,7 +553,37 @@ pub trait VerificationHelper {
     /// a subset of them may be sufficient.
     ///
     /// This method will be called at most once per message.
-    fn get_public_keys(&mut self, ids: &[crate::KeyHandle]) -> Result<Vec<Cert>>;
+    ///
+    /// # Examples
+    ///
+    /// This example demonstrates how to look up the certificates for
+    /// the signature verification given the list of signature
+    /// issuers.
+    ///
+    /// ```
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::{KeyHandle, Cert, Result};
+    /// use openpgp::parse::stream::*;
+    /// # fn lookup_cert_by_handle(_: &KeyHandle) -> Result<Cert> {
+    /// #     unimplemented!()
+    /// # }
+    ///
+    /// struct Helper { /* ... */ };
+    /// impl VerificationHelper for Helper {
+    ///     fn get_certs(&mut self, ids: &[KeyHandle]) -> Result<Vec<Cert>> {
+    ///         let mut certs = Vec::new();
+    ///         for id in ids {
+    ///             certs.push(lookup_cert_by_handle(id)?);
+    ///         }
+    ///         Ok(certs)
+    ///     }
+    ///     // ...
+    /// #    fn check(&mut self, structure: MessageStructure) -> Result<()> {
+    /// #        unimplemented!()
+    /// #    }
+    /// }
+    /// ```
+    fn get_certs(&mut self, ids: &[crate::KeyHandle]) -> Result<Vec<Cert>>;
 
     /// Conveys the message structure.
     ///
@@ -449,7 +603,46 @@ pub trait VerificationHelper {
     /// such, any error returned by this function will abort reading,
     /// and the error will be propagated via the `io::Read` operation.
     ///
-    /// This method will be called at most once per message.
+    /// This method will be called exactly once per message.
+    ///
+    /// # Examples
+    ///
+    /// This example demonstrates how to verify that the message is an
+    /// encrypted, optionally compressed, and signed message that has
+    /// at least one valid signature.
+    ///
+    /// ```
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::{KeyHandle, Cert, Result};
+    /// use openpgp::parse::stream::*;
+    ///
+    /// struct Helper { /* ... */ };
+    /// impl VerificationHelper for Helper {
+    /// #    fn get_certs(&mut self, ids: &[KeyHandle]) -> Result<Vec<Cert>> {
+    /// #        unimplemented!();
+    /// #    }
+    ///     fn check(&mut self, structure: MessageStructure) -> Result<()> {
+    ///         for (i, layer) in structure.into_iter().enumerate() {
+    ///             match layer {
+    ///                 MessageLayer::Encryption { .. } if i == 0 => (),
+    ///                 MessageLayer::Compression { .. } if i == 1 => (),
+    ///                 MessageLayer::SignatureGroup { ref results }
+    ///                     if i == 1 || i == 2 =>
+    ///                 {
+    ///                     if ! results.iter().any(|r| r.is_ok()) {
+    ///                         return Err(anyhow::anyhow!(
+    ///                                        "No valid signature"));
+    ///                     }
+    ///                 }
+    ///                 _ => return Err(anyhow::anyhow!(
+    ///                                     "Unexpected message structure")),
+    ///             }
+    ///         }
+    ///         Ok(())
+    ///     }
+    ///     // ...
+    /// }
+    /// ```
     fn check(&mut self, structure: MessageStructure) -> Result<()>;
 }
 
@@ -460,9 +653,9 @@ struct NoDecryptionHelper<V: VerificationHelper> {
 }
 
 impl<V: VerificationHelper> VerificationHelper for NoDecryptionHelper<V> {
-    fn get_public_keys(&mut self, ids: &[crate::KeyHandle]) -> Result<Vec<Cert>>
+    fn get_certs(&mut self, ids: &[crate::KeyHandle]) -> Result<Vec<Cert>>
     {
-        self.v.get_public_keys(ids)
+        self.v.get_certs(ids)
     }
     fn check(&mut self, structure: MessageStructure) -> Result<()>
     {
@@ -474,7 +667,7 @@ impl<V: VerificationHelper> DecryptionHelper for NoDecryptionHelper<V> {
     fn decrypt<D>(&mut self, _: &[PKESK], _: &[SKESK],
                   _: Option<SymmetricAlgorithm>,
                   _: D) -> Result<Option<Fingerprint>>
-        where D: FnMut(SymmetricAlgorithm, &SessionKey) -> Result<()>
+        where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool
     {
         unreachable!("This is not used for verifications")
     }
@@ -485,11 +678,14 @@ impl<V: VerificationHelper> DecryptionHelper for NoDecryptionHelper<V> {
 /// Signature verification requires processing the whole message
 /// first.  Therefore, OpenPGP implementations supporting streaming
 /// operations necessarily must output unverified data.  This has been
-/// a source of problems in the past.  To alleviate this, we buffer up
-/// to 25 megabytes of net message data first, and verify the
-/// signatures if the message fits into our buffer.  Nevertheless it
-/// is important to treat the data as unverified and untrustworthy
-/// until you have seen a positive verification.
+/// a source of problems in the past.  To alleviate this, we buffer
+/// the message first (up to 25 megabytes of net message data by
+/// default, see [`DEFAULT_BUFFER_SIZE`]), and verify the signatures
+/// if the message fits into our buffer.  Nevertheless it is important
+/// to treat the data as unverified and untrustworthy until you have
+/// seen a positive verification.
+///
+///   [`DEFAULT_BUFFER_SIZE`]: constant.DEFAULT_BUFFER_SIZE.html
 ///
 /// For a signature to be considered valid: The signature must have a
 /// `Signature Creation Time` subpacket.  The signature must be alive
@@ -499,106 +695,188 @@ impl<V: VerificationHelper> DecryptionHelper for NoDecryptionHelper<V> {
 /// revoked at the signature creation time, not have ever been hard
 /// revoked, and be signing capable at the signature creation time.
 ///
-/// # Example
+/// # Examples
 ///
 /// ```
-/// extern crate sequoia_openpgp as openpgp;
+/// # fn main() -> sequoia_openpgp::Result<()> {
 /// use std::io::Read;
-/// use openpgp::{KeyID, Cert, Result};
+/// use sequoia_openpgp as openpgp;
+/// use openpgp::{KeyHandle, Cert, Result};
 /// use openpgp::parse::stream::*;
 /// use openpgp::policy::StandardPolicy;
+/// # use sequoia_openpgp::parse::Parse;
+/// # fn lookup_cert_by_handle(_: &KeyHandle) -> Result<Cert> {
+/// #     Cert::from_bytes(
+/// #       &b"-----BEGIN PGP PUBLIC KEY BLOCK-----
+/// #
+/// #          xjMEWlNvABYJKwYBBAHaRw8BAQdA+EC2pvebpEbzPA9YplVgVXzkIG5eK+7wEAez
+/// #          lcBgLJrNMVRlc3R5IE1jVGVzdGZhY2UgKG15IG5ldyBrZXkpIDx0ZXN0eUBleGFt
+/// #          cGxlLm9yZz7CkAQTFggAOBYhBDnRAKtn1b2MBAECBfs3UfFYfa7xBQJaU28AAhsD
+/// #          BQsJCAcCBhUICQoLAgQWAgMBAh4BAheAAAoJEPs3UfFYfa7xJHQBAO4/GABMWUcJ
+/// #          5D/DZ9b+6YiFnysSjCT/gILJgxMgl7uoAPwJherI1pAAh49RnPHBR1IkWDtwzX65
+/// #          CJG8sDyO2FhzDs44BFpTbwASCisGAQQBl1UBBQEBB0B+A0GRHuBgdDX50T1nePjb
+/// #          mKQ5PeqXJbWEtVrUtVJaPwMBCAfCeAQYFggAIBYhBDnRAKtn1b2MBAECBfs3UfFY
+/// #          fa7xBQJaU28AAhsMAAoJEPs3UfFYfa7xzjIBANX2/FgDX3WkmvwpEHg/sn40zACM
+/// #          W2hrBY5x0sZ8H7JlAP47mCfCuRVBqyaePuzKbxLJeLe2BpDdc0n2izMVj8t9Cg==
+/// #          =QetZ
+/// #          -----END PGP PUBLIC KEY BLOCK-----"[..])
+/// # }
 ///
-/// # fn main() { f().unwrap(); }
-/// # fn f() -> Result<()> {
 /// let p = &StandardPolicy::new();
 ///
 /// // This fetches keys and computes the validity of the verification.
 /// struct Helper {};
 /// impl VerificationHelper for Helper {
-///     fn get_public_keys(&mut self, _ids: &[openpgp::KeyHandle]) -> Result<Vec<Cert>> {
-///         Ok(Vec::new()) // Feed the Certs to the verifier here...
+///     fn get_certs(&mut self, ids: &[KeyHandle]) -> Result<Vec<Cert>> {
+///         let mut certs = Vec::new();
+///         for id in ids {
+///             certs.push(lookup_cert_by_handle(id)?);
+///         }
+///         Ok(certs)
 ///     }
+///
 ///     fn check(&mut self, structure: MessageStructure) -> Result<()> {
-///         Ok(()) // Implement your verification policy here.
+///         for (i, layer) in structure.into_iter().enumerate() {
+///             match layer {
+///                 MessageLayer::Encryption { .. } if i == 0 => (),
+///                 MessageLayer::Compression { .. } if i == 1 => (),
+///                 MessageLayer::SignatureGroup { ref results } => {
+///                     if ! results.iter().any(|r| r.is_ok()) {
+///                         return Err(anyhow::anyhow!(
+///                                        "No valid signature"));
+///                     }
+///                 }
+///                 _ => return Err(anyhow::anyhow!(
+///                                     "Unexpected message structure")),
+///             }
+///         }
+///         Ok(())
 ///     }
 /// }
 ///
 /// let message =
 ///    b"-----BEGIN PGP MESSAGE-----
 ///
-///      xA0DAAoWBpwMNI3YLBkByxJiAAAAAABIZWxsbyBXb3JsZCHCdQQAFgoAJwWCW37P
-///      8RahBI6MM/pGJjN5dtl5eAacDDSN2CwZCZAGnAw0jdgsGQAAeZQA/2amPbBXT96Q
-///      O7PFms9DRuehsVVrFkaDtjN2WSxI4RGvAQDq/pzNdCMpy/Yo7AZNqZv5qNMtDdhE
-///      b2WH5lghfKe/AQ==
-///      =DjuO
-///      -----END PGP MESSAGE-----";
+///      xA0DAAoW+zdR8Vh9rvEByxJiAAAAAABIZWxsbyBXb3JsZCHCdQQAFgoABgWCXrLl
+///      AQAhCRD7N1HxWH2u8RYhBDnRAKtn1b2MBAECBfs3UfFYfa7xRUsBAJaxkU/RCstf
+///      UD7TM30IorO1Mb9cDa/hPRxyzipulT55AQDN1m9LMqi9yJDjHNHwYYVwxDcg+pLY
+///      YmAFv/UfO0vYBw==
+///      =+l94
+///      -----END PGP MESSAGE-----
+///      ";
 ///
 /// let h = Helper {};
-/// let mut v = Verifier::from_bytes(p, message, h, None)?;
+/// let mut v = VerifierBuilder::from_bytes(&message[..])?
+///     .with_policy(p, None, h)?;
 ///
 /// let mut content = Vec::new();
 /// v.read_to_end(&mut content)?;
 /// assert_eq!(content, b"Hello World!");
-/// # Ok(())
-/// # }
+/// # Ok(()) }
 pub struct Verifier<'a, H: VerificationHelper> {
     decryptor: Decryptor<'a, NoDecryptionHelper<H>>,
 }
 
-impl<'a, H: VerificationHelper> Verifier<'a, H> {
-    /// Creates a `Verifier` from the given reader.
-    ///
-    /// Signature verifications are done relative to time `t`, or the
-    /// current time, if `t` is `None`.
-    pub fn from_reader<R, T>(policy: &'a dyn Policy, reader: R, helper: H, t: T)
-        -> Result<Verifier<'a, H>>
-        where R: io::Read + 'a, T: Into<Option<time::SystemTime>>
+/// A builder for `Verifier`.
+///
+/// This allows the customization of [`Verifier`], which can
+/// be built using [`VerifierBuilder::with_policy`].
+///
+///   [`Verifier`]: struct.Verifier.html
+///   [`VerifierBuilder::with_policy`]: struct.VerifierBuilder.html#method.with_policy
+pub struct VerifierBuilder<'a> {
+    message: Box<dyn BufferedReader<Cookie> + 'a>,
+    buffer_size: usize,
+    mapping: bool,
+}
+
+impl<'a> Parse<'a, VerifierBuilder<'a>>
+    for VerifierBuilder<'a>
+{
+    fn from_reader<R>(reader: R) -> Result<VerifierBuilder<'a>>
+        where R: io::Read + 'a,
     {
-        // Do not eagerly map `t` to the current time.
-        let t = t.into();
-        Verifier::from_buffered_reader(
-            policy,
-            Box::new(buffered_reader::Generic::with_cookie(reader, None,
-                                                        Default::default())),
-            helper, t)
+        VerifierBuilder::new(buffered_reader::Generic::with_cookie(
+            reader, None, Default::default()))
     }
 
-    /// Creates a `Verifier` from the given file.
-    ///
-    /// Signature verifications are done relative to time `t`, or the
-    /// current time, if `t` is `None`.
-    pub fn from_file<P, T>(policy: &'a dyn Policy, path: P, helper: H, t: T)
-        -> Result<Verifier<'a, H>>
+    fn from_file<P>(path: P) -> Result<VerifierBuilder<'a>>
         where P: AsRef<Path>,
-              T: Into<Option<time::SystemTime>>
     {
-        // Do not eagerly map `t` to the current time.
-        let t = t.into();
-        Verifier::from_buffered_reader(
-            policy,
-            Box::new(buffered_reader::File::with_cookie(path,
-                                                     Default::default())?),
-            helper, t)
+        VerifierBuilder::new(buffered_reader::File::with_cookie(
+            path, Default::default())?)
     }
 
-    /// Creates a `Verifier` from the given buffer.
+    fn from_bytes<D>(data: &'a D) -> Result<VerifierBuilder<'a>>
+        where D: AsRef<[u8]> + ?Sized,
+    {
+        VerifierBuilder::new(buffered_reader::Memory::with_cookie(
+            data.as_ref(), Default::default()))
+    }
+}
+
+impl<'a> VerifierBuilder<'a> {
+    fn new<B>(signatures: B) -> Result<Self>
+        where B: buffered_reader::BufferedReader<Cookie> + 'a
+    {
+        Ok(VerifierBuilder {
+            message: Box::new(signatures),
+            buffer_size: DEFAULT_BUFFER_SIZE,
+            mapping: false,
+        })
+    }
+
+    /// Changes the amount of buffered data.
     ///
-    /// Signature verifications are done relative to time `t`, or the
-    /// current time, if `t` is `None`.
-    pub fn from_bytes<T>(policy: &'a dyn Policy,
-                         bytes: &'a [u8], helper: H, t: T)
-        -> Result<Verifier<'a, H>>
-        where T: Into<Option<time::SystemTime>>
-    {
-        // Do not eagerly map `t` to the current time.
-        let t = t.into();
-        Verifier::from_buffered_reader(
-            policy,
-            Box::new(buffered_reader::Memory::with_cookie(bytes,
-                                                       Default::default())),
-            helper, t)
+    /// By default, we buffer up to 25 megabytes of net message data
+    /// (see [`DEFAULT_BUFFER_SIZE`]).  This changes the default.
+    ///
+    ///   [`DEFAULT_BUFFER_SIZE`]: constant.DEFAULT_BUFFER_SIZE.html
+    pub fn buffer_size(mut self, size: usize) -> Self {
+        self.buffer_size = size;
+        self
     }
 
+    /// Enables mapping.
+    ///
+    /// If mapping is enabled, the packet parser will create a [`Map`]
+    /// of the packets that can be inspected in
+    /// [`VerificationHelper::inspect`].  Note that this buffers the
+    /// packets contents, and is not recommended unless you know that
+    /// the packets are small.
+    ///
+    ///   [`Map`]: ../map/struct.Map.html
+    ///   [`VerificationHelper::inspect`]: trait.VerificationHelper.html#tymethod.inspect
+    pub fn mapping(mut self, enabled: bool) -> Self {
+        self.mapping = enabled;
+        self
+    }
+
+    /// Creates the `Verifier`.
+    ///
+    /// Signature verifications are done under the given `policy` and
+    /// relative to time `time`, or the current time, if `time` is
+    /// `None`.  `helper` is the [`VerificationHelper`] to use.
+    ///
+    ///   [`VerificationHelper`]: trait.VerificationHelper.html
+    pub fn with_policy<T, H>(self, policy: &'a dyn Policy, time: T, helper: H)
+                             -> Result<Verifier<'a, H>>
+        where H: VerificationHelper,
+              T: Into<Option<time::SystemTime>>,
+    {
+        // Do not eagerly map `t` to the current time.
+        let t = time.into();
+        Ok(Verifier {
+            decryptor: Decryptor::from_buffered_reader(
+                policy,
+                self.message,
+                NoDecryptionHelper { v: helper, },
+                t, Mode::Verify, self.buffer_size, self.mapping)?,
+        })
+    }
+}
+
+impl<'a, H: VerificationHelper> Verifier<'a, H> {
     /// Returns a reference to the helper.
     pub fn helper_ref(&self) -> &H {
         &self.decryptor.helper_ref().v
@@ -614,28 +892,14 @@ impl<'a, H: VerificationHelper> Verifier<'a, H> {
         self.decryptor.into_helper().v
     }
 
-    /// Returns true if the whole message has been processed and the verification result is ready.
-    /// If the function returns false the message did not fit into the internal buffer and
-    /// **unverified** data must be `read()` from the instance until EOF.
-    pub fn message_processed(&self) -> bool {
-        // oppr is only None after we've processed the packet sequence.
-        self.decryptor.message_processed()
-    }
-
-    /// Creates the `Verifier`, and buffers the data up to `BUFFER_SIZE`.
+    /// Returns true if the whole message has been processed and the
+    /// verification result is ready.
     ///
-    /// Signature verifications are done relative to time `t`, or the
-    /// current time, if `t` is `None`.
-    pub(crate) fn from_buffered_reader<T>(policy: &'a dyn Policy,
-                                          bio: Box<dyn BufferedReader<Cookie> + 'a>,
-                                          helper: H, time: T)
-        -> Result<Verifier<'a, H>>
-        where T: Into<Option<time::SystemTime>>
-    {
-        Ok(Verifier {
-            decryptor: Decryptor::from_buffered_reader(
-                policy, bio, NoDecryptionHelper { v: helper, }, time, false)?,
-        })
+    /// If the function returns false the message did not fit into the
+    /// internal buffer and **unverified** data must be `read()` from
+    /// the instance until EOF.
+    pub fn message_processed(&self) -> bool {
+        self.decryptor.message_processed()
     }
 }
 
@@ -645,235 +909,25 @@ impl<'a, H: VerificationHelper> io::Read for Verifier<'a, H> {
     }
 }
 
-/// Transforms a detached signature and content into a signed message
-/// on the fly.
-struct Transformer<'a> {
-    state: TransformationState,
-    sigs: Vec<Signature>,
-    reader: Box<dyn BufferedReader<()> + 'a>,
-    buffer: Vec<u8>,
-}
-
-#[derive(PartialEq, Debug)]
-enum TransformationState {
-    Data,
-    Sigs,
-    Done,
-}
-
-impl<'a> Transformer<'a> {
-    fn new<'b>(signatures: Box<dyn BufferedReader<Cookie> + 'b>,
-               mut data: Box<dyn BufferedReader<()> + 'a>)
-               -> Result<Transformer<'a>>
-    {
-        let mut sigs = Vec::new();
-
-        // Gather signatures.
-        let mut ppr = PacketParser::from_buffered_reader(signatures)?;
-        while let PacketParserResult::Some(pp) = ppr {
-            let (packet, ppr_) = pp.next()?;
-            ppr = ppr_;
-
-            match packet {
-                Packet::Signature(sig) => sigs.push(sig),
-                _ => return Err(Error::InvalidArgument(
-                    format!("Not a signature packet: {:?}",
-                            packet.tag())).into()),
-            }
-        }
-
-        let mut buf = Vec::new();
-        for (i, sig) in sigs.iter().rev().enumerate() {
-            let mut ops = OnePassSig3::try_from(sig)?;
-            if i == sigs.len() - 1 {
-                ops.set_last(true);
-            }
-
-            Packet::OnePassSig(ops.into()).serialize(&mut buf)?;
-        }
-
-        // We need to decide whether to use partial body encoding or
-        // not.  For partial body encoding, the first chunk must be at
-        // least 512 bytes long.  Try to read 512 - HEADER_LEN bytes
-        // from data.
-        let state = {
-            const HEADER_LEN: usize = 6;
-            let data_prefix = data.data_consume(512 - HEADER_LEN)?;
-            if data_prefix.len() < 512 - HEADER_LEN {
-                // Too little data for a partial body encoding, produce a
-                // Literal Data Packet header of known length.
-                CTB::new(Tag::Literal).serialize(&mut buf)?;
-
-                let len = BodyLength::Full((data_prefix.len() + HEADER_LEN) as u32);
-                len.serialize(&mut buf)?;
-
-                let lit = Literal::new(DataFormat::Binary);
-                lit.serialize_headers(&mut buf, false)?;
-
-                // Copy the data, then proceed directly to the signatures.
-                buf.extend_from_slice(data_prefix);
-                TransformationState::Sigs
-            } else {
-                // Produce a Literal Data Packet header with partial
-                // length encoding.
-                CTB::new(Tag::Literal).serialize(&mut buf)?;
-
-                let len = BodyLength::Partial(512);
-                len.serialize(&mut buf)?;
-
-                let lit = Literal::new(DataFormat::Binary);
-                lit.serialize_headers(&mut buf, false)?;
-
-                // Copy the prefix up to the first chunk, then keep in the
-                // data state.
-                buf.extend_from_slice(&data_prefix[..512 - HEADER_LEN]);
-                TransformationState::Data
-            }
-        };
-
-        Ok(Self {
-            state: state,
-            sigs: sigs,
-            reader: data,
-            buffer: buf,
-        })
-    }
-
-    fn read_helper(&mut self, mut buf: &mut [u8]) -> Result<usize> {
-        // Keep track of the bytes written into `buf`.
-        let mut bytes_read = 0;
-
-        if self.buffer.is_empty() {
-            self.state = match self.state {
-                TransformationState::Data => {
-                    // Find the largest power of two equal or smaller
-                    // than the size of buf.
-                    let mut s = buf.len().next_power_of_two();
-                    if ! buf.len().is_power_of_two() {
-                        s >>= 1;
-                    }
-
-                    // Cap it.  Drop once we avoid the copies below.
-                    const MAX_CHUNK_SIZE: usize = 1 << 22; // 4 megabytes.
-                    if s > MAX_CHUNK_SIZE {
-                        s = MAX_CHUNK_SIZE;
-                    }
-
-                    assert!(s <= ::std::u32::MAX as usize);
-
-                    // Try to read that amount into the buffer.
-                    let data = self.reader.data_consume(s)?;
-                    let mut data = &data[..cmp::min(s, data.len())];
-
-                    // Short read?  The end is nigh.
-                    let short_read = data.len() < s;
-                    let len = if short_read {
-                        BodyLength::Full(data.len() as u32)
-                    } else {
-                        BodyLength::Partial(data.len() as u32)
-                    };
-                    len.serialize(&mut self.buffer)?;
-                    // Offset into `self.buffer`.
-                    let mut off = self.buffer.len();
-
-                    // Try to copy the length directly into the read
-                    // buffer.
-                    if off < buf.len() {
-                        &mut buf[..off].copy_from_slice(&self.buffer[..off]);
-                        buf = &mut buf[off..];
-                        bytes_read += off;
-                        off = 0;
-
-                        // Try to copy as much as possible of `data` into
-                        // the read buffer.
-                        let n = cmp::min(buf.len(), data.len());
-                        &mut buf[..n].copy_from_slice(&data[..n]);
-                        data = &data[n..];
-                        bytes_read += n;
-                    }
-
-                    // Copy the rest.
-                    // XXX: Could avoid the copy here.
-                    self.buffer.resize(off + data.len(), 0);
-                    &mut self.buffer[off..].copy_from_slice(data);
-
-                    if short_read {
-                        TransformationState::Sigs
-                    } else {
-                        TransformationState::Data
-                    }
-                },
-
-                TransformationState::Sigs => {
-                    for sig in self.sigs.drain(..) {
-                        Packet::Signature(sig).serialize(&mut self.buffer)?;
-                    }
-
-                    TransformationState::Done
-                },
-
-                TransformationState::Done =>
-                    TransformationState::Done,
-            };
-        }
-
-        if bytes_read > 0 {
-            // We (partially?) satisfied the read request.  Return
-            // now, and leave `self.buffer` for the next read
-            // invocation.
-            return Ok(bytes_read);
-        }
-
-        let n = cmp::min(buf.len(), self.buffer.len());
-        &mut buf[..n].copy_from_slice(&self.buffer[..n]);
-        crate::vec_drain_prefix(&mut self.buffer, n);
-        Ok(n)
-    }
-}
-
-impl<'a> io::Read for Transformer<'a> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        match self.read_helper(buf) {
-            Ok(n) => Ok(n),
-            Err(e) => match e.downcast::<io::Error>() {
-                // An io::Error.  Pass as-is.
-                Ok(e) => Err(e),
-                // A failure.  Wrap it.
-                Err(e) => Err(io::Error::new(io::ErrorKind::Other, e)),
-            },
-        }
-    }
-}
-
 
 /// Verifies a detached signature.
 ///
-/// Signature verification requires processing the whole message
-/// first.  Therefore, OpenPGP implementations supporting streaming
-/// operations necessarily must output unverified data.  This has been
-/// a source of problems in the past.  To alleviate this, we buffer up
-/// to 25 megabytes of net message data first, and verify the
-/// signatures if the message fits into our buffer.  Nevertheless it
-/// is important to treat the data as unverified and untrustworthy
-/// until you have seen a positive verification.
-///
-/// # Example
+/// # Examples
 ///
 /// ```
-/// extern crate sequoia_openpgp as openpgp;
+/// # fn main() -> sequoia_openpgp::Result<()> {
 /// use std::io::{self, Read};
-/// use openpgp::{KeyID, Cert, Result};
-/// use openpgp::parse::stream::*;
+/// use sequoia_openpgp as openpgp;
+/// use openpgp::{KeyHandle, Cert, Result};
+/// use openpgp::parse::{Parse, stream::*};
 /// use sequoia_openpgp::policy::StandardPolicy;
 ///
-/// # fn main() { f().unwrap(); }
-/// # fn f() -> Result<()> {
 /// let p = &StandardPolicy::new();
 ///
 /// // This fetches keys and computes the validity of the verification.
 /// struct Helper {};
 /// impl VerificationHelper for Helper {
-///     fn get_public_keys(&mut self, _ids: &[openpgp::KeyHandle]) -> Result<Vec<Cert>> {
+///     fn get_certs(&mut self, _ids: &[KeyHandle]) -> Result<Vec<Cert>> {
 ///         Ok(Vec::new()) // Feed the Certs to the verifier here...
 ///     }
 ///     fn check(&mut self, structure: MessageStructure) -> Result<()> {
@@ -892,134 +946,185 @@ impl<'a> io::Read for Transformer<'a> {
 ///
 /// let data = b"Hello World!";
 /// let h = Helper {};
-/// let mut v = DetachedVerifier::from_bytes(p, signature, data, h, None)?;
-///
-/// let mut content = Vec::new();
-/// v.read_to_end(&mut content)?;
-/// assert_eq!(content, b"Hello World!");
-/// # Ok(())
-/// # }
-pub struct DetachedVerifier {
+/// let mut v = DetachedVerifierBuilder::from_bytes(&signature[..])?
+///     .with_policy(p, None, h)?;
+/// v.verify_bytes(data)?;
+/// # Ok(()) }
+pub struct DetachedVerifier<'a, H: VerificationHelper> {
+    decryptor: Decryptor<'a, NoDecryptionHelper<H>>,
 }
 
-impl DetachedVerifier {
-    /// Creates a `Verifier` from the given readers.
-    ///
-    /// Signature verifications are done relative to time `t`, or the
-    /// current time, if `t` is `None`.
-    pub fn from_reader<'a, 's, H, R, S, T>(policy: &'a dyn Policy,
-                                           signature_reader: S, reader: R,
-                                           helper: H, t: T)
-        -> Result<Verifier<'a, H>>
-        where R: io::Read + 'a, S: io::Read + 's, H: VerificationHelper,
-              T: Into<Option<time::SystemTime>>
+/// A builder for `DetachedVerifier`.
+///
+/// This allows the customization of [`DetachedVerifier`], which can
+/// be built using [`DetachedVerifierBuilder::with_policy`].
+///
+///   [`DetachedVerifier`]: struct.DetachedVerifier.html
+///   [`DetachedVerifierBuilder::with_policy`]: struct.DetachedVerifierBuilder.html#method.with_policy
+pub struct DetachedVerifierBuilder<'a> {
+    signatures: Box<dyn BufferedReader<Cookie> + 'a>,
+    mapping: bool,
+}
+
+impl<'a> Parse<'a, DetachedVerifierBuilder<'a>>
+    for DetachedVerifierBuilder<'a>
+{
+    fn from_reader<R>(reader: R) -> Result<DetachedVerifierBuilder<'a>>
+        where R: io::Read + 'a,
     {
-        // Do not eagerly map `t` to the current time.
-        let t = t.into();
-        Self::from_buffered_reader(
-            policy,
-            Box::new(buffered_reader::Generic::with_cookie(signature_reader, None,
-                                                        Default::default())),
-            Box::new(buffered_reader::Generic::new(reader, None)),
-            helper, t)
+        DetachedVerifierBuilder::new(buffered_reader::Generic::with_cookie(
+            reader, None, Default::default()))
     }
 
-    /// Creates a `Verifier` from the given files.
-    ///
-    /// Signature verifications are done relative to time `t`, or the
-    /// current time, if `t` is `None`.
-    pub fn from_file<'a, H, P, S, T>(policy: &'a dyn Policy,
-                                     signature_path: S, path: P,
-                                     helper: H, t: T)
-        -> Result<Verifier<'a, H>>
-        where P: AsRef<Path>, S: AsRef<Path>, H: VerificationHelper,
-              T: Into<Option<time::SystemTime>>
+    fn from_file<P>(path: P) -> Result<DetachedVerifierBuilder<'a>>
+        where P: AsRef<Path>,
     {
-        // Do not eagerly map `t` to the current time.
-        let t = t.into();
-        Self::from_buffered_reader(
-            policy,
-            Box::new(buffered_reader::File::with_cookie(signature_path,
-                                                     Default::default())?),
-            Box::new(buffered_reader::File::open(path)?),
-            helper, t)
+        DetachedVerifierBuilder::new(buffered_reader::File::with_cookie(
+            path, Default::default())?)
     }
 
-    /// Creates a `Verifier` from the given buffers.
-    ///
-    /// Signature verifications are done relative to time `t`, or the
-    /// current time, if `t` is `None`.
-    pub fn from_bytes<'a, 's, H, T>(policy: &'a dyn Policy,
-                                    signature_bytes: &'s [u8], bytes: &'a [u8],
-                                    helper: H, t: T)
-        -> Result<Verifier<'a, H>>
-        where H: VerificationHelper, T: Into<Option<time::SystemTime>>
+    fn from_bytes<D>(data: &'a D) -> Result<DetachedVerifierBuilder<'a>>
+        where D: AsRef<[u8]> + ?Sized,
     {
-        // Do not eagerly map `t` to the current time.
-        let t = t.into();
-        Self::from_buffered_reader(
-            policy,
-            Box::new(buffered_reader::Memory::with_cookie(signature_bytes,
-                                                          Default::default())),
-            Box::new(buffered_reader::Memory::new(bytes)),
-            helper, t)
+        DetachedVerifierBuilder::new(buffered_reader::Memory::with_cookie(
+            data.as_ref(), Default::default()))
+    }
+}
+
+impl<'a> DetachedVerifierBuilder<'a> {
+    fn new<B>(signatures: B) -> Result<Self>
+        where B: buffered_reader::BufferedReader<Cookie> + 'a
+    {
+        Ok(DetachedVerifierBuilder {
+            signatures: Box::new(signatures),
+            mapping: false,
+        })
     }
 
-    /// Creates the `Verifier`, and buffers the data up to `BUFFER_SIZE`.
+    /// Enables mapping.
     ///
-    /// Signature verifications are done relative to time `t`, or the
-    /// current time, if `t` is `None`.
-    pub(crate) fn from_buffered_reader<'a, 's, H, T>
-        (policy: &'a dyn Policy,
-         signature_bio: Box<dyn BufferedReader<Cookie> + 's>,
-         reader: Box<dyn BufferedReader<()> + 'a>,
-         helper: H, t: T)
-         -> Result<Verifier<'a, H>>
+    /// If mapping is enabled, the packet parser will create a [`Map`]
+    /// of the packets that can be inspected in
+    /// [`VerificationHelper::inspect`].  Note that this buffers the
+    /// packets contents, and is not recommended unless you know that
+    /// the packets are small.
+    ///
+    ///   [`Map`]: ../map/struct.Map.html
+    ///   [`VerificationHelper::inspect`]: trait.VerificationHelper.html#tymethod.inspect
+    pub fn mapping(mut self, enabled: bool) -> Self {
+        self.mapping = enabled;
+        self
+    }
+
+    /// Creates the `DetachedVerifier`.
+    ///
+    /// Signature verifications are done under the given `policy` and
+    /// relative to time `time`, or the current time, if `time` is
+    /// `None`.  `helper` is the [`VerificationHelper`] to use.
+    ///
+    ///   [`VerificationHelper`]: trait.VerificationHelper.html
+    pub fn with_policy<T, H>(self, policy: &'a dyn Policy, time: T, helper: H)
+                             -> Result<DetachedVerifier<'a, H>>
         where H: VerificationHelper,
-              T: Into<Option<time::SystemTime>>
+              T: Into<Option<time::SystemTime>>,
     {
         // Do not eagerly map `t` to the current time.
-        let t = t.into();
-        Verifier::from_buffered_reader(
-            policy,
-            Box::new(buffered_reader::Generic::with_cookie(
-                Transformer::new(signature_bio, reader)?,
-                None, Default::default())),
-            helper, t)
+        let t = time.into();
+        Ok(DetachedVerifier {
+            decryptor: Decryptor::from_buffered_reader(
+                policy,
+                self.signatures,
+                NoDecryptionHelper { v: helper, },
+                t, Mode::VerifyDetached, 0, self.mapping)?,
+        })
     }
+}
+
+impl<'a, H: VerificationHelper> DetachedVerifier<'a, H> {
+    /// Verifies the given data.
+    pub fn verify_reader<R: io::Read>(&mut self, reader: R) -> Result<()> {
+        self.verify(buffered_reader::Generic::with_cookie(
+            reader, None, Default::default()).as_boxed())
+    }
+
+    /// Verifies the given data.
+    pub fn verify_file<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
+        self.verify(buffered_reader::File::with_cookie(
+            path, Default::default())?.as_boxed())
+    }
+
+    /// Verifies the given data.
+    pub fn verify_bytes<B: AsRef<[u8]>>(&mut self, buf: B) -> Result<()> {
+        self.verify(buffered_reader::Memory::with_cookie(
+            buf.as_ref(), Default::default()).as_boxed())
+    }
+
+    /// Verifies the given data.
+    fn verify<R>(&mut self, reader: R) -> Result<()>
+        where R: BufferedReader<Cookie>,
+    {
+        self.decryptor.verify_detached(reader)
+    }
+
+    /// Returns a reference to the helper.
+    pub fn helper_ref(&self) -> &H {
+        &self.decryptor.helper_ref().v
+    }
+
+    /// Returns a mutable reference to the helper.
+    pub fn helper_mut(&mut self) -> &mut H {
+        &mut self.decryptor.helper_mut().v
+    }
+
+    /// Recovers the helper.
+    pub fn into_helper(self) -> H {
+        self.decryptor.into_helper().v
+    }
+}
+
+
+/// Modes of operation for the Decryptor.
+#[derive(Debug, PartialEq, Eq)]
+enum Mode {
+    Decrypt,
+    Verify,
+    VerifyDetached,
 }
 
 /// Decrypts and verifies an encrypted and optionally signed OpenPGP
 /// message.
 ///
-/// Signature verification requires processing the whole message
-/// first.  Therefore, OpenPGP implementations supporting streaming
-/// operations necessarily must output unverified data.  This has been
-/// a source of problems in the past.  To alleviate this, we buffer up
-/// to 25 megabytes of net message data first, and verify the
-/// signatures if the message fits into our buffer.  Nevertheless it
-/// is important to treat the data as unverified and untrustworthy
-/// until you have seen a positive verification.
+/// Signature verification and detection of ciphertext tampering
+/// requires processing the whole message first.  Therefore, OpenPGP
+/// implementations supporting streaming operations necessarily must
+/// output unverified data.  This has been a source of problems in the
+/// past.  To alleviate this, we buffer the message first (up to 25
+/// megabytes of net message data by default, see
+/// [`DEFAULT_BUFFER_SIZE`]), and verify the signatures if the message
+/// fits into our buffer.  Nevertheless it is important to treat the
+/// data as unverified and untrustworthy until you have seen a
+/// positive verification.
 ///
-/// # Example
+///   [`DEFAULT_BUFFER_SIZE`]: constant.DEFAULT_BUFFER_SIZE.html
+///
+/// # Examples
 ///
 /// ```
-/// extern crate sequoia_openpgp as openpgp;
+/// # fn main() -> sequoia_openpgp::Result<()> {
 /// use std::io::Read;
+/// use sequoia_openpgp as openpgp;
 /// use openpgp::crypto::SessionKey;
 /// use openpgp::types::SymmetricAlgorithm;
 /// use openpgp::{KeyID, Cert, Result, packet::{Key, PKESK, SKESK}};
-/// use openpgp::parse::stream::*;
+/// use openpgp::parse::{Parse, stream::*};
 /// use sequoia_openpgp::policy::StandardPolicy;
 ///
-/// # fn main() { f().unwrap(); }
-/// # fn f() -> Result<()> {
 /// let p = &StandardPolicy::new();
 ///
 /// // This fetches keys and computes the validity of the verification.
 /// struct Helper {};
 /// impl VerificationHelper for Helper {
-///     fn get_public_keys(&mut self, _ids: &[openpgp::KeyHandle]) -> Result<Vec<Cert>> {
+///     fn get_certs(&mut self, _ids: &[openpgp::KeyHandle]) -> Result<Vec<Cert>> {
 ///         Ok(Vec::new()) // Feed the Certs to the verifier here...
 ///     }
 ///     fn check(&mut self, structure: MessageStructure) -> Result<()> {
@@ -1030,11 +1135,11 @@ impl DetachedVerifier {
 ///     fn decrypt<D>(&mut self, _: &[PKESK], skesks: &[SKESK],
 ///                   _sym_algo: Option<SymmetricAlgorithm>,
 ///                   mut decrypt: D) -> Result<Option<openpgp::Fingerprint>>
-///         where D: FnMut(SymmetricAlgorithm, &SessionKey) -> Result<()>
+///         where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool
 ///     {
 ///         skesks[0].decrypt(&"streng geheim".into())
-///             .and_then(|(algo, session_key)| decrypt(algo, &session_key))
-///             .map(|_| None)
+///             .map(|(algo, session_key)| decrypt(algo, &session_key));
+///         Ok(None)
 ///     }
 /// }
 ///
@@ -1048,24 +1153,29 @@ impl DetachedVerifier {
 ///      -----END PGP MESSAGE-----";
 ///
 /// let h = Helper {};
-/// let mut v = Decryptor::from_bytes(p, message, h, None)?;
+/// let mut v = DecryptorBuilder::from_bytes(&message[..])?
+///     .with_policy(p, None, h)?;
 ///
 /// let mut content = Vec::new();
 /// v.read_to_end(&mut content)?;
 /// assert_eq!(content, b"Hello World!");
-/// # Ok(())
-/// # }
+/// # Ok(()) }
 pub struct Decryptor<'a, H: VerificationHelper + DecryptionHelper> {
     helper: H,
     certs: Vec<Cert>,
     oppr: Option<PacketParserResult<'a>>,
     identity: Option<Fingerprint>,
     structure: IMessageStructure,
-    reserve: Option<Vec<u8>>,
 
-    /// Whether or not we shall decrypt (note: Verifier is implemented
-    /// using Decryptor).
-    decrypt: bool,
+    /// We want to hold back some data until the signatures checked
+    /// out.  We buffer this here, cursor is the offset of unread
+    /// bytes in the buffer.
+    buffer_size: usize,
+    reserve: Option<Vec<u8>>,
+    cursor: usize,
+
+    /// The mode of operation.
+    mode: Mode,
 
     /// Signature verification relative to this time.
     ///
@@ -1094,98 +1204,260 @@ pub struct Decryptor<'a, H: VerificationHelper + DecryptionHelper> {
     policy: &'a dyn Policy,
 }
 
+/// A builder for `Decryptor`.
+///
+/// This allows the customization of [`Decryptor`], which can
+/// be built using [`DecryptorBuilder::with_policy`].
+///
+///   [`Decryptor`]: struct.Decryptor.html
+///   [`DecryptorBuilder::with_policy`]: struct.DecryptorBuilder.html#method.with_policy
+pub struct DecryptorBuilder<'a> {
+    message: Box<dyn BufferedReader<Cookie> + 'a>,
+    buffer_size: usize,
+    mapping: bool,
+}
+
+impl<'a> Parse<'a, DecryptorBuilder<'a>>
+    for DecryptorBuilder<'a>
+{
+    fn from_reader<R>(reader: R) -> Result<DecryptorBuilder<'a>>
+        where R: io::Read + 'a,
+    {
+        DecryptorBuilder::new(buffered_reader::Generic::with_cookie(
+            reader, None, Default::default()))
+    }
+
+    fn from_file<P>(path: P) -> Result<DecryptorBuilder<'a>>
+        where P: AsRef<Path>,
+    {
+        DecryptorBuilder::new(buffered_reader::File::with_cookie(
+            path, Default::default())?)
+    }
+
+    fn from_bytes<D>(data: &'a D) -> Result<DecryptorBuilder<'a>>
+        where D: AsRef<[u8]> + ?Sized,
+    {
+        DecryptorBuilder::new(buffered_reader::Memory::with_cookie(
+            data.as_ref(), Default::default()))
+    }
+}
+
+impl<'a> DecryptorBuilder<'a> {
+    fn new<B>(signatures: B) -> Result<Self>
+        where B: buffered_reader::BufferedReader<Cookie> + 'a
+    {
+        Ok(DecryptorBuilder {
+            message: Box::new(signatures),
+            buffer_size: DEFAULT_BUFFER_SIZE,
+            mapping: false,
+        })
+    }
+
+    /// Changes the amount of buffered data.
+    ///
+    /// By default, we buffer up to 25 megabytes of net message data
+    /// (see [`DEFAULT_BUFFER_SIZE`]).  This changes the default.
+    ///
+    ///   [`DEFAULT_BUFFER_SIZE`]: constant.DEFAULT_BUFFER_SIZE.html
+    pub fn buffer_size(mut self, size: usize) -> Self {
+        self.buffer_size = size;
+        self
+    }
+
+    /// Enables mapping.
+    ///
+    /// If mapping is enabled, the packet parser will create a [`Map`]
+    /// of the packets that can be inspected in
+    /// [`VerificationHelper::inspect`].  Note that this buffers the
+    /// packets contents, and is not recommended unless you know that
+    /// the packets are small.
+    ///
+    ///   [`Map`]: ../map/struct.Map.html
+    ///   [`VerificationHelper::inspect`]: trait.VerificationHelper.html#tymethod.inspect
+    pub fn mapping(mut self, enabled: bool) -> Self {
+        self.mapping = enabled;
+        self
+    }
+
+    /// Creates the `Decryptor`.
+    ///
+    /// Signature verifications are done under the given `policy` and
+    /// relative to time `time`, or the current time, if `time` is
+    /// `None`.  `helper` is the [`VerificationHelper`] and
+    /// [`DecryptionHelper`] to use.
+    ///
+    ///   [`VerificationHelper`]: trait.VerificationHelper.html
+    ///   [`DecryptionHelper`]: trait.DecryptionHelper.html
+    pub fn with_policy<T, H>(self, policy: &'a dyn Policy, time: T, helper: H)
+                             -> Result<Decryptor<'a, H>>
+        where H: VerificationHelper + DecryptionHelper,
+              T: Into<Option<time::SystemTime>>,
+    {
+        // Do not eagerly map `t` to the current time.
+        let t = time.into();
+        Decryptor::from_buffered_reader(
+            policy,
+            self.message,
+            helper,
+            t, Mode::Decrypt, self.buffer_size, self.mapping)
+    }
+}
+
 /// Helper for decrypting messages.
+///
+/// This trait abstracts over session key decryption.  It allows us to
+/// provide the [`Decryptor`] without imposing any policy on how the
+/// session key is decrypted.
+///
+///   [`Decryptor`]: struct.Decryptor.html
 pub trait DecryptionHelper {
-    /// Turns mapping on or off.
-    ///
-    /// If this function returns true, the packet parser will create a
-    /// map of the packets.  Note that this buffers the packets
-    /// contents, and is not recommended unless you know that the
-    /// packets are small.  The default implementation returns false.
-    fn mapping(&self) -> bool {
-        false
-    }
-
-    /// Inspects the message.
-    ///
-    /// Called once per packet.  Can be used to dump packets in
-    /// encrypted messages.  The default implementation does nothing.
-    fn inspect(&mut self, pp: &PacketParser) -> Result<()> {
-        // Do nothing.
-        let _ = pp;
-        Ok(())
-    }
-
     /// Decrypts the message.
     ///
-    /// This function is called with every `PKESK` and `SKESK` found
-    /// in the message.  The implementation must decrypt the symmetric
-    /// algorithm and session key from one of the PKESK packets, the
-    /// SKESKs, or retrieve it from a cache, and then call `decrypt`
-    /// with the symmetric algorithm and session key.
+    /// This function is called with every [`PKESK`] and [`SKESK`]
+    /// packet found in the message.  The implementation must decrypt
+    /// the symmetric algorithm and session key from one of the
+    /// [`PKESK`] packets, the [`SKESK`] packets, or retrieve it from
+    /// a cache, and then call `decrypt` with the symmetric algorithm
+    /// and session key.  `decrypt` returns `true` if the decryption
+    /// was successful.
+    ///
+    ///   [`PKESK`]: ../../packet/enum.PKESK.html
+    ///   [`SKESK`]: ../../packet/enum.SKESK.html
     ///
     /// If a symmetric algorithm is given, it should be passed on to
-    /// PKESK::decrypt.
+    /// [`PKESK::decrypt`].
+    ///
+    ///   [`PKESK::decrypt`]: ../../packet/enum.PKESK.html#method.decrypt
+    ///
+    /// If the message is decrypted using a [`PKESK`] packet, then the
+    /// fingerprint of the certificate containing the encryption
+    /// subkey should be returned.  This is used in conjunction with
+    /// the intended recipient subpacket (see [Section 5.2.3.29 of RFC
+    /// 4880bis]) to prevent [*Surreptitious Forwarding*].
+    ///
+    ///   [Section 5.2.3.29 of RFC 4880bis]: https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-08#section-5.2.3.29
+    ///   [*Surreptitious Forwarding*]: http://world.std.com/~dtd/sign_encrypt/sign_encrypt7.html
+    ///
+    /// This method will be called once per encryption layer.
+    ///
+    /// # Examples
+    ///
+    /// This example demonstrates how to decrypt a message using local
+    /// keys (i.e. excluding remote keys like smart cards) while
+    /// maximizing convenience for the user.
+    ///
+    /// ```
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::{Fingerprint, Cert, Result};
+    /// # use openpgp::KeyID;
+    /// use openpgp::crypto::SessionKey;
+    /// use openpgp::types::SymmetricAlgorithm;
+    /// use openpgp::packet::{PKESK, SKESK};
+    /// # use openpgp::packet::{Key, key::*};
+    /// use openpgp::parse::stream::*;
+    /// # fn lookup_cache(_: &[PKESK], _: &[SKESK])
+    /// #                 -> Option<(Option<Fingerprint>, SymmetricAlgorithm, SessionKey)> {
+    /// #     unimplemented!()
+    /// # }
+    /// # fn lookup_key(_: &KeyID)
+    /// #               -> Option<(Fingerprint, Key<SecretParts, UnspecifiedRole>)> {
+    /// #     unimplemented!()
+    /// # }
+    /// # fn all_keys() -> impl Iterator<Item = (Fingerprint, Key<SecretParts, UnspecifiedRole>)> {
+    /// #     Vec::new().into_iter()
+    /// # }
+    ///
+    /// struct Helper { /* ... */ };
+    /// impl DecryptionHelper for Helper {
+    ///     fn decrypt<D>(&mut self, pkesks: &[PKESK], skesks: &[SKESK],
+    ///                   sym_algo: Option<SymmetricAlgorithm>,
+    ///                   mut decrypt: D) -> Result<Option<Fingerprint>>
+    ///         where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool
+    ///     {
+    ///         // Try to decrypt, from the most convenient method to the
+    ///         // least convenient one.
+    ///
+    ///         // First, see if it is in the cache.
+    ///         if let Some((fp, algo, sk)) = lookup_cache(pkesks, skesks) {
+    ///             if decrypt(algo, &sk) {
+    ///                 return Ok(fp);
+    ///             }
+    ///         }
+    ///
+    ///         // Second, we try those keys that we can use without
+    ///         // prompting for a password.
+    ///         for pkesk in pkesks {
+    ///             if let Some((fp, key)) = lookup_key(pkesk.recipient()) {
+    ///                 if ! key.secret().is_encrypted() {
+    ///                     let mut keypair = key.clone().into_keypair()?;
+    ///                     if pkesk.decrypt(&mut keypair, sym_algo)
+    ///                         .map(|(algo, sk)| decrypt(algo, &sk))
+    ///                         .unwrap_or(false)
+    ///                     {
+    ///                         return Ok(Some(fp));
+    ///                     }
+    ///                 }
+    ///             }
+    ///         }
+    ///
+    ///         // Third, we try to decrypt PKESK packets with
+    ///         // wildcard recipients using those keys that we can
+    ///         // use without prompting for a password.
+    ///         for pkesk in pkesks.iter().filter(|p| p.recipient().is_wildcard()) {
+    ///             for (fp, key) in all_keys() {
+    ///                 if ! key.secret().is_encrypted() {
+    ///                     let mut keypair = key.clone().into_keypair()?;
+    ///                     if pkesk.decrypt(&mut keypair, sym_algo)
+    ///                         .map(|(algo, sk)| decrypt(algo, &sk))
+    ///                         .unwrap_or(false)
+    ///                     {
+    ///                         return Ok(Some(fp));
+    ///                     }
+    ///                 }
+    ///             }
+    ///         }
+    ///
+    ///         // Fourth, we try to decrypt all PKESK packets that we
+    ///         // need encrypted keys for.
+    ///         // [...]
+    ///
+    ///         // Fifth, we try to decrypt all PKESK packets with
+    ///         // wildcard recipients using encrypted keys.
+    ///         // [...]
+    ///
+    ///         // At this point, we have exhausted our options at
+    ///         // decrypting the PKESK packets.
+    ///         if skesks.is_empty() {
+    ///             return
+    ///                 Err(anyhow::anyhow!("No key to decrypt message"));
+    ///         }
+    ///
+    ///         // Finally, try to decrypt using the SKESKs.
+    ///         loop {
+    ///             let password = // Prompt for a password.
+    /// #               "".into();
+    ///
+    ///             for skesk in skesks {
+    ///                 if skesk.decrypt(&password)
+    ///                     .map(|(algo, sk)| decrypt(algo, &sk))
+    ///                     .unwrap_or(false)
+    ///                 {
+    ///                     return Ok(None);
+    ///                 }
+    ///             }
+    ///
+    ///             eprintln!("Bad password.");
+    ///         }
+    ///     }
+    /// }
+    /// ```
     fn decrypt<D>(&mut self, pkesks: &[PKESK], skesks: &[SKESK],
                   sym_algo: Option<SymmetricAlgorithm>,
                   decrypt: D) -> Result<Option<Fingerprint>>
-        where D: FnMut(SymmetricAlgorithm, &SessionKey) -> Result<()>;
+        where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool;
 }
 
 impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
-    /// Creates a `Decryptor` from the given reader.
-    ///
-    /// Signature verifications are done relative to time `t`, or the
-    /// current time, if `t` is `None`.
-    pub fn from_reader<R, T>(policy: &'a dyn Policy,
-                             reader: R, helper: H, t: T)
-        -> Result<Decryptor<'a, H>>
-        where R: io::Read + 'a, T: Into<Option<time::SystemTime>>
-    {
-        // Do not eagerly map `t` to the current time.
-        let t = t.into();
-        Decryptor::from_buffered_reader(
-            policy,
-            Box::new(buffered_reader::Generic::with_cookie(reader, None,
-                                                        Default::default())),
-            helper, t, true)
-    }
-
-    /// Creates a `Decryptor` from the given file.
-    ///
-    /// Signature verifications are done relative to time `t`, or the
-    /// current time, if `t` is `None`.
-    pub fn from_file<P, T>(policy: &'a dyn Policy, path: P, helper: H, t: T)
-        -> Result<Decryptor<'a, H>>
-        where P: AsRef<Path>,
-              T: Into<Option<time::SystemTime>>
-    {
-        // Do not eagerly map `t` to the current time.
-        let t = t.into();
-        Decryptor::from_buffered_reader(
-            policy,
-            Box::new(buffered_reader::File::with_cookie(path,
-                                                     Default::default())?),
-            helper, t, true)
-    }
-
-    /// Creates a `Decryptor` from the given buffer.
-    ///
-    /// Signature verifications are done relative to time `t`, or the
-    /// current time, if `t` is `None`.
-    pub fn from_bytes<T>(policy: &'a dyn Policy, bytes: &'a [u8], helper: H, t: T)
-        -> Result<Decryptor<'a, H>>
-        where T: Into<Option<time::SystemTime>>
-    {
-        // Do not eagerly map `t` to the current time.
-        let t = t.into();
-        Decryptor::from_buffered_reader(
-            policy,
-            Box::new(buffered_reader::Memory::with_cookie(bytes,
-                                                       Default::default())),
-            helper, t, true)
-    }
-
     /// Returns a reference to the helper.
     pub fn helper_ref(&self) -> &H {
         &self.helper
@@ -1209,12 +1481,14 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
         self.oppr.is_none()
     }
 
-    /// Creates the `Decryptor`, and buffers the data up to `BUFFER_SIZE`.
-    pub(crate) fn from_buffered_reader<T>(
+    /// Creates the `Decryptor`, and buffers the data up to `buffer_size`.
+    fn from_buffered_reader<T>(
         policy: &'a dyn Policy,
         bio: Box<dyn BufferedReader<Cookie> + 'a>,
         helper: H, time: T,
-        decrypt: bool)
+        mode: Mode,
+        buffer_size: usize,
+        mapping: bool)
         -> Result<Decryptor<'a, H>>
         where T: Into<Option<time::SystemTime>>
     {
@@ -1225,23 +1499,24 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
             .map(|_| time::Duration::new(0, 0))
             .unwrap_or(
                 *crate::packet::signature::subpacket::CLOCK_SKEW_TOLERANCE);
-        let time = time
-            .unwrap_or_else(|| time::SystemTime::now());
+        let time = time.unwrap_or_else(time::SystemTime::now);
 
         let mut ppr = PacketParserBuilder::from_buffered_reader(bio)?
-            .map(helper.mapping()).finalize()?;
+            .map(mapping).build()?;
 
         let mut v = Decryptor {
-            helper: helper,
+            helper,
             certs: Vec::new(),
             oppr: None,
             identity: None,
             structure: IMessageStructure::new(),
+            buffer_size,
             reserve: None,
-            decrypt,
-            time: time,
+            cursor: 0,
+            mode,
+            time,
             clock_skew_tolerance: tolerance,
-            policy: policy,
+            policy,
         };
 
         let mut issuers = Vec::new();
@@ -1252,9 +1527,15 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
         while let PacketParserResult::Some(mut pp) = ppr {
             v.policy.packet(&pp.packet)?;
             v.helper.inspect(&pp)?;
-            if let Err(err) = pp.possible_message() {
-                t!("Malformed message: {}", err);
-                return Err(err.context("Malformed OpenPGP message").into());
+
+            // When verifying detached signatures, we parse only the
+            // signatures here, which on their own are not a valid
+            // message.
+            if v.mode != Mode::VerifyDetached {
+                if let Err(err) = pp.possible_message() {
+                    t!("Malformed message: {}", err);
+                    return Err(err.context("Malformed OpenPGP message").into());
+                }
             }
 
             let sym_algo_hint = if let Packet::AED(ref aed) = pp.packet {
@@ -1266,7 +1547,7 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
             match pp.packet {
                 Packet::CompressedData(ref p) =>
                     v.structure.new_compression_layer(p.algo()),
-                Packet::SEIP(_) | Packet::AED(_) if v.decrypt => {
+                Packet::SEIP(_) | Packet::AED(_) if v.mode == Mode::Decrypt => {
                     saw_content = true;
 
                     // Get the symmetric algorithm from the decryption
@@ -1278,8 +1559,10 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                             let result = pp.decrypt(algo, secret);
                             if let Ok(_) = result {
                                 sym_algo = Some(algo);
+                                true
+                            } else {
+                                false
                             }
-                            result
                         };
 
                         v.identity =
@@ -1287,7 +1570,7 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                                              sym_algo_hint,
                                              decryption_proxy)?;
                     }
-                    if ! pp.decrypted() {
+                    if pp.encrypted() {
                         return Err(
                             Error::MissingSessionKey(
                                 "No session key decrypted".into()).into());
@@ -1315,7 +1598,7 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                 Packet::Literal(_) => {
                     v.structure.insert_missing_signature_group();
                     // Query keys.
-                    v.certs = v.helper.get_public_keys(&issuers)?;
+                    v.certs = v.helper.get_certs(&issuers)?;
                     v.oppr = Some(PacketParserResult::Some(pp));
                     v.finish_maybe()?;
 
@@ -1355,10 +1638,53 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
             ppr = ppr_tmp;
         }
 
+        if v.mode == Mode::VerifyDetached {
+            v.certs = v.helper.get_certs(&issuers)?;
+            return Ok(v);
+        }
+
         // We can only get here if we didn't encounter a literal data
         // packet.
         Err(Error::MalformedMessage(
             "Malformed OpenPGP message".into()).into())
+    }
+
+    /// Verifies the given data in detached verification mode.
+    fn verify_detached<D>(&mut self, data: D) -> Result<()>
+        where D: BufferedReader<Cookie>
+    {
+        assert_eq!(self.mode, Mode::VerifyDetached);
+
+        let sigs = if let IMessageLayer::SignatureGroup {
+            sigs, .. } = &mut self.structure.layers[0] {
+            sigs
+        } else {
+            unreachable!("There is exactly one signature group layer")
+        };
+
+        // Compute the necessary hashes.
+        let algos: Vec<_> = sigs.iter().map(|s| s.hash_algo()).collect();
+        let hashes = crate::crypto::hash_buffered_reader(data, &algos)?;
+
+        // Attach the digests.
+        for sig in sigs.iter_mut() {
+            let algo = sig.hash_algo();
+            // Note: |hashes| < 10, most likely 1.
+            for hash in hashes.iter().filter(|c| c.algo() == algo) {
+                // Clone the hash context, update it with the
+                // signature.
+                use crate::crypto::hash::Hash;
+                let mut hash = hash.clone();
+                sig.hash(&mut hash);
+
+                // Attach digest to the signature.
+                let mut digest = vec![0; hash.digest_size()];
+                hash.digest(&mut digest);
+                sig.set_computed_digest(Some(digest.into()));
+            }
+        }
+
+        self.verify_signatures()
     }
 
     /// Stashes the given Signature (if it is one) for later
@@ -1380,10 +1706,11 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
     fn finish_maybe(&mut self) -> Result<()> {
         if let Some(PacketParserResult::Some(mut pp)) = self.oppr.take() {
             // Check if we hit EOF.
-            let data_len = pp.data(BUFFER_SIZE + 1)?.len();
-            if data_len <= BUFFER_SIZE {
+            let data_len = pp.data(self.buffer_size + 1)?.len();
+            if data_len <= self.buffer_size {
                 // Stash the reserve.
                 self.reserve = Some(pp.steal_eof()?);
+                self.cursor = 0;
 
                 // Process the rest of the packets.
                 let mut ppr = PacketParserResult::Some(pp);
@@ -1488,7 +1815,7 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                                 }
                             };
 
-                            err = if let Err(err) = ka.cert_alive() {
+                            err = if let Err(err) = ka.cert().alive() {
                                 t!("{:02X}{:02X}: cert {} not alive: {}",
                                    sigid[0], sigid[1], ka.cert().fingerprint(), err);
                                 VerificationError::BadKey {
@@ -1505,7 +1832,7 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                                     error: err,
                                 }
                             } else if let
-                                RevocationStatus::Revoked(rev) = ka.cert_revoked()
+                                RevocationStatus::Revoked(rev) = ka.cert().revocation_status()
                             {
                                 t!("{:02X}{:02X}: cert {} revoked: {:?}",
                                    sigid[0], sigid[1], ka.cert().fingerprint(), rev);
@@ -1517,7 +1844,7 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                                         .into(),
                                 }
                             } else if let
-                                RevocationStatus::Revoked(rev) = ka.revoked()
+                                RevocationStatus::Revoked(rev) = ka.revocation_status()
                             {
                                 t!("{:02X}{:02X}: key {} revoked: {:?}",
                                    sigid[0], sigid[1], ka.fingerprint(), rev);
@@ -1622,23 +1949,24 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
             // The message has been verified.  We can now drain the
             // reserve.
             assert!(self.oppr.is_none());
-
-            let n = cmp::min(buf.len(), reserve.len());
-            &mut buf[..n].copy_from_slice(&reserve[..n]);
-            crate::vec_drain_prefix(reserve, n);
+            assert!(self.cursor <= reserve.len());
+            let n = cmp::min(buf.len(), reserve.len() - self.cursor);
+            &mut buf[..n]
+                .copy_from_slice(&reserve[self.cursor..n + self.cursor]);
+            self.cursor += n;
             return Ok(n);
         }
 
         // Read the data from the Literal data packet.
         if let Some(PacketParserResult::Some(mut pp)) = self.oppr.take() {
             // Be careful to not read from the reserve.
-            let data_len = pp.data(BUFFER_SIZE + buf.len())?.len();
-            if data_len <= BUFFER_SIZE {
+            let data_len = pp.data(self.buffer_size + buf.len())?.len();
+            if data_len <= self.buffer_size {
                 self.oppr = Some(PacketParserResult::Some(pp));
                 self.finish_maybe()?;
                 self.read_helper(buf)
             } else {
-                let n = cmp::min(buf.len(), data_len - BUFFER_SIZE);
+                let n = cmp::min(buf.len(), data_len - self.buffer_size);
                 let buf = &mut buf[..n];
                 let result = pp.read(buf);
                 self.oppr = Some(PacketParserResult::Some(pp));
@@ -1668,6 +1996,7 @@ impl<'a, H: VerificationHelper + DecryptionHelper> io::Read for Decryptor<'a, H>
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::convert::TryFrom;
     use crate::parse::Parse;
     use crate::policy::StandardPolicy as P;
 
@@ -1706,17 +2035,17 @@ mod test {
     impl VHelper {
         fn new(good: usize, unknown: usize, bad: usize, error: usize, keys: Vec<Cert>) -> Self {
             VHelper {
-                good: good,
-                unknown: unknown,
-                bad: bad,
-                error: error,
-                keys: keys,
+                good,
+                unknown,
+                bad,
+                error,
+                keys,
             }
         }
     }
 
     impl VerificationHelper for VHelper {
-        fn get_public_keys(&mut self, _ids: &[crate::KeyHandle]) -> Result<Vec<Cert>> {
+        fn get_certs(&mut self, _ids: &[crate::KeyHandle]) -> Result<Vec<Cert>> {
             Ok(self.keys.clone())
         }
 
@@ -1755,14 +2084,14 @@ mod test {
         fn decrypt<D>(&mut self, _: &[PKESK], _: &[SKESK],
                       _: Option<SymmetricAlgorithm>, _: D)
                       -> Result<Option<Fingerprint>>
-            where D: FnMut(SymmetricAlgorithm, &SessionKey) -> Result<()>
+            where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool
         {
             unreachable!();
         }
     }
 
     #[test]
-    fn verifier() {
+    fn verifier() -> Result<()> {
         let p = P::new();
 
         let keys = [
@@ -1786,8 +2115,8 @@ mod test {
             // Test Verifier.
             let h = VHelper::new(0, 0, 0, 0, keys.clone());
             let mut v =
-                match Verifier::from_bytes(&p, crate::tests::file(f), h,
-                                           crate::frozen_time()) {
+                match VerifierBuilder::from_bytes(crate::tests::file(f))?
+                    .with_policy(&p, crate::frozen_time(), h) {
                     Ok(v) => v,
                     Err(e) => if r.error > 0 || r.unknown > 0 {
                         // Expected error.  No point in trying to read
@@ -1813,9 +2142,8 @@ mod test {
 
             // Test Decryptor.
             let h = VHelper::new(0, 0, 0, 0, keys.clone());
-            let mut v =
-                match Decryptor::from_bytes(&p, crate::tests::file(f), h,
-                                            crate::frozen_time()) {
+            let mut v = match DecryptorBuilder::from_bytes(crate::tests::file(f))?
+                .with_policy(&p, crate::frozen_time(), h) {
                     Ok(v) => v,
                     Err(e) => if r.error > 0 || r.unknown > 0 {
                         // Expected error.  No point in trying to read
@@ -1839,23 +2167,24 @@ mod test {
             assert_eq!(reference.len(), content.len());
             assert_eq!(reference, &content[..]);
         }
+        Ok(())
     }
 
     /// Tests the order of signatures given to
     /// VerificationHelper::check().
     #[test]
-    fn verifier_levels() {
+    fn verifier_levels() -> Result<()> {
         let p = P::new();
 
         struct VHelper(());
         impl VerificationHelper for VHelper {
-            fn get_public_keys(&mut self, _ids: &[crate::KeyHandle])
+            fn get_certs(&mut self, _ids: &[crate::KeyHandle])
                                -> Result<Vec<Cert>> {
                 Ok(Vec::new())
             }
 
             fn check(&mut self, structure: MessageStructure) -> Result<()> {
-                assert_eq!(structure.iter().count(), 2);
+                assert_eq!(structure.len(), 2);
                 for (i, layer) in structure.into_iter().enumerate() {
                     match layer {
                         MessageLayer::SignatureGroup { results } => {
@@ -1886,28 +2215,28 @@ mod test {
             fn decrypt<D>(&mut self, _: &[PKESK], _: &[SKESK],
                           _: Option<SymmetricAlgorithm>, _: D)
                           -> Result<Option<Fingerprint>>
-                where D: FnMut(SymmetricAlgorithm, &SessionKey) -> Result<()>
+                where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool
             {
                 unreachable!();
             }
         }
 
         // Test verifier.
-        let v = Verifier::from_bytes(
-            &p, crate::tests::message("signed-1-notarized-by-ed25519.pgp"),
-            VHelper(()), crate::frozen_time()).unwrap();
+        let v = VerifierBuilder::from_bytes(
+            crate::tests::message("signed-1-notarized-by-ed25519.pgp"))?
+            .with_policy(&p, crate::frozen_time(), VHelper(()))?;
         assert!(v.message_processed());
 
         // Test decryptor.
-        let v = Decryptor::from_bytes(
-            &p, crate::tests::message("signed-1-notarized-by-ed25519.pgp"),
-            VHelper(()), crate::frozen_time()).unwrap();
+        let v = DecryptorBuilder::from_bytes(
+            crate::tests::message("signed-1-notarized-by-ed25519.pgp"))?
+            .with_policy(&p, crate::frozen_time(), VHelper(()))?;
         assert!(v.message_processed());
+        Ok(())
     }
 
-    // This test is relatively long running in debug mode.  Split it
-    // up.
-    fn detached_verifier_read_size(l: usize) {
+    #[test]
+    fn detached_verifier() {
         lazy_static! {
             static ref ZEROS: Vec<u8> = vec![0; 100 * 1024 * 1024];
         }
@@ -1941,68 +2270,24 @@ mod test {
             .map(|f| Cert::from_bytes(crate::tests::key(f)).unwrap())
             .collect::<Vec<_>>();
 
-        let read_to_end = |v: &mut Verifier<_>, l, buffer: &mut Vec<_>| {
-            let mut offset = 0;
-            loop {
-                if offset + l > buffer.len() {
-                    if buffer.len() < buffer.capacity() {
-                        // Use the available capacity.
-                        buffer.resize(buffer.capacity(), 0);
-                    } else {
-                        // Double the capacity and size.
-                        buffer.resize(buffer.capacity() * 2, 0);
-                    }
-                }
-                match v.read(&mut buffer[offset..offset + l]) {
-                    Ok(0) => break,
-                    Ok(l) => offset += l,
-                    Err(err) => panic!("Error reading data: {:?}", err),
-                }
-            }
-
-            offset
-        };
-
-        let mut buffer = vec![0; 104 * 1024 * 1024];
         for test in tests.iter() {
             let sig = test.sig;
             let content = test.content;
             let reference = test.reference;
 
             let h = VHelper::new(0, 0, 0, 0, keys.clone());
-            let mut v = DetachedVerifier::from_bytes(
-                &p, sig, content, h, reference).unwrap();
-
-            let got = read_to_end(&mut v, l, &mut buffer);
-            assert!(v.message_processed());
-            let got = &buffer[..got];
-            assert_eq!(got.len(), content.len());
-            assert_eq!(got, &content[..]);
+            let mut v = DetachedVerifierBuilder::from_bytes(sig).unwrap()
+                .with_policy(&p, reference, h).unwrap();
+            v.verify_bytes(content).unwrap();
 
             let h = v.into_helper();
             assert_eq!(h.good, 1);
             assert_eq!(h.bad, 0);
         }
-        crate::vec_truncate(&mut buffer, 0);
     }
 
     #[test]
-    fn detached_verifier1() {
-        // Transformer::read_helper rounds up to 4 MB chunks try
-        // chunk sizes around that size.
-        detached_verifier_read_size(4 * 1024 * 1024 - 1);
-    }
-    #[test]
-    fn detached_verifier2() {
-        detached_verifier_read_size(4 * 1024 * 1024);
-    }
-    #[test]
-    fn detached_verifier3() {
-        detached_verifier_read_size(4 * 1024 * 1024 + 1);
-    }
-
-    #[test]
-    fn verify_long_message() {
+    fn verify_long_message() -> Result<()> {
         use std::io::Write;
         use crate::serialize::stream::{LiteralWriter, Signer, Message};
 
@@ -2013,25 +2298,27 @@ mod test {
             .add_signing_subkey()
             .generate().unwrap();
 
-        // sign 30MiB message
+        // sign 3MiB message
         let mut buf = vec![];
         {
             let key = cert.keys().with_policy(p, None).for_signing().nth(0).unwrap().key();
             let keypair =
-                key.clone().mark_parts_secret().unwrap()
+                key.clone().parts_into_secret().unwrap()
                 .into_keypair().unwrap();
 
             let m = Message::new(&mut buf);
             let signer = Signer::new(m, keypair).build().unwrap();
             let mut ls = LiteralWriter::new(signer).build().unwrap();
 
-            ls.write_all(&mut vec![42u8; 30 * 1024 * 1024]).unwrap();
+            ls.write_all(&mut vec![42u8; 3 * 1024 * 1024]).unwrap();
             ls.finalize().unwrap();
         }
 
         // Test Verifier.
         let h = VHelper::new(0, 0, 0, 0, vec![cert.clone()]);
-        let mut v = Verifier::from_bytes(p, &buf, h, None).unwrap();
+        let mut v = VerifierBuilder::from_bytes(&buf)?
+            .buffer_size(2 * 2usize.pow(20))
+            .with_policy(p, None, h)?;
 
         assert!(!v.message_processed());
         assert!(v.helper_ref().good == 0);
@@ -2044,7 +2331,7 @@ mod test {
         v.read_to_end(&mut message).unwrap();
 
         assert!(v.message_processed());
-        assert_eq!(30 * 1024 * 1024, message.len());
+        assert_eq!(3 * 1024 * 1024, message.len());
         assert!(message.iter().all(|&b| b == 42));
         assert!(v.helper_ref().good == 1);
         assert!(v.helper_ref().bad == 0);
@@ -2054,7 +2341,9 @@ mod test {
         // Try the same, but this time we let .check() fail.
         let h = VHelper::new(0, 0, /* makes check() fail: */ 1, 0,
                              vec![cert.clone()]);
-        let mut v = Verifier::from_bytes(p, &buf, h, None).unwrap();
+        let mut v = VerifierBuilder::from_bytes(&buf)?
+            .buffer_size(2 * 2usize.pow(20))
+            .with_policy(p, None, h)?;
 
         assert!(!v.message_processed());
         assert!(v.helper_ref().good == 0);
@@ -2069,7 +2358,7 @@ mod test {
         // Check that we only got a truncated message.
         assert!(v.message_processed());
         assert!(message.len() > 0);
-        assert!(message.len() <= 5 * 1024 * 1024);
+        assert!(message.len() <= 1 * 1024 * 1024);
         assert!(message.iter().all(|&b| b == 42));
         assert!(v.helper_ref().good == 1);
         assert!(v.helper_ref().bad == 1);
@@ -2078,7 +2367,9 @@ mod test {
 
         // Test Decryptor.
         let h = VHelper::new(0, 0, 0, 0, vec![cert.clone()]);
-        let mut v = Decryptor::from_bytes(p, &buf, h, None).unwrap();
+        let mut v = DecryptorBuilder::from_bytes(&buf)?
+            .buffer_size(2 * 2usize.pow(20))
+            .with_policy(p, None, h)?;
 
         assert!(!v.message_processed());
         assert!(v.helper_ref().good == 0);
@@ -2091,7 +2382,7 @@ mod test {
         v.read_to_end(&mut message).unwrap();
 
         assert!(v.message_processed());
-        assert_eq!(30 * 1024 * 1024, message.len());
+        assert_eq!(3 * 1024 * 1024, message.len());
         assert!(message.iter().all(|&b| b == 42));
         assert!(v.helper_ref().good == 1);
         assert!(v.helper_ref().bad == 0);
@@ -2101,7 +2392,9 @@ mod test {
         // Try the same, but this time we let .check() fail.
         let h = VHelper::new(0, 0, /* makes check() fail: */ 1, 0,
                              vec![cert.clone()]);
-        let mut v = Decryptor::from_bytes(p, &buf, h, None).unwrap();
+        let mut v = DecryptorBuilder::from_bytes(&buf)?
+            .buffer_size(2 * 2usize.pow(20))
+            .with_policy(p, None, h)?;
 
         assert!(!v.message_processed());
         assert!(v.helper_ref().good == 0);
@@ -2116,11 +2409,12 @@ mod test {
         // Check that we only got a truncated message.
         assert!(v.message_processed());
         assert!(message.len() > 0);
-        assert!(message.len() <= 5 * 1024 * 1024);
+        assert!(message.len() <= 1 * 1024 * 1024);
         assert!(message.iter().all(|&b| b == 42));
         assert!(v.helper_ref().good == 1);
         assert!(v.helper_ref().bad == 1);
         assert!(v.helper_ref().unknown == 0);
         assert!(v.helper_ref().error == 0);
+        Ok(())
     }
 }

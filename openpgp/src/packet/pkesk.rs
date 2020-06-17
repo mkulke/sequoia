@@ -5,6 +5,7 @@
 //!
 //!   [Section 5.1 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.1
 
+#[cfg(any(test, feature = "quickcheck"))]
 use quickcheck::{Arbitrary, Gen};
 
 use crate::Error;
@@ -12,7 +13,7 @@ use crate::packet::key;
 use crate::packet::Key;
 use crate::KeyID;
 use crate::crypto::Decryptor;
-use crate::crypto::mpis::Ciphertext;
+use crate::crypto::mpi::Ciphertext;
 use crate::Packet;
 use crate::PublicKeyAlgorithm;
 use crate::Result;
@@ -26,7 +27,9 @@ use crate::packet;
 /// [Section 5.1 of RFC 4880] for details.
 ///
 ///   [Section 5.1 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.1
-#[derive(Clone, Debug)]
+// IMPORTANT: If you add fields to this struct, you need to explicitly
+// IMPORTANT: implement PartialEq, Eq, and Hash.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PKESK3 {
     /// CTB header fields.
     pub(crate) common: packet::Common,
@@ -38,24 +41,6 @@ pub struct PKESK3 {
     esk: Ciphertext,
 }
 
-impl PartialEq for PKESK3 {
-    fn eq(&self, other: &PKESK3) -> bool {
-        self.recipient == other.recipient
-            && self.pk_algo == other.pk_algo
-            && self.esk == other.esk
-    }
-}
-
-impl Eq for PKESK3 {}
-
-impl std::hash::Hash for PKESK3 {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        std::hash::Hash::hash(&self.recipient, state);
-        std::hash::Hash::hash(&self.pk_algo, state);
-        std::hash::Hash::hash(&self.esk, state);
-    }
-}
-
 impl PKESK3 {
     /// Creates a new PKESK3 packet.
     pub fn new(recipient: KeyID, pk_algo: PublicKeyAlgorithm,
@@ -63,8 +48,8 @@ impl PKESK3 {
                -> Result<PKESK3> {
         Ok(PKESK3 {
             common: Default::default(),
-            recipient: recipient,
-            pk_algo: pk_algo,
+            recipient,
+            pk_algo,
             esk: encrypted_session_key,
         })
     }
@@ -86,18 +71,22 @@ impl PKESK3 {
         psk.push(algo.into());
         psk.extend_from_slice(session_key);
 
-        // Compute the sum modulo 65536.
-        let checksum
-            = session_key.iter().map(|&x| x as usize).sum::<usize>() & 0xffff;
-        psk.push((checksum >> 8) as u8);
-        psk.push((checksum >> 0) as u8);
+        // Compute the sum modulo 65536, i.e. as u16.
+        let checksum = session_key
+            .iter()
+            .cloned()
+            .map(u16::from)
+            .fold(0u16, u16::wrapping_add);
+
+        psk.extend_from_slice(&checksum.to_be_bytes());
+
         let psk: SessionKey = psk.into();
         let esk = recipient.encrypt(&psk)?;
         Ok(PKESK3{
             common: Default::default(),
             recipient: recipient.keyid(),
             pk_algo: recipient.pk_algo(),
-            esk: esk,
+            esk,
         })
     }
 
@@ -140,8 +129,22 @@ impl PKESK3 {
     ///
     /// Returns the session key and symmetric algorithm used to
     /// encrypt the following payload.
+    ///
+    /// Returns `None` on errors.  This prevents leaking information
+    /// to an attacker, which could lead to compromise of secret key
+    /// material with certain algorithms (RSA).  See [Section 14 of
+    /// RFC 4880].
+    ///
+    ///   [Section 14 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-14
     pub fn decrypt(&self, decryptor: &mut dyn Decryptor,
                    sym_algo_hint: Option<SymmetricAlgorithm>)
+        -> Option<(SymmetricAlgorithm, SessionKey)>
+    {
+        self.decrypt_insecure(decryptor, sym_algo_hint).ok()
+    }
+
+    fn decrypt_insecure(&self, decryptor: &mut dyn Decryptor,
+                        sym_algo_hint: Option<SymmetricAlgorithm>)
         -> Result<(SymmetricAlgorithm, SessionKey)>
     {
         let plaintext_len = if let Some(s) = sym_algo_hint {
@@ -187,6 +190,14 @@ impl From<PKESK3> for Packet {
     }
 }
 
+#[cfg(any(test, feature = "quickcheck"))]
+impl Arbitrary for super::PKESK {
+    fn arbitrary<G: Gen>(g: &mut G) -> Self {
+        PKESK3::arbitrary(g).into()
+    }
+}
+
+#[cfg(any(test, feature = "quickcheck"))]
 impl Arbitrary for PKESK3 {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         let (ciphertext, pk_algo) = loop {
@@ -225,7 +236,7 @@ mod tests {
             crate::tests::message("encrypted-to-testy.gpg")).unwrap();
         let mut keypair =
             cert.subkeys().next().unwrap()
-            .key().clone().mark_parts_secret().unwrap().into_keypair().unwrap();
+            .key().clone().parts_into_secret().unwrap().into_keypair().unwrap();
 
         let pkg = pile.descendants().skip(0).next().clone();
 
@@ -250,7 +261,7 @@ mod tests {
             crate::tests::message("encrypted-to-testy-new.pgp")).unwrap();
         let mut keypair =
             cert.subkeys().next().unwrap()
-            .key().clone().mark_parts_secret().unwrap().into_keypair().unwrap();
+            .key().clone().parts_into_secret().unwrap().into_keypair().unwrap();
 
         let pkg = pile.descendants().skip(0).next().clone();
 
@@ -275,7 +286,7 @@ mod tests {
             crate::tests::message("encrypted-to-testy-nistp256.pgp")).unwrap();
         let mut keypair =
             cert.subkeys().next().unwrap()
-            .key().clone().mark_parts_secret().unwrap().into_keypair().unwrap();
+            .key().clone().parts_into_secret().unwrap().into_keypair().unwrap();
 
         let pkg = pile.descendants().skip(0).next().clone();
 
@@ -300,7 +311,7 @@ mod tests {
             crate::tests::message("encrypted-to-testy-nistp384.pgp")).unwrap();
         let mut keypair =
             cert.subkeys().next().unwrap()
-            .key().clone().mark_parts_secret().unwrap().into_keypair().unwrap();
+            .key().clone().parts_into_secret().unwrap().into_keypair().unwrap();
 
         let pkg = pile.descendants().skip(0).next().clone();
 
@@ -325,7 +336,7 @@ mod tests {
             crate::tests::message("encrypted-to-testy-nistp521.pgp")).unwrap();
         let mut keypair =
             cert.subkeys().next().unwrap()
-            .key().clone().mark_parts_secret().unwrap().into_keypair().unwrap();
+            .key().clone().parts_into_secret().unwrap().into_keypair().unwrap();
 
         let pkg = pile.descendants().skip(0).next().clone();
 
@@ -347,46 +358,28 @@ mod tests {
     fn decrypt_with_short_cv25519_secret_key() {
         use super::PKESK3;
         use crate::crypto::SessionKey;
-        use crate::crypto::mpis::{self, MPI};
-        use crate::PublicKeyAlgorithm;
-        use crate::SymmetricAlgorithm;
-        use crate::HashAlgorithm;
-        use crate::types::Curve;
-        use crate::packet::key;
-        use crate::packet::key::Key4;
-        use nettle::curve25519;
+        use crate::{HashAlgorithm, SymmetricAlgorithm};
+        use crate::packet::key::{Key4, UnspecifiedRole};
 
         // 20 byte sec key
-        let mut sec = [
+        let secret_key = [
             0x0,0x0,
             0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,
             0x1,0x2,0x2,0x2,0x2,0x2,0x2,0x2,0x2,0x2,
             0x1,0x2,0x2,0x2,0x2,0x2,0x2,0x2,0x0,0x0
         ];
-        let mut pnt = [0x40u8; curve25519::CURVE25519_SIZE + 1];
-        curve25519::mul_g(&mut pnt[1..], &sec[..]).unwrap();
-        sec.reverse();
 
-        let public_mpis = mpis::PublicKey::ECDH {
-            curve: Curve::Cv25519,
-            q: MPI::new(&pnt[..]),
-            hash: HashAlgorithm::SHA256,
-            sym: SymmetricAlgorithm::AES256,
-        };
-        let private_mpis = mpis::SecretKeyMaterial::ECDH {
-            scalar: MPI::new(&sec[..]).into(),
-        };
-        let key: key::UnspecifiedPublic
-            = Key4::new(std::time::SystemTime::now(),
-                        PublicKeyAlgorithm::ECDH,
-                        public_mpis)
-                .unwrap().into();
-        let key = key.add_secret(private_mpis.into()).0;
+        let key: Key<_, UnspecifiedRole> = Key4::import_secret_cv25519(
+            &secret_key,
+            HashAlgorithm::SHA256,
+            SymmetricAlgorithm::AES256,
+            None,
+        ).unwrap().into();
+
         let sess_key = SessionKey::new(32);
         let pkesk = PKESK3::for_recipient(SymmetricAlgorithm::AES256, &sess_key,
                                           &key).unwrap();
-        let mut keypair =
-            key.mark_parts_secret().unwrap().into_keypair().unwrap();
+        let mut keypair = key.into_keypair().unwrap();
         pkesk.decrypt(&mut keypair, None).unwrap();
     }
 }

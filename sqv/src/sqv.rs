@@ -4,7 +4,6 @@
 /// the motivation.
 
 use std::process::exit;
-use std::io;
 
 use chrono::{DateTime, offset::Utc};
 extern crate clap;
@@ -19,7 +18,7 @@ use crate::openpgp::{
     parse::Parse,
 };
 use crate::openpgp::parse::stream::{
-    DetachedVerifier,
+    DetachedVerifierBuilder,
     MessageLayer,
     MessageStructure,
     VerificationHelper,
@@ -72,28 +71,24 @@ impl<'a> VHelper<'a> {
 }
 
 impl<'a> VerificationHelper for VHelper<'a> {
-    fn get_public_keys(&mut self, ids: &[crate::KeyHandle]) -> Result<Vec<Cert>> {
+    fn get_certs(&mut self, ids: &[crate::KeyHandle]) -> Result<Vec<Cert>> {
         let mut certs = Vec::with_capacity(ids.len());
 
         // Load relevant keys from the keyring.
         for filename in self.keyrings.clone() {
-            certs.extend(
-                CertParser::from_file(filename)?
-                    .unvalidated_cert_filter(|cert, _| {
-                        // We don't skip keys that are valid (not revoked,
-                        // alive, etc.) so that
-                        cert.keys().key_handles(ids.iter()).next().is_some()
-                    })
-                    .map(|certr| {
-                        match certr {
-                            Ok(cert) => cert,
-                            Err(err) => {
-                                eprintln!("Error reading keyring {:?}: {}",
-                                          filename, err);
-                                exit(2);
-                            }
-                        }
-                    }))
+            for cert in CertParser::from_file(filename)
+                .with_context(|| format!("Failed to parse keyring {:?}",
+                                         filename))?
+                .unvalidated_cert_filter(|cert, _| {
+                    // We don't skip keys that are valid (not revoked,
+                    // alive, etc.) so that
+                    cert.keys().key_handles(ids.iter()).next().is_some()
+                })
+            {
+                certs.push(cert.with_context(|| {
+                    format!("Malformed certificate in keyring {:?}", filename)
+                })?);
+            }
         }
 
         // Dedup.  To avoid cloning the certificates, we don't use
@@ -146,9 +141,11 @@ impl<'a> VerificationHelper for VHelper<'a> {
                                                 self.not_before,
                                                 self.not_after)
                                 {
-                                    (None, _, _) =>
-                                        eprintln!("Malformed signature: \
-                                                   no signature creation time"),
+                                    (None, _, _) => {
+                                        eprintln!("Malformed signature:");
+                                        print_error_chain(&anyhow::anyhow!(
+                                            "no signature creation time"));
+                                    },
                                     (Some(t), Some(not_before), not_after) => {
                                         if t < not_before {
                                             eprintln!(
@@ -177,7 +174,8 @@ impl<'a> VerificationHelper for VHelper<'a> {
                                 };
                             }
                             Err(MalformedSignature { error, .. }) => {
-                                eprintln!("Signature is malformed: {}", error);
+                                eprintln!("Signature is malformed:");
+                                print_error_chain(&error);
                             }
                             Err(MissingKey { sig, .. }) => {
                                 let issuers = sig.get_issuers();
@@ -186,16 +184,18 @@ impl<'a> VerificationHelper for VHelper<'a> {
                                           issuers.first().unwrap());
                             }
                             Err(UnboundKey { cert, error, .. }) => {
-                                eprintln!("Signing key on {:X} is not bound: {}",
-                                          cert.fingerprint(), error);
+                                eprintln!("Signing key on {:X} is not bound:",
+                                          cert.fingerprint());
+                                print_error_chain(&error);
                             }
                             Err(BadKey { ka, error, .. }) => {
-                                eprintln!("Signing key on {:X} is bad: {}",
-                                          ka.cert().fingerprint(),
-                                          error);
+                                eprintln!("Signing key on {:X} is bad:",
+                                          ka.cert().fingerprint());
+                                print_error_chain(&error);
                             }
                             Err(BadSignature { error, .. }) => {
-                                eprintln!("Verifying signature: {}.", error);
+                                eprintln!("Verifying signature:");
+                                print_error_chain(&error);
                                 if verification_err.is_none() {
                                     verification_err = Some(error)
                                 }
@@ -220,6 +220,11 @@ impl<'a> VerificationHelper for VHelper<'a> {
 
         Ok(())
     }
+}
+
+fn print_error_chain(err: &anyhow::Error) {
+    eprintln!("           {}", err);
+    err.chain().skip(1).for_each(|cause| eprintln!("  because: {}", cause));
 }
 
 
@@ -276,10 +281,9 @@ fn main() -> Result<()> {
 
     let h = VHelper::new(good_threshold, not_before, not_after, keyrings);
 
-    let mut v = DetachedVerifier::from_file(
-        p, sig_file, file, h, None)?;
-
-    io::copy(&mut v, &mut io::sink())?;
+    let mut v =
+        DetachedVerifierBuilder::from_file(sig_file)?.with_policy(p, None, h)?;
+    v.verify_file(file)?;
 
     let h = v.into_helper();
 

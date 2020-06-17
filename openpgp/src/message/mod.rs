@@ -1,4 +1,4 @@
-//! OpenPGP Message support.
+//! Message support.
 //!
 //! An OpenPGP message is a sequence of OpenPGP packets that
 //! corresponds to an optionally signed, optionally encrypted,
@@ -8,8 +8,20 @@
 //! This module provides support for validating and working with
 //! OpenPGP messages.
 //!
+//! Example of ASCII-armored OpenPGP message:
+//!
+//! ```txt
+//! -----BEGIN PGP MESSAGE-----
+//!
+//! yDgBO22WxBHv7O8X7O/jygAEzol56iUKiXmV+XmpCtmpqQUKiQrFqclFqUDBovzS
+//! vBSFjNSiVHsuAA==
+//! =njUN
+//! -----END PGP MESSAGE-----
+//! ```
+//!
 //! [Section 11.3 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-11.3
 
+use std::convert::TryFrom;
 use std::fmt;
 use std::io;
 use std::path::Path;
@@ -18,7 +30,6 @@ use crate::Result;
 use crate::Error;
 use crate::Packet;
 use crate::PacketPile;
-use crate::Message;
 use crate::packet::Literal;
 use crate::packet::Tag;
 use crate::parse::Parse;
@@ -60,9 +71,9 @@ impl From<MessageParserError> for anyhow::Error {
 }
 
 
-/// Whether a packet sequence is a valid OpenPGP Message.
+/// Represents the status of a parsed message.
 #[derive(Debug)]
-pub enum MessageValidity {
+pub(crate) enum MessageValidity {
     /// The packet sequence is a valid OpenPGP message.
     Message,
     /// The packet sequence appears to be a valid OpenPGP message that
@@ -73,6 +84,7 @@ pub enum MessageValidity {
     Error(anyhow::Error),
 }
 
+#[allow(unused)]
 impl MessageValidity {
     /// Returns whether the packet sequence is a valid message.
     ///
@@ -112,7 +124,7 @@ impl MessageValidity {
 
 /// Used to help validate a packet sequence is a valid OpenPGP message.
 #[derive(Debug)]
-pub struct MessageValidator {
+pub(crate) struct MessageValidator {
     tokens: Vec<Token>,
     finished: bool,
     // Once a raw token is pushed, this is set to None and pushing
@@ -138,29 +150,6 @@ impl MessageValidator {
             depth: Some(0),
             error: None,
         }
-    }
-
-    /// Returns whether the packet sequence is a valid message.
-    ///
-    /// Note: a `MessageValidator` will only return this after
-    /// `MessageValidator::finish` has been called.
-    pub fn is_message(&self) -> bool {
-        self.check().is_message()
-    }
-
-    /// Returns whether the packet sequence forms a valid message
-    /// prefix.
-    ///
-    /// Note: a `MessageValidator` will only return this before
-    /// `MessageValidator::finish` has been called.
-    pub fn is_message_prefix(&self) -> bool {
-        self.check().is_message_prefix()
-    }
-
-    /// Returns whether the packet sequence is definitely not a valid
-    /// OpenPGP Message.
-    pub fn is_err(&self) -> bool {
-        self.check().is_err()
     }
 
     /// Adds a token to the token stream.
@@ -278,7 +267,7 @@ impl MessageValidator {
     /// this function will only ever return either
     /// MessageValidity::MessagePrefix or MessageValidity::Error.  Once
     /// MessageValidity::finish() has been called, then only
-    /// MessageValidity::Message or MessageValidity::Bad will be called.
+    /// MessageValidity::Message or MessageValidity::Error will be returned.
     pub fn check(&self) -> MessageValidity {
         if let Some(ref err) = self.error {
             return MessageValidity::Error((*err).clone().into());
@@ -306,7 +295,62 @@ impl MessageValidator {
         }
     }
 }
-
+
+// DOC-HACK: To avoid having a top-level re-export of `Cert`, we move
+// it in a submodule `def`.
+pub use def::Message;
+mod def {
+use super::*;
+/// A message.
+///
+/// An OpenPGP message is a structured sequence of OpenPGP packets.
+/// Basically, it's an optionally encrypted, optionally signed literal
+/// data packet.  The exact structure is defined in [Section 11.3 of RFC
+/// 4880].
+///
+///   [Section 11.3 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-11.3
+///
+/// [ASCII Armored Messages] are wrapped in `-----BEGIN PGP MESSAGE-----` header
+/// and `-----END PGP MESSAGE-----` tail lines:
+///
+/// ```txt
+/// -----BEGIN PGP MESSAGE-----
+///
+/// xA0DAAoW5saJekzviSQByxBiAAAAAADYtdiv2KfZgtipwnUEABYKACcFglwJHYoW
+/// IQRnpIdTo4Cms7fffcXmxol6TO+JJAkQ5saJekzviSQAAIJ6APwK6FxtHXn8txDl
+/// tBFsIXlOSLOs4BvArlZzZSMomIyFLAEAwCLJUChMICDxWXRlHxORqU5x6hlO3DdW
+/// sl/1DAbnRgI=
+/// =AqoO
+/// -----END PGP MESSAGE-----
+/// ```
+///
+/// [ASCII Armored Messages]: https://tools.ietf.org/html/rfc4880#section-6.6
+///
+/// # Examples
+///
+/// Creating a Messaage encrypted with a password.
+///
+/// ```
+/// # use sequoia_openpgp as openpgp;
+/// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+/// use std::io::Write;
+/// use openpgp::serialize::stream::{Message, Encryptor, LiteralWriter};
+///
+/// let mut sink = vec![];
+/// let message = Encryptor::with_passwords(
+///     Message::new(&mut sink), Some("ściśle tajne")).build()?;
+/// let mut w = LiteralWriter::new(message).build()?;
+/// w.write_all(b"Hello world.")?;
+/// w.finalize()?;
+/// # Ok(()) }
+/// ```
+#[derive(PartialEq)]
+pub struct Message {
+    /// A message is just a validated packet pile.
+    pub(super) pile: PacketPile,
+}
+} // doc-hack, see above
+
 impl fmt::Debug for Message {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("Message")
@@ -318,29 +362,29 @@ impl fmt::Debug for Message {
 impl<'a> Parse<'a, Message> for Message {
     /// Reads a `Message` from the specified reader.
     ///
-    /// See [`Message::from_packet_pile`] for more details.
+    /// See [`Message::try_from`] for more details.
     ///
-    ///   [`Message::from_packet_pile`]: #method.from_packet_pile
+    ///   [`Message::try_from`]: #method.try_from
     fn from_reader<R: 'a + io::Read>(reader: R) -> Result<Self> {
-        Self::from_packet_pile(PacketPile::from_reader(reader)?)
+        Self::try_from(PacketPile::from_reader(reader)?)
     }
 
     /// Reads a `Message` from the specified file.
     ///
-    /// See [`Message::from_packet_pile`] for more details.
+    /// See [`Message::try_from`] for more details.
     ///
-    ///   [`Message::from_packet_pile`]: #method.from_packet_pile
+    ///   [`Message::try_from`]: #method.try_from
     fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
-        Self::from_packet_pile(PacketPile::from_file(path)?)
+        Self::try_from(PacketPile::from_file(path)?)
     }
 
     /// Reads a `Message` from `buf`.
     ///
-    /// See [`Message::from_packet_pile`] for more details.
+    /// See [`Message::try_from`] for more details.
     ///
-    ///   [`Message::from_packet_pile`]: #method.from_packet_pile
+    ///   [`Message::try_from`]: #method.try_from
     fn from_bytes<D: AsRef<[u8]> + ?Sized>(data: &'a D) -> Result<Self> {
-        Self::from_packet_pile(PacketPile::from_bytes(data)?)
+        Self::try_from(PacketPile::from_bytes(data)?)
     }
 }
 
@@ -353,6 +397,51 @@ impl std::str::FromStr for Message {
 }
 
 impl Message {
+    /// Returns the body of the message.
+    ///
+    /// Returns `None` if no literal data packet is found.  This
+    /// happens if a SEIP container has not been decrypted.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # extern crate sequoia_openpgp as openpgp;
+    /// # fn main() { f().unwrap(); }
+    /// # fn f() -> openpgp::Result<()> {
+    /// use std::io;
+    /// use std::io::Read;
+    /// use openpgp::Message;
+    /// use openpgp::armor::{Reader, ReaderMode};
+    /// use openpgp::parse::Parse;
+    ///
+    /// let data = "yxJiAAAAAABIZWxsbyB3b3JsZCE="; // base64 over literal data packet
+    ///
+    /// let mut cursor = io::Cursor::new(&data);
+    /// let mut reader = Reader::new(&mut cursor, ReaderMode::VeryTolerant);
+    ///
+    /// let mut buf = Vec::new();
+    /// reader.read_to_end(&mut buf)?;
+    ///
+    /// let message = Message::from_bytes(&buf)?;
+    /// assert_eq!(message.body().unwrap().body(), b"Hello world!");
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn body(&self) -> Option<&Literal> {
+        for packet in self.pile.descendants() {
+            if let &Packet::Literal(ref l) = packet {
+                return Some(l);
+            }
+        }
+
+        // No literal data packet found.
+        None
+    }
+}
+
+impl TryFrom<PacketPile> for Message {
+    type Error = anyhow::Error;
+
     /// Converts the `PacketPile` to a `Message`.
     ///
     /// Converting a `PacketPile` to a `Message` doesn't change the
@@ -365,7 +454,7 @@ impl Message {
     /// or still compressed parts are valid messages.
     ///
     ///   [Section 11.3 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-11.3
-    pub fn from_packet_pile(pile: PacketPile) -> Result<Self> {
+    fn try_from(pile: PacketPile) -> Result<Self> {
         let mut v = MessageValidator::new();
         for (mut path, packet) in pile.descendants().paths() {
             match packet {
@@ -386,9 +475,7 @@ impl Message {
                     // we treat the content as an opaque message.
 
                     path.push(0);
-                    if packet.children().next().is_none()
-                        && packet.body().is_some()
-                    {
+                    if packet.children().is_none() {
                         v.push_token(Token::OpaqueContent, &path);
                     }
                 }
@@ -398,7 +485,7 @@ impl Message {
         v.finish();
 
         match v.check() {
-            MessageValidity::Message => Ok(Message { pile: pile }),
+            MessageValidity::Message => Ok(Message { pile }),
             MessageValidity::MessagePrefix => unreachable!(),
             // We really want to squash the lexer's error: it is an
             // internal detail that may change, and meaningless even
@@ -406,29 +493,18 @@ impl Message {
             MessageValidity::Error(e) => Err(e.into()),
         }
     }
+}
+
+impl TryFrom<Vec<Packet>> for Message {
+    type Error = anyhow::Error;
 
     /// Converts the vector of `Packets` to a `Message`.
     ///
-    /// See [`Message::from_packet_pile`] for more details.
+    /// See [`Message::try_from`] for more details.
     ///
-    ///   [`Message::from_packet_pile`]: #method.from_packet_pile
-    pub fn from_packets(packets: Vec<Packet>) -> Result<Self> {
-        Self::from_packet_pile(PacketPile::from(packets))
-    }
-
-    /// Returns the body of the message.
-    ///
-    /// Returns `None` if no literal data packet is found.  This
-    /// happens if a SEIP container has not been decrypted.
-    pub fn body(&self) -> Option<&Literal> {
-        for packet in self.pile.descendants() {
-            if let &Packet::Literal(ref l) = packet {
-                return Some(l);
-            }
-        }
-
-        // No literal data packet found.
-        None
+    ///   [`Message::try_from`]: #method.try_from
+    fn try_from(packets: Vec<Packet>) -> Result<Self> {
+        Self::try_from(PacketPile::from(packets))
     }
 }
 
@@ -457,9 +533,8 @@ mod tests {
     use crate::PublicKeyAlgorithm;
     use crate::SignatureType;
     use crate::crypto::S2K;
-    use crate::crypto::mpis::{Ciphertext, MPI};
+    use crate::crypto::mpi::{Ciphertext, MPI};
     use crate::packet::prelude::*;
-    use crate::KeyID;
 
     #[test]
     fn tokens() {
@@ -731,7 +806,7 @@ mod tests {
     fn basic() {
         // Empty.
         // => bad.
-        let message = Message::from_packets(vec![]);
+        let message = Message::try_from(vec![]);
         assert!(message.is_err(), "{:?}", message);
 
         // 0: Literal
@@ -741,7 +816,7 @@ mod tests {
         lit.set_body(b"data".to_vec());
         packets.push(lit.into());
 
-        let message = Message::from_packets(packets);
+        let message = Message::try_from(packets);
         assert!(message.is_ok(), "{:?}", message);
     }
 
@@ -759,7 +834,7 @@ mod tests {
                 .push(lit.clone().into())
                 .into());
 
-        let message = Message::from_packets(packets);
+        let message = Message::try_from(packets);
         assert!(message.is_ok(), "{:?}", message);
 
         // 0: CompressedData
@@ -773,7 +848,7 @@ mod tests {
                 .push(lit.clone().into())
                 .into());
 
-        let message = Message::from_packets(packets);
+        let message = Message::try_from(packets);
         assert!(message.is_err(), "{:?}", message);
 
         // 0: CompressedData
@@ -787,7 +862,7 @@ mod tests {
                 .into());
         packets.push(lit.clone().into());
 
-        let message = Message::from_packets(packets);
+        let message = Message::try_from(packets);
         assert!(message.is_err(), "{:?}", message);
 
         // 0: CompressedData
@@ -803,7 +878,7 @@ mod tests {
                       .into())
                 .into());
 
-        let message = Message::from_packets(packets);
+        let message = Message::try_from(packets);
         assert!(message.is_ok(), "{:?}", message);
     }
 
@@ -817,7 +892,7 @@ mod tests {
             crate::packet::key::Key4::generate_ecc(true, crate::types::Curve::Ed25519)
             .unwrap().into();
         let mut pair = key.clone().into_keypair().unwrap();
-        let sig = crate::packet::signature::Builder::new(SignatureType::Binary)
+        let sig = crate::packet::signature::SignatureBuilder::new(SignatureType::Binary)
             .sign_hash(&mut pair, hash.context().unwrap()).unwrap();
 
         // 0: OnePassSig
@@ -825,7 +900,7 @@ mod tests {
         let mut packets : Vec<Packet> = Vec::new();
         packets.push(OnePassSig3::new(SignatureType::Binary).into());
 
-        let message = Message::from_packets(packets);
+        let message = Message::try_from(packets);
         assert!(message.is_err(), "{:?}", message);
 
         // 0: OnePassSig
@@ -835,7 +910,7 @@ mod tests {
         packets.push(OnePassSig3::new(SignatureType::Binary).into());
         packets.push(lit.clone().into());
 
-        let message = Message::from_packets(packets);
+        let message = Message::try_from(packets);
         assert!(message.is_err(), "{:?}", message);
 
         // 0: OnePassSig
@@ -847,7 +922,7 @@ mod tests {
         packets.push(lit.clone().into());
         packets.push(sig.clone().into());
 
-        let message = Message::from_packets(packets);
+        let message = Message::try_from(packets);
         assert!(message.is_ok(), "{:?}", message);
 
         // 0: OnePassSig
@@ -861,7 +936,7 @@ mod tests {
         packets.push(sig.clone().into());
         packets.push(sig.clone().into());
 
-        let message = Message::from_packets(packets);
+        let message = Message::try_from(packets);
         assert!(message.is_err(), "{:?}", message);
 
         // 0: OnePassSig
@@ -877,7 +952,7 @@ mod tests {
         packets.push(sig.clone().into());
         packets.push(sig.clone().into());
 
-        let message = Message::from_packets(packets);
+        let message = Message::try_from(packets);
         assert!(message.is_ok(), "{:?}", message);
 
         // 0: OnePassSig
@@ -895,7 +970,7 @@ mod tests {
         packets.push(sig.clone().into());
         packets.push(sig.clone().into());
 
-        let message = Message::from_packets(packets);
+        let message = Message::try_from(packets);
         assert!(message.is_err(), "{:?}", message);
 
         // 0: OnePassSig
@@ -915,7 +990,7 @@ mod tests {
         packets.push(sig.clone().into());
         packets.push(sig.clone().into());
 
-        let message = Message::from_packets(packets);
+        let message = Message::try_from(packets);
         assert!(message.is_ok(), "{:?}", message);
     }
 
@@ -929,7 +1004,7 @@ mod tests {
             crate::packet::key::Key4::generate_ecc(true, crate::types::Curve::Ed25519)
             .unwrap().into();
         let mut pair = key.clone().into_keypair().unwrap();
-        let sig = crate::packet::signature::Builder::new(SignatureType::Binary)
+        let sig = crate::packet::signature::SignatureBuilder::new(SignatureType::Binary)
             .sign_hash(&mut pair, hash.context().unwrap()).unwrap();
 
         // 0: Signature
@@ -937,7 +1012,7 @@ mod tests {
         let mut packets : Vec<Packet> = Vec::new();
         packets.push(sig.clone().into());
 
-        let message = Message::from_packets(packets);
+        let message = Message::try_from(packets);
         assert!(message.is_err(), "{:?}", message);
 
         // 0: Signature
@@ -947,7 +1022,7 @@ mod tests {
         packets.push(sig.clone().into());
         packets.push(lit.clone().into());
 
-        let message = Message::from_packets(packets);
+        let message = Message::try_from(packets);
         assert!(message.is_ok(), "{:?}", message);
 
         // 0: Signature
@@ -959,7 +1034,7 @@ mod tests {
         packets.push(sig.clone().into());
         packets.push(lit.clone().into());
 
-        let message = Message::from_packets(packets);
+        let message = Message::try_from(packets);
         assert!(message.is_ok(), "{:?}", message);
     }
 
@@ -983,7 +1058,7 @@ mod tests {
             S2K::Simple { hash: HashAlgorithm::SHA256 },
             &sk,
             &"12345678".into()).unwrap().into());
-        let message = Message::from_packets(packets.clone());
+        let message = Message::try_from(packets.clone());
         assert!(message.is_err(), "{:?}", message);
 
         // 0: SK-ESK
@@ -994,7 +1069,7 @@ mod tests {
         assert!(packets.iter().map(|p| p.tag()).collect::<Vec<Tag>>()
                 == [ Tag::SKESK, Tag::Literal ]);
 
-        let message = Message::from_packets(packets.clone());
+        let message = Message::try_from(packets.clone());
         assert!(message.is_err(), "{:?}", message);
 
         // 0: SK-ESK
@@ -1003,16 +1078,16 @@ mod tests {
         //  1: MDC
         // => good.
         let mut seip = SEIP1::new();
-        seip.children_mut().push(
+        seip.children_mut().unwrap().push(
             lit.clone().into());
-        seip.children_mut().push(
+        seip.children_mut().unwrap().push(
             MDC::from([0u8; 20]).into());
         packets[1] = seip.into();
 
         assert!(packets.iter().map(|p| p.tag()).collect::<Vec<Tag>>()
                 == [ Tag::SKESK, Tag::SEIP ]);
 
-        let message = Message::from_packets(packets.clone());
+        let message = Message::try_from(packets.clone());
         assert!(message.is_ok(), "{:#?}", message);
 
         // 0: SK-ESK
@@ -1027,7 +1102,7 @@ mod tests {
         assert!(packets.iter().map(|p| p.tag()).collect::<Vec<Tag>>()
                 == [ Tag::SKESK, Tag::SEIP, Tag::SKESK ]);
 
-        let message = Message::from_packets(packets.clone());
+        let message = Message::try_from(packets.clone());
         assert!(message.is_err(), "{:#?}", message);
 
         // 0: SK-ESK
@@ -1041,7 +1116,7 @@ mod tests {
         assert!(packets.iter().map(|p| p.tag()).collect::<Vec<Tag>>()
                 == [ Tag::SKESK, Tag::SKESK, Tag::SEIP ]);
 
-        let message = Message::from_packets(packets.clone());
+        let message = Message::try_from(packets.clone());
         assert!(message.is_ok(), "{:#?}", message);
 
         // 0: SK-ESK
@@ -1059,7 +1134,7 @@ mod tests {
         assert!(packets.iter().map(|p| p.tag()).collect::<Vec<Tag>>()
                 == [ Tag::SKESK, Tag::SKESK, Tag::SEIP, Tag::SEIP ]);
 
-        let message = Message::from_packets(packets.clone());
+        let message = Message::try_from(packets.clone());
         assert!(message.is_err(), "{:#?}", message);
 
         // 0: SK-ESK
@@ -1074,7 +1149,7 @@ mod tests {
         assert!(packets.iter().map(|p| p.tag()).collect::<Vec<Tag>>()
                 == [ Tag::SKESK, Tag::SKESK, Tag::SEIP, Tag::Literal ]);
 
-        let message = Message::from_packets(packets.clone());
+        let message = Message::try_from(packets.clone());
         assert!(message.is_err(), "{:#?}", message);
 
         // 0: SK-ESK
@@ -1086,12 +1161,12 @@ mod tests {
         // => bad.
         packets.remove(3);
         packets[2].container_mut().unwrap()
-            .children_mut().push(lit.clone().into());
+            .children_mut().unwrap().push(lit.clone().into());
 
         assert!(packets.iter().map(|p| p.tag()).collect::<Vec<Tag>>()
                 == [ Tag::SKESK, Tag::SKESK, Tag::SEIP ]);
 
-        let message = Message::from_packets(packets.clone());
+        let message = Message::try_from(packets.clone());
         assert!(message.is_err(), "{:#?}", message);
 
         // 0: SK-ESK
@@ -1100,26 +1175,91 @@ mod tests {
         // 2: SEIP
         //  0: Literal
         // => good.
-        packets[2].container_mut().unwrap().children_mut().pop().unwrap();
+        packets[2].container_mut().unwrap()
+            .children_mut().unwrap().pop().unwrap();
 
         #[allow(deprecated)]
         packets.insert(
             1,
             PKESK3::new(
-                KeyID::from_hex("0000111122223333").unwrap(),
+                "0000111122223333".parse().unwrap(),
                 PublicKeyAlgorithm::RSAEncrypt,
                 Ciphertext::RSA { c: MPI::new(&[]) }).unwrap().into());
 
         assert!(packets.iter().map(|p| p.tag()).collect::<Vec<Tag>>()
                 == [ Tag::SKESK, Tag::PKESK, Tag::SKESK, Tag::SEIP ]);
 
-        let message = Message::from_packets(packets.clone());
+        let message = Message::try_from(packets.clone());
         assert!(message.is_ok(), "{:#?}", message);
     }
 
     #[test]
     fn message_is_send_and_sync() {
         fn f<T: Send + Sync>(_: T) {}
-        f(Message::from_packets(vec![]));
+        f(Message::try_from(vec![]));
+    }
+
+    #[test]
+    fn basic_message_validator() {
+        use crate::message::{MessageValidator, MessageValidity, Token};
+
+        let mut l = MessageValidator::new();
+        l.push_token(Token::Literal, &[0]);
+        l.finish();
+        assert!(if let MessageValidity::Message = l.check() { true } else { false });
+    }
+
+    #[test]
+    fn message_validator_push_token() {
+        use crate::message::{MessageValidator, MessageValidity, Token};
+
+        let mut l = MessageValidator::new();
+        l.push_token(Token::Literal, &[0]);
+        l.finish();
+
+        assert!(if let MessageValidity::Message = l.check() { true } else { false });
+    }
+
+    #[test]
+    fn message_validator_push() {
+        use crate::message::{MessageValidator, MessageValidity};
+        use crate::packet::Tag;
+
+        let mut l = MessageValidator::new();
+        l.push(Tag::Literal, &[0]);
+        l.finish();
+
+        assert!(if let MessageValidity::Message = l.check() { true } else { false });
+    }
+
+    #[test]
+    fn message_validator_finish() {
+        use crate::message::{MessageValidator, MessageValidity};
+
+        let mut l = MessageValidator::new();
+        l.finish();
+
+        assert!(if let MessageValidity::Error(_) = l.check() { true } else { false });
+    }
+
+    #[test]
+    fn message_validator_check() {
+        use crate::message::{MessageValidator, MessageValidity};
+        use crate::packet::Tag;
+
+        // No packets will return an error.
+        let mut l = MessageValidator::new();
+        assert!(if let MessageValidity::MessagePrefix = l.check() { true } else { false });
+        l.finish();
+
+        assert!(if let MessageValidity::Error(_) = l.check() { true } else { false });
+
+        // Simple one-literal message.
+        let mut l = MessageValidator::new();
+        l.push(Tag::Literal, &[0]);
+        assert!(if let MessageValidity::MessagePrefix = l.check() { true } else { false });
+        l.finish();
+
+        assert!(if let MessageValidity::Message = l.check() { true } else { false });
     }
 }

@@ -1,7 +1,10 @@
+use std::cmp;
 use std::convert::{TryFrom, TryInto};
 use std::fmt;
 use std::time::{SystemTime, Duration as SystemDuration, UNIX_EPOCH};
 use std::u32;
+
+#[cfg(any(test, feature = "quickcheck"))]
 use quickcheck::{Arbitrary, Gen};
 
 use crate::{
@@ -10,6 +13,54 @@ use crate::{
 };
 
 /// A timestamp representable by OpenPGP.
+///
+/// OpenPGP timestamps are represented as `u32` containing the number of seconds
+/// elapsed since midnight, 1 January 1970 UTC ([Section 3.5 of RFC 4880]).
+///
+/// They cannot express dates further than 7th February of 2106 or earlier than
+/// the [UNIX epoch]. Unlike Unix's `time_t`, OpenPGP's timestamp is unsigned so
+/// it rollsover in 2106, not 2038.
+///
+/// # Examples
+///
+/// Signature creation time is internally stored as a `Timestamp`:
+///
+/// Note that this example retrieves raw packet value.
+/// Use [`SubpacketArea::signature_creation_time`] to get the signature creation time.
+///
+/// [`SubpacketArea::signature_creation_time`]: ../packet/signature/subpacket/struct.SubpacketArea.html#method.signature_creation_time
+///
+/// ```
+/// use sequoia_openpgp as openpgp;
+/// # use openpgp::Result;
+/// use std::convert::From;
+/// use std::time::SystemTime;
+/// use openpgp::cert::prelude::*;
+/// use openpgp::policy::StandardPolicy;
+/// use openpgp::packet::signature::subpacket::{SubpacketTag, SubpacketValue};
+///
+/// # fn main() -> Result<()> {
+/// let (cert, _) =
+///     CertBuilder::general_purpose(None, Some("alice@example.org"))
+///     .generate()?;
+///
+/// let subkey = cert.keys().subkeys().next().unwrap();
+/// let packets = subkey.bundle().self_signatures()[0].hashed_area();
+///
+/// match packets.lookup(SubpacketTag::SignatureCreationTime).unwrap().value() {
+///     SubpacketValue::SignatureCreationTime(ts) => assert!(u32::from(*ts) > 0),
+///     v => panic!("Unexpected subpacket: {:?}", v),
+/// }
+///
+/// let p = &StandardPolicy::new();
+/// let now = SystemTime::now();
+/// assert!(subkey.binding_signature(p, now)?.signature_creation_time().is_some());
+/// # Ok(()) }
+/// ```
+///
+/// [Section 3.5 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-3.5
+/// [UNIX epoch]: https://en.wikipedia.org/wiki/Unix_time
+/// [`Timestamp::round_down`]: ../types/struct.Timestamp.html#method.round_down
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Timestamp(u32);
 
@@ -51,9 +102,15 @@ impl From<Timestamp> for Option<SystemTime> {
     }
 }
 
+impl fmt::Display for Timestamp {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", crate::fmt::time(&SystemTime::from(*self)))
+    }
+}
+
 impl fmt::Debug for Timestamp {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{:?}", SystemTime::from(*self))
+        write!(f, "{}", self.0)
     }
 }
 
@@ -94,16 +151,22 @@ impl Timestamp {
     /// resolution of 24 days, or roughly a month.  `p` must be lower
     /// than 32.
     ///
-    /// See [`Duration::round_up`](struct.Duration.html#method.round_up).
+    /// The lower limit `floor` represents the earliest time the timestamp will be
+    /// rounded down to.
+    ///
+    /// See also [`Duration::round_up`](struct.Duration.html#method.round_up).
     ///
     /// # Important note
     ///
     /// If we create a signature, it is important that the signature's
     /// creation time does not predate the signing keys creation time,
-    /// or otherwise violate the key's validity constraints.  The
-    /// correct way to use this interface is to round the time down,
-    /// lookup all keys and other objects like userids using this
-    /// time, and on success create the signature:
+    /// or otherwise violate the key's validity constraints.
+    /// This can be achieved by using the `floor` parameter.
+    ///
+    /// To ensure validity, use this function to round the time down,
+    /// using the latest known relevant timestamp as a floor.
+    /// Then, lookup all keys and other objects like userids using this
+    /// timestamp, and on success create the signature:
     ///
     /// ```rust
     /// # use sequoia_openpgp::{*, packet::prelude::*, types::*, cert::*};
@@ -116,25 +179,29 @@ impl Timestamp {
     /// // Let's fix a time.
     /// let now = Timestamp::from(1583436160);
     ///
+    /// let cert_creation_alice = now.checked_sub(Duration::weeks(2)?).unwrap();
+    /// let cert_creation_bob = now.checked_sub(Duration::weeks(1)?).unwrap();
+    ///
     /// // Generate a Cert for Alice.
     /// let (alice, _) = CertBuilder::new()
-    ///     .set_creation_time(now.checked_sub(Duration::weeks(2)?).unwrap())
+    ///     .set_creation_time(cert_creation_alice)
     ///     .set_primary_key_flags(KeyFlags::default().set_certification(true))
     ///     .add_userid("alice@example.org")
     ///     .generate()?;
     ///
     /// // Generate a Cert for Bob.
     /// let (bob, _) = CertBuilder::new()
-    ///     .set_creation_time(now.checked_sub(Duration::weeks(1)?).unwrap())
+    ///     .set_creation_time(cert_creation_bob)
     ///     .set_primary_key_flags(KeyFlags::default().set_certification(true))
     ///     .add_userid("bob@example.org")
     ///     .generate()?;
     ///
     /// let sign_with_p = |p| -> Result<Signature> {
     ///     // Round `now` down, then use `t` for all lookups.
-    ///     let t: std::time::SystemTime = now.round_down(p)?.into();
+    ///     // Use the creation time of Bob's Cert as lower bound for rounding.
+    ///     let t: std::time::SystemTime = now.round_down(p, cert_creation_bob)?.into();
     ///
-    ///     /// First, get the certification key.
+    ///     // First, get the certification key.
     ///     let mut keypair =
     ///         alice.keys().with_policy(policy, t).secret().for_certification()
     ///         .nth(0).ok_or_else(|| anyhow::anyhow!("no valid key at"))?
@@ -153,22 +220,23 @@ impl Timestamp {
     /// };
     ///
     /// assert!(sign_with_p(21).is_ok());
-    /// assert!(sign_with_p(22).is_err()); // Rounded-down t predates key, uid.
+    /// assert!(sign_with_p(22).is_ok());  // Rounded to bob's cert's creation time.
+    /// assert!(sign_with_p(32).is_err()); // Invalid precision
     /// # Ok(()) }
     /// ```
-    ///
-    /// There are two possible policies that can be implemented using
-    /// this mechanism.  If protecting the timestamp is more important
-    /// than the signature, the process must fail.  Otherwise,
-    /// increasing the precision until all constraints are satisfied
-    /// will find a timestamp approximating `now`, assuming that the
-    /// constraints are satisfied at `now`.
-    pub fn round_down<P>(&self, precision: P) -> Result<Timestamp>
-        where P: Into<Option<u8>>
+    pub fn round_down<P, F>(&self, precision: P, floor: F) -> Result<Timestamp>
+        where P: Into<Option<u8>>,
+              F: Into<Option<SystemTime>>
     {
         let p = precision.into().unwrap_or(21) as u32;
         if p < 32 {
-            Ok(Self(self.0 & !((1 << p) - 1)))
+            let rounded = Self(self.0 & !((1 << p) - 1));
+            match floor.into() {
+                Some(floor) => {
+                    Ok(cmp::max(rounded, floor.try_into()?))
+                }
+                None => { Ok(rounded) }
+            }
         } else {
             Err(Error::InvalidArgument(
                 format!("Invalid precision {}", p)).into())
@@ -176,6 +244,7 @@ impl Timestamp {
     }
 }
 
+#[cfg(any(test, feature = "quickcheck"))]
 impl Arbitrary for Timestamp {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         Timestamp(u32::arbitrary(g))
@@ -183,6 +252,32 @@ impl Arbitrary for Timestamp {
 }
 
 /// A duration representable by OpenPGP.
+///
+/// # Examples
+///
+/// ```
+/// use sequoia_openpgp as openpgp;
+/// # use openpgp::Result;
+/// use openpgp::cert::prelude::*;
+/// use openpgp::policy::StandardPolicy;
+/// use openpgp::packet::signature::subpacket::{SubpacketTag, SubpacketValue};
+/// use openpgp::types::{Timestamp, Duration};
+///
+/// # fn main() -> Result<()> {
+/// let p = &StandardPolicy::new();
+///
+/// let now = Timestamp::now();
+/// let then = now.checked_add(Duration::days(365)?).unwrap();
+///
+/// let (cert,_) = CertBuilder::new()
+///     .set_creation_time(now)
+///     .set_expiration_time(then)
+///     .generate()?;
+///
+/// let vc = cert.with_policy(p, now)?;
+/// assert!(vc.alive().is_ok());
+/// # Ok(()) }
+/// ```
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Duration(u32);
 
@@ -215,6 +310,12 @@ impl TryFrom<SystemDuration> for Duration {
 impl From<Duration> for SystemDuration {
     fn from(d: Duration) -> Self {
         SystemDuration::new(d.0 as u64, 0)
+    }
+}
+
+impl From<Duration> for Option<SystemDuration> {
+    fn from(d: Duration) -> Self {
+        Some(d.into())
     }
 }
 
@@ -293,13 +394,22 @@ impl Duration {
     /// `2^p` seconds.  The default is `21`, which results in a
     /// resolution of 24 days, or roughly a month.  `p` must be lower
     /// than 32.
-    pub fn round_up<P>(&self, precision: P) -> Result<Duration>
-        where P: Into<Option<u8>>
+    ///
+    /// The upper limit `ceil` represents the maximum time to round up to.
+    pub fn round_up<P, C>(&self, precision: P, ceil: C) -> Result<Duration>
+        where P: Into<Option<u8>>,
+              C: Into<Option<SystemDuration>>
     {
         let p = precision.into().unwrap_or(21) as u32;
         if p < 32 {
             if let Some(sum) = self.0.checked_add((1 << p) - 1) {
-                Ok(Self(sum & !((1 << p) - 1)))
+                let rounded = Self(sum & !((1 << p) - 1));
+                match ceil.into() {
+                    Some(ceil) => {
+                        Ok(cmp::min(rounded, ceil.try_into()?))
+                    },
+                    None => Ok(rounded)
+                }
             } else {
                 Ok(Self(std::u32::MAX))
             }
@@ -455,6 +565,7 @@ impl Timestamp {
     pub(crate) const Y2106 : Timestamp = Timestamp(4291747200);
 }
 
+#[cfg(any(test, feature = "quickcheck"))]
 impl Arbitrary for Duration {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         Duration(u32::arbitrary(g))
@@ -474,21 +585,58 @@ mod tests {
 
     quickcheck! {
         fn timestamp_round_down(t: Timestamp) -> bool {
-            let u = t.round_down(None).unwrap();
+            let u = t.round_down(None, None).unwrap();
             assert!(u <= t);
-            assert_eq!(u32::from(u) & 0b1_1111_1111_1111_1111, 0);
-            assert!(u32::from(t) - u32::from(u) < 2097152);
+            assert_eq!(u32::from(u) & 0b1_1111_1111_1111_1111_1111, 0);
+            assert!(u32::from(t) - u32::from(u) < 2_u32.pow(21));
             true
         }
     }
 
+    #[test]
+    fn timestamp_round_down_floor() -> Result<()> {
+        let t = Timestamp(1585753307);
+        let floor = t.checked_sub(Duration::weeks(1).unwrap()).unwrap();
+
+        let u = t.round_down(21, floor).unwrap();
+        assert!(u < t);
+        assert!(floor < u);
+        assert_eq!(u32::from(u) & 0b1_1111_1111_1111_1111_1111, 0);
+
+        let floor = t.checked_sub(Duration::days(1).unwrap()).unwrap();
+
+        let u = t.round_down(21, floor).unwrap();
+        assert_eq!(u, floor);
+        Ok(())
+    }
+
     quickcheck! {
-        fn duration_round_up(t: Duration) -> bool {
-            let u = t.round_up(None).unwrap();
-            assert!(t <= u);
-            assert_eq!(u32::from(u) & 0b1_1111_1111_1111_1111, 0);
-            assert!(u32::from(u) - u32::from(t) < 2097152);
+        fn duration_round_up(d: Duration) -> bool {
+            let u = d.round_up(None, None).unwrap();
+            assert!(d <= u);
+            assert_eq!(u32::from(u) & 0b1_1111_1111_1111_1111_1111, 0);
+            assert!(u32::from(u) - u32::from(d) < 2_u32.pow(21));
             true
         }
+    }
+
+    #[test]
+    fn duration_round_up_ceil() -> Result<()> {
+        let d = Duration(123);
+
+        let ceil = Duration(2_u32.pow(23));
+
+        let u = d.round_up(21, ceil)?;
+        assert!(d < u);
+        assert!(u < ceil);
+        assert_eq!(u32::from(u) & 0b1_1111_1111_1111_1111_1111, 0);
+
+        let ceil = Duration::days(1).unwrap();
+
+        let u = d.round_up(21, ceil)?;
+        assert!(d < u);
+        assert_eq!(u, ceil);
+
+        Ok(())
     }
 }

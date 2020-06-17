@@ -12,7 +12,7 @@ use crate::openpgp::types::{
     SymmetricAlgorithm,
 };
 use crate::openpgp::crypto::SessionKey;
-use crate::openpgp::parse::stream::*;
+use crate::openpgp::parse::{Parse, stream::*};
 use crate::openpgp::serialize::{Serialize, stream::*};
 use crate::openpgp::cert::prelude::*;
 use crate::openpgp::policy::Policy;
@@ -27,7 +27,7 @@ macro_rules! make_context {
             Err(e) => {
                 eprintln!("SKIP: Failed to create GnuPG context: {}\n\
                            SKIP: Is GnuPG installed?", e);
-                return;
+                return Ok(());
             },
         };
         match ctx.start("gpg-agent") {
@@ -35,7 +35,7 @@ macro_rules! make_context {
             Err(e) => {
                 eprintln!("SKIP: Failed to create GnuPG context: {}\n\
                            SKIP: Is the GnuPG agent installed?", e);
-                return;
+                return Ok(());
             },
         }
         ctx
@@ -43,23 +43,25 @@ macro_rules! make_context {
 }
 
 #[test]
-fn nop() {
+fn nop() -> openpgp::Result<()> {
     let ctx = make_context!();
     let mut agent = Agent::connect(&ctx).wait().unwrap();
     agent.send("NOP").unwrap();
     let response = agent.wait().collect::<Vec<_>>();
     assert_eq!(response.len(), 1);
     assert!(response[0].is_ok());
+    Ok(())
 }
 
 #[test]
-fn help() {
+fn help() -> openpgp::Result<()>  {
     let ctx = make_context!();
     let mut agent = Agent::connect(&ctx).wait().unwrap();
     agent.send("HELP").unwrap();
     let response = agent.wait().collect::<Vec<_>>();
     assert!(response.len() > 3);
     assert!(response.iter().last().unwrap().is_ok());
+    Ok(())
 }
 
 const MESSAGE: &'static str = "дружба";
@@ -79,7 +81,7 @@ fn gpg_import(ctx: &Context, what: &[u8]) {
 }
 
 #[test]
-fn sign() {
+fn sign() -> openpgp::Result<()> {
     use self::CipherSuite::*;
     use openpgp::policy::StandardPolicy as P;
 
@@ -131,8 +133,8 @@ fn sign() {
         let helper = Helper { cert: &cert };
 
         // Now, create a verifier with a helper using the given Certs.
-        let mut verifier =
-            Verifier::from_bytes(p, &message, helper, None).unwrap();
+        let mut verifier = VerifierBuilder::from_bytes(&message)?
+            .with_policy(p, None, helper)?;
 
         // Verify the data.
         let mut sink = Vec::new();
@@ -145,7 +147,7 @@ fn sign() {
     }
 
     impl<'a> VerificationHelper for Helper<'a> {
-        fn get_public_keys(&mut self, _ids: &[openpgp::KeyHandle])
+        fn get_certs(&mut self, _ids: &[openpgp::KeyHandle])
                            -> openpgp::Result<Vec<openpgp::Cert>> {
             // Return public keys for signature verification here.
             Ok(vec![self.cert.clone()])
@@ -184,10 +186,11 @@ fn sign() {
             }
         }
     }
+    Ok(())
 }
 
 #[test]
-fn decrypt() {
+fn decrypt() -> openpgp::Result<()> {
     use self::CipherSuite::*;
     use openpgp::policy::StandardPolicy as P;
 
@@ -207,18 +210,19 @@ fn decrypt() {
 
         let mut message = Vec::new();
         {
-            let recipient =
+            let recipients =
                 cert.keys().with_policy(p, None).alive().revoked(false)
                 .for_transport_encryption()
-                .map(|ka| ka.key().into())
-                .nth(0).unwrap();
+                .map(|ka| ka.key())
+                .collect::<Vec<_>>();
 
             // Start streaming an OpenPGP message.
             let message = Message::new(&mut message);
 
             // We want to encrypt a literal data packet.
             let encryptor =
-                Encryptor::for_recipient(message, recipient).build().unwrap();
+                Encryptor::for_recipients(message, recipients)
+                .build().unwrap();
 
             // Emit a literal data packet.
             let mut literal_writer = LiteralWriter::new(
@@ -237,8 +241,8 @@ fn decrypt() {
         let helper = Helper { policy: p, ctx: &ctx, cert: &cert, };
 
         // Now, create a decryptor with a helper using the given Certs.
-        let mut decryptor = Decryptor::from_bytes(p, &message, helper, None)
-            .unwrap();
+        let mut decryptor = DecryptorBuilder::from_bytes(&message).unwrap()
+            .with_policy(p, None, helper).unwrap();
 
         // Decrypt the data.
         let mut sink = Vec::new();
@@ -252,7 +256,7 @@ fn decrypt() {
         }
 
         impl<'a> VerificationHelper for Helper<'a> {
-            fn get_public_keys(&mut self, _ids: &[openpgp::KeyHandle])
+            fn get_certs(&mut self, _ids: &[openpgp::KeyHandle])
                                -> openpgp::Result<Vec<openpgp::Cert>> {
                 // Return public keys for signature verification here.
                 Ok(Vec::new())
@@ -272,8 +276,7 @@ fn decrypt() {
                           sym_algo: Option<SymmetricAlgorithm>,
                           mut decrypt: D)
                           -> openpgp::Result<Option<openpgp::Fingerprint>>
-                where D: FnMut(SymmetricAlgorithm, &SessionKey) ->
-                      openpgp::Result<()>
+                where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool
             {
                 let mut keypair = KeyPair::new(
                     self.ctx,
@@ -283,11 +286,13 @@ fn decrypt() {
                     .unwrap();
 
                 pkesks[0].decrypt(&mut keypair, sym_algo)
-                    .and_then(|(algo, session_key)| decrypt(algo, &session_key))
-                    .map(|_| None)
+                    .map(|(algo, session_key)| decrypt(algo, &session_key));
+
                 // XXX: In production code, return the Fingerprint of the
                 // recipient's Cert here
+                Ok(None)
             }
         }
     }
+    Ok(())
 }

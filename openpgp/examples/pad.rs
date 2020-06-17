@@ -10,9 +10,8 @@ use crate::openpgp::KeyID;
 use crate::openpgp::types::KeyFlags;
 use crate::openpgp::parse::Parse;
 use crate::openpgp::serialize::stream::{
-    Message, LiteralWriter, Encryptor, Recipient,
+    Message, LiteralWriter, Encryptor, Recipient, padding::*,
 };
-use crate::openpgp::serialize::padding::*;
 use crate::openpgp::policy::StandardPolicy as P;
 
 fn main() {
@@ -39,7 +38,7 @@ fn main() {
     }).collect();
 
     // Build a vector of recipients to hand to Encryptor.
-    let mut recipients = certs
+    let recipients = certs
         .iter()
         .flat_map(|cert| {
             cert.keys()
@@ -51,19 +50,15 @@ fn main() {
     // Compose a writer stack corresponding to the output format and
     // packet structure we want.  First, we want the output to be
     // ASCII armored.
-    let mut sink = armor::Writer::new(io::stdout(), armor::Kind::Message, &[])
+    let mut sink = armor::Writer::new(io::stdout(), armor::Kind::Message)
         .expect("Failed to create an armored writer");
 
     // Stream an OpenPGP message.
     let message = Message::new(&mut sink);
 
     // We want to encrypt a literal data packet.
-    let mut encryptor = Encryptor::for_recipient(
-        message, recipients.pop().expect("No encryption key found"));
-    for r in recipients {
-        encryptor = encryptor.add_recipient(r)
-    }
-    let encryptor = encryptor.build().expect("Failed to create encryptor");
+    let encryptor = Encryptor::for_recipients(message, recipients)
+        .build().expect("Failed to create encryptor");
 
     let padder = Padder::new(encryptor, padme)
         .expect("Failed to create padder");

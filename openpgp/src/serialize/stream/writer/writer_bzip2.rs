@@ -3,19 +3,20 @@ use std::fmt;
 use std::io;
 
 use crate::Result;
-use super::{Generic, Stack, BoxStack, Stackable, CompressionLevel};
+use crate::types::CompressionLevel;
+use super::{Generic, Message, BoxStack, Stackable, Cookie};
 
 /// BZing writer.
 pub struct BZ<'a, C: 'a> {
     inner: Generic<BzEncoder<BoxStack<'a, C>>, C>,
 }
 
-impl<'a, C: 'a> BZ<'a, C> {
+impl<'a> BZ<'a, Cookie> {
     /// Makes a BZ compressing writer.
-    pub fn new<L>(inner: Stack<'a, C>, cookie: C, level: L) -> Stack<'a, C>
+    pub fn new<L>(inner: Message<'a>, cookie: Cookie, level: L) -> Message<'a>
         where L: Into<Option<CompressionLevel>>
     {
-        Stack::from(Box::new(BZ {
+        Message::from(Box::new(BZ {
             inner: Generic::new_unboxed(
                 BzEncoder::new(inner.into(),
                                level.into().unwrap_or_default().into()),

@@ -27,7 +27,7 @@
 //! let mut core = Core::new().unwrap();
 //! let ctx = Context::new()?;
 //! let mut ks = KeyServer::keys_openpgp_org(&ctx)?;
-//! let keyid = KeyID::from_hex("31855247603831FD").unwrap();
+//! let keyid = "31855247603831FD".parse().unwrap();
 //! println!("{:?}", core.run(ks.get(&keyid)));
 //! Ok(())
 //! # }
@@ -151,7 +151,7 @@ impl KeyServer {
                         _ => unreachable!(),
                     }.unwrap()).parse()?;
 
-        Ok(KeyServer{client: client, uri: uri})
+        Ok(KeyServer{client, uri})
     }
 
     /// Retrieves the key with the given `keyid`.
@@ -214,8 +214,7 @@ impl KeyServer {
                 Ok(u) => u,
             };
 
-        let mut w = match Writer::new(Vec::new(),
-                                      Kind::PublicKey, &[]) {
+        let mut w = match Writer::new(Vec::new(), Kind::PublicKey) {
             Ok(v) => v,
             Err(e) => return Box::new(future::err(e.into())),
         };

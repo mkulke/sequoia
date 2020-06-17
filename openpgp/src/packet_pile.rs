@@ -1,22 +1,110 @@
+use std::convert::TryFrom;
 use std::fmt;
-use std::slice;
 use std::vec;
 use std::io;
 use std::path::Path;
+use std::iter::FromIterator;
+use std::iter::IntoIterator;
 
 use buffered_reader::BufferedReader;
 
 use crate::Result;
 use crate::Error;
 use crate::Packet;
+use crate::cert::Cert;
 use crate::packet::{self, Container};
-use crate::PacketPile;
 use crate::parse::PacketParserResult;
 use crate::parse::PacketParserBuilder;
 use crate::parse::Parse;
 use crate::parse::Cookie;
 
-
+/// An unstructured [packet] sequence.
+///
+/// To deserialize an OpenPGP packet stream, use either
+/// [`PacketParser`], [`PacketPileParser`], or
+/// [`PacketPile::from_file`] (or related routines).
+///
+/// Normally, you'll want to convert the `PacketPile` to a Cert or a
+/// `Message`.
+///
+/// # Example
+///
+/// This example shows how to modify packets in PacketPile using [`pathspec`]s.
+///
+/// ```rust
+/// # extern crate sequoia_openpgp as openpgp;
+/// use std::convert::TryFrom;
+/// use openpgp::{Packet, PacketPile};
+/// use openpgp::packet::signature::Signature4;
+/// use openpgp::packet::Signature;
+/// use openpgp::cert::prelude::*;
+/// use openpgp::parse::Parse;
+/// use openpgp::serialize::Serialize;
+/// use openpgp::policy::StandardPolicy;
+/// use openpgp::crypto::mpi;
+/// use openpgp::types::RevocationStatus::{Revoked, CouldBe};
+///
+/// # fn main() { f().unwrap(); }
+/// # fn f() -> openpgp::Result<()> {
+/// let (cert, revocation) = CertBuilder::new().generate()?;
+///
+/// let mut buffer = Vec::new();
+/// cert.serialize(&mut buffer)?;
+/// let packet: Packet = revocation.into();
+/// packet.serialize(&mut buffer)?;
+///
+/// let policy = &StandardPolicy::new();
+///
+/// // Certificate is considered revoked because it is accompanied with its
+/// // revocation signature
+/// let pp: PacketPile = PacketPile::from_bytes(&buffer)?;
+/// let cert = Cert::try_from(pp)?;
+/// if let Revoked(_) = cert.revocation_status(policy, None) {
+///     // cert is considered revoked
+/// }
+/// # else {
+/// #     unreachable!();
+/// # }
+///
+/// // Breaking the revocation signature changes certificate's status
+/// let mut pp: PacketPile = PacketPile::from_bytes(&buffer)?;
+/// if let Some(Packet::Signature(ref mut sig)) = pp.path_ref_mut(&[2]) {
+///     *sig = Signature4::new(
+///         sig.typ(),
+///         sig.pk_algo(),
+///         sig.hash_algo(),
+///         sig.hashed_area().clone(),
+///         sig.unhashed_area().clone(),
+///         *sig.digest_prefix(),
+///         // MPI is replaced with a dummy one
+///         mpi::Signature::RSA {
+///             s: mpi::MPI::from(vec![1, 2, 3])
+///         }).into();
+/// }
+///
+/// let cert = Cert::try_from(pp)?;
+/// if let CouldBe(_) = cert.revocation_status(policy, None) {
+///     // revocation signature is broken and the key is not definitely revoked
+/// }
+/// # else {
+/// #   unreachable!();
+/// # }
+/// #     Ok(())
+/// # }
+/// ```
+///
+///   [packet]: https://tools.ietf.org/html/rfc4880#section-4
+///   [`PacketParser`]: parse/struct.PacketParser.html
+///   [`PacketPileParser`]: parse/struct.PacketPileParser.html
+///   [`PacketPile::from_file`]: struct.PacketPile.html#method.from_file
+///   [`pathspec`]: struct.PacketPile.html#method.path_ref
+#[derive(PartialEq, Clone, Default)]
+pub struct PacketPile {
+    /// At the top level, we have a sequence of packets, which may be
+    /// containers.
+    top_level: Container,
+}
+
 impl fmt::Debug for PacketPile {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("PacketPile")
@@ -84,7 +172,29 @@ impl From<Packet> for PacketPile {
     }
 }
 
+impl FromIterator<Packet> for PacketPile {
+    fn from_iter<I: IntoIterator<Item=Packet>>(iter: I) -> Self {
+        Self::from(Vec::from_iter(iter))
+    }
+}
+
+impl From<PacketPile> for Vec<Packet> {
+    fn from(pp: PacketPile) -> Self {
+        pp.into_children().collect()
+    }
+}
+
 impl PacketPile {
+    /// Accessor for PacketPileParser.
+    pub(crate) fn top_level_mut(&mut self) -> &mut Container {
+        &mut self.top_level
+    }
+
+    /// Returns an error if operating on a non-container packet.
+    fn error() -> crate::Error {
+        crate::Error::InvalidOperation("Not a container packet".into())
+    }
+
     /// Pretty prints the message to stderr.
     ///
     /// This function is primarily intended for debugging purposes.
@@ -117,17 +227,49 @@ impl PacketPile {
     ///
     /// Note: there is no packet at the root.  Thus, the path `[]`
     /// returns None.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # extern crate sequoia_openpgp as openpgp;
+    /// # use openpgp::{Result, types::{CompressionAlgorithm, DataFormat},
+    /// #     Packet, PacketPile, packet::Literal, packet::CompressedData};
+    /// # fn main() { f().unwrap(); }
+    /// # fn f() -> Result<()> {
+    /// # let mut lit = Literal::new(DataFormat::Text);
+    /// # lit.set_body(b"test".to_vec());
+    /// # let packets = vec![ lit.into() ];
+    /// let pile = PacketPile::from(packets);
+    ///
+    /// if let Some(packet) = pile.path_ref(&[0]) {
+    ///     // There is a packet at this path.
+    /// }
+    /// # else {
+    /// #     unreachable!();
+    /// # }
+    ///
+    /// if let None = pile.path_ref(&[0, 1, 2]) {
+    ///     // But none here.
+    /// }
+    /// # else {
+    /// #     unreachable!();
+    /// # }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn path_ref(&self, pathspec: &[usize]) -> Option<&Packet> {
         let mut packet : Option<&Packet> = None;
 
         let mut cont = Some(&self.top_level);
         for i in pathspec {
             if let Some(ref c) = cont.take() {
-                if *i < c.children_ref().len() {
-                    let p = &c.children_ref()[*i];
-                    packet = Some(p);
-                    cont = p.container_ref();
-                    continue;
+                if let Some(children) = c.children_ref() {
+                    if *i < children.len() {
+                        let p = &children[*i];
+                        packet = Some(p);
+                        cont = p.container_ref();
+                        continue;
+                    }
                 }
             }
 
@@ -140,17 +282,43 @@ impl PacketPile {
     /// described by `pathspec`.
     ///
     /// See the description of the `path_spec` for more details.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # extern crate sequoia_openpgp as openpgp;
+    /// # use openpgp::{Result, types::{CompressionAlgorithm, DataFormat},
+    /// #     Packet, PacketPile, packet::Literal, packet::CompressedData};
+    /// # fn main() { f().unwrap(); }
+    /// # fn f() -> Result<()> {
+    /// # let mut lit = Literal::new(DataFormat::Text);
+    /// # lit.set_body(b"test".to_vec());
+    /// # let packets = vec![ lit.into() ];
+    /// let mut pile = PacketPile::from(packets);
+    ///
+    /// if let Some(ref packet) = pile.path_ref_mut(&[0]) {
+    ///     // There is a packet at this path.
+    /// }
+    /// # else {
+    /// #     unreachable!();
+    /// # }
+    ///
+    /// if let None = pile.path_ref_mut(&[0, 1, 2]) {
+    ///     // But none here.
+    /// }
+    /// # else {
+    /// #     unreachable!();
+    /// # }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn path_ref_mut(&mut self, pathspec: &[usize]) -> Option<&mut Packet> {
         let mut container = &mut self.top_level;
 
         for (level, &i) in pathspec.iter().enumerate() {
             let tmp = container;
 
-            if i >= tmp.children_ref().len() {
-                return None;
-            }
-
-            let p = &mut tmp.children_mut()[i];
+            let p = tmp.children_mut().and_then(|c| c.get_mut(i))?;
 
             if level == pathspec.len() - 1 {
                 return Some(p)
@@ -182,7 +350,6 @@ impl PacketPile {
     /// # extern crate sequoia_openpgp as openpgp;
     /// # use openpgp::{Result, types::{CompressionAlgorithm, DataFormat},
     /// #     Packet, PacketPile, packet::Literal, packet::CompressedData};
-    ///
     /// # fn main() { f().unwrap(); }
     /// # fn f() -> Result<()> {
     /// // A compressed data packet that contains a literal data packet.
@@ -190,7 +357,7 @@ impl PacketPile {
     /// literal.set_body(b"old".to_vec());
     /// let mut compressed =
     ///     CompressedData::new(CompressionAlgorithm::Uncompressed);
-    /// compressed.children_mut().push(literal.into());
+    /// compressed.children_mut().unwrap().push(literal.into());
     /// let mut pile = PacketPile::from(Packet::from(compressed));
     ///
     /// // Replace the literal data packet.
@@ -218,12 +385,15 @@ impl PacketPile {
             let tmp = container;
 
             if level == pathspec.len() - 1 {
-                if i + count > tmp.children_ref().len() {
+                if tmp.children_ref().map(|c| i + count > c.len())
+                    .unwrap_or(true)
+                {
                     return Err(Error::IndexOutOfRange.into());
                 }
 
                 // Out with the old...
                 let old = tmp.children_mut()
+                    .expect("checked above")
                     .drain(i..i + count)
                     .collect::<Vec<Packet>>();
                 assert_eq!(old.len(), count);
@@ -231,20 +401,21 @@ impl PacketPile {
                 // In with the new...
 
                 let mut tail = tmp.children_mut()
+                    .expect("checked above")
                     .drain(i..)
                     .collect::<Vec<Packet>>();
 
-                tmp.children_mut().append(&mut packets);
-                tmp.children_mut().append(&mut tail);
+                tmp.children_mut().expect("checked above").append(&mut packets);
+                tmp.children_mut().expect("checked above").append(&mut tail);
 
                 return Ok(old)
             }
 
-            if i >= tmp.children_ref().len() {
+            if tmp.children_ref().map(|c| i >= c.len()).unwrap_or(true) {
                 return Err(Error::IndexOutOfRange.into());
             }
 
-            match tmp.children_ref()[i] {
+            match tmp.children_ref().expect("checked above")[i] {
                 // The structured container types.
                 Packet::CompressedData(_)
                     | Packet::SEIP(_)
@@ -252,7 +423,8 @@ impl PacketPile {
                     => (), // Ok.
                 _ => return Err(Error::IndexOutOfRange.into()),
             }
-            container = tmp.children_mut()[i].container_mut()
+            container =
+                tmp.children_mut().expect("checked above")[i].container_mut()
                 .expect("The above packets are structured containers");
         }
 
@@ -261,18 +433,75 @@ impl PacketPile {
 
     /// Returns an iterator over all of the packet's descendants, in
     /// depth-first order.
+    ///
+    /// ```rust
+    /// # extern crate sequoia_openpgp as openpgp;
+    /// # use openpgp::{Result, types::{CompressionAlgorithm, DataFormat},
+    /// #     Packet, PacketPile, packet::Literal, packet::Tag};
+    /// # use std::iter::Iterator;
+    /// # fn main() { f().unwrap(); }
+    /// # fn f() -> Result<()> {
+    /// let mut lit = Literal::new(DataFormat::Text);
+    /// lit.set_body(b"test".to_vec());
+    ///
+    /// let pile = PacketPile::from(vec![ lit.into() ]);
+    ///
+    /// for packet in pile.descendants() {
+    ///     assert_eq!(packet.tag(), Tag::Literal);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn descendants(&self) -> packet::Iter {
-        self.top_level.descendants()
+        self.top_level.descendants().expect("toplevel is a container")
     }
 
     /// Returns an iterator over the top-level packets.
-    pub fn children<'a>(&'a self) -> slice::Iter<'a, Packet> {
-        self.top_level.children()
+    ///
+    /// ```rust
+    /// # extern crate sequoia_openpgp as openpgp;
+    /// # use openpgp::{Result, types::{CompressionAlgorithm, DataFormat},
+    /// #     Packet, PacketPile, packet::Literal, packet::CompressedData};
+    /// # fn main() { f().unwrap(); }
+    /// # fn f() -> Result<()> {
+    /// let mut lit = Literal::new(DataFormat::Text);
+    /// lit.set_body(b"test".to_vec());
+    ///
+    /// let pile = PacketPile::from(vec![ lit.into() ]);
+    ///
+    /// assert_eq!(pile.children().len(), 1);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn children(&self)
+        -> impl Iterator<Item=&Packet> + ExactSizeIterator
+    {
+        self.top_level.children().expect("toplevel is a container")
     }
 
     /// Returns an `IntoIter` over the top-level packets.
-    pub fn into_children(self) -> vec::IntoIter<Packet> {
-        self.top_level.into_children()
+    ///
+    /// ```rust
+    /// # extern crate sequoia_openpgp as openpgp;
+    /// # use openpgp::{Result, types::{CompressionAlgorithm, DataFormat},
+    /// #     Packet, PacketPile, packet::Literal, packet::Tag};
+    /// # fn main() { f().unwrap(); }
+    /// # fn f() -> Result<()> {
+    /// let mut lit = Literal::new(DataFormat::Text);
+    /// lit.set_body(b"test".to_vec());
+    ///
+    /// let pile = PacketPile::from(vec![ lit.into() ]);
+    ///
+    /// for packet in pile.into_children() {
+    ///     assert_eq!(packet.tag(), Tag::Literal);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn into_children(self)
+        -> impl Iterator<Item=Packet> + ExactSizeIterator
+    {
+        self.top_level.into_children().expect("toplevel is a container")
     }
 
 
@@ -282,12 +511,23 @@ impl PacketPile {
             .buffer_unread_content()
             .into_packet_pile()
     }
+}
+
+impl From<Cert> for PacketPile {
+    /// Converts the `Cert` into a `PacketPile`.
+    fn from(cert: Cert) -> PacketPile {
+        PacketPile::from(cert.into_packets().collect::<Vec<Packet>>())
+    }
+}
+
+impl<'a> TryFrom<PacketParserResult<'a>> for PacketPile {
+    type Error = anyhow::Error;
 
     /// Reads all of the packets from a `PacketParser`, and turns them
     /// into a message.
     ///
     /// Note: this assumes that `ppr` points to a top-level packet.
-    pub fn from_packet_parser<'a>(ppr: PacketParserResult<'a>)
+    fn try_from(ppr: PacketParserResult<'a>)
         -> Result<PacketPile>
     {
         // Things are not going to work out if we don't start with a
@@ -296,7 +536,12 @@ impl PacketPile {
         // it is hard to imagine that that is what the caller wants.
         // Instead of hiding that error, fail fast.
         if let PacketParserResult::Some(ref pp) = ppr {
-            assert_eq!(pp.recursion_depth(), 0);
+            if pp.recursion_depth() != 0 {
+                return Err(Error::InvalidOperation(
+                    format!("Expected top-level packet, \
+                             but the parser is at level {}",
+                            pp.recursion_depth())).into());
+            }
         }
 
         // Create a top-level container.
@@ -311,8 +556,9 @@ impl PacketPile {
         let mut pp = ppr.unwrap();
 
         'outer: loop {
+            let recursion_depth = pp.recursion_depth();
             let (mut packet, mut ppr) = pp.recurse()?;
-            let mut position = ppr.last_recursion_depth().unwrap() as isize;
+            let mut position = recursion_depth as isize;
 
             let mut relative_position : isize = position - last_position;
             assert!(relative_position <= 1);
@@ -325,8 +571,11 @@ impl PacketPile {
                 // being reborrowed and preventing us from
                 // assigning to it.
                 let tmp = container;
-                let packets_len = tmp.children_ref().len();
-                let p = &mut tmp.children_mut()[packets_len - 1];
+                let packets_len =
+                    tmp.children_ref().ok_or_else(Self::error)?.len();
+                let p = &mut tmp.children_mut()
+                    .ok_or_else(Self::error)?
+                    [packets_len - 1];
 
                 container = p.container_mut().unwrap();
             }
@@ -342,11 +591,14 @@ impl PacketPile {
                 if relative_position == 1 {
                     // Create a new container.
                     let tmp = container;
-                    let i = tmp.children_ref().len() - 1;
-                    container = tmp.children_mut()[i].container_mut().unwrap();
+                    let i =
+                        tmp.children_ref().ok_or_else(Self::error)?.len() - 1;
+                    container = tmp.children_mut()
+                        .ok_or_else(Self::error)?
+                        [i].container_mut().unwrap();
                 }
 
-                container.children_mut().push(packet);
+                container.children_mut().unwrap().push(packet);
 
                 if ppr.is_none() {
                     break 'outer;
@@ -363,15 +615,15 @@ impl PacketPile {
                     break;
                 }
 
+                let recursion_depth = pp.recursion_depth();
                 let (packet_, ppr_) = pp.recurse()?;
                 packet = packet_;
                 ppr = ppr_;
-                assert_eq!(position,
-                           ppr.last_recursion_depth().unwrap() as isize);
+                assert_eq!(position, recursion_depth as isize);
             }
         }
 
-        return Ok(PacketPile { top_level: top_level });
+        return Ok(PacketPile { top_level });
     }
 }
 
@@ -404,10 +656,10 @@ impl<'a> PacketParserBuilder<'a> {
     /// # }
     /// ```
     pub fn into_packet_pile(self) -> Result<PacketPile> {
-        PacketPile::from_packet_parser(self.finalize()?)
+        PacketPile::try_from(self.build()?)
     }
 }
-
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -484,30 +736,33 @@ mod test {
     // lutz's key is a v3 key.
     #[test]
     fn torture() {
+        use std::convert::TryInto;
+        use crate::parse::PacketPileParser;
+
         let data = crate::tests::key("dkg.gpg");
-        let mut ppp = PacketParserBuilder::from_bytes(data).unwrap()
+        let mut ppp: PacketPileParser =
+            PacketParserBuilder::from_bytes(data).unwrap()
             //.trace()
             .buffer_unread_content()
-            .into_packet_pile_parser().unwrap();
+            .try_into().unwrap();
 
-        let mut ppr = ppp.recurse().unwrap();
-        while ppr.is_some() {
-            ppr = ppp.recurse().unwrap();
+        while ppp.is_some() {
+            ppp.recurse().unwrap();
         }
         let pile = ppp.finish();
         //pile.pretty_print();
         assert_eq!(pile.children().len(), 1450);
 
         let data = crate::tests::key("lutz.gpg");
-        let mut ppp = PacketParserBuilder::from_bytes(data).unwrap()
+        let mut ppp: PacketPileParser =
+            PacketParserBuilder::from_bytes(data).unwrap()
             //.trace()
             .buffer_unread_content()
-            .into_packet_pile_parser().unwrap();
+            .try_into().unwrap();
 
-        let mut ppr = ppp.recurse().unwrap();
-        while let Some(pp) = ppr.as_mut() {
+        while let Some(pp) = ppp.as_ref() {
             eprintln!("{:?}", pp);
-            ppr = ppp.recurse().unwrap();
+            ppp.recurse().unwrap();
         }
         let pile = ppp.finish();
         pile.pretty_print();
@@ -545,18 +800,18 @@ mod test {
             = PacketParserBuilder::from_bytes(
                 crate::tests::message("compression-quine.gpg")).unwrap()
                 .max_recursion_depth(max_recursion_depth)
-                .finalize().unwrap();
+                .build().unwrap();
 
         let mut count = 0;
         loop {
             if let PacketParserResult::Some(pp2) = ppr {
                 count += 1;
 
+                let packet_depth = pp2.recursion_depth();
                 let pp2 = pp2.recurse().unwrap().1;
-                let packet_depth = pp2.last_recursion_depth().unwrap();
                 assert_eq!(packet_depth, count - 1);
                 if pp2.is_some() {
-                    assert_eq!(pp2.recursion_depth(), Some(count));
+                    assert_eq!(pp2.as_ref().unwrap().recursion_depth(), count);
                 }
                 ppr = pp2;
             } else {
@@ -577,7 +832,7 @@ mod test {
         let ppr = PacketParserBuilder::from_bytes(
                 crate::tests::message("compressed-data-algo-1.gpg")).unwrap()
             .buffer_unread_content()
-            .finalize().unwrap();
+            .build().unwrap();
 
         let mut pp = ppr.unwrap();
         if let Packet::CompressedData(_) = pp.packet {
@@ -597,11 +852,10 @@ mod test {
 
         // Get the rest of the content and put the initial byte that
         // we stole back.
-        let mut content = packet.body().unwrap().to_vec();
+        let mut content = packet.processed_body().unwrap().to_vec();
         content.insert(0, data[0]);
 
-        let content = &content.into_boxed_slice()[..];
-        let ppr = PacketParser::from_bytes(content).unwrap();
+        let ppr = PacketParser::from_bytes(&content).unwrap();
         let pp = ppr.unwrap();
         if let Packet::Literal(_) = pp.packet {
         } else {
@@ -634,7 +888,7 @@ mod test {
         }
 
         let mut seip = SEIP1::new();
-        seip.children_mut().push(cd.into());
+        seip.children_mut().unwrap().push(cd.into());
         packets.push(seip.into());
 
         eprintln!("{:#?}", packets);
@@ -809,7 +1063,7 @@ mod test {
                     assert_eq!(top_level.len(), 1);
 
                     let values = top_level[0]
-                        .children()
+                        .children().unwrap()
                         .map(|p| {
                             if let Packet::Literal(ref literal) = p {
                                 literal.body()

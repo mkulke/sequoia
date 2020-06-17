@@ -5,7 +5,9 @@ use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::sync::Mutex;
 
+#[cfg(any(test, feature = "quickcheck"))]
 use quickcheck::{Arbitrary, Gen};
+
 use anyhow::Context;
 use regex::Regex;
 
@@ -359,10 +361,10 @@ impl ConventionallyParsedUserID {
                 let email = Some(to_range(email));
 
                 Ok(ConventionallyParsedUserID {
-                    userid: userid,
+                    userid,
                     name: None,
                     comment: None,
-                    email: email,
+                    email,
                     uri: None,
                 })
             } else if let Some(uri) = cap.name("raw_uri") {
@@ -370,11 +372,11 @@ impl ConventionallyParsedUserID {
                 let uri = Some(to_range(uri));
 
                 Ok(ConventionallyParsedUserID {
-                    userid: userid,
+                    userid,
                     name: None,
                     comment: None,
                     email: None,
-                    uri: uri,
+                    uri,
                 })
             } else if let Some(email) = cap.name("wrapped_addr_spec") {
                 // wrapped-addr-spec
@@ -383,10 +385,10 @@ impl ConventionallyParsedUserID {
                 let email = Some(to_range(email));
 
                 Ok(ConventionallyParsedUserID {
-                    userid: userid,
-                    name: name,
-                    comment: comment,
-                    email: email,
+                    userid,
+                    name,
+                    comment,
+                    email,
                     uri: None,
                 })
             } else if let Some(uri) = cap.name("wrapped_uri") {
@@ -396,11 +398,11 @@ impl ConventionallyParsedUserID {
                 let uri = Some(to_range(uri));
 
                 Ok(ConventionallyParsedUserID {
-                    userid: userid,
-                    name: name,
-                    comment: comment,
+                    userid,
+                    name,
+                    comment,
                     email: None,
-                    uri: uri,
+                    uri,
                 })
             } else if let Some(name) = cap.name("bare_name") {
                 // name-bare
@@ -408,9 +410,9 @@ impl ConventionallyParsedUserID {
                 let comment = cap.name("bare_comment").map(to_range);
 
                 Ok(ConventionallyParsedUserID {
-                    userid: userid,
+                    userid,
                     name: Some(name),
-                    comment: comment,
+                    comment,
                     email: None,
                     uri: None,
                 })
@@ -506,7 +508,8 @@ impl fmt::Debug for UserID {
 
 impl PartialEq for UserID {
     fn eq(&self, other: &UserID) -> bool {
-        self.value == other.value
+        self.common == other.common
+            && self.value == other.value
     }
 }
 
@@ -521,20 +524,26 @@ impl PartialOrd for UserID {
 
 impl Ord for UserID {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.value.cmp(&other.value)
+        self.common.cmp(&other.common).then_with(
+            || self.value.cmp(&other.value))
     }
 }
 
 impl Hash for UserID {
     fn hash<H: Hasher>(&self, state: &mut H) {
         // We hash only the data; the cache does not implement hash.
+        self.common.hash(state);
         self.value.hash(state);
     }
 }
 
 impl Clone for UserID {
     fn clone(&self) -> Self {
-        self.value.clone().into()
+        UserID {
+            common: self.common.clone(),
+            value: self.value.clone(),
+            parsed: Mutex::new(RefCell::new(None)),
+        }
     }
 }
 
@@ -822,6 +831,7 @@ impl From<UserID> for Packet {
     }
 }
 
+#[cfg(any(test, feature = "quickcheck"))]
 impl Arbitrary for UserID {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         Vec::<u8>::arbitrary(g).into()

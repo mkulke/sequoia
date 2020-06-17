@@ -292,11 +292,12 @@ impl Cert {
 
 /// A reference to a Cert that allows serialization of secret keys.
 ///
-/// To avoid accidental leakage `Cert::serialize()` skips secret keys.
-/// To serialize `Cert`s with secret keys, use [`Cert::as_tsk()`] to
-/// create a `TSK`, which is a shim on top of the `Cert`, and serialize
-/// this.
+/// To avoid accidental leakage, secret keys are not serialized when a
+/// serializing a [`Cert`].  To serialize [`Cert`]s with secret keys,
+/// use [`Cert::as_tsk()`] to create a `TSK`, which is a shim on top
+/// of the `Cert`, and serialize this.
 ///
+/// [`Cert`]: ../cert/struct.Cert.html
 /// [`Cert::as_tsk()`]: ../cert/struct.Cert.html#method.as_tsk
 ///
 /// # Example
@@ -323,7 +324,7 @@ impl<'a> TSK<'a> {
     /// Creates a new view for the given `Cert`.
     fn new(cert: &'a Cert) -> Self {
         Self {
-            cert: cert,
+            cert,
             filter: None,
         }
     }
@@ -761,14 +762,14 @@ mod test {
         let p = &P::new();
 
         let (cert, _) = CertBuilder::new().generate().unwrap();
-        let mut keypair = cert.primary_key().key().clone().mark_parts_secret()
+        let mut keypair = cert.primary_key().key().clone().parts_into_secret()
             .unwrap().into_keypair().unwrap();
 
         let key: key::SecretSubkey =
             Key4::generate_ecc(false, Curve::Cv25519).unwrap().into();
         let key_binding = key.bind(
             &mut keypair, &cert,
-            signature::Builder::new(SignatureType::SubkeyBinding)
+            signature::SignatureBuilder::new(SignatureType::SubkeyBinding)
                 .set_key_flags(
                     &KeyFlags::default().set_transport_encryption(true))
                 .unwrap()
@@ -777,7 +778,7 @@ mod test {
         let uid = UserID::from("foo");
         let uid_binding = uid.bind(
             &mut keypair, &cert,
-            signature::Builder::from(
+            signature::SignatureBuilder::from(
                 cert.primary_key().with_policy(p, None).unwrap()
                     .direct_key_signature().unwrap().clone())
                     .set_type(SignatureType::PositiveCertification)
@@ -788,7 +789,7 @@ mod test {
         ]).unwrap();
         let ua_binding = ua.bind(
             &mut keypair, &cert,
-            signature::Builder::from(
+            signature::SignatureBuilder::from(
                 cert.primary_key().with_policy(p, None).unwrap()
                     .direct_key_signature().unwrap().clone())
                 .set_type(SignatureType::PositiveCertification)
@@ -801,8 +802,7 @@ mod test {
         ]).unwrap();
 
         assert_eq!(cert.subkeys().count(), 1);
-        assert!(cert.subkeys().nth(0).unwrap().binding_signature(p, None)
-                .is_some());
+        cert.subkeys().nth(0).unwrap().binding_signature(p, None).unwrap();
         assert_eq!(cert.userids().count(), 1);
         assert!(cert.userids().with_policy(p, None).nth(0).is_some());
         assert_eq!(cert.user_attributes().count(), 1);

@@ -1,19 +1,131 @@
 //! Streaming packet serialization.
 //!
-//! This is the preferred interface to generate OpenPGP messages.  It
+//! This interface provides a convenient way to create signed and/or
+//! encrypted OpenPGP messages (see [Section 11.3 of RFC 4880]) and is
+//! the preferred interface to generate messages using Sequoia.  It
 //! takes advantage of OpenPGP's streaming nature to avoid unnecessary
-//! buffering.  This interface provides a convenient, yet low-level
-//! way to sign or encrypt.
+//! buffering.
 //!
-//! See the [encryption example].
+//!   [Section 11.3 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-11.3
 //!
-//! [encryption example]: struct.Encryptor.html#example
+//! To use this interface, a sink implementing [`io::Write`] is
+//! wrapped by [`Message::new`] returning a streaming [`Message`].
+//! The writer stack is a structure to compose filters that create the
+//! desired message structure.  There are a number of filters that can
+//! be freely combined:
+//!
+//!   - [`Armorer`] applies ASCII-Armor to the stream,
+//!   - [`Encryptor`] encrypts data fed into it,
+//!   - [`Compressor`] compresses data,
+//!   - [`Padder`] pads data,
+//!   - [`Signer`] signs data,
+//!   - [`LiteralWriter`] wraps literal data (i.e. the payload) into
+//!     a literal data packet,
+//!   - and finally, [`ArbitraryWriter`] can be used to create
+//!     arbitrary packets for testing purposes.
+//!
+//!   [`io::Write`]: https://doc.rust-lang.org/nightly/std/io/trait.Write.html
+//!   [`Message::new`]: struct.Message.html#method.new
+//!   [`Message`]: struct.Message.html
+//!   [`Armorer`]: struct.Armorer.html
+//!   [`Encryptor`]: struct.Encryptor.html
+//!   [`Compressor`]: struct.Compressor.html
+//!   [`Padder`]: padding/struct.Padder.html
+//!   [`Signer`]: struct.Signer.html
+//!   [`LiteralWriter`]: struct.LiteralWriter.html
+//!   [`ArbitraryWriter`]: struct.ArbitraryWriter.html
+//!
+//! The most common structure is an encrypted, compressed, and signed
+//! message.  This structure is [supported] by all OpenPGP
+//! implementations.  See the example below on how to create this
+//! structure.
+//!
+//!   [supported]: https://tests.sequoia-pgp.org/#Unusual_Message_Structure
+//!
+//! # Examples
+//!
+//! This example demonstrates how to create the simplest possible
+//! OpenPGP message (see [Section 11.3 of RFC 4880]) containing just a
+//! literal data packet (see [Section 5.9 of RFC 4880]):
+//!
+//!   [Section 5.9 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.9
+//!
+//! ```
+//! # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+//! use std::io::Write;
+//! use sequoia_openpgp as openpgp;
+//! use openpgp::serialize::stream::{Message, LiteralWriter};
+//!
+//! let mut sink = vec![];
+//! {
+//!     let message = Message::new(&mut sink);
+//!     let mut message = LiteralWriter::new(message).build()?;
+//!     message.write_all(b"Hello world.")?;
+//!     message.finalize()?;
+//! }
+//! assert_eq!(b"\xcb\x12b\x00\x00\x00\x00\x00Hello world.", sink.as_slice());
+//! # Ok(()) }
+//! ```
+//!
+//! This example demonstrates how to create the most common OpenPGP
+//! message structure (see [Section 11.3 of RFC 4880]).  The plaintext
+//! is first signed, then compressed, encrypted, and finally ASCII
+//! armored.  Our example pads the plaintext instead of compressing
+//! it, but the resulting message structure is the same.
+//!
+//! ```
+//! # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+//! use std::io::Write;
+//! use sequoia_openpgp as openpgp;
+//! use openpgp::policy::StandardPolicy;
+//! use openpgp::cert::prelude::*;
+//! use openpgp::serialize::stream::{
+//!     Message, Armorer, Encryptor, Signer, LiteralWriter,
+//!     padding::{Padder, padme},
+//! };
+//! # use openpgp::parse::Parse;
+//!
+//! let p = &StandardPolicy::new();
+//!
+//! let sender: Cert = // ...
+//! #     Cert::from_bytes(&include_bytes!(
+//! #     "../../tests/data/keys/testy-new-private.pgp")[..])?;
+//! let signing_keypair = sender.keys().secret()
+//!     .with_policy(p, None).alive().revoked(false).for_signing()
+//!     .nth(0).unwrap()
+//!     .key().clone().into_keypair()?;
+//!
+//! let recipient: Cert = // ...
+//! #     sender.clone();
+//! // Note: One certificate may contain several suitable encryption keys.
+//! let recipients =
+//!     recipient.keys().with_policy(p, None).alive().revoked(false)
+//!     // Or `for_storage_encryption()`, for data at rest.
+//!     .for_transport_encryption()
+//!     .map(|ka| ka.key());
+//!
+//! # let mut sink = vec![];
+//! let message = Message::new(&mut sink);
+//! let message = Armorer::new(message).build()?;
+//! let message = Encryptor::for_recipients(message, recipients).build()?;
+//! // Reduce metadata leakage by concealing the message size.
+//! let message = Padder::new(message, padme)?;
+//! let message = Signer::new(message, signing_keypair)
+//!     // Prevent Surreptitious Forwarding.
+//!     .add_intended_recipient(&recipient)
+//!     .build()?;
+//! let mut message = LiteralWriter::new(message).build()?;
+//! message.write_all(b"Hello world.")?;
+//! message.finalize()?;
+//! # Ok(()) }
+//! ```
 
 use std::fmt;
 use std::io::{self, Write};
 use std::time::SystemTime;
 
 use crate::{
+    armor,
     crypto,
     Error,
     Fingerprint,
@@ -24,32 +136,32 @@ use crate::{
     crypto::SessionKey,
     packet::prelude::*,
     packet::signature,
-    packet::key::{
-        PublicParts,
-        UnspecifiedRole,
-    },
+    packet::key,
     cert::prelude::*,
 };
 use crate::packet::header::CTB;
 use crate::packet::header::BodyLength;
 use super::{
-    PartialBodyFilter,
     Marshal,
-    writer,
 };
 use crate::types::{
     AEADAlgorithm,
     CompressionAlgorithm,
+    CompressionLevel,
     DataFormat,
     SignatureType,
     SymmetricAlgorithm,
 };
 
+pub(crate) mod writer;
+#[cfg(feature = "compression-deflate")]
+pub mod padding;
+mod partial_body;
+use partial_body::PartialBodyFilter;
+
 /// Cookie must be public because the writers are.
-#[doc(hidden)]
 #[derive(Debug)]
-pub struct Cookie {
-    pub(crate) // For padding.rs
+struct Cookie {
     level: usize,
     private: Private,
 }
@@ -61,10 +173,9 @@ enum Private {
 }
 
 impl Cookie {
-    pub(crate) // For padding.rs
     fn new(level: usize) -> Self {
         Cookie {
-            level: level,
+            level,
             private: Private::Nothing,
         }
     }
@@ -78,20 +189,332 @@ impl Default for Cookie {
 
 /// Streams an OpenPGP message.
 ///
-/// Wraps a `std::io::Write`r for use with the streaming subsystem.
-pub struct Message {
+/// Wraps an [`io::Write`]r for use with the streaming subsystem.  The
+/// `Message` is a stack of filters that create the desired message
+/// structure.  Literal data must be framed using the
+/// [`LiteralWriter`] filter.  Once all the has been written, the
+/// `Message` must be finalized using [`Message::finalize`].
+///
+///   [`io::Write`]: https://doc.rust-lang.org/nightly/std/io/trait.Write.html
+///   [`LiteralWriter`]: struct.LiteralWriter.html
+///   [`Message::finalize`]: #method.finalize
+#[derive(Debug)]
+pub struct Message<'a>(writer::BoxStack<'a, Cookie>);
+
+impl<'a> Message<'a> {
+    /// Starts streaming an OpenPGP message.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::serialize::stream::{Message, LiteralWriter};
+    ///
+    /// # let mut sink = vec![]; // Vec<u8> implements io::Write.
+    /// let message = Message::new(&mut sink);
+    /// // Construct the writer stack here.
+    /// let mut message = LiteralWriter::new(message).build()?;
+    /// // Write literal data to `message` here.
+    /// // ...
+    /// // Finalize the message.
+    /// message.finalize()?;
+    /// # Ok(()) }
+    /// ```
+    pub fn new<W: 'a + io::Write>(w: W) -> Message<'a> {
+        writer::Generic::new(w, Cookie::new(0))
+    }
+
+    /// Finalizes the topmost writer, returning the underlying writer.
+    ///
+    /// Finalizes the topmost writer, i.e. flushes any buffered data,
+    /// and pops it of the stack.  This allows for fine-grained
+    /// control of the resulting message, but must be done with great
+    /// care.  If done improperly, the resulting message may be
+    /// malformed.
+    ///
+    /// # Example
+    ///
+    /// This demonstrates how to create a compressed, signed message
+    /// from a detached signature.
+    ///
+    /// ```
+    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// use std::io::Write;
+    /// use std::convert::TryFrom;
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::packet::{Packet, Signature, one_pass_sig::OnePassSig3};
+    /// # use openpgp::parse::Parse;
+    /// use openpgp::serialize::Serialize;
+    /// use openpgp::serialize::stream::{Message, Compressor, LiteralWriter};
+    ///
+    /// let data: &[u8] = // ...
+    /// # &include_bytes!(
+    /// # "../../tests/data/messages/a-cypherpunks-manifesto.txt")[..];
+    /// let sig: Signature = // ...
+    /// # if let Packet::Signature(s) = Packet::from_bytes(&include_bytes!(
+    /// # "../../tests/data/messages/a-cypherpunks-manifesto.txt.ed25519.sig")[..])?
+    /// # { s } else { panic!() };
+    ///
+    /// # let mut sink = vec![]; // Vec<u8> implements io::Write.
+    /// let message = Message::new(&mut sink);
+    /// let mut message = Compressor::new(message).build()?;
+    ///
+    /// // First, write a one-pass-signature packet.
+    /// Packet::from(OnePassSig3::try_from(&sig)?)
+    ///     .serialize(&mut message)?;
+    ///
+    /// // Then, add the literal data.
+    /// let mut message = LiteralWriter::new(message).build()?;
+    /// message.write_all(data)?;
+    ///
+    /// // Finally, pop the `LiteralWriter` off the stack to write the
+    /// // signature.
+    /// let mut message = message.finalize_one()?.unwrap();
+    /// Packet::from(sig).serialize(&mut message)?;
+    ///
+    /// // Finalize the message.
+    /// message.finalize()?;
+    /// # Ok(()) }
+    /// ```
+    pub fn finalize_one(self) -> Result<Option<Message<'a>>> {
+        Ok(self.0.into_inner()?.map(|bs| Self::from(bs)))
+    }
+
+    /// Finalizes the message.
+    ///
+    /// Finalizes all writers on the stack, flushing any buffered
+    /// data.
+    ///
+    /// # Note
+    ///
+    /// Failing to finalize the message may result in corrupted
+    /// messages.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::serialize::stream::{Message, LiteralWriter};
+    ///
+    /// # let mut sink = vec![]; // Vec<u8> implements io::Write.
+    /// let message = Message::new(&mut sink);
+    /// // Construct the writer stack here.
+    /// let mut message = LiteralWriter::new(message).build()?;
+    /// // Write literal data to `message` here.
+    /// // ...
+    /// // Finalize the message.
+    /// message.finalize()?;
+    /// # Ok(()) }
+    /// ```
+    pub fn finalize(self) -> Result<()> {
+        let mut stack = self;
+        while let Some(s) = stack.finalize_one()? {
+            stack = s;
+        }
+        Ok(())
+    }
 }
 
-impl Message {
-    /// Streams an OpenPGP message.
-    pub fn new<'a, W: 'a + io::Write>(w: W) -> writer::Stack<'a, Cookie> {
+impl<'a> From<&'a mut dyn io::Write> for Message<'a> {
+    fn from(w: &'a mut dyn io::Write) -> Self {
         writer::Generic::new(w, Cookie::new(0))
     }
 }
 
-impl<'a> From<&'a mut dyn io::Write> for writer::Stack<'a, Cookie> {
-    fn from(w: &'a mut dyn io::Write) -> Self {
-        writer::Generic::new(w, Cookie::new(0))
+
+/// Applies ASCII Armor to the message.
+///
+/// ASCII armored data (see [Section 6 of RFC 4880]) is a OpenPGP data
+/// stream that has been base64-encoded and decorated with a header,
+/// footer, and optional headers representing key-value pairs.  It can
+/// be safely transmitted over protocols that can only transmit
+/// printable characters, and can handled by end users (e.g. copied
+/// and pasted).
+///
+///   [Section 6 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-6
+pub struct Armorer<'a> {
+    kind: armor::Kind,
+    headers: Vec<(String, String)>,
+    inner: Message<'a>,
+}
+
+impl<'a> Armorer<'a> {
+    /// Creates a new armoring filter.
+    ///
+    /// By default, the type of the armored data is set to
+    /// [`armor::Kind`]`::Message`.  To change it, use
+    /// [`Armorer::kind`].  To add headers to the armor, use
+    /// [`Armorer::add_header`].
+    ///
+    ///   [`armor::Kind`]: ../../armor/enum.Kind.html
+    ///   [`Armorer::kind`]: #method.kind
+    ///   [`Armorer::add_header`]: #method.add_header
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// use std::io::Write;
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::serialize::stream::{Message, Armorer, LiteralWriter};
+    ///
+    /// let mut sink = vec![];
+    /// {
+    ///     let message = Message::new(&mut sink);
+    ///     let message = Armorer::new(message)
+    ///         // Customize the `Armorer` here.
+    ///         .build()?;
+    ///     let mut message = LiteralWriter::new(message).build()?;
+    ///     message.write_all(b"Hello world.")?;
+    ///     message.finalize()?;
+    /// }
+    /// assert_eq!("-----BEGIN PGP MESSAGE-----\n\
+    ///             \n\
+    ///             yxJiAAAAAABIZWxsbyB3b3JsZC4=\n\
+    ///             =6nHv\n\
+    ///             -----END PGP MESSAGE-----\n",
+    ///            std::str::from_utf8(&sink)?);
+    /// # Ok(()) }
+    pub fn new(inner: Message<'a>) -> Self {
+        Self {
+            kind: armor::Kind::Message,
+            headers: Vec::with_capacity(0),
+            inner,
+        }
+    }
+
+    /// Changes the kind of armoring.
+    ///
+    /// The armor header and footer changes depending on the type of
+    /// wrapped data.  See [`armor::Kind`] for the possible values.
+    ///
+    ///   [`armor::Kind`]: ../../armor/enum.Kind.html
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// use std::io::Write;
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::armor;
+    /// use openpgp::serialize::stream::{Message, Armorer, Signer};
+    /// # use sequoia_openpgp::policy::StandardPolicy;
+    /// # use openpgp::{Result, Cert};
+    /// # use openpgp::packet::prelude::*;
+    /// # use openpgp::crypto::KeyPair;
+    /// # use openpgp::parse::Parse;
+    /// # use openpgp::parse::stream::*;
+    /// # let p = &StandardPolicy::new();
+    /// # let cert = Cert::from_bytes(&include_bytes!(
+    /// #     "../../tests/data/keys/testy-new-private.pgp")[..])?;
+    /// # let signing_keypair
+    /// #     = cert.keys().secret()
+    /// #           .with_policy(p, None).alive().revoked(false).for_signing()
+    /// #           .nth(0).unwrap()
+    /// #           .key().clone().into_keypair()?;
+    ///
+    /// let mut sink = vec![];
+    /// {
+    ///     let message = Message::new(&mut sink);
+    ///     let message = Armorer::new(message)
+    ///         .kind(armor::Kind::Signature)
+    ///         .build()?;
+    ///     let mut signer = Signer::new(message, signing_keypair)
+    ///         .detached()
+    ///         .build()?;
+    ///
+    ///     // Write the data directly to the `Signer`.
+    ///     signer.write_all(b"Make it so, number one!")?;
+    ///     // In reality, just io::copy() the file to be signed.
+    ///     signer.finalize()?;
+    /// }
+    ///
+    /// assert!(std::str::from_utf8(&sink)?
+    ///         .starts_with("-----BEGIN PGP SIGNATURE-----\n"));
+    /// # Ok(()) }
+    pub fn kind(mut self, kind: armor::Kind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    /// Adds a header to the armor block.
+    ///
+    /// There are a number of defined armor header keys (see [Section
+    /// 6 of RFC 4880]), but in practice, any key may be used, as
+    /// implementations should simply ignore unknown keys.
+    ///
+    ///   [Section 6 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-6
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// use std::io::Write;
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::serialize::stream::{Message, Armorer, LiteralWriter};
+    ///
+    /// let mut sink = vec![];
+    /// {
+    ///     let message = Message::new(&mut sink);
+    ///     let message = Armorer::new(message)
+    ///         .add_header("Comment", "No comment.")
+    ///         .build()?;
+    ///     let mut message = LiteralWriter::new(message).build()?;
+    ///     message.write_all(b"Hello world.")?;
+    ///     message.finalize()?;
+    /// }
+    /// assert_eq!("-----BEGIN PGP MESSAGE-----\n\
+    ///             Comment: No comment.\n\
+    ///             \n\
+    ///             yxJiAAAAAABIZWxsbyB3b3JsZC4=\n\
+    ///             =6nHv\n\
+    ///             -----END PGP MESSAGE-----\n",
+    ///            std::str::from_utf8(&sink)?);
+    /// # Ok(()) }
+    pub fn add_header<K, V>(mut self, key: K, value: V) -> Self
+        where K: AsRef<str>,
+              V: AsRef<str>,
+    {
+        self.headers.push((key.as_ref().to_string(),
+                           value.as_ref().to_string()));
+        self
+    }
+
+    /// Builds the armor writer, returning the writer stack.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::serialize::stream::{Message, Armorer, LiteralWriter};
+    ///
+    /// # let mut sink = vec![];
+    /// let message = Message::new(&mut sink);
+    /// let message = Armorer::new(message)
+    ///     // Customize the `Armorer` here.
+    ///     .build()?;
+    /// # Ok(()) }
+    pub fn build(self) -> Result<Message<'a>> {
+        let level = self.inner.as_ref().cookie_ref().level;
+        writer::Armorer::new(
+            self.inner,
+            Cookie::new(level + 1),
+            self.kind,
+            self.headers,
+        )
+    }
+}
+
+impl<'a> fmt::Debug for Armorer<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Armorer")
+            .field("inner", &self.inner)
+            .field("kind", &self.kind)
+            .field("headers", &self.headers)
+            .finish()
     }
 }
 
@@ -99,41 +522,43 @@ impl<'a> From<&'a mut dyn io::Write> for writer::Stack<'a, Cookie> {
 /// Writes an arbitrary packet.
 ///
 /// This writer can be used to construct arbitrary OpenPGP packets.
-/// The body will be written using partial length encoding, or, if the
-/// body is short, using full length encoding.
-///
-/// # Example
-///
-/// ```
-/// extern crate sequoia_openpgp as openpgp;
-/// use std::io::Write;
-/// use openpgp::packet::Tag;
-/// use openpgp::serialize::stream::{Message, ArbitraryWriter};
-/// # use openpgp::Result;
-/// # f().unwrap();
-/// # fn f() -> Result<()> {
-/// let mut o = vec![];
-/// {
-///     let mut w = ArbitraryWriter::new(Message::new(&mut o), Tag::Literal)?;
-///     w.write_all(b"t")?;                   // type
-///     w.write_all(b"\x00")?;                // filename length
-///     w.write_all(b"\x00\x00\x00\x00")?;    // date
-///     w.write_all(b"Hello world.")?;        // body
-/// }
-/// assert_eq!(b"\xcb\x12t\x00\x00\x00\x00\x00Hello world.", o.as_slice());
-/// # Ok(())
-/// # }
+/// This is mainly useful for testing.  The body will be written using
+/// partial length encoding, or, if the body is short, using full
+/// length encoding.
 pub struct ArbitraryWriter<'a> {
     inner: writer::BoxStack<'a, Cookie>,
 }
 
 impl<'a> ArbitraryWriter<'a> {
     /// Creates a new writer with the given tag.
-    pub fn new(mut inner: writer::Stack<'a, Cookie>, tag: Tag)
-               -> Result<writer::Stack<'a, Cookie>> {
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// use std::io::Write;
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::packet::Tag;
+    /// use openpgp::serialize::stream::{Message, ArbitraryWriter};
+    ///
+    /// let mut sink = vec![];
+    /// {
+    ///     let message = Message::new(&mut sink);
+    ///     let mut message = ArbitraryWriter::new(message, Tag::Literal)?;
+    ///     message.write_all(b"t")?;                   // type
+    ///     message.write_all(b"\x00")?;                // filename length
+    ///     message.write_all(b"\x00\x00\x00\x00")?;    // date
+    ///     message.write_all(b"Hello world.")?;        // body
+    ///     message.finalize()?;
+    /// }
+    /// assert_eq!(b"\xcb\x12t\x00\x00\x00\x00\x00Hello world.",
+    ///            sink.as_slice());
+    /// # Ok(()) }
+    pub fn new(mut inner: Message<'a>, tag: Tag)
+               -> Result<Message<'a>> {
         let level = inner.as_ref().cookie_ref().level + 1;
         CTB::new(tag).serialize(&mut inner)?;
-        Ok(writer::Stack::from(Box::new(ArbitraryWriter {
+        Ok(Message::from(Box::new(ArbitraryWriter {
             inner: PartialBodyFilter::new(inner, Cookie::new(level)).into()
         })))
     }
@@ -187,11 +612,12 @@ impl<'a> writer::Stackable<'a, Cookie> for ArbitraryWriter<'a> {
     }
 }
 
-/// Signs a packet stream.
+/// Signs a message.
 ///
-/// For every signing key, a signer writes a one-pass-signature
-/// packet, then hashes and emits the data stream, then for every key
-/// writes a signature packet.
+/// Signs a message with every [`crypto::Signer`] added to the
+/// streaming signer.
+///
+///   [`crypto::Signer`]: ../../crypto/trait.Signer.html
 pub struct Signer<'a> {
     // The underlying writer.
     //
@@ -206,6 +632,7 @@ pub struct Signer<'a> {
     signers: Vec<Box<dyn crypto::Signer + 'a>>,
     intended_recipients: Vec<Fingerprint>,
     detached: bool,
+    template: signature::SignatureBuilder,
     creation_time: Option<SystemTime>,
     hash: crypto::hash::Context,
     cookie: Cookie,
@@ -215,45 +642,57 @@ pub struct Signer<'a> {
 impl<'a> Signer<'a> {
     /// Creates a signer.
     ///
+    /// Signs the message with the given [`crypto::Signer`].  To
+    /// create more than one signature, add more [`crypto::Signer`]s
+    /// using [`Signer::add_signer`].  Properties of the signatures
+    /// can be tweaked using the methods of this type.  Notably, to
+    /// generate a detached signature (see [Section 11.4 of RFC
+    /// 4880]), use [`Signer::detached`].  For even more control over
+    /// the generated signatures, use [`Signer::with_template`].
+    ///
+    ///   [`crypto::Signer`]: ../../crypto/trait.Signer.html
+    ///   [`Signer::add_signer`]: #method.add_signer
+    ///   [Section 11.4 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-11.4
+    ///   [`Signer::detached`]: #method.detached
+    ///   [`Signer::with_template`]: #method.with_template
+    ///
     /// # Example
     ///
     /// ```
-    /// extern crate sequoia_openpgp as openpgp;
+    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
     /// use std::io::{Read, Write};
+    /// use sequoia_openpgp as openpgp;
     /// use openpgp::serialize::stream::{Message, Signer, LiteralWriter};
     /// use openpgp::policy::StandardPolicy;
     /// # use openpgp::{Result, Cert};
     /// # use openpgp::packet::prelude::*;
-    /// # use openpgp::crypto::KeyPair;
     /// # use openpgp::parse::Parse;
     /// # use openpgp::parse::stream::*;
     ///
     /// let p = &StandardPolicy::new();
+    /// let cert: Cert = // ...
+    /// #     Cert::from_bytes(&include_bytes!(
+    /// #     "../../tests/data/keys/testy-new-private.pgp")[..])?;
+    /// let signing_keypair = cert.keys().secret()
+    ///     .with_policy(p, None).alive().revoked(false).for_signing()
+    ///     .nth(0).unwrap()
+    ///     .key().clone().into_keypair()?;
     ///
-    /// # let tsk = Cert::from_bytes(&include_bytes!(
-    /// #     "../../tests/data/keys/testy-new-private.pgp")[..])
-    /// #     .unwrap();
-    /// # let keypair = tsk.keys().with_policy(p, None).alive().revoked(false).for_signing()
-    /// #     .nth(0).unwrap()
-    /// #     .key().clone().mark_parts_secret().unwrap().into_keypair().unwrap();
-    /// # f(tsk, keypair).unwrap();
-    /// # fn f(cert: Cert, mut signing_keypair: KeyPair)
-    /// #      -> Result<()> {
-    /// let p = &StandardPolicy::new();
-    ///
-    /// let mut o = vec![];
+    /// let mut sink = vec![];
     /// {
-    ///     let message = Message::new(&mut o);
-    ///     let signer = Signer::new(message, signing_keypair).build()?;
-    ///     let mut ls = LiteralWriter::new(signer).build()?;
-    ///     ls.write_all(b"Make it so, number one!")?;
-    ///     ls.finalize()?;
+    ///     let message = Message::new(&mut sink);
+    ///     let message = Signer::new(message, signing_keypair)
+    ///         // Customize the `Signer` here.
+    ///         .build()?;
+    ///     let mut message = LiteralWriter::new(message).build()?;
+    ///     message.write_all(b"Make it so, number one!")?;
+    ///     message.finalize()?;
     /// }
     ///
     /// // Now check the signature.
     /// struct Helper<'a>(&'a openpgp::Cert);
     /// impl<'a> VerificationHelper for Helper<'a> {
-    ///     fn get_public_keys(&mut self, _: &[openpgp::KeyHandle])
+    ///     fn get_certs(&mut self, _: &[openpgp::KeyHandle])
     ///                        -> openpgp::Result<Vec<openpgp::Cert>> {
     ///         Ok(vec![self.0.clone()])
     ///     }
@@ -269,16 +708,85 @@ impl<'a> Signer<'a> {
     ///     }
     /// }
     ///
-    /// let mut verifier = Verifier::from_bytes(p, &o, Helper(&cert), None)?;
+    /// let mut verifier = VerifierBuilder::from_bytes(&sink)?
+    ///     .with_policy(p, None, Helper(&cert))?;
     ///
     /// let mut message = String::new();
     /// verifier.read_to_string(&mut message)?;
     /// assert_eq!(&message, "Make it so, number one!");
-    /// # Ok(())
-    /// # }
+    /// # Ok(()) }
     /// ```
-    pub fn new<S>(inner: writer::Stack<'a, Cookie>, signer: S) -> Self
+    pub fn new<S>(inner: Message<'a>, signer: S) -> Self
         where S: crypto::Signer + 'a
+    {
+        Self::with_template(inner, signer,
+                            signature::SignatureBuilder::new(SignatureType::Binary))
+    }
+
+    /// Creates a signer with a given signature template.
+    ///
+    /// Signs the message with the given [`crypto::Signer`] like
+    /// [`Signer::new`], but allows more control over the generated
+    /// signatures.  The given [`signature::SignatureBuilder`] is used to
+    /// create all the signatures.
+    ///
+    /// For every signature, the creation time is set to the current
+    /// time or the one specified using [`Signer::creation_time`], the
+    /// intended recipients are added (see
+    /// [`Signer::add_intended_recipient`]), the issuer and issuer
+    /// fingerprint subpackets are set according to the signing key,
+    /// and the hash algorithm set using [`Signer::hash_algo`] is used
+    /// to create the signature.
+    ///
+    ///   [`crypto::Signer`]: ../../crypto/trait.Signer.html
+    ///   [`Signer::new`]: #method.new
+    ///   [`signature::SignatureBuilder`]: ../../packet/signature/struct.Builder.html
+    ///   [`Signer::creation_time`]: #method.creation_time
+    ///   [`Signer::hash_algo`]: #method.hash_algo
+    ///   [`Signer::add_intended_recipient`]: #method.add_intended_recipient
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// use std::io::{Read, Write};
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::types::SignatureType;
+    /// use openpgp::packet::signature;
+    /// use openpgp::serialize::stream::{Message, Signer, LiteralWriter};
+    /// # use openpgp::policy::StandardPolicy;
+    /// # use openpgp::{Result, Cert};
+    /// # use openpgp::packet::prelude::*;
+    /// # use openpgp::parse::Parse;
+    /// # use openpgp::parse::stream::*;
+    /// #
+    /// # let p = &StandardPolicy::new();
+    /// # let cert: Cert = // ...
+    /// #     Cert::from_bytes(&include_bytes!(
+    /// #     "../../tests/data/keys/testy-new-private.pgp")[..])?;
+    /// # let signing_keypair = cert.keys().secret()
+    /// #     .with_policy(p, None).alive().revoked(false).for_signing()
+    /// #     .nth(0).unwrap()
+    /// #     .key().clone().into_keypair()?;
+    /// # let mut sink = vec![];
+    ///
+    /// let message = Message::new(&mut sink);
+    /// let message = Signer::with_template(
+    ///     message, signing_keypair,
+    ///     signature::SignatureBuilder::new(SignatureType::Text)
+    ///         .add_notation("issuer@starfleet.command", "Jean-Luc Picard",
+    ///                       None, true)?)
+    ///     // Further customize the `Signer` here.
+    ///     .build()?;
+    /// let mut message = LiteralWriter::new(message).build()?;
+    /// message.write_all(b"Make it so, number one!")?;
+    /// message.finalize()?;
+    /// # Ok(()) }
+    /// ```
+    pub fn with_template<S, T>(inner: Message<'a>, signer: S, template: T)
+                               -> Self
+        where S: crypto::Signer + 'a,
+              T: Into<signature::SignatureBuilder>,
     {
         let inner = writer::BoxStack::from(inner);
         let level = inner.cookie_ref().level + 1;
@@ -287,23 +795,132 @@ impl<'a> Signer<'a> {
             signers: vec![Box::new(signer)],
             intended_recipients: Vec::new(),
             detached: false,
+            template: template.into(),
             creation_time: None,
             hash: HashAlgorithm::default().context().unwrap(),
             cookie: Cookie {
-                level: level,
+                level,
                 private: Private::Signer,
             },
             position: 0,
         }
     }
 
-    /// Sets the hash algorithm to use for the signatures.
-    pub fn hash_algo(mut self, algo: HashAlgorithm) -> Result<Self> {
-        self.hash = algo.context()?;
-        Ok(self)
+    /// Creates a signer for a detached signature.
+    ///
+    /// Changes the `Signer` to create a detached signature (see
+    /// [Section 11.4 of RFC 4880]).  Note that the literal data *must
+    /// not* be wrapped using the [`LiteralWriter`].
+    ///
+    ///   [Section 11.4 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-11.4
+    ///   [`LiteralWriter`]: ../struct.LiteralWriter.html
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// use std::io::Write;
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::serialize::stream::{Message, Signer};
+    /// use sequoia_openpgp::policy::StandardPolicy;
+    /// # use openpgp::{Result, Cert};
+    /// # use openpgp::packet::prelude::*;
+    /// # use openpgp::crypto::KeyPair;
+    /// # use openpgp::parse::Parse;
+    /// # use openpgp::parse::stream::*;
+    ///
+    /// let p = &StandardPolicy::new();
+    /// # let cert = Cert::from_bytes(&include_bytes!(
+    /// #     "../../tests/data/keys/testy-new-private.pgp")[..])?;
+    /// # let signing_keypair
+    /// #     = cert.keys().secret()
+    /// #           .with_policy(p, None).alive().revoked(false).for_signing()
+    /// #           .nth(0).unwrap()
+    /// #           .key().clone().into_keypair()?;
+    ///
+    /// let mut sink = vec![];
+    /// {
+    ///     let message = Message::new(&mut sink);
+    ///     let mut signer = Signer::new(message, signing_keypair)
+    ///         .detached()
+    ///         // Customize the `Signer` here.
+    ///         .build()?;
+    ///
+    ///     // Write the data directly to the `Signer`.
+    ///     signer.write_all(b"Make it so, number one!")?;
+    ///     // In reality, just io::copy() the file to be signed.
+    ///     signer.finalize()?;
+    /// }
+    ///
+    /// // Now check the signature.
+    /// struct Helper<'a>(&'a openpgp::Cert);
+    /// impl<'a> VerificationHelper for Helper<'a> {
+    ///     fn get_certs(&mut self, _: &[openpgp::KeyHandle])
+    ///                        -> openpgp::Result<Vec<openpgp::Cert>> {
+    ///         Ok(vec![self.0.clone()])
+    ///     }
+    ///
+    ///     fn check(&mut self, structure: MessageStructure)
+    ///              -> openpgp::Result<()> {
+    ///         if let MessageLayer::SignatureGroup { ref results } =
+    ///             structure.iter().nth(0).unwrap()
+    ///         {
+    ///             results.get(0).unwrap().as_ref().unwrap();
+    ///             Ok(())
+    ///         } else { panic!() }
+    ///     }
+    /// }
+    ///
+    /// let mut verifier = DetachedVerifierBuilder::from_bytes(&sink)?
+    ///     .with_policy(p, None, Helper(&cert))?;
+    ///
+    /// verifier.verify_bytes(b"Make it so, number one!")?;
+    /// # Ok(()) }
+    /// ```
+    pub fn detached(mut self) -> Self {
+        self.detached = true;
+        self
     }
 
     /// Adds an additional signer.
+    ///
+    /// Can be used multiple times.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// use std::io::Write;
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::serialize::stream::{Message, Signer, LiteralWriter};
+    /// # use openpgp::policy::StandardPolicy;
+    /// # use openpgp::{Result, Cert};
+    /// # use openpgp::packet::prelude::*;
+    /// # use openpgp::parse::Parse;
+    /// # use openpgp::parse::stream::*;
+    ///
+    /// # let p = &StandardPolicy::new();
+    /// # let cert = Cert::from_bytes(&include_bytes!(
+    /// #     "../../tests/data/keys/testy-new-private.pgp")[..])?;
+    /// # let signing_keypair = cert.keys().secret()
+    /// #     .with_policy(p, None).alive().revoked(false).for_signing()
+    /// #     .nth(0).unwrap()
+    /// #     .key().clone().into_keypair()?;
+    /// # let additional_signing_keypair = cert.keys().secret()
+    /// #     .with_policy(p, None).alive().revoked(false).for_signing()
+    /// #     .nth(0).unwrap()
+    /// #     .key().clone().into_keypair()?;
+    ///
+    /// # let mut sink = vec![];
+    /// let message = Message::new(&mut sink);
+    /// let message = Signer::new(message, signing_keypair)
+    ///     .add_signer(additional_signing_keypair)
+    ///     .build()?;
+    /// let mut message = LiteralWriter::new(message).build()?;
+    /// message.write_all(b"Make it so, number one!")?;
+    /// message.finalize()?;
+    /// # Ok(()) }
+    /// ```
     pub fn add_signer<S>(mut self, signer: S) -> Self
         where S: crypto::Signer + 'a
     {
@@ -313,24 +930,22 @@ impl<'a> Signer<'a> {
 
     /// Adds an intended recipient.
     ///
-    /// This signer emits signatures indicating the intended
-    /// recipients of the encryption container containing the
-    /// signature.  This prevents forwarding a signed message using a
-    /// different encryption context.
-    pub fn add_intended_recipient(mut self, recipient: &Cert) -> Self {
-        self.intended_recipients.push(recipient.fingerprint());
-        self
-    }
-
-    /// Creates a signer for a detached signature.
+    /// Indicates that the given certificate is an intended recipient
+    /// of this message.  Can be used multiple times.  This prevents
+    /// [*Surreptitious Forwarding*] of encrypted and signed messages,
+    /// i.e. forwarding a signed message using a different encryption
+    /// context.
+    ///
+    ///   [*Surreptitious Forwarding*]: http://world.std.com/~dtd/sign_encrypt/sign_encrypt7.html
     ///
     /// # Example
     ///
     /// ```
-    /// extern crate sequoia_openpgp as openpgp;
-    /// use std::io::{Read, Write};
+    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// use std::io::Write;
+    /// use sequoia_openpgp as openpgp;
     /// use openpgp::serialize::stream::{Message, Signer, LiteralWriter};
-    /// use sequoia_openpgp::policy::StandardPolicy;
+    /// # use openpgp::policy::StandardPolicy;
     /// # use openpgp::{Result, Cert};
     /// # use openpgp::packet::prelude::*;
     /// # use openpgp::crypto::KeyPair;
@@ -338,74 +953,163 @@ impl<'a> Signer<'a> {
     /// # use openpgp::parse::stream::*;
     ///
     /// # let p = &StandardPolicy::new();
-    /// # let tsk = Cert::from_bytes(&include_bytes!(
-    /// #     "../../tests/data/keys/testy-new-private.pgp")[..])
-    /// #     .unwrap();
-    /// # let keypair
-    /// #     = tsk.keys().with_policy(p, None).alive().revoked(false).for_signing()
-    /// #           .nth(0).unwrap()
-    /// #           .key().clone().mark_parts_secret().unwrap().into_keypair()
-    /// #           .unwrap();
-    /// # f(tsk, keypair).unwrap();
-    /// # fn f(cert: Cert, mut signing_keypair: KeyPair)
-    /// #      -> Result<()> {
-    /// let p = &StandardPolicy::new();
+    /// # let cert = Cert::from_bytes(&include_bytes!(
+    /// #     "../../tests/data/keys/testy-new-private.pgp")[..])?;
+    /// # let signing_keypair = cert.keys().secret()
+    /// #     .with_policy(p, None).alive().revoked(false).for_signing()
+    /// #     .nth(0).unwrap()
+    /// #     .key().clone().into_keypair()?;
+    /// let recipient: Cert = // ...
+    /// #     Cert::from_bytes(&include_bytes!(
+    /// #     "../../tests/data/keys/testy.pgp")[..])?;
     ///
-    /// let mut o = vec![];
-    /// {
-    ///     let message = Message::new(&mut o);
-    ///     let mut signer =
-    ///         Signer::new(message, signing_keypair).detached().build()?;
-    ///     signer.write_all(b"Make it so, number one!")?;
-    ///     // In reality, just io::copy() the file to be signed.
-    ///     signer.finalize()?;
-    /// }
-    ///
-    /// // Now check the signature.
-    /// struct Helper<'a>(&'a openpgp::Cert);
-    /// impl<'a> VerificationHelper for Helper<'a> {
-    ///     fn get_public_keys(&mut self, _: &[openpgp::KeyHandle])
-    ///                        -> openpgp::Result<Vec<openpgp::Cert>> {
-    ///         Ok(vec![self.0.clone()])
-    ///     }
-    ///
-    ///     fn check(&mut self, structure: MessageStructure)
-    ///              -> openpgp::Result<()> {
-    ///         if let MessageLayer::SignatureGroup { ref results } =
-    ///             structure.iter().nth(0).unwrap()
-    ///         {
-    ///             results.get(0).unwrap().as_ref().unwrap();
-    ///             Ok(())
-    ///         } else { panic!() }
-    ///     }
-    /// }
-    ///
-    /// let mut verifier =
-    ///     DetachedVerifier::from_bytes(p, &o, b"Make it so, number one!",
-    ///                                  Helper(&cert), None)?;
-    ///
-    /// let mut message = String::new();
-    /// verifier.read_to_string(&mut message)?;
-    /// assert_eq!(&message, "Make it so, number one!");
-    /// # Ok(())
-    /// # }
+    /// # let mut sink = vec![];
+    /// let message = Message::new(&mut sink);
+    /// let message = Signer::new(message, signing_keypair)
+    ///     .add_intended_recipient(&recipient)
+    ///     .build()?;
+    /// let mut message = LiteralWriter::new(message).build()?;
+    /// message.write_all(b"Make it so, number one!")?;
+    /// message.finalize()?;
+    /// # Ok(()) }
     /// ```
-    pub fn detached(mut self) -> Self {
-        self.detached = true;
+    pub fn add_intended_recipient(mut self, recipient: &Cert) -> Self {
+        self.intended_recipients.push(recipient.fingerprint());
         self
+    }
+
+    /// Sets the hash algorithm to use for the signatures.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// use std::io::Write;
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::types::HashAlgorithm;
+    /// use openpgp::serialize::stream::{Message, Signer, LiteralWriter};
+    /// # use openpgp::policy::StandardPolicy;
+    /// # use openpgp::{Result, Cert};
+    /// # use openpgp::packet::prelude::*;
+    /// # use openpgp::parse::Parse;
+    /// # use openpgp::parse::stream::*;
+    ///
+    /// # let p = &StandardPolicy::new();
+    /// # let cert = Cert::from_bytes(&include_bytes!(
+    /// #     "../../tests/data/keys/testy-new-private.pgp")[..])?;
+    /// # let signing_keypair = cert.keys().secret()
+    /// #     .with_policy(p, None).alive().revoked(false).for_signing()
+    /// #     .nth(0).unwrap()
+    /// #     .key().clone().into_keypair()?;
+    ///
+    /// # let mut sink = vec![];
+    /// let message = Message::new(&mut sink);
+    /// let message = Signer::new(message, signing_keypair)
+    ///     .hash_algo(HashAlgorithm::SHA384)?
+    ///     .build()?;
+    /// let mut message = LiteralWriter::new(message).build()?;
+    /// message.write_all(b"Make it so, number one!")?;
+    /// message.finalize()?;
+    /// # Ok(()) }
+    /// ```
+    pub fn hash_algo(mut self, algo: HashAlgorithm) -> Result<Self> {
+        self.hash = algo.context()?;
+        Ok(self)
     }
 
     /// Sets the signature's creation time to `time`.
     ///
     /// Note: it is up to the caller to make sure the signing keys are
     /// actually valid as of `time`.
-    pub fn creation_time(mut self, creation_time: SystemTime) -> Self {
-        self.creation_time = Some(creation_time);
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// use std::io::Write;
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::types::Timestamp;
+    /// use openpgp::serialize::stream::{Message, Signer, LiteralWriter};
+    /// use openpgp::policy::StandardPolicy;
+    /// # use openpgp::{Result, Cert};
+    /// # use openpgp::packet::prelude::*;
+    /// # use openpgp::parse::Parse;
+    /// # use openpgp::parse::stream::*;
+    ///
+    /// let p = &StandardPolicy::new();
+    /// let cert: Cert = // ...
+    /// #     Cert::from_bytes(&include_bytes!(
+    /// #     "../../tests/data/keys/testy-new-private.pgp")[..])?;
+    /// let signing_key = cert.keys().secret()
+    ///     .with_policy(p, None).alive().revoked(false).for_signing()
+    ///     .nth(0).unwrap()
+    ///     .key();
+    /// let signing_keypair = signing_key.clone().into_keypair()?;
+    ///
+    /// # let mut sink = vec![];
+    /// let message = Message::new(&mut sink);
+    /// let message = Signer::new(message, signing_keypair)
+    ///     .creation_time(Timestamp::now()
+    ///                    .round_down(None, signing_key.creation_time())?)
+    ///     .build()?;
+    /// let mut message = LiteralWriter::new(message).build()?;
+    /// message.write_all(b"Make it so, number one!")?;
+    /// message.finalize()?;
+    /// # Ok(()) }
+    /// ```
+    pub fn creation_time<T: Into<SystemTime>>(mut self, creation_time: T)
+                                              -> Self
+    {
+        self.creation_time = Some(creation_time.into());
         self
     }
 
-    /// Finalizes the signer, returning the writer stack.
-    pub fn build(mut self) -> Result<writer::Stack<'a, Cookie>>
+    /// Builds the signer, returning the writer stack.
+    ///
+    /// The most useful filter to push to the writer stack next is the
+    /// [`LiteralWriter`].  Note, if you are creating a signed OpenPGP
+    /// message (see [Section 11.3 of RFC 4880]), literal data *must*
+    /// be wrapped using the [`LiteralWriter`].  On the other hand, if
+    /// you are creating a detached signature (see [Section 11.4 of
+    /// RFC 4880]), the literal data *must not* be wrapped using the
+    /// [`LiteralWriter`].
+    ///
+    ///   [`LiteralWriter`]: ../struct.LiteralWriter.html
+    ///   [Section 11.3 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-11.3
+    ///   [Section 11.4 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-11.4
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// use std::io::Write;
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::types::Timestamp;
+    /// use openpgp::serialize::stream::{Message, Signer};
+    /// # use openpgp::policy::StandardPolicy;
+    /// # use openpgp::{Result, Cert};
+    /// # use openpgp::packet::prelude::*;
+    /// # use openpgp::parse::Parse;
+    /// # use openpgp::parse::stream::*;
+    ///
+    /// # let p = &StandardPolicy::new();
+    /// # let cert: Cert = // ...
+    /// #     Cert::from_bytes(&include_bytes!(
+    /// #     "../../tests/data/keys/testy-new-private.pgp")[..])?;
+    /// # let signing_keypair
+    /// #     = cert.keys().secret()
+    /// #           .with_policy(p, None).alive().revoked(false).for_signing()
+    /// #           .nth(0).unwrap()
+    /// #           .key().clone().into_keypair()?;
+    /// #
+    /// # let mut sink = vec![];
+    /// let message = Message::new(&mut sink);
+    /// let message = Signer::new(message, signing_keypair)
+    ///     // Customize the `Signer` here.
+    ///     .build()?;
+    /// # Ok(()) }
+    /// ```
+    pub fn build(mut self) -> Result<Message<'a>>
     {
         assert!(self.signers.len() > 0, "The constructor adds a signer.");
         assert!(self.inner.is_some(), "The constructor adds an inner writer.");
@@ -425,7 +1129,7 @@ impl<'a> Signer<'a> {
             }
         }
 
-        Ok(writer::Stack::from(Box::new(self)))
+        Ok(Message::from(Box::new(self)))
     }
 
     fn emit_signatures(&mut self) -> Result<()> {
@@ -439,7 +1143,7 @@ impl<'a> Signer<'a> {
                 let hash = self.hash.clone();
 
                 // Make and hash a signature packet.
-                let mut sig = signature::Builder::new(SignatureType::Binary)
+                let mut sig = self.template.clone()
                     .set_signature_creation_time(
                         self.creation_time
                             .unwrap_or_else(SystemTime::now))?
@@ -461,12 +1165,6 @@ impl<'a> Signer<'a> {
             }
         }
         Ok(())
-    }
-}
-
-impl<'a> Drop for Signer<'a> {
-    fn drop(&mut self) {
-        let _ = self.emit_signatures();
     }
 }
 
@@ -550,30 +1248,24 @@ impl<'a> writer::Stackable<'a, Cookie> for Signer<'a> {
 
 /// Writes a literal data packet.
 ///
-/// The body will be written using partial length encoding, or, if the
-/// body is short, using full length encoding.
+/// Literal data, i.e. the payload or plaintext, must be wrapped in a
+/// literal data packet to be transported over OpenPGP (see [Section
+/// 5.9 of RFC 4880]).  The body will be written using partial length
+/// encoding, or, if the body is short, using full length encoding.
 ///
-/// # Example
+///   [Section 5.9 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.9
 ///
-/// ```
-/// extern crate sequoia_openpgp as openpgp;
-/// use std::io::Write;
-/// use openpgp::serialize::stream::{Message, LiteralWriter};
-/// # use openpgp::Result;
-/// # f().unwrap();
-/// # fn f() -> Result<()> {
+/// # Note on metadata
 ///
-/// let mut o = vec![];
-/// {
-///     let message = Message::new(&mut o);
-///     let mut w = LiteralWriter::new(message).build()?;
-///     w.write_all(b"Hello world.")?;
-///     w.finalize()?;
-/// }
-/// assert_eq!(b"\xcb\x12b\x00\x00\x00\x00\x00Hello world.", o.as_slice());
-/// # Ok(())
-/// # }
-/// ```
+/// A literal data packet can communicate some metadata: a hint as to
+/// what kind of data is transported, the original file name, and a
+/// timestamp.  Note that this metadata will not be authenticated by
+/// signatures (but will be authenticated by a SEIP/MDC container),
+/// and are therefore unreliable and should not be trusted.
+///
+/// Therefore, it is good practice not to set this metadata when
+/// creating a literal data packet, and not to interpret it when
+/// consuming one.
 pub struct LiteralWriter<'a> {
     template: Literal,
     inner: writer::BoxStack<'a, Cookie>,
@@ -582,7 +1274,29 @@ pub struct LiteralWriter<'a> {
 
 impl<'a> LiteralWriter<'a> {
     /// Creates a new literal writer.
-    pub fn new(inner: writer::Stack<'a, Cookie>) -> Self {
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// use std::io::Write;
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::serialize::stream::{Message, LiteralWriter};
+    ///
+    /// let mut sink = vec![];
+    /// {
+    ///     let message = Message::new(&mut sink);
+    ///     let mut message = LiteralWriter::new(message)
+    ///         // Customize the `LiteralWriter` here.
+    ///         .build()?;
+    ///     message.write_all(b"Hello world.")?;
+    ///     message.finalize()?;
+    /// }
+    /// assert_eq!(b"\xcb\x12b\x00\x00\x00\x00\x00Hello world.",
+    ///            sink.as_slice());
+    /// # Ok(()) }
+    /// ```
+    pub fn new(inner: Message<'a>) -> Self {
         LiteralWriter {
             template: Literal::new(DataFormat::default()),
             inner: writer::BoxStack::from(inner),
@@ -591,6 +1305,29 @@ impl<'a> LiteralWriter<'a> {
     }
 
     /// Sets the data format.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// use std::io::Write;
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::types::DataFormat;
+    /// use openpgp::serialize::stream::{Message, LiteralWriter};
+    ///
+    /// let mut sink = vec![];
+    /// {
+    ///     let message = Message::new(&mut sink);
+    ///     let mut message = LiteralWriter::new(message)
+    ///         .format(DataFormat::Text)
+    ///         .build()?;
+    ///     message.write_all(b"Hello world.")?;
+    ///     message.finalize()?;
+    /// }
+    /// assert_eq!(b"\xcb\x12t\x00\x00\x00\x00\x00Hello world.",
+    ///            sink.as_slice());
+    /// # Ok(()) }
+    /// ```
     pub fn format(mut self, format: DataFormat) -> Self {
         self.template.set_format(format);
         self
@@ -599,27 +1336,95 @@ impl<'a> LiteralWriter<'a> {
     /// Sets the filename.
     ///
     /// The standard does not specify the encoding.  Filenames must
-    /// not be longer than 255 bytes.
+    /// not be longer than 255 bytes.  Returns an error if the given
+    /// name is longer than that.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// use std::io::Write;
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::serialize::stream::{Message, LiteralWriter};
+    ///
+    /// let mut sink = vec![];
+    /// {
+    ///     let message = Message::new(&mut sink);
+    ///     let mut message = LiteralWriter::new(message)
+    ///         .filename("foobar")?
+    ///         .build()?;
+    ///     message.write_all(b"Hello world.")?;
+    ///     message.finalize()?;
+    /// }
+    /// assert_eq!(b"\xcb\x18b\x06foobar\x00\x00\x00\x00Hello world.",
+    ///            sink.as_slice());
+    /// # Ok(()) }
+    /// ```
     pub fn filename<B: AsRef<[u8]>>(mut self, filename: B) -> Result<Self> {
         self.template.set_filename(filename.as_ref())?;
         Ok(self)
     }
 
-    /// Sets the data format.
-    pub fn date(mut self, timestamp: SystemTime) -> Result<Self>
+    /// Sets the date.
+    ///
+    /// This date may be the modification date or the creation date.
+    /// Returns an error if the given date is not representable by
+    /// OpenPGP.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// use std::io::Write;
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::types::Timestamp;
+    /// use openpgp::serialize::stream::{Message, LiteralWriter};
+    ///
+    /// let mut sink = vec![];
+    /// {
+    ///     let message = Message::new(&mut sink);
+    ///     let mut message = LiteralWriter::new(message)
+    ///         .date(Timestamp::from(1585925313))?
+    ///         .build()?;
+    ///     message.write_all(b"Hello world.")?;
+    ///     message.finalize()?;
+    /// }
+    /// assert_eq!(b"\xcb\x12b\x00\x5e\x87\x4c\xc1Hello world.",
+    ///            sink.as_slice());
+    /// # Ok(()) }
+    /// ```
+    pub fn date<T: Into<SystemTime>>(mut self, timestamp: T) -> Result<Self>
     {
-        self.template.set_date(Some(timestamp))?;
+        self.template.set_date(Some(timestamp.into()))?;
         Ok(self)
     }
 
-    /// Finalizes the literal writer, returning the writer stack.
+    /// Builds the literal writer, returning the writer stack.
     ///
-    /// `format`, `filename`, and `date` will be emitted as part of
-    /// the literal packets headers.  Note that these headers will not
-    /// be authenticated by signatures (but will be authenticated by a
-    /// SEIP/MDC container), and are therefore unreliable and should
-    /// not be trusted.
-    pub fn build(mut self) -> Result<writer::Stack<'a, Cookie>> {
+    /// The next step is to write the payload to the writer stack.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// use std::io::Write;
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::serialize::stream::{Message, LiteralWriter};
+    ///
+    /// let mut sink = vec![];
+    /// {
+    ///     let message = Message::new(&mut sink);
+    ///     let mut message = LiteralWriter::new(message)
+    ///         // Customize the `LiteralWriter` here.
+    ///         .build()?;
+    ///     message.write_all(b"Hello world.")?;
+    ///     message.finalize()?;
+    /// }
+    /// assert_eq!(b"\xcb\x12b\x00\x00\x00\x00\x00Hello world.",
+    ///            sink.as_slice());
+    /// # Ok(()) }
+    /// ```
+    pub fn build(mut self) -> Result<Message<'a>> {
         let level = self.inner.cookie_ref().level + 1;
 
         // For historical reasons, signatures over literal data
@@ -650,13 +1455,13 @@ impl<'a> LiteralWriter<'a> {
 
         // Neither is any framing added by the PartialBodyFilter.
         self.inner
-            = PartialBodyFilter::new(writer::Stack::from(self.inner),
+            = PartialBodyFilter::new(Message::from(self.inner),
                                      Cookie::new(level)).into();
 
         // Nor the headers.
         self.template.serialize_headers(&mut self.inner, false)?;
 
-        Ok(writer::Stack::from(Box::new(self)))
+        Ok(Message::from(Box::new(self)))
     }
 }
 
@@ -729,47 +1534,47 @@ impl<'a> writer::Stackable<'a, Cookie> for LiteralWriter<'a> {
     }
 }
 
-/// Compresses a packet stream.
+/// Compresses a message.
 ///
 /// Writes a compressed data packet containing all packets written to
 /// this writer.
-///
-/// # Example
-///
-/// ```
-/// extern crate sequoia_openpgp as openpgp;
-/// use std::io::Write;
-/// use openpgp::serialize::stream::{Message, Compressor, LiteralWriter};
-/// use openpgp::types::CompressionAlgorithm;
-/// # use openpgp::Result;
-/// # f().unwrap();
-/// # fn f() -> Result<()> {
-///
-/// let mut o = vec![];
-/// {
-///     let message = Message::new(&mut o);
-///     let w = Compressor::new(message)
-///         .algo(CompressionAlgorithm::Uncompressed).build()?;
-///     let mut w = LiteralWriter::new(w).build()?;
-///     w.write_all(b"Hello world.")?;
-///     w.finalize()?;
-/// }
-/// assert_eq!(b"\xc8\x15\x00\xcb\x12b\x00\x00\x00\x00\x00Hello world.",
-///            o.as_slice());
-/// # Ok(())
-/// # }
 pub struct Compressor<'a> {
     algo: CompressionAlgorithm,
-    level: writer::CompressionLevel,
+    level: CompressionLevel,
     inner: writer::BoxStack<'a, Cookie>,
 }
 
 impl<'a> Compressor<'a> {
-    /// Creates a new compressor using the given algorithm.
-    ///
-    /// Passing `None` to `compression_level` selects the default
+    /// Creates a new compressor using the default algorithm and
     /// compression level.
-    pub fn new(inner: writer::Stack<'a, Cookie>) -> Self {
+    ///
+    /// To change the compression algorithm use [`Compressor::algo`].
+    /// Use [`Compressor::level`] to change the compression level.
+    ///
+    ///   [`Compressor::algo`]: #method.algo
+    ///   [`Compressor::level`]: #method.level
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// use std::io::Write;
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::serialize::stream::{Message, Compressor, LiteralWriter};
+    /// use openpgp::types::CompressionAlgorithm;
+    ///
+    /// # let mut sink = vec![];
+    /// let message = Message::new(&mut sink);
+    /// let message = Compressor::new(message)
+    ///     // Customize the `Compressor` here.
+    /// #   .algo(CompressionAlgorithm::Uncompressed)
+    ///     .build()?;
+    /// let mut message = LiteralWriter::new(message).build()?;
+    /// message.write_all(b"Hello world.")?;
+    /// message.finalize()?;
+    /// # Ok(()) }
+    /// ```
+    pub fn new(inner: Message<'a>) -> Self {
         Self {
             algo: Default::default(),
             level: Default::default(),
@@ -778,25 +1583,98 @@ impl<'a> Compressor<'a> {
     }
 
     /// Sets the compression algorithm.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// use std::io::Write;
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::serialize::stream::{Message, Compressor, LiteralWriter};
+    /// use openpgp::types::CompressionAlgorithm;
+    ///
+    /// let mut sink = vec![];
+    /// {
+    ///     let message = Message::new(&mut sink);
+    ///     let message = Compressor::new(message)
+    ///         .algo(CompressionAlgorithm::Uncompressed)
+    ///         .build()?;
+    ///     let mut message = LiteralWriter::new(message).build()?;
+    ///     message.write_all(b"Hello world.")?;
+    ///     message.finalize()?;
+    /// }
+    /// assert_eq!(b"\xc8\x15\x00\xcb\x12b\x00\x00\x00\x00\x00Hello world.",
+    ///            sink.as_slice());
+    /// # Ok(()) }
+    /// ```
     pub fn algo(mut self, algo: CompressionAlgorithm) -> Self {
         self.algo = algo;
         self
     }
 
     /// Sets the compression level.
-    pub fn level(mut self, level: writer::CompressionLevel) -> Self {
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// use std::io::Write;
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::serialize::stream::{Message, Compressor, LiteralWriter};
+    /// use openpgp::types::{CompressionAlgorithm, CompressionLevel};
+    ///
+    /// # let mut sink = vec![];
+    /// let message = Message::new(&mut sink);
+    /// let message = Compressor::new(message)
+    /// #   .algo(CompressionAlgorithm::Uncompressed)
+    ///     .level(CompressionLevel::fastest())
+    ///     .build()?;
+    /// let mut message = LiteralWriter::new(message).build()?;
+    /// message.write_all(b"Hello world.")?;
+    /// message.finalize()?;
+    /// # Ok(()) }
+    /// ```
+    pub fn level(mut self, level: CompressionLevel) -> Self {
         self.level = level;
         self
     }
 
-    /// Finalizes the compressor, returning the writer stack.
-    pub fn build(mut self) -> Result<writer::Stack<'a, Cookie>> {
+    /// Builds the compressor, returning the writer stack.
+    ///
+    /// The most useful filter to push to the writer stack next is the
+    /// [`Signer`] or the [`LiteralWriter`].  Finally, literal data
+    /// *must* be wrapped using the [`LiteralWriter`].
+    ///
+    ///   [`Signer`]: struct.Signer.html
+    ///   [`LiteralWriter`]: struct.LiteralWriter.html
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// use std::io::Write;
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::serialize::stream::{Message, Compressor, LiteralWriter};
+    /// use openpgp::types::CompressionAlgorithm;
+    ///
+    /// # let mut sink = vec![];
+    /// let message = Message::new(&mut sink);
+    /// let message = Compressor::new(message)
+    ///     // Customize the `Compressor` here.
+    /// #   .algo(CompressionAlgorithm::Uncompressed)
+    ///     .build()?;
+    /// let mut message = LiteralWriter::new(message).build()?;
+    /// message.write_all(b"Hello world.")?;
+    /// message.finalize()?;
+    /// # Ok(()) }
+    /// ```
+    pub fn build(mut self) -> Result<Message<'a>> {
         let level = self.inner.cookie_ref().level + 1;
 
         // Packet header.
         CTB::new(Tag::CompressedData).serialize(&mut self.inner)?;
-        let inner: writer::Stack<'a, Cookie>
-            = PartialBodyFilter::new(writer::Stack::from(self.inner),
+        let inner: Message<'a>
+            = PartialBodyFilter::new(Message::from(self.inner),
                                      Cookie::new(level));
 
         Self::new_naked(inner, self.algo, self.level, level)
@@ -805,17 +1683,17 @@ impl<'a> Compressor<'a> {
 
     /// Creates a new compressor using the given algorithm.
     pub(crate) // For CompressedData::serialize.
-    fn new_naked(mut inner: writer::Stack<'a, Cookie>,
+    fn new_naked(mut inner: Message<'a>,
                  algo: CompressionAlgorithm,
-                 compression_level: writer::CompressionLevel,
+                 compression_level: CompressionLevel,
                  level: usize)
-                 -> Result<writer::Stack<'a, Cookie>>
+                 -> Result<Message<'a>>
     {
         // Compressed data header.
         inner.as_mut().write_u8(algo.into())?;
 
         // Create an appropriate filter.
-        let inner: writer::Stack<'a, Cookie> = match algo {
+        let inner: Message<'a> = match algo {
             CompressionAlgorithm::Uncompressed => {
                 // Avoid warning about unused value if compiled
                 // without any compression support.
@@ -835,7 +1713,7 @@ impl<'a> Compressor<'a> {
                 return Err(Error::UnsupportedCompressionAlgorithm(a).into()),
         };
 
-        Ok(writer::Stack::from(Box::new(Self {
+        Ok(Message::from(Box::new(Self {
             algo,
             level: compression_level,
             inner: inner.into(),
@@ -893,80 +1771,74 @@ impl<'a> writer::Stackable<'a, Cookie> for Compressor<'a> {
 }
 
 /// A recipient of an encrypted message.
+///
+/// OpenPGP messages are encrypted with the subkeys of recipients,
+/// identified by the keyid of said subkeys in the [`recipient`] field
+/// of [`PKESK`] packets (see [Section 5.1 of RFC 4880]).  The keyid
+/// may be a wildcard (as returned by [`KeyID::wildcard()`]) to
+/// obscure the identity of the recipient.
+///
+///   [`recipient`]: ../../packet/enum.PKESK.html#method.recipient
+///   [`PKESK`]: ../../packet/enum.PKESK.html
+///   [Section 5.1 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.1
+///   [`KeyID::wildcard()`]: ../../../struct.KeyID.html#method.wildcard
+///
+/// Note that several subkeys in a certificate may be suitable
+/// encryption subkeys.  OpenPGP does not specify what should happen
+/// in this case.  Some implementations arbitrarily pick one
+/// encryption subkey, while others use all of them.  This crate does
+/// not dictate a policy, but allows for arbitrary policies.  We do,
+/// however, suggest to encrypt to all suitable subkeys.
 #[derive(Debug)]
 pub struct Recipient<'a> {
     keyid: KeyID,
-    key: &'a Key<PublicParts, UnspecifiedRole>,
+    key: &'a Key<key::PublicParts, key::UnspecifiedRole>,
 }
 
-impl<'a> From<&'a Key<PublicParts, UnspecifiedRole>> for Recipient<'a> {
-    fn from(key: &'a Key<PublicParts, UnspecifiedRole>) -> Self {
-        Self::new(key.keyid(), key)
+impl<'a, P, R> From<&'a Key<P, R>> for Recipient<'a>
+    where P: key::KeyParts,
+          R: key::KeyRole,
+{
+    fn from(key: &'a Key<P, R>) -> Self {
+        Self::new(key.keyid(), key.parts_as_public().role_as_unspecified())
+    }
+}
+
+impl<'a, P, R, R2> From<ValidKeyAmalgamation<'a, P, R, R2>>
+    for Recipient<'a>
+    where P: key::KeyParts,
+          R: key::KeyRole,
+          R2: Copy,
+{
+    fn from(ka: ValidKeyAmalgamation<'a, P, R, R2>) -> Self {
+        ka.key().into()
     }
 }
 
 impl<'a> Recipient<'a> {
     /// Creates a new recipient with an explicit recipient keyid.
-    pub fn new<P, R>(keyid: KeyID, key: &'a Key<P, R>) -> Recipient<'a>
-        where P: key::KeyParts,
-              R: key::KeyRole,
-    {
-        Recipient {
-            keyid,
-            key: key.mark_parts_public_ref().mark_role_unspecified_ref(),
-        }
-    }
-
-    /// Gets the KeyID.
-    pub fn keyid(&self) -> &KeyID {
-        &self.keyid
-    }
-
-    /// Sets the KeyID.
-    pub fn set_keyid(&mut self, keyid: KeyID) -> KeyID {
-        std::mem::replace(&mut self.keyid, keyid)
-    }
-}
-
-/// Encrypts a packet stream.
-pub struct Encryptor<'a> {
-    inner: Option<writer::BoxStack<'a, Cookie>>,
-    recipients: Vec<Recipient<'a>>,
-    passwords: Vec<Password>,
-    sym_algo: SymmetricAlgorithm,
-    aead_algo: Option<AEADAlgorithm>,
-    hash: crypto::hash::Context,
-    cookie: Cookie,
-}
-
-impl<'a> Encryptor<'a> {
-    /// Creates a new encryptor.
     ///
-    /// The stream will be encrypted using a generated session key,
-    /// which will be encrypted using the given passwords, and all
-    /// encryption-capable subkeys of the given Certs.
+    /// Note: If you don't want to change the recipient keyid,
+    /// `Recipient`s can be created from [`Key`] and
+    /// [`ValidKeyAmalgamation`] using [`From`].
     ///
-    /// Unless otherwise specified, the stream is encrypted using
-    /// AES256.  If `aead_algo` is `None`, a `SEIP` packet is emitted,
-    /// otherwise the given AEAD algorithm is used.
-    ///
-    /// Key preferences of the recipients are not honored.
+    ///   [`Key`]: ../../packet/enum.Key.html
+    ///   [`ValidKeyAmalgamation`]: ../../cert/amalgamation/key/struct.ValidKeyAmalgamation.html
+    ///   [`From`]: https://doc.rust-lang.org/std/convert/trait.From.html
     ///
     /// # Example
     ///
     /// ```
+    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
     /// use std::io::Write;
-    /// extern crate sequoia_openpgp as openpgp;
+    /// use sequoia_openpgp as openpgp;
     /// use openpgp::cert::prelude::*;
-    /// use openpgp::types::KeyFlags;
     /// use openpgp::serialize::stream::{
-    ///     Message, Encryptor, LiteralWriter,
+    ///     Recipient, Message, Encryptor,
     /// };
     /// use openpgp::policy::StandardPolicy;
-    /// # use openpgp::Result;
     /// # use openpgp::parse::Parse;
-    /// # fn main() { f().unwrap(); }
-    /// # fn f() -> Result<()> {
+    ///
     /// let p = &StandardPolicy::new();
     ///
     /// let cert = Cert::from_bytes(
@@ -1005,32 +1877,282 @@ impl<'a> Encryptor<'a> {
     ///      ...
     ///      -----END PGP PUBLIC KEY BLOCK-----"
     /// #    */
-    /// ).unwrap();
+    /// )?;
     ///
-    /// // Build a vector of recipients to hand to Encryptor.
-    /// let recipient =
+    /// let recipients =
     ///     cert.keys().with_policy(p, None).alive().revoked(false)
     ///     // Or `for_storage_encryption()`, for data at rest.
     ///     .for_transport_encryption()
-    ///     .map(|ka| ka.key().into())
-    ///     .nth(0).unwrap();
+    ///     .map(|ka| Recipient::new(ka.key().keyid(), ka.key()));
     ///
-    /// let mut o = vec![];
-    /// let message = Message::new(&mut o);
-    /// let encryptor =
-    ///     Encryptor::for_recipient(message, recipient)
-    ///         .build().expect("Failed to create encryptor");
-    /// let mut w = LiteralWriter::new(encryptor).build()?;
+    /// # let mut sink = vec![];
+    /// let message = Message::new(&mut sink);
+    /// let message = Encryptor::for_recipients(message, recipients).build()?;
+    /// # let _ = message;
+    /// # Ok(()) }
+    /// ```
+    pub fn new<P, R>(keyid: KeyID, key: &'a Key<P, R>) -> Recipient<'a>
+        where P: key::KeyParts,
+              R: key::KeyRole,
+    {
+        Recipient {
+            keyid,
+            key: key.parts_as_public().role_as_unspecified(),
+        }
+    }
+
+    /// Gets the recipient keyid.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// use std::io::Write;
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::cert::prelude::*;
+    /// use openpgp::serialize::stream::Recipient;
+    /// use openpgp::policy::StandardPolicy;
+    /// # use openpgp::parse::Parse;
+    ///
+    /// let p = &StandardPolicy::new();
+    ///
+    /// let cert = Cert::from_bytes(
+    /// #   // We do some acrobatics here to abbreviate the Cert.
+    ///     "-----BEGIN PGP PUBLIC KEY BLOCK-----
+    ///
+    ///      mQENBFpxtsABCADZcBa1Q3ZLZnju18o0+t8LoQuIIeyeUQ0H45y6xUqyrD5HSkVM
+    /// #    VGQs6IHLq70mAizBJ4VznUVqVOh/NhOlapXi6/TKpjHvttdg45o6Pgqa0Kx64luT
+    /// #    ZY+TEKyILcdBdhr3CzsEILnQst5jadgMvU9fnT/EkJIvxtWPlUzU5R7nnALO626x
+    /// #    2M5Pj3k0h3ZNHMmYQQtReX/RP/xUh2SfOYG6i/MCclIlee8BXHB9k0bW2NAX2W7H
+    /// #    rLDGPm1LzmyqxFGDvDvfPlYZ5nN2cbGsv3w75LDzv75kMhVnkZsrUjnHjVRzFq7q
+    /// #    fSIpxlvJMEMKSIJ/TFztQoOBO5OlBb5qzYPpABEBAAG0F+G8iM+BzrnPg8+Ezr/P
+    /// #    hM6tzrvOt8+CiQFUBBMBCAA+FiEEfcpYtU6xQxad3uFfJH9tq8hJFP4FAlpxtsAC
+    /// #    GwMFCQPCZwAFCwkIBwIGFQgJCgsCBBYCAwECHgECF4AACgkQJH9tq8hJFP49hgf+
+    /// #    IKvec0RkD9EHSLFc6AKDm/knaI4AIH0isZTz9jRCF8H/j3h8QVUE+/0jtCcyvR6F
+    /// #    TGVSfO3pelDPYGIjDFI3aA6H/UlhZWzYRXZ+QQRrV0zwvLna3XjiW8ib3Ky+5bpQ
+    /// #    0uVeee30u+U3SnaCL9QB4+UvwVvAxRuk49Z0Q8TsRrQyQNYpeZDN7uNrvA134cf6
+    /// #    6pLUvzPG4lMLIvSXFuHou704EhT7NS3wAzFtjMrsLLieVqtbEi/kBaJTQSZQwjVB
+    /// #    sE/Z8lp1heKw/33Br3cB63n4cTf0FdoFywDBhCAMU7fKboU5xBpm5bQJ4ck6j6w+
+    /// #    BKG1FiQRR6PCUeb6GjxVOrkBDQRacbbAAQgAw538MMb/pRdpt7PTgBCedw+rU9fh
+    /// #    onZYKwmCO7wz5VrVf8zIVvWKxhX6fBTSAy8mxaYbeL/3woQ9Leuo8f0PQNs9zw1N
+    /// #    mdH+cnm2KQmL9l7/HQKMLgEAu/0C/q7ii/j8OMYitaMUyrwy+OzW3nCal/uJHIfj
+    /// #    bdKx29MbKgF/zaBs8mhTvf/Tu0rIVNDPEicwijDEolGSGebZxdGdHJA31uayMHDK
+    /// #    /mwySJViMZ8b+Lzc/dRgNbQoY6yjsjso7U9OZpQK1fooHOSQS6iLsSSsZLcGPD+7
+    /// #    m7j3jwq68SIJPMsu0O8hdjFWL4Cfj815CwptAxRGkp00CIusAabO7m8DzwARAQAB
+    /// #    iQE2BBgBCAAgFiEEfcpYtU6xQxad3uFfJH9tq8hJFP4FAlpxtsACGwwACgkQJH9t
+    /// #    q8hJFP5rmQgAoYOUXolTiQmWipJTdMG/VZ5X7mL8JiBWAQ11K1o01cZCMlziyHnJ
+    /// #    xJ6Mqjb6wAFpYBtqysJG/vfjc/XEoKgfFs7+zcuEnt41xJQ6tl/L0VTxs+tEwjZu
+    /// #    Rp/owB9GCkqN9+xNEnlH77TLW1UisW+l0F8CJ2WFOj4lk9rcXcLlEdGmXfWIlVCb
+    /// #    2/o0DD+HDNsF8nWHpDEy0mcajkgIUTvXQaDXKbccX6Wgep8dyBP7YucGmRPd9Z6H
+    /// #    bGeT3KvlJlH5kthQ9shsmT14gYwGMR6rKpNUXmlpetkjqUK7pGVaHGgJWUZ9QPGU
+    /// #    awwPdWWvZSyXJAPZ9lC5sTKwMJDwIxILug==
+    /// #    =lAie
+    /// #    -----END PGP PUBLIC KEY BLOCK-----"
+    /// #    /*
+    ///      ...
+    ///      -----END PGP PUBLIC KEY BLOCK-----"
+    /// #    */
+    /// )?;
+    ///
+    /// let recipients =
+    ///     cert.keys().with_policy(p, None).alive().revoked(false)
+    ///     // Or `for_storage_encryption()`, for data at rest.
+    ///     .for_transport_encryption()
+    ///     .map(Into::into)
+    ///     .collect::<Vec<Recipient>>();
+    ///
+    /// assert_eq!(recipients[0].keyid(),
+    ///            &"EA6E 3770 628A 713C".parse()?);
+    /// # Ok(()) }
+    /// ```
+    pub fn keyid(&self) -> &KeyID {
+        &self.keyid
+    }
+
+    /// Sets the recipient keyid.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// use std::io::Write;
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::KeyID;
+    /// use openpgp::cert::prelude::*;
+    /// use openpgp::serialize::stream::{
+    ///     Recipient, Message, Encryptor,
+    /// };
+    /// use openpgp::policy::StandardPolicy;
+    /// # use openpgp::parse::Parse;
+    ///
+    /// let p = &StandardPolicy::new();
+    ///
+    /// let cert = Cert::from_bytes(
+    /// #   // We do some acrobatics here to abbreviate the Cert.
+    ///     "-----BEGIN PGP PUBLIC KEY BLOCK-----
+    ///
+    ///      mQENBFpxtsABCADZcBa1Q3ZLZnju18o0+t8LoQuIIeyeUQ0H45y6xUqyrD5HSkVM
+    /// #    VGQs6IHLq70mAizBJ4VznUVqVOh/NhOlapXi6/TKpjHvttdg45o6Pgqa0Kx64luT
+    /// #    ZY+TEKyILcdBdhr3CzsEILnQst5jadgMvU9fnT/EkJIvxtWPlUzU5R7nnALO626x
+    /// #    2M5Pj3k0h3ZNHMmYQQtReX/RP/xUh2SfOYG6i/MCclIlee8BXHB9k0bW2NAX2W7H
+    /// #    rLDGPm1LzmyqxFGDvDvfPlYZ5nN2cbGsv3w75LDzv75kMhVnkZsrUjnHjVRzFq7q
+    /// #    fSIpxlvJMEMKSIJ/TFztQoOBO5OlBb5qzYPpABEBAAG0F+G8iM+BzrnPg8+Ezr/P
+    /// #    hM6tzrvOt8+CiQFUBBMBCAA+FiEEfcpYtU6xQxad3uFfJH9tq8hJFP4FAlpxtsAC
+    /// #    GwMFCQPCZwAFCwkIBwIGFQgJCgsCBBYCAwECHgECF4AACgkQJH9tq8hJFP49hgf+
+    /// #    IKvec0RkD9EHSLFc6AKDm/knaI4AIH0isZTz9jRCF8H/j3h8QVUE+/0jtCcyvR6F
+    /// #    TGVSfO3pelDPYGIjDFI3aA6H/UlhZWzYRXZ+QQRrV0zwvLna3XjiW8ib3Ky+5bpQ
+    /// #    0uVeee30u+U3SnaCL9QB4+UvwVvAxRuk49Z0Q8TsRrQyQNYpeZDN7uNrvA134cf6
+    /// #    6pLUvzPG4lMLIvSXFuHou704EhT7NS3wAzFtjMrsLLieVqtbEi/kBaJTQSZQwjVB
+    /// #    sE/Z8lp1heKw/33Br3cB63n4cTf0FdoFywDBhCAMU7fKboU5xBpm5bQJ4ck6j6w+
+    /// #    BKG1FiQRR6PCUeb6GjxVOrkBDQRacbbAAQgAw538MMb/pRdpt7PTgBCedw+rU9fh
+    /// #    onZYKwmCO7wz5VrVf8zIVvWKxhX6fBTSAy8mxaYbeL/3woQ9Leuo8f0PQNs9zw1N
+    /// #    mdH+cnm2KQmL9l7/HQKMLgEAu/0C/q7ii/j8OMYitaMUyrwy+OzW3nCal/uJHIfj
+    /// #    bdKx29MbKgF/zaBs8mhTvf/Tu0rIVNDPEicwijDEolGSGebZxdGdHJA31uayMHDK
+    /// #    /mwySJViMZ8b+Lzc/dRgNbQoY6yjsjso7U9OZpQK1fooHOSQS6iLsSSsZLcGPD+7
+    /// #    m7j3jwq68SIJPMsu0O8hdjFWL4Cfj815CwptAxRGkp00CIusAabO7m8DzwARAQAB
+    /// #    iQE2BBgBCAAgFiEEfcpYtU6xQxad3uFfJH9tq8hJFP4FAlpxtsACGwwACgkQJH9t
+    /// #    q8hJFP5rmQgAoYOUXolTiQmWipJTdMG/VZ5X7mL8JiBWAQ11K1o01cZCMlziyHnJ
+    /// #    xJ6Mqjb6wAFpYBtqysJG/vfjc/XEoKgfFs7+zcuEnt41xJQ6tl/L0VTxs+tEwjZu
+    /// #    Rp/owB9GCkqN9+xNEnlH77TLW1UisW+l0F8CJ2WFOj4lk9rcXcLlEdGmXfWIlVCb
+    /// #    2/o0DD+HDNsF8nWHpDEy0mcajkgIUTvXQaDXKbccX6Wgep8dyBP7YucGmRPd9Z6H
+    /// #    bGeT3KvlJlH5kthQ9shsmT14gYwGMR6rKpNUXmlpetkjqUK7pGVaHGgJWUZ9QPGU
+    /// #    awwPdWWvZSyXJAPZ9lC5sTKwMJDwIxILug==
+    /// #    =lAie
+    /// #    -----END PGP PUBLIC KEY BLOCK-----"
+    /// #    /*
+    ///      ...
+    ///      -----END PGP PUBLIC KEY BLOCK-----"
+    /// #    */
+    /// )?;
+    ///
+    /// let recipients =
+    ///     cert.keys().with_policy(p, None).alive().revoked(false)
+    ///     // Or `for_storage_encryption()`, for data at rest.
+    ///     .for_transport_encryption()
+    ///     .map(|ka| {
+    ///         let mut r: Recipient = ka.into();
+    ///         // Set the recipient keyid to the wildcard id.
+    ///         r.set_keyid(KeyID::wildcard());
+    ///         r
+    ///     });
+    ///
+    /// # let mut sink = vec![];
+    /// let message = Message::new(&mut sink);
+    /// let message = Encryptor::for_recipients(message, recipients).build()?;
+    /// # let _ = message;
+    /// # Ok(()) }
+    /// ```
+    pub fn set_keyid(&mut self, keyid: KeyID) -> KeyID {
+        std::mem::replace(&mut self.keyid, keyid)
+    }
+}
+
+/// Encrypts a message.
+///
+/// The stream will be encrypted using a generated session key, which
+/// will be encrypted using the given passwords, and for all given
+/// recipients.
+pub struct Encryptor<'a> {
+    // XXX: Opportunity for optimization.  Previously, this writer
+    // implemented `Drop`, so we could not move the inner writer out
+    // of this writer.  We therefore wrapped it with `Option` so that
+    // we can `take()` it.  This writer no longer implements Drop, so
+    // we could avoid the Option here.
+    inner: Option<writer::BoxStack<'a, Cookie>>,
+    recipients: Vec<Recipient<'a>>,
+    passwords: Vec<Password>,
+    sym_algo: SymmetricAlgorithm,
+    aead_algo: Option<AEADAlgorithm>,
+    hash: crypto::hash::Context,
+    cookie: Cookie,
+}
+
+impl<'a> Encryptor<'a> {
+    /// Creates a new encryptor for the given recipients.
+    ///
+    /// To add more recipients, use [`Encryptor::add_recipient`].  To
+    /// add a password, use [`Encryptor::add_password`].  To change
+    /// the symmetric encryption algorithm, use
+    /// [`Encryptor::sym_algo`].  To enable the experimental AEAD
+    /// encryption, use [`Encryptor::aead_algo`].
+    ///
+    ///   [`Encryptor::add_recipient`]: #method.add_recipient
+    ///   [`Encryptor::add_password`]: #method.add_password
+    ///   [`Encryptor::sym_algo`]: #method.sym_algo
+    ///   [`Encryptor::aead_algo`]: #method.aead_algo
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// use std::io::Write;
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::cert::prelude::*;
+    /// use openpgp::serialize::stream::{
+    ///     Message, Encryptor, LiteralWriter,
+    /// };
+    /// use openpgp::policy::StandardPolicy;
+    /// # use openpgp::parse::Parse;
+    /// let p = &StandardPolicy::new();
+    ///
+    /// let cert = Cert::from_bytes(
+    /// #   // We do some acrobatics here to abbreviate the Cert.
+    ///     "-----BEGIN PGP PUBLIC KEY BLOCK-----
+    ///
+    ///      mQENBFpxtsABCADZcBa1Q3ZLZnju18o0+t8LoQuIIeyeUQ0H45y6xUqyrD5HSkVM
+    /// #    VGQs6IHLq70mAizBJ4VznUVqVOh/NhOlapXi6/TKpjHvttdg45o6Pgqa0Kx64luT
+    /// #    ZY+TEKyILcdBdhr3CzsEILnQst5jadgMvU9fnT/EkJIvxtWPlUzU5R7nnALO626x
+    /// #    2M5Pj3k0h3ZNHMmYQQtReX/RP/xUh2SfOYG6i/MCclIlee8BXHB9k0bW2NAX2W7H
+    /// #    rLDGPm1LzmyqxFGDvDvfPlYZ5nN2cbGsv3w75LDzv75kMhVnkZsrUjnHjVRzFq7q
+    /// #    fSIpxlvJMEMKSIJ/TFztQoOBO5OlBb5qzYPpABEBAAG0F+G8iM+BzrnPg8+Ezr/P
+    /// #    hM6tzrvOt8+CiQFUBBMBCAA+FiEEfcpYtU6xQxad3uFfJH9tq8hJFP4FAlpxtsAC
+    /// #    GwMFCQPCZwAFCwkIBwIGFQgJCgsCBBYCAwECHgECF4AACgkQJH9tq8hJFP49hgf+
+    /// #    IKvec0RkD9EHSLFc6AKDm/knaI4AIH0isZTz9jRCF8H/j3h8QVUE+/0jtCcyvR6F
+    /// #    TGVSfO3pelDPYGIjDFI3aA6H/UlhZWzYRXZ+QQRrV0zwvLna3XjiW8ib3Ky+5bpQ
+    /// #    0uVeee30u+U3SnaCL9QB4+UvwVvAxRuk49Z0Q8TsRrQyQNYpeZDN7uNrvA134cf6
+    /// #    6pLUvzPG4lMLIvSXFuHou704EhT7NS3wAzFtjMrsLLieVqtbEi/kBaJTQSZQwjVB
+    /// #    sE/Z8lp1heKw/33Br3cB63n4cTf0FdoFywDBhCAMU7fKboU5xBpm5bQJ4ck6j6w+
+    /// #    BKG1FiQRR6PCUeb6GjxVOrkBDQRacbbAAQgAw538MMb/pRdpt7PTgBCedw+rU9fh
+    /// #    onZYKwmCO7wz5VrVf8zIVvWKxhX6fBTSAy8mxaYbeL/3woQ9Leuo8f0PQNs9zw1N
+    /// #    mdH+cnm2KQmL9l7/HQKMLgEAu/0C/q7ii/j8OMYitaMUyrwy+OzW3nCal/uJHIfj
+    /// #    bdKx29MbKgF/zaBs8mhTvf/Tu0rIVNDPEicwijDEolGSGebZxdGdHJA31uayMHDK
+    /// #    /mwySJViMZ8b+Lzc/dRgNbQoY6yjsjso7U9OZpQK1fooHOSQS6iLsSSsZLcGPD+7
+    /// #    m7j3jwq68SIJPMsu0O8hdjFWL4Cfj815CwptAxRGkp00CIusAabO7m8DzwARAQAB
+    /// #    iQE2BBgBCAAgFiEEfcpYtU6xQxad3uFfJH9tq8hJFP4FAlpxtsACGwwACgkQJH9t
+    /// #    q8hJFP5rmQgAoYOUXolTiQmWipJTdMG/VZ5X7mL8JiBWAQ11K1o01cZCMlziyHnJ
+    /// #    xJ6Mqjb6wAFpYBtqysJG/vfjc/XEoKgfFs7+zcuEnt41xJQ6tl/L0VTxs+tEwjZu
+    /// #    Rp/owB9GCkqN9+xNEnlH77TLW1UisW+l0F8CJ2WFOj4lk9rcXcLlEdGmXfWIlVCb
+    /// #    2/o0DD+HDNsF8nWHpDEy0mcajkgIUTvXQaDXKbccX6Wgep8dyBP7YucGmRPd9Z6H
+    /// #    bGeT3KvlJlH5kthQ9shsmT14gYwGMR6rKpNUXmlpetkjqUK7pGVaHGgJWUZ9QPGU
+    /// #    awwPdWWvZSyXJAPZ9lC5sTKwMJDwIxILug==
+    /// #    =lAie
+    /// #    -----END PGP PUBLIC KEY BLOCK-----"
+    /// #    /*
+    ///      ...
+    ///      -----END PGP PUBLIC KEY BLOCK-----"
+    /// #    */
+    /// )?;
+    ///
+    /// let recipients =
+    ///     cert.keys().with_policy(p, None).alive().revoked(false)
+    ///     // Or `for_storage_encryption()`, for data at rest.
+    ///     .for_transport_encryption();
+    ///
+    /// # let mut sink = vec![];
+    /// let message = Message::new(&mut sink);
+    /// let message = Encryptor::for_recipients(message, recipients).build()?;
+    /// let mut w = LiteralWriter::new(message).build()?;
     /// w.write_all(b"Hello world.")?;
     /// w.finalize()?;
-    /// # Ok(())
-    /// # }
+    /// # Ok(()) }
     /// ```
-    pub fn for_recipient(inner: writer::Stack<'a, Cookie>,
-                         recipient: Recipient<'a>) -> Self {
-        Self {
+    pub fn for_recipients<R>(inner: Message<'a>, recipients: R) -> Self
+        where R: IntoIterator,
+              R::Item: Into<Recipient<'a>>,
+    {
+            Self {
             inner: Some(inner.into()),
-            recipients: vec![recipient],
+            recipients: recipients.into_iter().map(|r| r.into()).collect(),
             passwords: Vec::new(),
             sym_algo: Default::default(),
             aead_algo: Default::default(),
@@ -1039,48 +2161,46 @@ impl<'a> Encryptor<'a> {
         }
     }
 
-    /// Creates a new encryptor.
+    /// Creates a new encryptor for the given passwords.
     ///
-    /// The stream will be encrypted using a generated session key,
-    /// which will be encrypted using the given passwords, and all
-    /// encryption-capable subkeys of the given Certs.
+    /// To add more passwords, use [`Encryptor::add_password`].  To
+    /// add an recipient, use [`Encryptor::add_recipient`].  To change
+    /// the symmetric encryption algorithm, use
+    /// [`Encryptor::sym_algo`].  To enable the experimental AEAD
+    /// encryption, use [`Encryptor::aead_algo`].
     ///
-    /// Unless otherwise specified, the stream is encrypted using
-    /// AES256.  If `aead_algo` is `None`, a `SEIP` packet is emitted,
-    /// otherwise the given AEAD algorithm is used.
-    ///
-    /// Key preferences of the recipients are not honored.
+    ///   [`Encryptor::add_recipient`]: #method.add_recipient
+    ///   [`Encryptor::add_password`]: #method.add_password
+    ///   [`Encryptor::sym_algo`]: #method.sym_algo
+    ///   [`Encryptor::aead_algo`]: #method.aead_algo
     ///
     /// # Example
     ///
     /// ```
+    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
     /// use std::io::Write;
-    /// extern crate sequoia_openpgp as openpgp;
-    /// use openpgp::types::KeyFlags;
+    /// use sequoia_openpgp as openpgp;
     /// use openpgp::serialize::stream::{
     ///     Message, Encryptor, LiteralWriter,
     /// };
-    /// # use openpgp::Result;
-    /// # use openpgp::parse::Parse;
-    /// # fn main() { f().unwrap(); }
-    /// # fn f() -> Result<()> {
-    /// let mut o = vec![];
-    /// let message = Message::new(&mut o);
-    /// let encryptor =
-    ///     Encryptor::with_password(message, "совершенно секретно".into())
-    ///         .build().expect("Failed to create encryptor");
-    /// let mut w = LiteralWriter::new(encryptor).build()?;
+    ///
+    /// # let mut sink = vec![];
+    /// let message = Message::new(&mut sink);
+    /// let message = Encryptor::with_passwords(
+    ///     message, Some("совершенно секретно")).build()?;
+    /// let mut w = LiteralWriter::new(message).build()?;
     /// w.write_all(b"Hello world.")?;
     /// w.finalize()?;
-    /// # Ok(())
-    /// # }
+    /// # Ok(()) }
     /// ```
-    pub fn with_password(inner: writer::Stack<'a, Cookie>,
-                         password: Password) -> Self {
+    pub fn with_passwords<P>(inner: Message<'a>, passwords: P) -> Self
+        where P: IntoIterator,
+              P::Item: Into<Password>,
+    {
         Self {
             inner: Some(inner.into()),
             recipients: Vec::new(),
-            passwords: vec![password],
+            passwords: passwords.into_iter().map(|p| p.into()).collect(),
             sym_algo: Default::default(),
             aead_algo: Default::default(),
             hash: HashAlgorithm::SHA1.context().unwrap(),
@@ -1088,20 +2208,197 @@ impl<'a> Encryptor<'a> {
         }
     }
 
-    /// Adds a recipient.
-    pub fn add_recipient(mut self, recipient: Recipient<'a>) -> Self {
-        self.recipients.push(recipient);
+    /// Adds recipients.
+    ///
+    /// The resulting message can be encrypted by any recipient and
+    /// with any password.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// use std::io::Write;
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::cert::prelude::*;
+    /// use openpgp::serialize::stream::{
+    ///     Message, Encryptor, LiteralWriter,
+    /// };
+    /// use openpgp::policy::StandardPolicy;
+    /// # use openpgp::parse::Parse;
+    /// let p = &StandardPolicy::new();
+    ///
+    /// let cert = Cert::from_bytes(
+    /// #   // We do some acrobatics here to abbreviate the Cert.
+    ///     "-----BEGIN PGP PUBLIC KEY BLOCK-----
+    ///
+    ///      mQENBFpxtsABCADZcBa1Q3ZLZnju18o0+t8LoQuIIeyeUQ0H45y6xUqyrD5HSkVM
+    /// #    VGQs6IHLq70mAizBJ4VznUVqVOh/NhOlapXi6/TKpjHvttdg45o6Pgqa0Kx64luT
+    /// #    ZY+TEKyILcdBdhr3CzsEILnQst5jadgMvU9fnT/EkJIvxtWPlUzU5R7nnALO626x
+    /// #    2M5Pj3k0h3ZNHMmYQQtReX/RP/xUh2SfOYG6i/MCclIlee8BXHB9k0bW2NAX2W7H
+    /// #    rLDGPm1LzmyqxFGDvDvfPlYZ5nN2cbGsv3w75LDzv75kMhVnkZsrUjnHjVRzFq7q
+    /// #    fSIpxlvJMEMKSIJ/TFztQoOBO5OlBb5qzYPpABEBAAG0F+G8iM+BzrnPg8+Ezr/P
+    /// #    hM6tzrvOt8+CiQFUBBMBCAA+FiEEfcpYtU6xQxad3uFfJH9tq8hJFP4FAlpxtsAC
+    /// #    GwMFCQPCZwAFCwkIBwIGFQgJCgsCBBYCAwECHgECF4AACgkQJH9tq8hJFP49hgf+
+    /// #    IKvec0RkD9EHSLFc6AKDm/knaI4AIH0isZTz9jRCF8H/j3h8QVUE+/0jtCcyvR6F
+    /// #    TGVSfO3pelDPYGIjDFI3aA6H/UlhZWzYRXZ+QQRrV0zwvLna3XjiW8ib3Ky+5bpQ
+    /// #    0uVeee30u+U3SnaCL9QB4+UvwVvAxRuk49Z0Q8TsRrQyQNYpeZDN7uNrvA134cf6
+    /// #    6pLUvzPG4lMLIvSXFuHou704EhT7NS3wAzFtjMrsLLieVqtbEi/kBaJTQSZQwjVB
+    /// #    sE/Z8lp1heKw/33Br3cB63n4cTf0FdoFywDBhCAMU7fKboU5xBpm5bQJ4ck6j6w+
+    /// #    BKG1FiQRR6PCUeb6GjxVOrkBDQRacbbAAQgAw538MMb/pRdpt7PTgBCedw+rU9fh
+    /// #    onZYKwmCO7wz5VrVf8zIVvWKxhX6fBTSAy8mxaYbeL/3woQ9Leuo8f0PQNs9zw1N
+    /// #    mdH+cnm2KQmL9l7/HQKMLgEAu/0C/q7ii/j8OMYitaMUyrwy+OzW3nCal/uJHIfj
+    /// #    bdKx29MbKgF/zaBs8mhTvf/Tu0rIVNDPEicwijDEolGSGebZxdGdHJA31uayMHDK
+    /// #    /mwySJViMZ8b+Lzc/dRgNbQoY6yjsjso7U9OZpQK1fooHOSQS6iLsSSsZLcGPD+7
+    /// #    m7j3jwq68SIJPMsu0O8hdjFWL4Cfj815CwptAxRGkp00CIusAabO7m8DzwARAQAB
+    /// #    iQE2BBgBCAAgFiEEfcpYtU6xQxad3uFfJH9tq8hJFP4FAlpxtsACGwwACgkQJH9t
+    /// #    q8hJFP5rmQgAoYOUXolTiQmWipJTdMG/VZ5X7mL8JiBWAQ11K1o01cZCMlziyHnJ
+    /// #    xJ6Mqjb6wAFpYBtqysJG/vfjc/XEoKgfFs7+zcuEnt41xJQ6tl/L0VTxs+tEwjZu
+    /// #    Rp/owB9GCkqN9+xNEnlH77TLW1UisW+l0F8CJ2WFOj4lk9rcXcLlEdGmXfWIlVCb
+    /// #    2/o0DD+HDNsF8nWHpDEy0mcajkgIUTvXQaDXKbccX6Wgep8dyBP7YucGmRPd9Z6H
+    /// #    bGeT3KvlJlH5kthQ9shsmT14gYwGMR6rKpNUXmlpetkjqUK7pGVaHGgJWUZ9QPGU
+    /// #    awwPdWWvZSyXJAPZ9lC5sTKwMJDwIxILug==
+    /// #    =lAie
+    /// #    -----END PGP PUBLIC KEY BLOCK-----"
+    /// #    /*
+    ///      ...
+    ///      -----END PGP PUBLIC KEY BLOCK-----"
+    /// #    */
+    /// )?;
+    ///
+    /// let recipients =
+    ///     cert.keys().with_policy(p, None).alive().revoked(false)
+    ///     // Or `for_storage_encryption()`, for data at rest.
+    ///     .for_transport_encryption();
+    ///
+    /// # let mut sink = vec![];
+    /// let message = Message::new(&mut sink);
+    /// let message =
+    ///     Encryptor::with_passwords(message, Some("совершенно секретно"))
+    ///     .add_recipients(recipients)
+    ///     .build()?;
+    /// let mut message = LiteralWriter::new(message).build()?;
+    /// message.write_all(b"Hello world.")?;
+    /// message.finalize()?;
+    /// # Ok(()) }
+    /// ```
+    pub fn add_recipients<R>(mut self, recipients: R) -> Self
+        where R: IntoIterator,
+              R::Item: Into<Recipient<'a>>,
+    {
+        for r in recipients {
+            self.recipients.push(r.into());
+        }
         self
     }
 
-    /// Adds a password.
-    pub fn add_password(mut self, password: Password) -> Self {
-        self.passwords.push(password);
+    /// Adds passwords to encrypt with.
+    ///
+    /// The resulting message can be encrypted with any password and
+    /// by any recipient.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// use std::io::Write;
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::cert::prelude::*;
+    /// use openpgp::serialize::stream::{
+    ///     Message, Encryptor, LiteralWriter,
+    /// };
+    /// use openpgp::policy::StandardPolicy;
+    /// # use openpgp::parse::Parse;
+    /// let p = &StandardPolicy::new();
+    ///
+    /// let cert = Cert::from_bytes(
+    /// #   // We do some acrobatics here to abbreviate the Cert.
+    ///     "-----BEGIN PGP PUBLIC KEY BLOCK-----
+    ///
+    ///      mQENBFpxtsABCADZcBa1Q3ZLZnju18o0+t8LoQuIIeyeUQ0H45y6xUqyrD5HSkVM
+    /// #    VGQs6IHLq70mAizBJ4VznUVqVOh/NhOlapXi6/TKpjHvttdg45o6Pgqa0Kx64luT
+    /// #    ZY+TEKyILcdBdhr3CzsEILnQst5jadgMvU9fnT/EkJIvxtWPlUzU5R7nnALO626x
+    /// #    2M5Pj3k0h3ZNHMmYQQtReX/RP/xUh2SfOYG6i/MCclIlee8BXHB9k0bW2NAX2W7H
+    /// #    rLDGPm1LzmyqxFGDvDvfPlYZ5nN2cbGsv3w75LDzv75kMhVnkZsrUjnHjVRzFq7q
+    /// #    fSIpxlvJMEMKSIJ/TFztQoOBO5OlBb5qzYPpABEBAAG0F+G8iM+BzrnPg8+Ezr/P
+    /// #    hM6tzrvOt8+CiQFUBBMBCAA+FiEEfcpYtU6xQxad3uFfJH9tq8hJFP4FAlpxtsAC
+    /// #    GwMFCQPCZwAFCwkIBwIGFQgJCgsCBBYCAwECHgECF4AACgkQJH9tq8hJFP49hgf+
+    /// #    IKvec0RkD9EHSLFc6AKDm/knaI4AIH0isZTz9jRCF8H/j3h8QVUE+/0jtCcyvR6F
+    /// #    TGVSfO3pelDPYGIjDFI3aA6H/UlhZWzYRXZ+QQRrV0zwvLna3XjiW8ib3Ky+5bpQ
+    /// #    0uVeee30u+U3SnaCL9QB4+UvwVvAxRuk49Z0Q8TsRrQyQNYpeZDN7uNrvA134cf6
+    /// #    6pLUvzPG4lMLIvSXFuHou704EhT7NS3wAzFtjMrsLLieVqtbEi/kBaJTQSZQwjVB
+    /// #    sE/Z8lp1heKw/33Br3cB63n4cTf0FdoFywDBhCAMU7fKboU5xBpm5bQJ4ck6j6w+
+    /// #    BKG1FiQRR6PCUeb6GjxVOrkBDQRacbbAAQgAw538MMb/pRdpt7PTgBCedw+rU9fh
+    /// #    onZYKwmCO7wz5VrVf8zIVvWKxhX6fBTSAy8mxaYbeL/3woQ9Leuo8f0PQNs9zw1N
+    /// #    mdH+cnm2KQmL9l7/HQKMLgEAu/0C/q7ii/j8OMYitaMUyrwy+OzW3nCal/uJHIfj
+    /// #    bdKx29MbKgF/zaBs8mhTvf/Tu0rIVNDPEicwijDEolGSGebZxdGdHJA31uayMHDK
+    /// #    /mwySJViMZ8b+Lzc/dRgNbQoY6yjsjso7U9OZpQK1fooHOSQS6iLsSSsZLcGPD+7
+    /// #    m7j3jwq68SIJPMsu0O8hdjFWL4Cfj815CwptAxRGkp00CIusAabO7m8DzwARAQAB
+    /// #    iQE2BBgBCAAgFiEEfcpYtU6xQxad3uFfJH9tq8hJFP4FAlpxtsACGwwACgkQJH9t
+    /// #    q8hJFP5rmQgAoYOUXolTiQmWipJTdMG/VZ5X7mL8JiBWAQ11K1o01cZCMlziyHnJ
+    /// #    xJ6Mqjb6wAFpYBtqysJG/vfjc/XEoKgfFs7+zcuEnt41xJQ6tl/L0VTxs+tEwjZu
+    /// #    Rp/owB9GCkqN9+xNEnlH77TLW1UisW+l0F8CJ2WFOj4lk9rcXcLlEdGmXfWIlVCb
+    /// #    2/o0DD+HDNsF8nWHpDEy0mcajkgIUTvXQaDXKbccX6Wgep8dyBP7YucGmRPd9Z6H
+    /// #    bGeT3KvlJlH5kthQ9shsmT14gYwGMR6rKpNUXmlpetkjqUK7pGVaHGgJWUZ9QPGU
+    /// #    awwPdWWvZSyXJAPZ9lC5sTKwMJDwIxILug==
+    /// #    =lAie
+    /// #    -----END PGP PUBLIC KEY BLOCK-----"
+    /// #    /*
+    ///      ...
+    ///      -----END PGP PUBLIC KEY BLOCK-----"
+    /// #    */
+    /// )?;
+    ///
+    /// let recipients =
+    ///     cert.keys().with_policy(p, None).alive().revoked(false)
+    ///     // Or `for_storage_encryption()`, for data at rest.
+    ///     .for_transport_encryption();
+    ///
+    /// # let mut sink = vec![];
+    /// let message = Message::new(&mut sink);
+    /// let message =
+    ///     Encryptor::for_recipients(message, recipients)
+    ///         .add_passwords(Some("совершенно секретно"))
+    ///         .build()?;
+    /// let mut message = LiteralWriter::new(message).build()?;
+    /// message.write_all(b"Hello world.")?;
+    /// message.finalize()?;
+    /// # Ok(()) }
+    /// ```
+    pub fn add_passwords<P>(mut self, passwords: P) -> Self
+        where P: IntoIterator,
+              P::Item: Into<Password>,
+    {
+        for p in passwords {
+            self.passwords.push(p.into());
+        }
         self
     }
 
     /// Sets the symmetric algorithm to use.
-    pub fn sym_algo(mut self, algo: SymmetricAlgorithm) -> Self {
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// use std::io::Write;
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::types::SymmetricAlgorithm;
+    /// use openpgp::serialize::stream::{
+    ///     Message, Encryptor, LiteralWriter,
+    /// };
+    ///
+    /// # let mut sink = vec![];
+    /// let message = Message::new(&mut sink);
+    /// let message =
+    ///     Encryptor::with_passwords(message, Some("совершенно секретно"))
+    ///         .symmetric_algo(SymmetricAlgorithm::AES128)
+    ///         .build()?;
+    /// let mut message = LiteralWriter::new(message).build()?;
+    /// message.write_all(b"Hello world.")?;
+    /// message.finalize()?;
+    /// # Ok(()) }
+    /// ```
+    pub fn symmetric_algo(mut self, algo: SymmetricAlgorithm) -> Self {
         self.sym_algo = algo;
         self
     }
@@ -1109,6 +2406,29 @@ impl<'a> Encryptor<'a> {
     /// Enables AEAD and sets the AEAD algorithm to use.
     ///
     /// This feature is [experimental](../../index.html#experimental-features).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// use std::io::Write;
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::types::AEADAlgorithm;
+    /// use openpgp::serialize::stream::{
+    ///     Message, Encryptor, LiteralWriter,
+    /// };
+    ///
+    /// # let mut sink = vec![];
+    /// let message = Message::new(&mut sink);
+    /// let message =
+    ///     Encryptor::with_passwords(message, Some("совершенно секретно"))
+    ///         .aead_algo(AEADAlgorithm::EAX)
+    ///         .build()?;
+    /// let mut message = LiteralWriter::new(message).build()?;
+    /// message.write_all(b"Hello world.")?;
+    /// message.finalize()?;
+    /// # Ok(()) }
+    /// ```
     pub fn aead_algo(mut self, algo: AEADAlgorithm) -> Self {
         self.aead_algo = Some(algo);
         self
@@ -1119,10 +2439,48 @@ impl<'a> Encryptor<'a> {
     // A page, 3 per mille overhead.
     const AEAD_CHUNK_SIZE : usize = 4096;
 
-    /// Finalizes the encryptor, returning the writer stack.
-    pub fn build(mut self) -> Result<writer::Stack<'a, Cookie>> {
-        assert!(self.recipients.len() + self.passwords.len() > 0,
-                "The constructors add at least one recipient or password");
+    /// Builds the encryptor, returning the writer stack.
+    ///
+    /// The most useful filters to push to the writer stack next are
+    /// the [`Padder`] or [`Compressor`], and after that the
+    /// [`Signer`].  Finally, literal data *must* be wrapped using the
+    /// [`LiteralWriter`].
+    ///
+    ///   [`Compressor`]: struct.Compressor.html
+    ///   [`Padder`]: padding/struct.Padder.html
+    ///   [`Signer`]: struct.Signer.html
+    ///   [`LiteralWriter`]: struct.LiteralWriter.html
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// use std::io::Write;
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::serialize::stream::{
+    ///     Message, Encryptor, LiteralWriter,
+    /// };
+    ///
+    /// # let mut sink = vec![];
+    /// let message = Message::new(&mut sink);
+    /// let message =
+    ///     Encryptor::with_passwords(message, Some("совершенно секретно"))
+    ///         // Customize the `Encryptor` here.
+    ///         .build()?;
+    ///
+    /// // Optionally add a `Padder` or `Compressor` here.
+    /// // Optionally add a `Signer` here.
+    ///
+    /// let mut message = LiteralWriter::new(message).build()?;
+    /// message.write_all(b"Hello world.")?;
+    /// message.finalize()?;
+    /// # Ok(()) }
+    /// ```
+    pub fn build(mut self) -> Result<Message<'a>> {
+        if self.recipients.len() + self.passwords.len() == 0 {
+            return Err(Error::InvalidOperation(
+                "Neither recipients nor passwords given".into()).into());
+        }
 
         struct AEADParameters {
             algo: AEADAlgorithm,
@@ -1134,7 +2492,7 @@ impl<'a> Encryptor<'a> {
             let mut nonce = vec![0; algo.iv_size()?];
             crypto::random(&mut nonce);
             Some(AEADParameters {
-                algo: algo,
+                algo,
                 chunk_size: Self::AEAD_CHUNK_SIZE,
                 nonce: nonce.into_boxed_slice(),
             })
@@ -1174,9 +2532,10 @@ impl<'a> Encryptor<'a> {
         if let Some(aead) = aead {
             // Write the AED packet.
             CTB::new(Tag::AED).serialize(&mut inner)?;
-            let mut inner = PartialBodyFilter::new(writer::Stack::from(inner),
+            let mut inner = PartialBodyFilter::new(Message::from(inner),
                                                    Cookie::new(level));
-            let aed = AED1::new(self.sym_algo, aead.algo, aead.chunk_size, aead.nonce)?;
+            let aed = AED1::new(self.sym_algo, aead.algo,
+                                aead.chunk_size as u64, aead.nonce)?;
             aed.serialize_headers(&mut inner)?;
 
             writer::AEADEncryptor::new(
@@ -1184,14 +2543,14 @@ impl<'a> Encryptor<'a> {
                 Cookie::new(level),
                 aed.symmetric_algo(),
                 aed.aead(),
-                aed.chunk_size(),
+                aead.chunk_size,
                 aed.iv(),
                 &sk,
             )
         } else {
             // Write the SEIP packet.
             CTB::new(Tag::SEIP).serialize(&mut inner)?;
-            let mut inner = PartialBodyFilter::new(writer::Stack::from(inner),
+            let mut inner = PartialBodyFilter::new(Message::from(inner),
                                                    Cookie::new(level));
             inner.write_all(&[1])?; // Version.
 
@@ -1213,7 +2572,7 @@ impl<'a> Encryptor<'a> {
             self.write_all(&iv)?;
             self.write_all(&iv[iv.len() - 2..])?;
 
-            Ok(writer::Stack::from(Box::new(self)))
+            Ok(Message::from(Box::new(self)))
         }
     }
 
@@ -1241,12 +2600,6 @@ impl<'a> Encryptor<'a> {
             Err(Error::InvalidOperation(
                 "Inner writer already taken".into()).into())
         }
-    }
-}
-
-impl<'a> Drop for Encryptor<'a> {
-    fn drop(&mut self) {
-        let _ = self.emit_mdc();
     }
 }
 
@@ -1333,6 +2686,7 @@ mod test {
             ustr.write_all(b"\x00").unwrap(); // fn length
             ustr.write_all(b"\x00\x00\x00\x00").unwrap(); // date
             ustr.write_all(b"Hello world.").unwrap(); // body
+            ustr.finalize().unwrap();
         }
 
         let mut pp = PacketParser::from_bytes(&o).unwrap().unwrap();
@@ -1389,6 +2743,7 @@ mod test {
             let c = c.finalize_one().unwrap().unwrap(); // Pop the Compressor.
             let mut ls = LiteralWriter::new(c).format(T).build().unwrap();
             write!(ls, "three").unwrap();
+            ls.finalize().unwrap();
         }
 
         let pile = PacketPile::from(reference);
@@ -1455,6 +2810,7 @@ mod test {
             let c = ls.finalize_one().unwrap().unwrap();
             let mut ls = LiteralWriter::new(c).format(T).build().unwrap();
             write!(ls, "four").unwrap();
+            ls.finalize().unwrap();
         }
 
         let pile = PacketPile::from(reference);
@@ -1508,7 +2864,7 @@ mod test {
         let mut o = vec![];
         {
             let mut signers = keys.iter().map(|(_, key)| {
-                key.clone().mark_parts_secret().unwrap().into_keypair()
+                key.clone().parts_into_secret().unwrap().into_keypair()
                     .expect("expected unencrypted secret key")
             }).collect::<Vec<KeyPair>>();
 
@@ -1541,20 +2897,20 @@ mod test {
 
     #[test]
     fn encryptor() {
-        let passwords: [Password; 2] = ["streng geheim".into(),
-                                        "top secret".into()];
+        let passwords = vec!["streng geheim".into(),
+                             "top secret".into()];
         let message = b"Hello world.";
 
         // Write a simple encrypted message...
         let mut o = vec![];
         {
             let m = Message::new(&mut o);
-            let encryptor = Encryptor::with_password(m, passwords[0].clone())
-                .add_password(passwords[1].clone())
+            let encryptor = Encryptor::with_passwords(m, passwords.clone())
                 .build().unwrap();
             let mut literal = LiteralWriter::new(encryptor).build()
                 .unwrap();
             literal.write_all(message).unwrap();
+            literal.finalize().unwrap();
         }
 
         // ... and recover it...
@@ -1646,7 +3002,7 @@ mod test {
     }
 
     #[test]
-    fn aead_messages() {
+    fn aead_messages() -> Result<()> {
         // AEAD data is of the form:
         //
         //   [ chunk1 ][ tag1 ] ... [ chunkN ][ tagN ][ tag ]
@@ -1670,7 +3026,7 @@ mod test {
 
         use crate::parse::{
             stream::{
-                Decryptor,
+                DecryptorBuilder,
                 DecryptionHelper,
                 VerificationHelper,
                 MessageStructure,
@@ -1689,7 +3045,7 @@ mod test {
             tsk: &'a Cert,
         };
         impl<'a> VerificationHelper for Helper<'a> {
-            fn get_public_keys(&mut self, _ids: &[crate::KeyHandle])
+            fn get_certs(&mut self, _ids: &[crate::KeyHandle])
                                -> Result<Vec<Cert>> {
                 Ok(Vec::new())
             }
@@ -1701,16 +3057,16 @@ mod test {
             fn decrypt<D>(&mut self, pkesks: &[PKESK], _skesks: &[SKESK],
                           sym_algo: Option<SymmetricAlgorithm>,
                           mut decrypt: D) -> Result<Option<crate::Fingerprint>>
-                where D: FnMut(SymmetricAlgorithm, &SessionKey) -> Result<()>
+                where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool
             {
                 let mut keypair = self.tsk.keys().with_policy(self.policy, None)
                     .for_transport_encryption()
                     .map(|ka| ka.key()).next().unwrap()
-                    .clone().mark_parts_secret().unwrap()
+                    .clone().parts_into_secret().unwrap()
                     .into_keypair().unwrap();
                 pkesks[0].decrypt(&mut keypair, sym_algo)
-                    .and_then(|(algo, session_key)| decrypt(algo, &session_key))
-                    .map(|_| None)
+                    .map(|(algo, session_key)| decrypt(algo, &session_key));
+                Ok(None)
             }
         }
 
@@ -1731,17 +3087,16 @@ mod test {
                 let mut msg = vec![];
                 {
                     let m = Message::new(&mut msg);
-                    let recipient = tsk
+                    let recipients = tsk
                         .keys().with_policy(p, None)
-                        .for_storage_encryption().for_transport_encryption()
-                        .nth(0).unwrap().key().into();
-                    let encryptor = Encryptor::for_recipient(m, recipient)
+                        .for_storage_encryption().for_transport_encryption();
+                    let encryptor = Encryptor::for_recipients(m, recipients)
                         .aead_algo(AEADAlgorithm::EAX)
                         .build().unwrap();
                     let mut literal = LiteralWriter::new(encryptor).build()
                         .unwrap();
                     literal.write_all(&content).unwrap();
-                    // literal.finalize().unwrap();
+                    literal.finalize().unwrap();
                 }
 
                 for &read_len in &[
@@ -1764,7 +3119,9 @@ mod test {
                         let h = Helper { policy: p, tsk: &tsk };
                         // Note: a corrupted message is only guaranteed
                         // to error out before it returns EOF.
-                        let mut v = match Decryptor::from_bytes(p, &msg, h, None) {
+                        let mut v = match DecryptorBuilder::from_bytes(&msg)?
+                            .with_policy(p, None, h)
+                        {
                             Ok(v) => v,
                             Err(_) if do_err => continue,
                             Err(err) => panic!("Decrypting message: {}", err),
@@ -1804,6 +3161,7 @@ mod test {
                 }
             }
         }
+        Ok(())
     }
 
     #[test]
@@ -1832,7 +3190,7 @@ mod test {
         let mut o = vec![];
         {
             let signer_keypair : KeyPair =
-                ka.key().clone().mark_parts_secret().unwrap().into_keypair()
+                ka.key().clone().parts_into_secret().unwrap().into_keypair()
                     .expect("expected unencrypted secret key");
 
             let m = Message::new(&mut o);

@@ -37,32 +37,25 @@ fn main() {
             .expect("Failed to read key")
     }).collect();
 
-    // Build a vector of recipients to hand to Encryptor.
-    let mut recipients =
+    let recipients =
         certs.iter()
         .flat_map(|cert| {
             cert.keys()
                 .with_policy(p, None).alive().revoked(false).key_flags(&mode)
-        })
-        .map(|ka| ka.key().into())
-        .collect::<Vec<_>>();
+        });
 
     // Compose a writer stack corresponding to the output format and
     // packet structure we want.  First, we want the output to be
     // ASCII armored.
-    let mut sink = armor::Writer::new(io::stdout(), armor::Kind::Message, &[])
+    let mut sink = armor::Writer::new(io::stdout(), armor::Kind::Message)
         .expect("Failed to create an armored writer");
 
     // Stream an OpenPGP message.
     let message = Message::new(&mut sink);
 
     // We want to encrypt a literal data packet.
-    let mut encryptor = Encryptor::for_recipient(
-        message, recipients.pop().expect("No encryption key found"));
-    for r in recipients {
-        encryptor = encryptor.add_recipient(r)
-    }
-    let encryptor = encryptor.build().expect("Failed to create encryptor");
+    let encryptor = Encryptor::for_recipients(message, recipients)
+        .build().expect("Failed to create encryptor");
 
     let mut literal_writer = LiteralWriter::new(encryptor).build()
         .expect("Failed to create literal writer");

@@ -19,21 +19,14 @@ use crate::openpgp::parse::{
     Parse,
     PacketParserResult,
 };
-use crate::openpgp::parse::stream::{
-    Verifier, DetachedVerifier,
-    GoodChecksum,
-    VerificationResult,
-    VerificationError,
-    VerificationHelper,
-    MessageStructure, MessageLayer,
-};
+use crate::openpgp::parse::stream::*;
 use crate::openpgp::serialize::stream::{
     Message, Signer, LiteralWriter, Encryptor, Recipient,
     Compressor,
-};
-use crate::openpgp::serialize::padding::{
-    Padder,
-    padme,
+    padding::{
+        Padder,
+        padme,
+    },
 };
 use crate::openpgp::policy::Policy;
 extern crate sequoia_store as store;
@@ -85,17 +78,13 @@ fn get_signing_keys(certs: &[openpgp::Cert], p: &dyn Policy,
     Ok(keys)
 }
 
-pub fn encrypt(policy: &dyn Policy,
-               mapping: &mut store::Mapping,
-               input: &mut dyn io::Read, output: &mut dyn io::Write,
-               npasswords: usize, recipients: Vec<&str>,
-               mut certs: Vec<openpgp::Cert>, signers: Vec<openpgp::Cert>,
-               mode: openpgp::types::KeyFlags, compression: &str,
-               time: Option<SystemTime>)
-               -> Result<()> {
-    for r in recipients {
-        certs.push(mapping.lookup(r).context("No such key found")?.cert()?);
-    }
+pub fn encrypt<'a>(policy: &'a dyn Policy,
+                   input: &mut dyn io::Read, message: Message<'a>,
+                   npasswords: usize, recipients: &'a [openpgp::Cert],
+                   signers: Vec<openpgp::Cert>,
+                   mode: openpgp::types::KeyFlags, compression: &str,
+                   time: Option<SystemTime>)
+                   -> Result<()> {
     let mut passwords: Vec<crypto::Password> = Vec::with_capacity(npasswords);
     for n in 0..npasswords {
         let nprompt = format!("Enter password {}: ", n + 1);
@@ -107,19 +96,16 @@ pub fn encrypt(policy: &dyn Policy,
             }))?.into());
     }
 
-    if certs.len() + passwords.len() == 0 {
+    if recipients.len() + passwords.len() == 0 {
         return Err(anyhow::anyhow!(
             "Neither recipient nor password given"));
     }
 
     let mut signers = get_signing_keys(&signers, policy, time)?;
 
-    // Build a vector of references to hand to Signer.
-    let recipients: Vec<&openpgp::Cert> = certs.iter().collect();
-
     // Build a vector of recipients to hand to Encryptor.
     let mut recipient_subkeys: Vec<Recipient> = Vec::new();
-    for cert in certs.iter() {
+    for cert in recipients.iter() {
         let mut count = 0;
         for key in cert.keys().with_policy(policy, None).alive().revoked(false)
             .key_flags(&mode).map(|ka| ka.key())
@@ -133,21 +119,10 @@ pub fn encrypt(policy: &dyn Policy,
         }
     }
 
-    // Stream an OpenPGP message.
-    let message = Message::new(output);
-
     // We want to encrypt a literal data packet.
-    let mut encryptor = if let Some(p) = passwords.pop() {
-        Encryptor::with_password(message, p)
-    } else {
-        Encryptor::for_recipient(message, recipient_subkeys.pop().unwrap())
-    };
-    for p in passwords {
-        encryptor = encryptor.add_password(p);
-    }
-    for r in recipient_subkeys {
-        encryptor = encryptor.add_recipient(r);
-    }
+    let encryptor =
+        Encryptor::for_recipients(message, recipient_subkeys)
+        .add_passwords(passwords);
 
     let mut sink = encryptor.build()
         .context("Failed to create encryptor")?;
@@ -173,7 +148,7 @@ pub fn encrypt(policy: &dyn Policy,
                 signer = signer.creation_time(time);
             }
         }
-        for r in recipients {
+        for r in recipients.iter() {
             signer = signer.add_intended_recipient(r);
         }
         sink = signer.build()?;
@@ -320,7 +295,7 @@ impl<'a> VHelper<'a> {
 }
 
 impl<'a> VerificationHelper for VHelper<'a> {
-    fn get_public_keys(&mut self, ids: &[openpgp::KeyHandle]) -> Result<Vec<Cert>> {
+    fn get_certs(&mut self, ids: &[openpgp::KeyHandle]) -> Result<Vec<Cert>> {
         let mut certs = self.certs.take().unwrap();
         // Get all keys.
         let seen: HashSet<_> = certs.iter()
@@ -373,7 +348,7 @@ impl<'a> VerificationHelper for VHelper<'a> {
     }
 
     fn check(&mut self, structure: MessageStructure) -> Result<()> {
-        for layer in structure.iter() {
+        for layer in structure {
             match layer {
                 MessageLayer::Compression { algo } =>
                     eprintln!("Compressed using {}", algo),
@@ -407,15 +382,19 @@ pub fn verify(ctx: &Context, policy: &dyn Policy,
               signatures: usize, certs: Vec<Cert>)
               -> Result<()> {
     let helper = VHelper::new(ctx, mapping, signatures, certs);
-    let mut verifier = if let Some(dsig) = detached {
-        DetachedVerifier::from_reader(policy, dsig, input, helper, None)?
+    let helper = if let Some(dsig) = detached {
+        let mut v = DetachedVerifierBuilder::from_reader(dsig)?
+            .with_policy(policy, None, helper)?;
+        v.verify_reader(input)?;
+        v.into_helper()
     } else {
-        Verifier::from_reader(policy, input, helper, None)?
+        let mut v = VerifierBuilder::from_reader(input)?
+            .with_policy(policy, None, helper)?;
+        io::copy(&mut v, output)?;
+        v.into_helper()
     };
 
-    io::copy(&mut verifier, output)?;
-
-    verifier.into_helper().print_status();
+    helper.print_status();
     Ok(())
 }
 
@@ -425,7 +404,7 @@ pub fn split(input: &mut dyn io::Read, prefix: &str)
     // nested packets.
     let mut ppr =
         openpgp::parse::PacketParserBuilder::from_reader(input)?
-        .map(true).finalize()?;
+        .map(true).build()?;
 
     // This encodes our position in the tree.
     let mut pos = vec![0];
@@ -443,13 +422,13 @@ pub fn split(input: &mut dyn io::Read, prefix: &str)
 
             // Write all the bytes.
             for field in map.iter() {
-                sink.write_all(field.data())?;
+                sink.write_all(field.as_bytes())?;
             }
         }
 
+        let old_depth = Some(pp.recursion_depth());
         ppr = pp.recurse()?.1;
-        let old_depth = ppr.last_recursion_depth();
-        let new_depth = ppr.recursion_depth();
+        let new_depth = ppr.as_ref().map(|pp| pp.recursion_depth());
 
         // Update pos.
         match old_depth.cmp(&new_depth) {
@@ -476,7 +455,7 @@ pub fn join(inputs: Option<clap::Values>, output: &mut dyn io::Write)
             // We (ab)use the mapping feature to create byte-accurate
             // copies.
             for field in pp.map().expect("must be mapped").iter() {
-                output.write_all(field.data())?;
+                output.write_all(field.as_bytes())?;
             }
 
             ppr = pp.next()?.1;
@@ -488,13 +467,13 @@ pub fn join(inputs: Option<clap::Values>, output: &mut dyn io::Write)
         for name in inputs {
             let ppr =
                 openpgp::parse::PacketParserBuilder::from_file(name)?
-                .map(true).finalize()?;
+                .map(true).build()?;
             copy(ppr, output)?;
         }
     } else {
         let ppr =
             openpgp::parse::PacketParserBuilder::from_reader(io::stdin())?
-            .map(true).finalize()?;
+            .map(true).build()?;
         copy(ppr, output)?;
     }
     Ok(())
