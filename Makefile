@@ -23,10 +23,17 @@ SIGN_WITH	?= XXXXXXXXXXXXXXXX
 CARGO		?= cargo
 GIT		?= git
 TAR		?= tar
+GZIP		?= gzip
 XZ		?= xz
 GPG		?= gpg
 CODESPELL	?= codespell
 CODESPELL_FLAGS ?= --disable-colors --write-changes
+
+SOURCE_DATE_EPOCH = $(shell git show -s --no-show-signature --format=%cI)
+TAR_FLAGS = --sort=name \
+      --mtime="$(SOURCE_DATE_EPOCH)" \
+      --owner=0 --group=0 --numeric-owner \
+      --pax-option=exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime
 
 ifeq ($(shell uname -s), Darwin)
 	INSTALL	?= ginstall
@@ -78,73 +85,55 @@ doc:
 # Installation.
 .PHONY: build-release
 build-release:
-	CARGO_TARGET_DIR=$(CARGO_TARGET_DIR) \
-	    $(CARGO) build $(CARGO_FLAGS) --release --all
 	$(MAKE) -Copenpgp-ffi build-release
 	$(MAKE) -Cffi build-release
+	$(MAKE) -Ctool build-release
 	$(MAKE) -Csqv build-release
 	$(MAKE) -Csop build-release
 
 .PHONY: install
 install: build-release
-	$(INSTALL) -d $(DESTDIR)$(PREFIX)/lib/sequoia
-	$(INSTALL) -t $(DESTDIR)$(PREFIX)/lib/sequoia \
-	    $(CARGO_TARGET_DIR)/release/sequoia-public-key-store
-	$(INSTALL) -d $(DESTDIR)$(PREFIX)/bin
-	$(INSTALL) -t $(DESTDIR)$(PREFIX)/bin \
-	    $(CARGO_TARGET_DIR)/release/sq
 	$(MAKE) -Copenpgp-ffi install
 	$(MAKE) -Cffi install
+	$(MAKE) -Ctool install
 	$(MAKE) -Csqv install
 	$(MAKE) -Csop install
-	$(INSTALL) -d $(DESTDIR)$(PREFIX)/share/zsh/site-functions
-	$(INSTALL) -t $(DESTDIR)$(PREFIX)/share/zsh/site-functions \
-	    $(CARGO_TARGET_DIR)/_sq
-	$(INSTALL) -t $(DESTDIR)$(PREFIX)/share/zsh/site-functions \
-	    $(CARGO_TARGET_DIR)/_sqv
-	$(INSTALL) -d $(DESTDIR)$(PREFIX)/share/bash-completion/completions
-	$(INSTALL) $(CARGO_TARGET_DIR)/sq.bash \
-	    $(DESTDIR)$(PREFIX)/share/bash-completion/completions/sq
-	$(INSTALL) $(CARGO_TARGET_DIR)/sqv.bash \
-	    $(DESTDIR)$(PREFIX)/share/bash-completion/completions/sqv
-	$(INSTALL) -d $(DESTDIR)$(PREFIX)/share/fish/completions
-	$(INSTALL) -t $(DESTDIR)$(PREFIX)/share/fish/completions \
-	    $(CARGO_TARGET_DIR)/sq.fish
-	$(INSTALL) -t $(DESTDIR)$(PREFIX)/share/fish/completions \
-	    $(CARGO_TARGET_DIR)/sqv.fish
 
 # Infrastructure for creating source distributions.
 .PHONY: dist
-dist: $(CARGO_TARGET_DIR)/dist/sequoia-$(VERSION).tar.xz.sig
+dist:	$(CARGO_TARGET_DIR)/dist/sequoia-$(VERSION).tar.pgp.gz \
+	$(CARGO_TARGET_DIR)/dist/sequoia-$(VERSION).tar.pgp.xz
 
 $(CARGO_TARGET_DIR)/dist/sequoia-$(VERSION):
 	$(GIT) clone . $(CARGO_TARGET_DIR)/dist/sequoia-$(VERSION)
 	cd $(CARGO_TARGET_DIR)/dist/sequoia-$(VERSION) && \
-		mkdir .cargo && \
-		CARGO_TARGET_DIR=$(CARGO_TARGET_DIR) \
-		    $(CARGO) vendor $(CARGO_FLAGS) \
-			| sed 's/^directory = ".*"$$/directory = "vendor"/' \
-			> .cargo/config && \
 		rm -rf .git
 
 $(CARGO_TARGET_DIR)/dist/sequoia-$(VERSION).tar: \
 		$(CARGO_TARGET_DIR)/dist/sequoia-$(VERSION)
-	$(TAR) cf $@ -C $(CARGO_TARGET_DIR)/dist sequoia-$(VERSION)
+	$(TAR) $(TAR_FLAGS) -cf $@ -C $(CARGO_TARGET_DIR)/dist sequoia-$(VERSION)
+
+%.gz: %
+	$(GZIP) -c "$<" >"$@"
 
 %.xz: %
-	$(XZ) -c $< >$@
+	$(XZ) -c "$<" >"$@"
 
-%.sig: %
-	$(GPG) --local-user $(SIGN_WITH) --detach-sign --armor $<
+%.pgp: %
+	$(GPG) --local-user "$(SIGN_WITH)" --compression-algo=none \
+		--sign --output "$@" "$<"
 
+# Testing source distributions.
 .PHONY: dist-test dist-check
-dist-test dist-check: $(CARGO_TARGET_DIR)/dist/sequoia-$(VERSION).tar.xz
-	rm -rf $(CARGO_TARGET_DIR)/dist-check/sequoia-$(VERSION)
-	mkdir -p $(CARGO_TARGET_DIR)/dist-check
-	$(TAR) xf $< -C $(CARGO_TARGET_DIR)/dist-check
-	cd $(CARGO_TARGET_DIR)/dist-check/sequoia-$(VERSION) && \
-		CARGO_HOME=$$(mktemp -d) $(MAKE) test CARGO_FLAGS=--frozen
-	rm -rf $(CARGO_TARGET_DIR)/dist-check/sequoia-$(VERSION)
+dist-test dist-check: $(CARGO_TARGET_DIR)/dist/sequoia-$(VERSION).tar.pgp.gz
+	mkdir -p "$(CARGO_TARGET_DIR)/dist-check"
+	rm -rf "$(CARGO_TARGET_DIR)/dist-check/sequoia-$(VERSION)"
+	$(GZIP) -d -c "$<" |\
+		$(GPG) -o - --verify |\
+		$(TAR) xf - -C "$(CARGO_TARGET_DIR)/dist-check"
+	cd "$(CARGO_TARGET_DIR)/dist-check/sequoia-$(VERSION)" && \
+		CARGO_HOME=$$(mktemp -d) $(MAKE) test CARGO_FLAGS=--locked
+	rm -rf "$(CARGO_TARGET_DIR)/dist-check/sequoia-$(VERSION)"
 
 # Housekeeping.
 .PHONY: clean
