@@ -57,6 +57,84 @@ macro_rules! impl_arbitrary_with_bound {
 
 pub mod subpacket;
 
+/// The data stored in a `Signature` packet.
+///
+/// This data structure contains exactly those fields that appear in a
+/// `Signature` packet.  It is used by both `Signature4` and
+/// `SignatureBuilder`, which include auxiliary information.  This
+/// data structure is public so that `Signature4` and
+/// `SignatureBuilder` can deref to it.
+#[derive(Clone, Hash, PartialEq, Eq)]
+pub struct SignatureFields {
+    /// Version of the signature packet. Must be 4.
+    version: u8,
+    /// Type of signature.
+    typ: SignatureType,
+    /// Public-key algorithm used for this signature.
+    pk_algo: PublicKeyAlgorithm,
+    /// Hash algorithm used to compute the signature.
+    hash_algo: HashAlgorithm,
+    /// Subpackets.
+    subpackets: SubpacketAreas,
+}
+
+#[cfg(any(test, feature = "quickcheck"))]
+impl ArbitraryBounded for SignatureFields {
+    fn arbitrary_bounded<G: Gen>(g: &mut G, depth: usize) -> Self {
+        SignatureFields {
+            // XXX: Make this more interesting once we dig other
+            // versions.
+            version: 4,
+            typ: Arbitrary::arbitrary(g),
+            pk_algo: PublicKeyAlgorithm::arbitrary_for_signing(g),
+            hash_algo: Arbitrary::arbitrary(g),
+            subpackets: ArbitraryBounded::arbitrary_bounded(g, depth),
+        }
+    }
+}
+
+#[cfg(any(test, feature = "quickcheck"))]
+impl_arbitrary_with_bound!(SignatureFields);
+
+impl Deref for SignatureFields {
+    type Target = SubpacketAreas;
+
+    fn deref(&self) -> &Self::Target {
+        &self.subpackets
+    }
+}
+
+impl DerefMut for SignatureFields {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.subpackets
+    }
+}
+
+impl SignatureFields {
+    /// Gets the version.
+    pub fn version(&self) -> u8 {
+        self.version
+    }
+
+    /// Gets the signature type.
+    pub fn typ(&self) -> SignatureType {
+        self.typ
+    }
+
+    /// Gets the public key algorithm.
+    ///
+    /// This is `pub(crate)`, because it shouldn't be exported by
+    /// `SignatureBuilder` where it is only set at the end.
+    pub(crate) fn pk_algo(&self) -> PublicKeyAlgorithm {
+        self.pk_algo
+    }
+
+    /// Gets the hash algorithm.
+    pub fn hash_algo(&self) -> HashAlgorithm {
+        self.hash_algo
+    }
+}
+
 /// Builds a signature packet.
 ///
 /// This is the mutable version of a `Signature4` packet.  To convert
@@ -94,47 +172,21 @@ pub mod subpacket;
 // IMPORTANT: implement PartialEq, Eq, and Hash.
 #[derive(Clone, Hash, PartialEq, Eq)]
 pub struct SignatureBuilder {
-    /// Version of the signature packet. Must be 4.
-    version: u8,
-    /// Type of signature.
-    typ: SignatureType,
-    /// Pub(Crate)lic-key algorithm used for this signature.
-    pk_algo: PublicKeyAlgorithm,
-    /// Hash algorithm used to compute the signature.
-    hash_algo: HashAlgorithm,
-    /// Subpackets.
-    subpackets: SubpacketAreas,
+    overrode_creation_time: bool,
+    fields: SignatureFields,
 }
-
-#[cfg(any(test, feature = "quickcheck"))]
-impl ArbitraryBounded for SignatureBuilder {
-    fn arbitrary_bounded<G: Gen>(g: &mut G, depth: usize) -> Self {
-        SignatureBuilder {
-            // XXX: Make this more interesting once we dig other
-            // versions.
-            version: 4,
-            typ: Arbitrary::arbitrary(g),
-            pk_algo: PublicKeyAlgorithm::arbitrary_for_signing(g),
-            hash_algo: Arbitrary::arbitrary(g),
-            subpackets: ArbitraryBounded::arbitrary_bounded(g, depth),
-        }
-    }
-}
-
-#[cfg(any(test, feature = "quickcheck"))]
-impl_arbitrary_with_bound!(SignatureBuilder);
 
 impl Deref for SignatureBuilder {
-    type Target = SubpacketAreas;
+    type Target = SignatureFields;
 
     fn deref(&self) -> &Self::Target {
-        &self.subpackets
+        &self.fields
     }
 }
 
 impl DerefMut for SignatureBuilder {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.subpackets
+        &mut self.fields
     }
 }
 
@@ -142,42 +194,21 @@ impl SignatureBuilder {
     /// Returns a new `SignatureBuilder` object.
     pub fn new(typ: SignatureType) ->  Self {
         SignatureBuilder {
-            version: 4,
-            typ,
-            pk_algo: PublicKeyAlgorithm::Unknown(0),
-            hash_algo: HashAlgorithm::default(),
-            subpackets: SubpacketAreas::default(),
+            overrode_creation_time: false,
+            fields: SignatureFields {
+                version: 4,
+                typ,
+                pk_algo: PublicKeyAlgorithm::Unknown(0),
+                hash_algo: HashAlgorithm::default(),
+                subpackets: SubpacketAreas::default(),
+            }
         }
-        .set_signature_creation_time(
-            std::time::SystemTime::now())
-            .expect("area is empty, insertion cannot fail; \
-                     time is representable for the foreseeable future")
-    }
-
-    /// Gets the version.
-    pub fn version(&self) -> u8 {
-        self.version
-    }
-
-    /// Gets the signature type.
-    pub fn typ(&self) -> SignatureType {
-        self.typ
     }
 
     /// Sets the signature type.
     pub fn set_type(mut self, t: SignatureType) -> Self {
         self.typ = t;
         self
-    }
-
-    /// Gets the public key algorithm.
-    pub fn pk_algo(&self) -> PublicKeyAlgorithm {
-        self.pk_algo
-    }
-
-    /// Gets the hash algorithm.
-    pub fn hash_algo(&self) -> HashAlgorithm {
-        self.hash_algo
     }
 
     /// Sets the hash algorithm.
@@ -195,9 +226,10 @@ impl SignatureBuilder {
     pub fn sign_standalone(mut self, signer: &mut dyn Signer)
                            -> Result<Signature>
     {
-        self.sort();
-        self.pk_algo = signer.public().pk_algo();
+        self = self.pre_sign(signer)?;
+
         let digest = Signature::hash_standalone(&self)?;
+
         self.sign(signer, digest)
     }
 
@@ -210,9 +242,10 @@ impl SignatureBuilder {
     pub fn sign_timestamp(mut self, signer: &mut dyn Signer)
                           -> Result<Signature>
     {
-        self.sort();
-        self.pk_algo = signer.public().pk_algo();
+        self = self.pre_sign(signer)?;
+
         let digest = Signature::hash_timestamp(&self)?;
+
         self.sign(signer, digest)
     }
 
@@ -225,12 +258,10 @@ impl SignatureBuilder {
     pub fn sign_direct_key(mut self, signer: &mut dyn Signer)
         -> Result<Signature>
     {
-        self.sort();
-        self.pk_algo = signer.public().pk_algo();
-        let digest =
-            Signature::hash_direct_key(&self,
-                                       signer.public()
-                                       .role_as_primary())?;
+        self = self.pre_sign(signer)?;
+
+        let digest = Signature::hash_direct_key(
+            &self, signer.public().role_as_primary())?;
 
         self.sign(signer, digest)
     }
@@ -247,8 +278,8 @@ impl SignatureBuilder {
         -> Result<Signature>
         where P: key::KeyParts,
     {
-        self.sort();
-        self.pk_algo = signer.public().pk_algo();
+        self = self.pre_sign(signer)?;
+
         let digest = Signature::hash_userid_binding(&self, key, userid)?;
 
         self.sign(signer, digest)
@@ -267,8 +298,8 @@ impl SignatureBuilder {
         where P: key:: KeyParts,
               Q: key:: KeyParts,
     {
-        self.sort();
-        self.pk_algo = signer.public().pk_algo();
+        self = self.pre_sign(signer)?;
+
         let digest = Signature::hash_subkey_binding(&self, primary, subkey)?;
 
         self.sign(signer, digest)
@@ -289,10 +320,11 @@ impl SignatureBuilder {
         where P: key:: KeyParts,
               Q: key:: KeyParts,
     {
-        self.sort();
-        self.pk_algo = subkey_signer.public().pk_algo();
+        self = self.pre_sign(subkey_signer)?;
+
         let digest =
             Signature::hash_primary_key_binding(&self, primary, subkey)?;
+
         self.sign(subkey_signer, digest)
     }
 
@@ -309,8 +341,8 @@ impl SignatureBuilder {
         -> Result<Signature>
         where P: key::KeyParts,
     {
-        self.sort();
-        self.pk_algo = signer.public().pk_algo();
+        self = self.pre_sign(signer)?;
+
         let digest =
             Signature::hash_user_attribute_binding(&self, key, ua)?;
 
@@ -318,6 +350,8 @@ impl SignatureBuilder {
     }
 
     /// Signs `hash` using `signer`.
+    ///
+    /// This sets the hash algorithm to whatever 'hash's algorithm is.
     ///
     /// The Signature's public-key algorithm field is set to the
     /// algorithm used by `signer`.
@@ -327,13 +361,11 @@ impl SignatureBuilder {
                      mut hash: hash::Context)
         -> Result<Signature>
     {
-        self.sort();
-        // Fill out some fields, then hash the packet.
-        self.pk_algo = signer.public().pk_algo();
         self.hash_algo = hash.algo();
-        self.hash(&mut hash);
 
-        // Compute the digest.
+        self = self.pre_sign(signer)?;
+
+        self.hash(&mut hash);
         let mut digest = vec![0u8; hash.digest_size()];
         hash.digest(&mut digest);
 
@@ -350,38 +382,47 @@ impl SignatureBuilder {
         -> Result<Signature>
         where M: AsRef<[u8]>
     {
-        self.sort();
         // Hash the message
         let mut hash = self.hash_algo.context()?;
         hash.update(msg.as_ref());
 
-        // Fill out some fields, then hash the packet.
-        self.pk_algo = signer.public().pk_algo();
-        self.hash(&mut hash);
+        self = self.pre_sign(signer)?;
 
-        // Compute the digest.
+        self.hash(&mut hash);
         let mut digest = vec![0u8; hash.digest_size()];
         hash.digest(&mut digest);
 
         self.sign(signer, digest)
     }
 
-    fn sign(self, signer: &mut dyn Signer, digest: Vec<u8>)
-        -> Result<Signature>
-    {
-        let algo = self.hash_algo;
-        let mpis = signer.sign(algo, &digest)?;
+    fn pre_sign(mut self, signer: &dyn Signer) -> Result<Self> {
+        self.pk_algo = signer.public().pk_algo();
 
-        let mut fields = self;
+        // Set the creation time.
+        if ! self.overrode_creation_time {
+            self = self.set_signature_creation_time(
+                std::time::SystemTime::now())?;
+        }
 
-        if fields.issuer().is_none() && fields.issuer_fingerprint().is_none() {
-            fields = fields.set_issuer(signer.public().keyid())?
+        // Make sure we have an issuer packet.
+        if self.issuer().is_none() && self.issuer_fingerprint().is_none() {
+            self = self.set_issuer(signer.public().keyid())?
                 .set_issuer_fingerprint(signer.public().fingerprint())?;
         }
 
+        self.sort();
+
+        Ok(self)
+    }
+
+    fn sign(self, signer: &mut dyn Signer, digest: Vec<u8>)
+        -> Result<Signature>
+    {
+        let mpis = signer.sign(self.hash_algo, &digest)?;
+
         Ok(Signature4 {
             common: Default::default(),
-            fields,
+            fields: self.fields,
             digest_prefix: [digest[0], digest[1]],
             mpis,
             computed_digest: Some(digest),
@@ -401,25 +442,12 @@ impl From<Signature> for SignatureBuilder {
 
 impl From<Signature4> for SignatureBuilder {
     fn from(sig: Signature4) -> Self {
-        sig.fields
-    }
-}
-
-impl<'a> From<&'a Signature> for &'a SignatureBuilder {
-    fn from(sig: &'a Signature) -> Self {
-        match sig {
-            Signature::V4(ref sig) => sig.into(),
-            Signature::__Nonexhaustive => unreachable!(),
+        SignatureBuilder {
+            overrode_creation_time: false,
+            fields: sig.fields,
         }
     }
 }
-
-impl<'a> From<&'a Signature4> for &'a SignatureBuilder {
-    fn from(sig: &'a Signature4) -> Self {
-        &sig.fields
-    }
-}
-
 
 /// Holds a signature packet.
 ///
@@ -436,7 +464,7 @@ pub struct Signature4 {
     pub(crate) common: packet::Common,
 
     /// Fields as configured using the SignatureBuilder.
-    pub(crate) fields: SignatureBuilder,
+    pub(crate) fields: SignatureFields,
 
     /// Lower 16 bits of the signed hash value.
     digest_prefix: [u8; 2],
@@ -533,7 +561,7 @@ impl Signature4 {
                mpis: mpi::Signature) -> Self {
         Signature4 {
             common: Default::default(),
-            fields: SignatureBuilder {
+            fields: SignatureFields {
                 version: 4,
                 typ,
                 pk_algo,
@@ -1235,7 +1263,7 @@ impl ArbitraryBounded for Signature4 {
         use mpi::MPI;
         use PublicKeyAlgorithm::*;
 
-        let fields = SignatureBuilder::arbitrary_bounded(g, depth);
+        let fields = SignatureFields::arbitrary_bounded(g, depth);
         #[allow(deprecated)]
         let mpis = match fields.pk_algo() {
             RSAEncryptSign | RSASign => mpi::Signature::RSA  {
