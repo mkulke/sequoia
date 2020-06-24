@@ -675,6 +675,12 @@ impl<V: VerificationHelper> DecryptionHelper for NoDecryptionHelper<V> {
 
 /// Verifies a signed OpenPGP message.
 ///
+/// To create a `Verifier`, create a [`VerifierBuilder`] using
+/// [`Parse`], and customize it to your needs.
+///
+///   [`VerifierBuilder`]: struct.VerifierBuilder.html
+///   [`Parse`]: ../trait.Parse.html
+///
 /// Signature verification requires processing the whole message
 /// first.  Therefore, OpenPGP implementations supporting streaming
 /// operations necessarily must output unverified data.  This has been
@@ -683,17 +689,22 @@ impl<V: VerificationHelper> DecryptionHelper for NoDecryptionHelper<V> {
 /// default, see [`DEFAULT_BUFFER_SIZE`]), and verify the signatures
 /// if the message fits into our buffer.  Nevertheless it is important
 /// to treat the data as unverified and untrustworthy until you have
-/// seen a positive verification.
+/// seen a positive verification.  See [`Verifier::message_processed`]
+/// for more information.
 ///
 ///   [`DEFAULT_BUFFER_SIZE`]: constant.DEFAULT_BUFFER_SIZE.html
+///   [`Verifier::message_processed`]: #method.message_processed
 ///
 /// For a signature to be considered valid: The signature must have a
 /// `Signature Creation Time` subpacket.  The signature must be alive
 /// at the signature verification time (the time passed to
-/// `Verifier::from_reader`).  The key used to verify the signature
-/// must be alive at the signature creation time, not have been soft
-/// revoked at the signature creation time, not have ever been hard
-/// revoked, and be signing capable at the signature creation time.
+/// [`VerifierBuilder::with_policy`).  The key used to verify the
+/// signature must be alive at the signature creation time, not have
+/// been soft revoked at the signature creation time, not have ever
+/// been hard revoked, and be signing capable at the signature
+/// creation time.
+///
+///   [`VerifierBuilder::with_policy`]: struct.VerifierBuilder.html#method.with_policy
 ///
 /// # Examples
 ///
@@ -702,9 +713,8 @@ impl<V: VerificationHelper> DecryptionHelper for NoDecryptionHelper<V> {
 /// use std::io::Read;
 /// use sequoia_openpgp as openpgp;
 /// use openpgp::{KeyHandle, Cert, Result};
-/// use openpgp::parse::stream::*;
+/// use openpgp::parse::{Parse, stream::*};
 /// use openpgp::policy::StandardPolicy;
-/// # use sequoia_openpgp::parse::Parse;
 /// # fn lookup_cert_by_handle(_: &KeyHandle) -> Result<Cert> {
 /// #     Cert::from_bytes(
 /// #       &b"-----BEGIN PGP PUBLIC KEY BLOCK-----
@@ -832,6 +842,49 @@ impl<'a> VerifierBuilder<'a> {
     /// (see [`DEFAULT_BUFFER_SIZE`]).  This changes the default.
     ///
     ///   [`DEFAULT_BUFFER_SIZE`]: constant.DEFAULT_BUFFER_SIZE.html
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # fn main() -> sequoia_openpgp::Result<()> {
+    /// use sequoia_openpgp as openpgp;
+    /// # use openpgp::{KeyHandle, Cert, Result};
+    /// use openpgp::parse::{Parse, stream::*};
+    /// use openpgp::policy::StandardPolicy;
+    ///
+    /// let p = &StandardPolicy::new();
+    ///
+    /// struct Helper {};
+    /// impl VerificationHelper for Helper {
+    ///     // ...
+    /// #   fn get_certs(&mut self, ids: &[KeyHandle]) -> Result<Vec<Cert>> {
+    /// #       Ok(Vec::new())
+    /// #   }
+    /// #
+    /// #   fn check(&mut self, structure: MessageStructure) -> Result<()> {
+    /// #       Ok(())
+    /// #   }
+    /// }
+    ///
+    /// let message =
+    ///     // ...
+    /// # &b"-----BEGIN PGP MESSAGE-----
+    /// #
+    /// #    xA0DAAoW+zdR8Vh9rvEByxJiAAAAAABIZWxsbyBXb3JsZCHCdQQAFgoABgWCXrLl
+    /// #    AQAhCRD7N1HxWH2u8RYhBDnRAKtn1b2MBAECBfs3UfFYfa7xRUsBAJaxkU/RCstf
+    /// #    UD7TM30IorO1Mb9cDa/hPRxyzipulT55AQDN1m9LMqi9yJDjHNHwYYVwxDcg+pLY
+    /// #    YmAFv/UfO0vYBw==
+    /// #    =+l94
+    /// #    -----END PGP MESSAGE-----
+    /// #    "[..];
+    ///
+    /// let h = Helper {};
+    /// let mut v = VerifierBuilder::from_bytes(message)?
+    ///     .buffer_size(1 << 12)
+    ///     .with_policy(p, None, h)?;
+    /// # let _ = v;
+    /// # Ok(()) }
+    /// ```
     pub fn buffer_size(mut self, size: usize) -> Self {
         self.buffer_size = size;
         self
@@ -847,6 +900,49 @@ impl<'a> VerifierBuilder<'a> {
     ///
     ///   [`Map`]: ../map/struct.Map.html
     ///   [`VerificationHelper::inspect`]: trait.VerificationHelper.html#tymethod.inspect
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # fn main() -> sequoia_openpgp::Result<()> {
+    /// use sequoia_openpgp as openpgp;
+    /// # use openpgp::{KeyHandle, Cert, Result};
+    /// use openpgp::parse::{Parse, stream::*};
+    /// use openpgp::policy::StandardPolicy;
+    ///
+    /// let p = &StandardPolicy::new();
+    ///
+    /// struct Helper {};
+    /// impl VerificationHelper for Helper {
+    ///     // ...
+    /// #   fn get_certs(&mut self, ids: &[KeyHandle]) -> Result<Vec<Cert>> {
+    /// #       Ok(Vec::new())
+    /// #   }
+    /// #
+    /// #   fn check(&mut self, structure: MessageStructure) -> Result<()> {
+    /// #       Ok(())
+    /// #   }
+    /// }
+    ///
+    /// let message =
+    ///     // ...
+    /// # &b"-----BEGIN PGP MESSAGE-----
+    /// #
+    /// #    xA0DAAoW+zdR8Vh9rvEByxJiAAAAAABIZWxsbyBXb3JsZCHCdQQAFgoABgWCXrLl
+    /// #    AQAhCRD7N1HxWH2u8RYhBDnRAKtn1b2MBAECBfs3UfFYfa7xRUsBAJaxkU/RCstf
+    /// #    UD7TM30IorO1Mb9cDa/hPRxyzipulT55AQDN1m9LMqi9yJDjHNHwYYVwxDcg+pLY
+    /// #    YmAFv/UfO0vYBw==
+    /// #    =+l94
+    /// #    -----END PGP MESSAGE-----
+    /// #    "[..];
+    ///
+    /// let h = Helper {};
+    /// let mut v = VerifierBuilder::from_bytes(message)?
+    ///     .mapping(true)
+    ///     .with_policy(p, None, h)?;
+    /// # let _ = v;
+    /// # Ok(()) }
+    /// ```
     pub fn mapping(mut self, enabled: bool) -> Self {
         self.mapping = enabled;
         self
@@ -859,6 +955,49 @@ impl<'a> VerifierBuilder<'a> {
     /// `None`.  `helper` is the [`VerificationHelper`] to use.
     ///
     ///   [`VerificationHelper`]: trait.VerificationHelper.html
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # fn main() -> sequoia_openpgp::Result<()> {
+    /// use sequoia_openpgp as openpgp;
+    /// # use openpgp::{KeyHandle, Cert, Result};
+    /// use openpgp::parse::{Parse, stream::*};
+    /// use openpgp::policy::StandardPolicy;
+    ///
+    /// let p = &StandardPolicy::new();
+    ///
+    /// struct Helper {};
+    /// impl VerificationHelper for Helper {
+    ///     // ...
+    /// #   fn get_certs(&mut self, ids: &[KeyHandle]) -> Result<Vec<Cert>> {
+    /// #       Ok(Vec::new())
+    /// #   }
+    /// #
+    /// #   fn check(&mut self, structure: MessageStructure) -> Result<()> {
+    /// #       Ok(())
+    /// #   }
+    /// }
+    ///
+    /// let message =
+    ///     // ...
+    /// # &b"-----BEGIN PGP MESSAGE-----
+    /// #
+    /// #    xA0DAAoW+zdR8Vh9rvEByxJiAAAAAABIZWxsbyBXb3JsZCHCdQQAFgoABgWCXrLl
+    /// #    AQAhCRD7N1HxWH2u8RYhBDnRAKtn1b2MBAECBfs3UfFYfa7xRUsBAJaxkU/RCstf
+    /// #    UD7TM30IorO1Mb9cDa/hPRxyzipulT55AQDN1m9LMqi9yJDjHNHwYYVwxDcg+pLY
+    /// #    YmAFv/UfO0vYBw==
+    /// #    =+l94
+    /// #    -----END PGP MESSAGE-----
+    /// #    "[..];
+    ///
+    /// let h = Helper {};
+    /// let mut v = VerifierBuilder::from_bytes(message)?
+    ///     // Customize the `Verifier` here.
+    ///     .with_policy(p, None, h)?;
+    /// # let _ = v;
+    /// # Ok(()) }
+    /// ```
     pub fn with_policy<T, H>(self, policy: &'a dyn Policy, time: T, helper: H)
                              -> Result<Verifier<'a, H>>
         where H: VerificationHelper,
@@ -892,12 +1031,98 @@ impl<'a, H: VerificationHelper> Verifier<'a, H> {
         self.decryptor.into_helper().v
     }
 
-    /// Returns true if the whole message has been processed and the
-    /// verification result is ready.
+    /// Returns true if the whole message has been processed and
+    /// authenticated.
     ///
-    /// If the function returns false the message did not fit into the
-    /// internal buffer and **unverified** data must be `read()` from
-    /// the instance until EOF.
+    /// If the function returns `true`, the whole message has been
+    /// processed, the signatures are verified, and the message
+    /// structure has been passed to [`VerificationHelper::check`].
+    /// Data read from this `Verifier` using [`io::Read`] has been
+    /// authenticated.
+    ///
+    ///   [`VerificationHelper::check`]: trait.VerificationHelper.html#tymethod.check
+    ///   [`io::Read`]: https://doc.rust-lang.org/std/io/trait.Read.html
+    ///
+    /// If the function returns `false`, the message did not fit into
+    /// the internal buffer, and therefore data read from this
+    /// `Verifier` using [`io::Read`] has **not yet been
+    /// authenticated**.  It is important to treat this data as
+    /// attacker controlled and not use it until it has been
+    /// authenticated.
+    ///
+    /// # Examples
+    ///
+    /// This example demonstrates how to verify a message in a
+    /// streaming fashion, writing the data to a temporary file and
+    /// only commit the result once the data is authenticated.
+    ///
+    /// ```
+    /// # fn main() -> sequoia_openpgp::Result<()> {
+    /// use std::io::{Read, Seek, SeekFrom};
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::{KeyHandle, Cert, Result};
+    /// use openpgp::parse::{Parse, stream::*};
+    /// use openpgp::policy::StandardPolicy;
+    /// #
+    /// # // Mock of `tempfile::tempfile`.
+    /// # mod tempfile {
+    /// #     pub fn tempfile() -> sequoia_openpgp::Result<std::fs::File> {
+    /// #         unimplemented!()
+    /// #     }
+    /// # }
+    ///
+    /// let p = &StandardPolicy::new();
+    ///
+    /// // This fetches keys and computes the validity of the verification.
+    /// struct Helper {};
+    /// impl VerificationHelper for Helper {
+    ///     // ...
+    /// #   fn get_certs(&mut self, ids: &[KeyHandle]) -> Result<Vec<Cert>> {
+    /// #       Ok(Vec::new())
+    /// #   }
+    /// #   fn check(&mut self, _: MessageStructure) -> Result<()> {
+    /// #       Ok(())
+    /// #   }
+    /// }
+    ///
+    /// let mut source =
+    ///    // ...
+    /// #  std::io::Cursor::new(&b"-----BEGIN PGP MESSAGE-----
+    /// #
+    /// #    xA0DAAoW+zdR8Vh9rvEByxJiAAAAAABIZWxsbyBXb3JsZCHCdQQAFgoABgWCXrLl
+    /// #    AQAhCRD7N1HxWH2u8RYhBDnRAKtn1b2MBAECBfs3UfFYfa7xRUsBAJaxkU/RCstf
+    /// #    UD7TM30IorO1Mb9cDa/hPRxyzipulT55AQDN1m9LMqi9yJDjHNHwYYVwxDcg+pLY
+    /// #    YmAFv/UfO0vYBw==
+    /// #    =+l94
+    /// #    -----END PGP MESSAGE-----
+    /// #    "[..]);
+    ///
+    /// fn consume(r: &mut dyn Read) -> Result<()> {
+    ///    // ...
+    /// #   let _ = r; Ok(())
+    /// }
+    ///
+    /// let h = Helper {};
+    /// let mut v = VerifierBuilder::from_reader(&mut source)?
+    ///     .with_policy(p, None, h)?;
+    ///
+    /// if v.message_processed() {
+    ///     // The data has been authenticated.
+    ///     consume(&mut v)?;
+    /// } else {
+    ///     let mut tmp = tempfile::tempfile()?;
+    ///     std::io::copy(&mut v, &mut tmp)?;
+    ///
+    ///     // If the copy succeeds, the message has been fully
+    ///     // processed and the data has been authenticated.
+    ///     assert!(v.message_processed());
+    ///
+    ///     // Rewind and consume.
+    ///     tmp.seek(SeekFrom::Start(0))?;
+    ///     consume(&mut tmp)?;
+    /// }
+    /// # Ok(()) }
+    /// ```
     pub fn message_processed(&self) -> bool {
         self.decryptor.message_processed()
     }
@@ -911,6 +1136,24 @@ impl<'a, H: VerificationHelper> io::Read for Verifier<'a, H> {
 
 
 /// Verifies a detached signature.
+///
+/// To create a `DetachedVerifier`, create a
+/// [`DetachedVerifierBuilder`] using [`Parse`], and customize it to
+/// your needs.
+///
+///   [`DetachedVerifierBuilder`]: struct.DetachedVerifierBuilder.html
+///   [`Parse`]: ../trait.Parse.html
+///
+/// For a signature to be considered valid: The signature must have a
+/// `Signature Creation Time` subpacket.  The signature must be alive
+/// at the signature verification time (the time passed to
+/// [`DetachedVerifierBuilder::with_policy`).  The key used to verify
+/// the signature must be alive at the signature creation time, not
+/// have been soft revoked at the signature creation time, not have
+/// ever been hard revoked, and be signing capable at the signature
+/// creation time.
+///
+///   [`DetachedVerifierBuilder::with_policy`]: struct.DetachedVerifierBuilder.html#method.with_policy
 ///
 /// # Examples
 ///
@@ -1011,6 +1254,49 @@ impl<'a> DetachedVerifierBuilder<'a> {
     ///
     ///   [`Map`]: ../map/struct.Map.html
     ///   [`VerificationHelper::inspect`]: trait.VerificationHelper.html#tymethod.inspect
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # fn main() -> sequoia_openpgp::Result<()> {
+    /// use sequoia_openpgp as openpgp;
+    /// # use openpgp::{KeyHandle, Cert, Result};
+    /// use openpgp::parse::{Parse, stream::*};
+    /// use openpgp::policy::StandardPolicy;
+    ///
+    /// let p = &StandardPolicy::new();
+    ///
+    /// struct Helper {};
+    /// impl VerificationHelper for Helper {
+    ///     // ...
+    /// #   fn get_certs(&mut self, ids: &[KeyHandle]) -> Result<Vec<Cert>> {
+    /// #       Ok(Vec::new())
+    /// #   }
+    /// #
+    /// #   fn check(&mut self, structure: MessageStructure) -> Result<()> {
+    /// #       Ok(())
+    /// #   }
+    /// }
+    ///
+    /// let message =
+    ///     // ...
+    /// # &b"-----BEGIN PGP MESSAGE-----
+    /// #
+    /// #    xA0DAAoW+zdR8Vh9rvEByxJiAAAAAABIZWxsbyBXb3JsZCHCdQQAFgoABgWCXrLl
+    /// #    AQAhCRD7N1HxWH2u8RYhBDnRAKtn1b2MBAECBfs3UfFYfa7xRUsBAJaxkU/RCstf
+    /// #    UD7TM30IorO1Mb9cDa/hPRxyzipulT55AQDN1m9LMqi9yJDjHNHwYYVwxDcg+pLY
+    /// #    YmAFv/UfO0vYBw==
+    /// #    =+l94
+    /// #    -----END PGP MESSAGE-----
+    /// #    "[..];
+    ///
+    /// let h = Helper {};
+    /// let mut v = DetachedVerifierBuilder::from_bytes(message)?
+    ///     .mapping(true)
+    ///     .with_policy(p, None, h)?;
+    /// # let _ = v;
+    /// # Ok(()) }
+    /// ```
     pub fn mapping(mut self, enabled: bool) -> Self {
         self.mapping = enabled;
         self
@@ -1023,6 +1309,49 @@ impl<'a> DetachedVerifierBuilder<'a> {
     /// `None`.  `helper` is the [`VerificationHelper`] to use.
     ///
     ///   [`VerificationHelper`]: trait.VerificationHelper.html
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # fn main() -> sequoia_openpgp::Result<()> {
+    /// use sequoia_openpgp as openpgp;
+    /// # use openpgp::{KeyHandle, Cert, Result};
+    /// use openpgp::parse::{Parse, stream::*};
+    /// use openpgp::policy::StandardPolicy;
+    ///
+    /// let p = &StandardPolicy::new();
+    ///
+    /// struct Helper {};
+    /// impl VerificationHelper for Helper {
+    ///     // ...
+    /// #   fn get_certs(&mut self, ids: &[KeyHandle]) -> Result<Vec<Cert>> {
+    /// #       Ok(Vec::new())
+    /// #   }
+    /// #
+    /// #   fn check(&mut self, structure: MessageStructure) -> Result<()> {
+    /// #       Ok(())
+    /// #   }
+    /// }
+    ///
+    /// let message =
+    ///     // ...
+    /// # &b"-----BEGIN PGP MESSAGE-----
+    /// #
+    /// #    xA0DAAoW+zdR8Vh9rvEByxJiAAAAAABIZWxsbyBXb3JsZCHCdQQAFgoABgWCXrLl
+    /// #    AQAhCRD7N1HxWH2u8RYhBDnRAKtn1b2MBAECBfs3UfFYfa7xRUsBAJaxkU/RCstf
+    /// #    UD7TM30IorO1Mb9cDa/hPRxyzipulT55AQDN1m9LMqi9yJDjHNHwYYVwxDcg+pLY
+    /// #    YmAFv/UfO0vYBw==
+    /// #    =+l94
+    /// #    -----END PGP MESSAGE-----
+    /// #    "[..];
+    ///
+    /// let h = Helper {};
+    /// let mut v = DetachedVerifierBuilder::from_bytes(message)?
+    ///     // Customize the `DetachedVerifier` here.
+    ///     .with_policy(p, None, h)?;
+    /// # let _ = v;
+    /// # Ok(()) }
+    /// ```
     pub fn with_policy<T, H>(self, policy: &'a dyn Policy, time: T, helper: H)
                              -> Result<DetachedVerifier<'a, H>>
         where H: VerificationHelper,
@@ -1094,6 +1423,12 @@ enum Mode {
 /// Decrypts and verifies an encrypted and optionally signed OpenPGP
 /// message.
 ///
+/// To create a `Decryptor`, create a [`DecryptorBuilder`] using
+/// [`Parse`], and customize it to your needs.
+///
+///   [`DecryptorBuilder`]: struct.DecryptorBuilder.html
+///   [`Parse`]: ../trait.Parse.html
+///
 /// Signature verification and detection of ciphertext tampering
 /// requires processing the whole message first.  Therefore, OpenPGP
 /// implementations supporting streaming operations necessarily must
@@ -1103,9 +1438,22 @@ enum Mode {
 /// [`DEFAULT_BUFFER_SIZE`]), and verify the signatures if the message
 /// fits into our buffer.  Nevertheless it is important to treat the
 /// data as unverified and untrustworthy until you have seen a
-/// positive verification.
+/// positive verification.  See [`Decryptor::message_processed`] for
+/// more information.
 ///
 ///   [`DEFAULT_BUFFER_SIZE`]: constant.DEFAULT_BUFFER_SIZE.html
+///   [`Decryptor::message_processed`]: #method.message_processed
+///
+/// For a signature to be considered valid: The signature must have a
+/// `Signature Creation Time` subpacket.  The signature must be alive
+/// at the signature verification time (the time passed to
+/// [`DecryptorBuilder::with_policy`).  The key used to verify the
+/// signature must be alive at the signature creation time, not have
+/// been soft revoked at the signature creation time, not have ever
+/// been hard revoked, and be signing capable at the signature
+/// creation time.
+///
+///   [`DecryptorBuilder::with_policy`]: struct.DecryptorBuilder.html#method.with_policy
 ///
 /// # Examples
 ///
@@ -1259,6 +1607,59 @@ impl<'a> DecryptorBuilder<'a> {
     /// (see [`DEFAULT_BUFFER_SIZE`]).  This changes the default.
     ///
     ///   [`DEFAULT_BUFFER_SIZE`]: constant.DEFAULT_BUFFER_SIZE.html
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # fn main() -> sequoia_openpgp::Result<()> {
+    /// use sequoia_openpgp as openpgp;
+    /// # use openpgp::{*, crypto::*, packet::prelude::*, types::*};
+    /// use openpgp::parse::{Parse, stream::*};
+    /// use openpgp::policy::StandardPolicy;
+    ///
+    /// let p = &StandardPolicy::new();
+    ///
+    /// struct Helper {};
+    /// impl VerificationHelper for Helper {
+    ///     // ...
+    /// #   fn get_certs(&mut self, ids: &[KeyHandle]) -> Result<Vec<Cert>> {
+    /// #       Ok(Vec::new())
+    /// #   }
+    /// #
+    /// #   fn check(&mut self, structure: MessageStructure) -> Result<()> {
+    /// #       Ok(())
+    /// #   }
+    /// }
+    /// impl DecryptionHelper for Helper {
+    ///     // ...
+    /// #   fn decrypt<D>(&mut self, _: &[PKESK], skesks: &[SKESK],
+    /// #                 _sym_algo: Option<SymmetricAlgorithm>,
+    /// #                 mut decrypt: D) -> Result<Option<Fingerprint>>
+    /// #       where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool
+    /// #   {
+    /// #       Ok(None)
+    /// #   }
+    /// }
+    ///
+    /// let message =
+    ///     // ...
+    /// # &b"-----BEGIN PGP MESSAGE-----
+    /// #
+    /// #    xA0DAAoW+zdR8Vh9rvEByxJiAAAAAABIZWxsbyBXb3JsZCHCdQQAFgoABgWCXrLl
+    /// #    AQAhCRD7N1HxWH2u8RYhBDnRAKtn1b2MBAECBfs3UfFYfa7xRUsBAJaxkU/RCstf
+    /// #    UD7TM30IorO1Mb9cDa/hPRxyzipulT55AQDN1m9LMqi9yJDjHNHwYYVwxDcg+pLY
+    /// #    YmAFv/UfO0vYBw==
+    /// #    =+l94
+    /// #    -----END PGP MESSAGE-----
+    /// #    "[..];
+    ///
+    /// let h = Helper {};
+    /// let mut v = DecryptorBuilder::from_bytes(message)?
+    ///     .buffer_size(1 << 12)
+    ///     .with_policy(p, None, h)?;
+    /// # let _ = v;
+    /// # Ok(()) }
+    /// ```
     pub fn buffer_size(mut self, size: usize) -> Self {
         self.buffer_size = size;
         self
@@ -1274,6 +1675,59 @@ impl<'a> DecryptorBuilder<'a> {
     ///
     ///   [`Map`]: ../map/struct.Map.html
     ///   [`VerificationHelper::inspect`]: trait.VerificationHelper.html#tymethod.inspect
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # fn main() -> sequoia_openpgp::Result<()> {
+    /// use sequoia_openpgp as openpgp;
+    /// # use openpgp::{*, crypto::*, packet::prelude::*, types::*};
+    /// use openpgp::parse::{Parse, stream::*};
+    /// use openpgp::policy::StandardPolicy;
+    ///
+    /// let p = &StandardPolicy::new();
+    ///
+    /// struct Helper {};
+    /// impl VerificationHelper for Helper {
+    ///     // ...
+    /// #   fn get_certs(&mut self, ids: &[KeyHandle]) -> Result<Vec<Cert>> {
+    /// #       Ok(Vec::new())
+    /// #   }
+    /// #
+    /// #   fn check(&mut self, structure: MessageStructure) -> Result<()> {
+    /// #       Ok(())
+    /// #   }
+    /// }
+    /// impl DecryptionHelper for Helper {
+    ///     // ...
+    /// #   fn decrypt<D>(&mut self, _: &[PKESK], skesks: &[SKESK],
+    /// #                 _sym_algo: Option<SymmetricAlgorithm>,
+    /// #                 mut decrypt: D) -> Result<Option<Fingerprint>>
+    /// #       where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool
+    /// #   {
+    /// #       Ok(None)
+    /// #   }
+    /// }
+    ///
+    /// let message =
+    ///     // ...
+    /// # &b"-----BEGIN PGP MESSAGE-----
+    /// #
+    /// #    xA0DAAoW+zdR8Vh9rvEByxJiAAAAAABIZWxsbyBXb3JsZCHCdQQAFgoABgWCXrLl
+    /// #    AQAhCRD7N1HxWH2u8RYhBDnRAKtn1b2MBAECBfs3UfFYfa7xRUsBAJaxkU/RCstf
+    /// #    UD7TM30IorO1Mb9cDa/hPRxyzipulT55AQDN1m9LMqi9yJDjHNHwYYVwxDcg+pLY
+    /// #    YmAFv/UfO0vYBw==
+    /// #    =+l94
+    /// #    -----END PGP MESSAGE-----
+    /// #    "[..];
+    ///
+    /// let h = Helper {};
+    /// let mut v = DecryptorBuilder::from_bytes(message)?
+    ///     .mapping(true)
+    ///     .with_policy(p, None, h)?;
+    /// # let _ = v;
+    /// # Ok(()) }
+    /// ```
     pub fn mapping(mut self, enabled: bool) -> Self {
         self.mapping = enabled;
         self
@@ -1288,6 +1742,59 @@ impl<'a> DecryptorBuilder<'a> {
     ///
     ///   [`VerificationHelper`]: trait.VerificationHelper.html
     ///   [`DecryptionHelper`]: trait.DecryptionHelper.html
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # fn main() -> sequoia_openpgp::Result<()> {
+    /// use sequoia_openpgp as openpgp;
+    /// # use openpgp::{*, crypto::*, packet::prelude::*, types::*};
+    /// use openpgp::parse::{Parse, stream::*};
+    /// use openpgp::policy::StandardPolicy;
+    ///
+    /// let p = &StandardPolicy::new();
+    ///
+    /// struct Helper {};
+    /// impl VerificationHelper for Helper {
+    ///     // ...
+    /// #   fn get_certs(&mut self, ids: &[KeyHandle]) -> Result<Vec<Cert>> {
+    /// #       Ok(Vec::new())
+    /// #   }
+    /// #
+    /// #   fn check(&mut self, structure: MessageStructure) -> Result<()> {
+    /// #       Ok(())
+    /// #   }
+    /// }
+    /// impl DecryptionHelper for Helper {
+    ///     // ...
+    /// #   fn decrypt<D>(&mut self, _: &[PKESK], skesks: &[SKESK],
+    /// #                 _sym_algo: Option<SymmetricAlgorithm>,
+    /// #                 mut decrypt: D) -> Result<Option<Fingerprint>>
+    /// #       where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool
+    /// #   {
+    /// #       Ok(None)
+    /// #   }
+    /// }
+    ///
+    /// let message =
+    ///     // ...
+    /// # &b"-----BEGIN PGP MESSAGE-----
+    /// #
+    /// #    xA0DAAoW+zdR8Vh9rvEByxJiAAAAAABIZWxsbyBXb3JsZCHCdQQAFgoABgWCXrLl
+    /// #    AQAhCRD7N1HxWH2u8RYhBDnRAKtn1b2MBAECBfs3UfFYfa7xRUsBAJaxkU/RCstf
+    /// #    UD7TM30IorO1Mb9cDa/hPRxyzipulT55AQDN1m9LMqi9yJDjHNHwYYVwxDcg+pLY
+    /// #    YmAFv/UfO0vYBw==
+    /// #    =+l94
+    /// #    -----END PGP MESSAGE-----
+    /// #    "[..];
+    ///
+    /// let h = Helper {};
+    /// let mut v = DecryptorBuilder::from_bytes(message)?
+    ///     // Customize the `Decryptor` here.
+    ///     .with_policy(p, None, h)?;
+    /// # let _ = v;
+    /// # Ok(()) }
+    /// ```
     pub fn with_policy<T, H>(self, policy: &'a dyn Policy, time: T, helper: H)
                              -> Result<Decryptor<'a, H>>
         where H: VerificationHelper + DecryptionHelper,
@@ -1473,9 +1980,98 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
         self.helper
     }
 
-    /// Returns true if the whole message has been processed and the verification result is ready.
-    /// If the function returns false the message did not fit into the internal buffer and
-    /// **unverified** data must be `read()` from the instance until EOF.
+    /// Returns true if the whole message has been processed and
+    /// authenticated.
+    ///
+    /// If the function returns `true`, the whole message has been
+    /// processed, the signatures are verified, and the message
+    /// structure has been passed to [`VerificationHelper::check`].
+    /// Data read from this `Verifier` using [`io::Read`] has been
+    /// authenticated.
+    ///
+    ///   [`VerificationHelper::check`]: trait.VerificationHelper.html#tymethod.check
+    ///   [`io::Read`]: https://doc.rust-lang.org/std/io/trait.Read.html
+    ///
+    /// If the function returns `false`, the message did not fit into
+    /// the internal buffer, and therefore data read from this
+    /// `Verifier` using [`io::Read`] has **not yet been
+    /// authenticated**.  It is important to treat this data as
+    /// attacker controlled and not use it until it has been
+    /// authenticated.
+    ///
+    /// # Examples
+    ///
+    /// This example demonstrates how to verify a message in a
+    /// streaming fashion, writing the data to a temporary file and
+    /// only commit the result once the data is authenticated.
+    ///
+    /// ```
+    /// # fn main() -> sequoia_openpgp::Result<()> {
+    /// use std::io::{Read, Seek, SeekFrom};
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::{KeyHandle, Cert, Result};
+    /// use openpgp::parse::{Parse, stream::*};
+    /// use openpgp::policy::StandardPolicy;
+    /// #
+    /// # // Mock of `tempfile::tempfile`.
+    /// # mod tempfile {
+    /// #     pub fn tempfile() -> sequoia_openpgp::Result<std::fs::File> {
+    /// #         unimplemented!()
+    /// #     }
+    /// # }
+    ///
+    /// let p = &StandardPolicy::new();
+    ///
+    /// // This fetches keys and computes the validity of the verification.
+    /// struct Helper {};
+    /// impl VerificationHelper for Helper {
+    ///     // ...
+    /// #   fn get_certs(&mut self, ids: &[KeyHandle]) -> Result<Vec<Cert>> {
+    /// #       Ok(Vec::new())
+    /// #   }
+    /// #   fn check(&mut self, _: MessageStructure) -> Result<()> {
+    /// #       Ok(())
+    /// #   }
+    /// }
+    ///
+    /// let mut source =
+    ///    // ...
+    /// #  std::io::Cursor::new(&b"-----BEGIN PGP MESSAGE-----
+    /// #
+    /// #    xA0DAAoW+zdR8Vh9rvEByxJiAAAAAABIZWxsbyBXb3JsZCHCdQQAFgoABgWCXrLl
+    /// #    AQAhCRD7N1HxWH2u8RYhBDnRAKtn1b2MBAECBfs3UfFYfa7xRUsBAJaxkU/RCstf
+    /// #    UD7TM30IorO1Mb9cDa/hPRxyzipulT55AQDN1m9LMqi9yJDjHNHwYYVwxDcg+pLY
+    /// #    YmAFv/UfO0vYBw==
+    /// #    =+l94
+    /// #    -----END PGP MESSAGE-----
+    /// #    "[..]);
+    ///
+    /// fn consume(r: &mut dyn Read) -> Result<()> {
+    ///    // ...
+    /// #   let _ = r; Ok(())
+    /// }
+    ///
+    /// let h = Helper {};
+    /// let mut v = VerifierBuilder::from_reader(&mut source)?
+    ///     .with_policy(p, None, h)?;
+    ///
+    /// if v.message_processed() {
+    ///     // The data has been authenticated.
+    ///     consume(&mut v)?;
+    /// } else {
+    ///     let mut tmp = tempfile::tempfile()?;
+    ///     std::io::copy(&mut v, &mut tmp)?;
+    ///
+    ///     // If the copy succeeds, the message has been fully
+    ///     // processed and the data has been authenticated.
+    ///     assert!(v.message_processed());
+    ///
+    ///     // Rewind and consume.
+    ///     tmp.seek(SeekFrom::Start(0))?;
+    ///     consume(&mut tmp)?;
+    /// }
+    /// # Ok(()) }
+    /// ```
     pub fn message_processed(&self) -> bool {
         // oppr is only None after we've processed the packet sequence.
         self.oppr.is_none()
