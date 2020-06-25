@@ -530,7 +530,7 @@ impl SubpacketArea {
 /// details.
 ///
 ///   [Section 5.2.3.16 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.16
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct NotationData {
     flags: NotationDataFlags,
     name: String,
@@ -545,6 +545,21 @@ impl Arbitrary for NotationData {
             name: Arbitrary::arbitrary(g),
             value: Arbitrary::arbitrary(g),
         }
+    }
+}
+
+impl fmt::Debug for NotationData {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use std::collections::hash_map::DefaultHasher;
+
+        let mut hasher = DefaultHasher::new();
+        &self.value.hash(&mut hasher);
+
+        let mut s = f.debug_struct("NotationData");
+        s.field("flags", &self.flags);
+        s.field("name", &self.name);
+        s.field("value", &hasher.finish());
+        s.finish()
     }
 }
 
