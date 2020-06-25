@@ -1930,6 +1930,7 @@ mod test {
     use super::*;
     use crate::serialize::SerializeInto;
     use crate::parse::Parse;
+    use pretty_assertions::assert_eq;
 
     #[test]
     fn packet_is_send_and_sync() {
