@@ -515,20 +515,9 @@ pub struct Signature4 {
 
 impl fmt::Debug for Signature4 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        // Get the issuer.  Prefer the issuer fingerprint to the
-        // issuer keyid, which may be stored in the unhashed area.
-        let issuer = if let Some(tmp) = self.issuer_fingerprint() {
-            tmp.to_string()
-        } else if let Some(tmp) = self.issuer() {
-            tmp.to_string()
-        } else {
-            "Unknown".to_string()
-        };
-
         f.debug_struct("Signature4")
             .field("version", &self.version())
             .field("typ", &self.typ())
-            .field("issuer", &issuer)
             .field("pk_algo", &self.pk_algo())
             .field("hash_algo", &self.hash_algo())
             .field("hashed_area", self.hashed_area())
@@ -1535,10 +1524,6 @@ mod test {
         let msg = b"Hello, World";
         let mut pair = key.into_keypair().unwrap();
         let sig = SignatureBuilder::new(SignatureType::Binary)
-            .set_signature_creation_time(
-                std::time::SystemTime::now()).unwrap()
-            .set_issuer_fingerprint(pair.public().fingerprint()).unwrap()
-            .set_issuer(pair.public().keyid()).unwrap()
             .sign_message(&mut pair, msg).unwrap();
 
         sig.verify_message(pair.public(), msg).unwrap();
@@ -1664,10 +1649,6 @@ mod test {
         let mut pair = key.into_keypair().unwrap();
 
         let sig = SignatureBuilder::new(SignatureType::Standalone)
-            .set_signature_creation_time(
-                std::time::SystemTime::now()).unwrap()
-            .set_issuer_fingerprint(pair.public().fingerprint()).unwrap()
-            .set_issuer(pair.public().keyid()).unwrap()
             .sign_standalone(&mut pair)
             .unwrap();
 
@@ -1696,10 +1677,6 @@ mod test {
         let mut pair = key.into_keypair().unwrap();
 
         let sig = SignatureBuilder::new(SignatureType::Timestamp)
-            .set_signature_creation_time(
-                std::time::SystemTime::now()).unwrap()
-            .set_issuer_fingerprint(pair.public().fingerprint()).unwrap()
-            .set_issuer(pair.public().keyid()).unwrap()
             .sign_timestamp(&mut pair)
             .unwrap();
 
