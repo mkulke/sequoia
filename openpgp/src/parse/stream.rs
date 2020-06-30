@@ -2261,13 +2261,18 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                         //
                         // In this case, we get the issuer from the
                         // signature itself.
-                        let sig_issuers = sig.get_issuers();
+                        let mut sig_issuers = sig.get_issuers();
                         if sig_issuers.is_empty() {
+                            // No issuer information.  Push a wildcard
+                            // KeyID to indicate this to the
+                            // VerificationHelper::check.  This is the
+                            // detached-signature equivalent of a
+                            // signed message with a wildcard signer
+                            // KeyID on the OPS packet and no issuer
+                            // information on the signature.
                             issuers.push(KeyID::wildcard().into());
                         } else {
-                            for issuer in sig_issuers {
-                                issuers.push(issuer);
-                            }
+                            issuers.append(&mut sig_issuers);
                         }
                     }
                     v.structure.push_bare_signature(sig);
@@ -2429,6 +2434,21 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                         };
 
                         let issuers = sig.get_issuers();
+                        // Note: If there are no issuers, the only way
+                        // to verify the signature is to try every key
+                        // that could possibly have created the
+                        // signature.  While this may be feasible if
+                        // the set of potential signing keys is small,
+                        // the use case of hiding the signer's
+                        // identity seems better solved using
+                        // encryption.  Furthermore, no other OpenPGP
+                        // implementation seems to support this kind
+                        // of wildcard signatures.
+                        //
+                        // If there are no issuers, this iterator will
+                        // not yield any keys, hence this verification
+                        // will fail with the default error,
+                        // `VerificationError::MissingKey`.
                         for ka in self.certs.iter()
                             .flat_map(|cert| {
                                 cert.keys().key_handles(issuers.iter())
