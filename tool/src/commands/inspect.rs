@@ -6,7 +6,10 @@ use clap;
 extern crate sequoia_openpgp as openpgp;
 use crate::openpgp::{Packet, Result};
 use crate::openpgp::cert::prelude::*;
-use openpgp::packet::key::PublicParts;
+use openpgp::packet::{
+    Signature,
+    key::PublicParts,
+};
 use crate::openpgp::parse::{Parse, PacketParserResult};
 use crate::openpgp::policy::Policy;
 use crate::openpgp::packet::key::SecretKeyMaterial;
@@ -179,7 +182,8 @@ fn inspect_cert(policy: &dyn Policy,
     }
 
     for uab in cert.user_attributes() {
-        writeln!(output, "         UserID: {:?}", uab.user_attribute())?;
+        writeln!(output, "         User attribute: {:?}",
+                 uab.user_attribute())?;
         inspect_revocation(output, "", uab.revocation_status(policy, None))?;
         match uab.binding_signature(policy, None) {
             Ok(sig) => if let Err(e) =
@@ -284,11 +288,28 @@ fn inspect_revocation(output: &mut dyn io::Write,
                       revoked: openpgp::types::RevocationStatus)
                       -> Result<()> {
     use crate::openpgp::types::RevocationStatus::*;
+    fn print_reasons(output: &mut dyn io::Write, indent: &str,
+                     sigs: &[&Signature])
+                     -> Result<()> {
+        for sig in sigs {
+            if let Some((r, _)) = sig.reason_for_revocation() {
+                writeln!(output, "{}                  - {}", indent, r)?;
+            } else {
+                writeln!(output, "{}                  - No reason specified",
+                         indent)?;
+            }
+        }
+        Ok(())
+    }
     match revoked {
-        Revoked(_) =>
-            writeln!(output, "{}                 Revoked", indent)?,
-        CouldBe(_) =>
-            writeln!(output, "{}                 Possibly revoked", indent)?,
+        Revoked(sigs) => {
+            writeln!(output, "{}                 Revoked:", indent)?;
+            print_reasons(output, indent, &sigs)?;
+        },
+        CouldBe(sigs) => {
+            writeln!(output, "{}                 Possibly revoked:", indent)?;
+            print_reasons(output, indent, &sigs)?;
+        },
         NotAsFarAsWeKnow => (),
     }
 
