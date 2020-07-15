@@ -233,6 +233,8 @@ use crate::packet::signature::subpacket::{
     SubpacketValue,
 };
 
+use crate::serialize::MarshalInto;
+
 mod packet_pile_parser;
 pub use self::packet_pile_parser::PacketPileParser;
 
@@ -314,7 +316,7 @@ macro_rules! impl_parse_generic_packet {
 /// Typically, we expect a message to looking like:
 ///
 /// ```text
-/// [ encryption container: [ compressioned data: [ signature: [ literal data ]]]]
+/// [ encryption container: [ compression container: [ signature: [ literal data ]]]]
 /// ```
 ///
 /// So, this should be more than enough.
@@ -1674,6 +1676,8 @@ impl SubpacketLength {
 #[cfg(test)]
 quickcheck! {
     fn length_roundtrip(l: u32) -> bool {
+        use crate::serialize::Marshal;
+
         let length = SubpacketLength::from(l);
         let mut encoded = Vec::new();
         length.serialize(&mut encoded).unwrap();
@@ -2846,7 +2850,7 @@ impl PacketParserState {
 /// Parse an OpenPGP message using a `PacketParser`:
 ///
 /// ```rust
-/// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+/// # fn main() -> sequoia_openpgp::Result<()> {
 /// use sequoia_openpgp as openpgp;
 /// use openpgp::Packet;
 /// use openpgp::parse::{Parse, PacketParserResult, PacketParser};
@@ -3435,7 +3439,7 @@ impl <'a> PacketParser<'a> {
     /// # Examples
     ///
     /// ```rust
-    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// # fn main() -> sequoia_openpgp::Result<()> {
     /// use sequoia_openpgp as openpgp;
     /// use openpgp::Packet;
     /// use openpgp::fmt::hex;
@@ -3480,7 +3484,7 @@ impl <'a> PacketParser<'a> {
     /// # Examples
     ///
     /// ```rust
-    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// # fn main() -> sequoia_openpgp::Result<()> {
     /// use sequoia_openpgp as openpgp;
     /// use openpgp::Packet;
     /// use openpgp::parse::{Parse, PacketParserResult, PacketParser};
@@ -3517,7 +3521,7 @@ impl <'a> PacketParser<'a> {
     /// # Examples
     ///
     /// ```rust
-    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// # fn main() -> sequoia_openpgp::Result<()> {
     /// use sequoia_openpgp as openpgp;
     /// use openpgp::Packet;
     /// use openpgp::parse::{Parse, PacketParserResult, PacketParser};
@@ -3550,7 +3554,7 @@ impl <'a> PacketParser<'a> {
     /// # Examples
     ///
     /// ```rust
-    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// # fn main() -> sequoia_openpgp::Result<()> {
     /// use sequoia_openpgp as openpgp;
     /// use openpgp::Packet;
     /// use openpgp::parse::{Parse, PacketParserResult, PacketParser};
@@ -3585,7 +3589,7 @@ impl <'a> PacketParser<'a> {
     /// # Examples
     ///
     /// ```rust
-    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// # fn main() -> sequoia_openpgp::Result<()> {
     /// use sequoia_openpgp as openpgp;
     /// use openpgp::Packet;
     /// use openpgp::parse::{Parse, PacketParserResult, PacketParser};
@@ -3628,7 +3632,7 @@ impl <'a> PacketParser<'a> {
     /// # Examples
     ///
     /// ```rust
-    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// # fn main() -> sequoia_openpgp::Result<()> {
     /// use sequoia_openpgp as openpgp;
     /// use openpgp::Packet;
     /// use openpgp::parse::{Parse, PacketParserResult, PacketParser};
@@ -3668,7 +3672,7 @@ impl <'a> PacketParser<'a> {
     /// # Examples
     ///
     /// ```rust
-    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// # fn main() -> sequoia_openpgp::Result<()> {
     /// use sequoia_openpgp as openpgp;
     /// use openpgp::Packet;
     /// use openpgp::parse::{Parse, PacketParserResult, PacketParser};
@@ -3706,7 +3710,7 @@ impl <'a> PacketParser<'a> {
     /// # Examples
     ///
     /// ```rust
-    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// # fn main() -> sequoia_openpgp::Result<()> {
     /// use sequoia_openpgp as openpgp;
     /// use openpgp::Packet;
     /// use openpgp::parse::{Parse, PacketParserResult, PacketParser};
@@ -4061,7 +4065,7 @@ impl <'a> PacketParser<'a> {
     /// # Examples
     ///
     /// ```rust
-    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// # fn main() -> sequoia_openpgp::Result<()> {
     /// use sequoia_openpgp as openpgp;
     /// use openpgp::Packet;
     /// use openpgp::parse::{Parse, PacketParserResult, PacketParser};
@@ -4178,7 +4182,7 @@ impl <'a> PacketParser<'a> {
     /// # Examples
     ///
     /// ```rust
-    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// # fn main() -> sequoia_openpgp::Result<()> {
     /// use sequoia_openpgp as openpgp;
     /// use openpgp::Packet;
     /// use openpgp::parse::{Parse, PacketParserResult, PacketParser};
@@ -4280,7 +4284,7 @@ impl <'a> PacketParser<'a> {
     /// content is small.
     ///
     /// ```rust
-    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// # fn main() -> sequoia_openpgp::Result<()> {
     /// use sequoia_openpgp as openpgp;
     /// use openpgp::Packet;
     /// use openpgp::parse::{Parse, PacketParserResult, PacketParser};
@@ -4382,7 +4386,7 @@ impl <'a> PacketParser<'a> {
     /// # Examples
     ///
     /// ```rust
-    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// # fn main() -> sequoia_openpgp::Result<()> {
     /// use sequoia_openpgp as openpgp;
     /// use openpgp::Packet;
     /// use openpgp::parse::{Parse, PacketParserResult, PacketParser};
@@ -4463,7 +4467,7 @@ impl <'a> PacketParser<'a> {
     /// # Examples
     ///
     /// ```rust
-    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// # fn main() -> sequoia_openpgp::Result<()> {
     /// use sequoia_openpgp as openpgp;
     /// use openpgp::Packet;
     /// use openpgp::parse::{Parse, PacketParserResult, PacketParser};
@@ -4489,7 +4493,7 @@ impl <'a> PacketParser<'a> {
     /// # Examples
     ///
     /// ```
-    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// # fn main() -> sequoia_openpgp::Result<()> {
     /// use sequoia_openpgp as openpgp;
     /// use openpgp::parse::{Parse, PacketParserBuilder};
     ///
@@ -4514,7 +4518,7 @@ impl <'a> PacketParser<'a> {
     /// # Examples
     ///
     /// ```
-    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// # fn main() -> sequoia_openpgp::Result<()> {
     /// use sequoia_openpgp as openpgp;
     /// use openpgp::parse::{Parse, PacketParserBuilder};
     ///
@@ -4740,7 +4744,7 @@ impl<'a> PacketParser<'a> {
     /// # Examples
     ///
     /// ```rust
-    /// # f().unwrap(); fn f() -> sequoia_openpgp::Result<()> {
+    /// # fn main() -> sequoia_openpgp::Result<()> {
     /// use sequoia_openpgp as openpgp;
     /// use openpgp::Packet;
     /// use openpgp::fmt::hex;

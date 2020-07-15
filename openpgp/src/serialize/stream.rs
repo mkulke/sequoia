@@ -35,10 +35,16 @@
 //!   [`LiteralWriter`]: struct.LiteralWriter.html
 //!   [`ArbitraryWriter`]: struct.ArbitraryWriter.html
 //!
-//! The most common structure is an encrypted, compressed, and signed
-//! message.  This structure is [supported] by all OpenPGP
-//! implementations.  See the example below on how to create this
-//! structure.
+//! The most common structure is an optionally encrypted, optionally
+//! compressed, and optionally signed message.  This structure is
+//! [supported] by all OpenPGP implementations, and applications
+//! should only create messages of that structure to increase
+//! compatibility.  See the example below on how to create this
+//! structure.  This is a sketch of such a message:
+//!
+//! ```text
+//! [ encryption layer: [ compression layer: [ signature group: [ literal data ]]]]
+//! ```
 //!
 //!   [supported]: https://tests.sequoia-pgp.org/#Unusual_Message_Structure
 //!
@@ -1146,11 +1152,7 @@ impl<'a> Signer<'a> {
                 let mut sig = self.template.clone()
                     .set_signature_creation_time(
                         self.creation_time
-                            .unwrap_or_else(SystemTime::now))?
-                    .set_issuer_fingerprint(signer.public().fingerprint())?
-                    // GnuPG up to (and including) 2.2.8 requires the
-                    // Issuer subpacket to be present.
-                    .set_issuer(signer.public().keyid())?;
+                            .unwrap_or_else(SystemTime::now))?;
 
                 if ! self.intended_recipients.is_empty() {
                     sig = sig.set_intended_recipients(

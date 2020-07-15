@@ -387,10 +387,10 @@ type UnknownBundles = ComponentBundles<Unknown>;
 /// requires User IDs that are unrelated to the WKD's domain be
 /// stripped from the certificate prior to publication.  As such, any
 /// User ID may be considered the primary User ID.  Consequently, if
-/// any User ID includes this packet, then all User IDs should include
-/// it.  Furthermore, RFC 4880bis allows certificates [without any
-/// User ID packets].  To handle this case, certificates should also
-/// create a direct key signature with this information.
+/// any User ID includes a particular subpacket, then all User IDs
+/// should include it.  Furthermore, RFC 4880bis allows certificates
+/// [without any User ID packets].  To handle this case, certificates
+/// should also create a direct key signature with this information.
 ///
 /// [Section 5.2.3.3]: https://tools.ietf.org/html/rfc4880#section-5.2.3.3
 /// [WKD]: https://tools.ietf.org/html/draft-koch-openpgp-webkey-service-09#section-5
@@ -1389,17 +1389,19 @@ impl Cert {
                    stringify!($verify_method));
                 for sig in mem::replace(&mut $binding.$sigs, Vec::new())
                     .into_iter()
-                {
-                    if let Ok(()) = sig.$verify_method(self.primary.key(),
-                                                       self.primary.key(),
-                                                       $($verify_args),*) {
-                        $binding.$sigs.push(sig);
-                    } else {
-                        t!("Sig {:02X}{:02X}, type = {} doesn't belong to {}",
-                           sig.digest_prefix()[0], sig.digest_prefix()[1],
-                           sig.typ(), $desc);
+                 {
+                     match sig.$verify_method(self.primary.key(),
+                                              self.primary.key(),
+                                              $($verify_args),*) {
+                         Ok(()) => $binding.$sigs.push(sig),
+                         Err(err) => {
+                             t!("Sig {:02X}{:02X}, type = {} \
+                                 doesn't belong to {}: {:?}",
+                                sig.digest_prefix()[0], sig.digest_prefix()[1],
+                                sig.typ(), $desc, err);
 
-                        self.bad.push(sig);
+                             self.bad.push(sig);
+                         }
                     }
                 }
             });
@@ -1454,9 +1456,10 @@ impl Cert {
                             }
                         } else {
                             t!("Sig {:02X}{:02X}, type = {} \
-                                doesn't belong to {}",
+                                doesn't belong to {} (computed hash's prefix: {:02X}{:02X})",
                                sig.digest_prefix()[0], sig.digest_prefix()[1],
-                               sig.typ(), $desc);
+                               sig.typ(), $desc,
+                               hash[0], hash[1]);
 
                             self.bad.push(sig);
                         }
@@ -4069,36 +4072,28 @@ mod test {
                 .set_key_flags(&KeyFlags::default()).unwrap()
                 .set_signature_creation_time(t1).unwrap()
                 .set_key_validity_period(Some(time::Duration::new(10 * 52 * 7 * 24 * 60 * 60, 0))).unwrap()
-                .set_issuer_fingerprint(key.fingerprint()).unwrap()
-                .set_issuer(key.keyid()).unwrap()
                 .set_preferred_hash_algorithms(vec![HashAlgorithm::SHA512]).unwrap()
-                .sign_direct_key(&mut pair).unwrap();
+                .sign_direct_key(&mut pair, &key).unwrap();
 
             let rev1 = signature::SignatureBuilder::new(SignatureType::KeyRevocation)
                 .set_signature_creation_time(t2).unwrap()
                 .set_reason_for_revocation(ReasonForRevocation::KeySuperseded,
                                            &b""[..]).unwrap()
-                .set_issuer_fingerprint(key.fingerprint()).unwrap()
-                .set_issuer(key.keyid()).unwrap()
-                .sign_direct_key(&mut pair).unwrap();
+                .sign_direct_key(&mut pair, &key).unwrap();
 
             let bind2 = signature::SignatureBuilder::new(SignatureType::DirectKey)
                 .set_features(&Features::sequoia()).unwrap()
                 .set_key_flags(&KeyFlags::default()).unwrap()
                 .set_signature_creation_time(t3).unwrap()
                 .set_key_validity_period(Some(time::Duration::new(10 * 52 * 7 * 24 * 60 * 60, 0))).unwrap()
-                .set_issuer_fingerprint(key.fingerprint()).unwrap()
-                .set_issuer(key.keyid()).unwrap()
                 .set_preferred_hash_algorithms(vec![HashAlgorithm::SHA512]).unwrap()
-                .sign_direct_key(&mut pair).unwrap();
+                .sign_direct_key(&mut pair, &key).unwrap();
 
             let rev2 = signature::SignatureBuilder::new(SignatureType::KeyRevocation)
                 .set_signature_creation_time(t4).unwrap()
                 .set_reason_for_revocation(ReasonForRevocation::KeyCompromised,
                                            &b""[..]).unwrap()
-                .set_issuer_fingerprint(key.fingerprint()).unwrap()
-                .set_issuer(key.keyid()).unwrap()
-                .sign_direct_key(&mut pair).unwrap();
+                .sign_direct_key(&mut pair, &key).unwrap();
 
             (bind1, rev1, bind2, rev2)
         };
@@ -4758,11 +4753,9 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
                     .set_key_validity_period(Some(
                         time::Duration::new((1 + i as u64) * 24 * 60 * 60, 0)))
                     .unwrap()
-                    .set_issuer_fingerprint(key.fingerprint()).unwrap()
-                    .set_issuer(key.keyid()).unwrap()
                     .set_preferred_hash_algorithms(vec![HashAlgorithm::SHA512]).unwrap()
                     .set_signature_creation_time(*t).unwrap()
-                    .sign_direct_key(&mut pair).unwrap();
+                    .sign_direct_key(&mut pair, &key).unwrap();
 
                 let binding : Packet = binding.into();
 
@@ -4936,9 +4929,8 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
         let mut fake_key = packet::Unknown::new(
             packet::Tag::PublicSubkey, anyhow::anyhow!("fake key"));
         fake_key.set_body("fake key".into());
-        let fake_binding = signature::SignatureBuilder::new(SignatureType::SubkeyBinding)
-            .set_issuer(primary_pair.public().keyid())?
-            .set_issuer_fingerprint(primary_pair.public().fingerprint())?
+        let fake_binding = signature::SignatureBuilder::new(
+                SignatureType::Unknown(SignatureType::SubkeyBinding.into()))
             .sign_standalone(&mut primary_pair)?;
         let cert = cert.merge_packets(vec![Packet::from(fake_key),
                                            fake_binding.clone().into()])?;

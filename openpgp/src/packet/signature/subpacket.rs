@@ -61,7 +61,6 @@ use std::hash::{Hash, Hasher};
 use std::sync::Mutex;
 use std::ops::{Deref, DerefMut};
 use std::fmt;
-use std::io;
 use std::cmp;
 use std::time;
 
@@ -73,6 +72,7 @@ use crate::packet::signature::ArbitraryBounded;
 use crate::{
     Error,
     Result,
+    packet::header::BodyLength,
     packet::Signature,
     packet::signature::{self, Signature4},
     packet::key,
@@ -874,8 +874,45 @@ pub struct Subpacket {
 #[cfg(any(test, feature = "quickcheck"))]
 impl ArbitraryBounded for Subpacket {
     fn arbitrary_bounded<G: Gen>(g: &mut G, depth: usize) -> Self {
-        Subpacket::new(ArbitraryBounded::arbitrary_bounded(g, depth),
-                       Arbitrary::arbitrary(g)).unwrap()
+        use rand::Rng;
+
+        fn encode_non_optimal(length: usize) -> SubpacketLength {
+            // Calculate length the same way as Subpacket::new.
+            let length = 1 /* Tag */ + length as u32;
+
+            let mut len_vec = Vec::<u8>::with_capacity(5);
+            len_vec.push(0xFF);
+            len_vec.extend_from_slice(&length.to_be_bytes());
+            SubpacketLength::new(length, Some(len_vec))
+        }
+
+        let critical = <bool>::arbitrary(g);
+        let use_nonoptimal_encoding = <bool>::arbitrary(g);
+        // We don't want to overrepresent large subpackets.
+        let create_large_subpacket = g.gen_range(0, 25) == 0;
+
+        let value = if create_large_subpacket {
+            // Choose a size which makes sure the subpacket length must be
+            // encoded with 2 or 5 octets.
+            let value_size = g.gen_range(7000, 9000);
+            let nd = NotationData {
+                flags: Arbitrary::arbitrary(g),
+                name: Arbitrary::arbitrary(g),
+                value: (0..value_size)
+                    .map(|_| <u8>::arbitrary(g))
+                    .collect::<Vec<u8>>(),
+            };
+            SubpacketValue::NotationData(nd)
+        } else {
+            SubpacketValue::arbitrary_bounded(g, depth)
+        };
+
+        if use_nonoptimal_encoding {
+            let length = encode_non_optimal(value.serialized_len());
+            Subpacket::with_length(length, value, critical)
+        } else {
+            Subpacket::new(value, critical).unwrap()
+        }
     }
 }
 
@@ -933,12 +970,13 @@ impl Subpacket {
     }
 }
 
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, Eq)]
 pub(crate) struct SubpacketLength {
     /// The length.
-    len: u32,
-    /// Stores the raw bytes in case of suboptimal encoding.
-    raw: Option<Vec<u8>>,
+    pub(crate) len: u32,
+    /// The length encoding used in the serialized form.
+    /// If this is `None`, optimal encoding will be used.
+    pub(crate) raw: Option<Vec<u8>>,
 }
 
 impl From<u32> for SubpacketLength {
@@ -949,29 +987,33 @@ impl From<u32> for SubpacketLength {
     }
 }
 
+impl PartialEq for SubpacketLength {
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.raw, &other.raw) {
+            (None, None) => {
+                self.len == other.len
+            },
+            // Compare serialized representations if at least one is given
+            (Some(self_raw), Some(other_raw)) => {
+                self_raw == other_raw
+            },
+            (Some(self_raw), None) => {
+                let mut other_raw = [0; 5];
+                other.serialize_into(&mut other_raw[..self.serialized_len()]).unwrap();
+                &self_raw[..] == &other_raw[..self.serialized_len()]
+            },
+            (None, Some(other_raw)) => {
+                let mut self_raw = [0; 5];
+                self.serialize_into(&mut self_raw[..self.serialized_len()]).unwrap();
+                &self_raw[..self.serialized_len()] == &other_raw[..]
+            },
+        }
+    }
+}
+
 impl SubpacketLength {
     pub(crate) fn new(len: u32, raw: Option<Vec<u8>>) -> Self {
         Self { len, raw }
-    }
-
-    /// Writes the subpacket length to `w`.
-    pub(crate) fn serialize(&self, sink: &mut dyn std::io::Write)
-                            -> io::Result<()> {
-        let v = self.len;
-        if let Some(ref raw) = self.raw {
-            sink.write_all(raw)
-        } else if v < 192 {
-            sink.write_all(&[v as u8])
-        } else if v < 16320 {
-            let v = v - 192 + (192 << 8);
-            sink.write_all(&[(v >> 8) as u8,
-                             (v >> 0) as u8])
-        } else {
-            sink.write_all(&[(v >> 24) as u8,
-                             (v >> 16) as u8,
-                             (v >> 8) as u8,
-                             (v >> 0) as u8])
-        }
     }
 
     /// Returns the length.
@@ -979,24 +1021,9 @@ impl SubpacketLength {
         self.len as usize
     }
 
-    /// Returns the length of the serialized subpacket length.
-    pub(crate) fn serialized_len(&self) -> usize {
-        if let Some(ref raw) = self.raw {
-            raw.len()
-        } else {
-            Self::len_optimal_encoding(self.len)
-        }
-    }
-
     /// Returns the length of the optimal encoding of `len`.
     pub(crate) fn len_optimal_encoding(len: u32) -> usize {
-        if len < 192 {
-            1
-        } else if len < 16320 {
-            2
-        } else {
-            5
-        }
+        BodyLength::serialized_len(&BodyLength::Full(len))
     }
 }
 
@@ -2028,17 +2055,15 @@ impl signature::SignatureBuilder {
     ///
     /// This function returns an error if there is no `Signature
     /// Creation Time` subpacket in the hashed area.
-    pub fn preserve_signature_creation_time(mut self)
+    pub fn preserve_signature_creation_time(self)
         -> Result<Self>
     {
-        self.overrode_creation_time = true;
-
-        if self.hashed_area.lookup(SubpacketTag::SignatureCreationTime).is_none() {
+        if let Some(t) = self.original_creation_time {
+            self.set_signature_creation_time(t)
+        } else {
             Err(Error::InvalidOperation(
                 "Signature does not contain a Signature Creation Time subpacket".into())
                 .into())
-        } else {
-            Ok(self)
         }
     }
 
