@@ -632,8 +632,8 @@ impl<'a> PacketParserBuilder<'a> {
     /// parsed message.
     ///
     /// Note: calling this function does not change the default
-    /// settings `PacketParserSettings`.  Thus, by default, the
-    /// content of packets will *not* be buffered.
+    /// settings.  Thus, by default, the content of packets will *not*
+    /// be buffered.
     ///
     /// Note: to avoid denial of service attacks, the `PacketParser`
     /// interface should be preferred unless the size of the message
@@ -760,7 +760,7 @@ mod test {
             .buffer_unread_content()
             .try_into().unwrap();
 
-        while let Some(pp) = ppp.as_ref() {
+        while let Ok(pp) = ppp.as_ref() {
             eprintln!("{:?}", pp);
             ppp.recurse().unwrap();
         }

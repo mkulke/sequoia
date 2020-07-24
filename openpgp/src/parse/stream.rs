@@ -453,15 +453,37 @@ impl<'a> IntoIterator for MessageStructure<'a> {
 /// Represents a layer of the message structure.
 ///
 /// A valid OpenPGP message contains one literal data packet with
-/// optional encryption, signing, and compression layers on top.
+/// optional encryption, signing, and compression layers freely
+/// combined on top (see [Section 11.3 of RFC 4880]).  This enum
+/// represents the layers.  The [`MessageStructure`] is communicated
+/// to the [`VerificationHelper::check`].  Iterating over the
+/// [`MessageStructure`] yields the individual message layers.
+///
+///   [Section 11.3 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-11.3
+///   [`MessageStructure`]: struct.MessageStructure.html
+///   [`VerificationHelper::check`]: trait.VerificationHelper.html#tymethod.check
 #[derive(Debug)]
 pub enum MessageLayer<'a> {
     /// Represents an compression container.
+    ///
+    /// Compression is usually transparent in OpenPGP, though it may
+    /// sometimes be interesting for advanced users to indicate that
+    /// the message was compressed, and how (see [Section 5.6 of RFC
+    /// 4880]).
+    ///
+    ///   [Section 5.6 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.6
     Compression {
         /// Compression algorithm used.
         algo: CompressionAlgorithm,
     },
     /// Represents an encryption container.
+    ///
+    /// Indicates the fact that the message was encrypted (see
+    /// [Section 5.13 of RFC 4880]).  If you expect encrypted
+    /// messages, make sure that there is at least one encryption
+    /// container present.
+    ///
+    ///   [Section 5.13 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.13
     Encryption {
         /// Symmetric algorithm used.
         sym_algo: SymmetricAlgorithm,
@@ -473,14 +495,16 @@ pub enum MessageLayer<'a> {
     /// Represents a signature group.
     ///
     /// A signature group consists of all signatures with the same
-    /// level.  Each [`VerificationResult`] represents the result of
-    /// a single signature verification.  In your
-    /// [`VerificationHelper::check`] method, iterate over the
-    /// verification results, see if it meets your policies' demands,
-    /// and communicate it to the user, if applicable.
+    /// level (see [Section 5.2 of RFC 4880]).  Each
+    /// [`VerificationResult`] represents the result of a single
+    /// signature verification.  In your [`VerificationHelper::check`]
+    /// method, iterate over the verification results, see if it meets
+    /// your policies' demands, and communicate it to the user, if
+    /// applicable.
     ///
-    ///  [`VerificationResult`]: type.VerificationResult.html
-    ///  [`VerificationHelper::check`]: trait.VerificationHelper.html#tymethod.check
+    ///   [Section 5.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2
+    ///   [`VerificationResult`]: type.VerificationResult.html
+    ///   [`VerificationHelper::check`]: trait.VerificationHelper.html#tymethod.check
     SignatureGroup {
         /// The results of the signature verifications.
         results: Vec<VerificationResult<'a>>,
@@ -717,6 +741,13 @@ pub trait VerificationHelper {
     ///
     ///   [`Verifier::message_processed`]: struct.Verifier.html#method.message_processed
     ///   [`Decryptor::message_processed`]: struct.Decryptor.html#method.message_processed
+    ///
+    /// When verifying a detached signature using the
+    /// [`DetachedVerifier`], this method will be called with a
+    /// [`MessageStructure`] containing exactly one layer, a signature
+    /// group.
+    ///
+    ///   [`DetachedVerifier`]: struct.DetachedVerifier.html
     ///
     /// # Examples
     ///
@@ -1252,9 +1283,14 @@ impl<'a, H: VerificationHelper> io::Read for Verifier<'a, H> {
 ///   [`Parse`]: ../trait.Parse.html
 ///
 /// See [`GoodChecksum`] for what it means for a signature to be
-/// considered valid.
+/// considered valid.  When the signature(s) are processed,
+/// [`VerificationHelper::check`] will be called with a
+/// [`MessageStructure`] containing exactly one layer, a signature
+/// group.
 ///
 ///   [`GoodChecksum`]: struct.GoodChecksum.html
+///   [`VerificationHelper::check`]: trait.VerificationHelper.html#tymethod.check
+///   [`MessageStructure`]: struct.MessageStructure.html
 ///
 /// # Examples
 ///
@@ -1408,8 +1444,13 @@ impl<'a> DetachedVerifierBuilder<'a> {
     /// Signature verifications are done under the given `policy` and
     /// relative to time `time`, or the current time, if `time` is
     /// `None`.  `helper` is the [`VerificationHelper`] to use.
+    /// [`VerificationHelper::check`] will be called with a
+    /// [`MessageStructure`] containing exactly one layer, a signature
+    /// group.
     ///
     ///   [`VerificationHelper`]: trait.VerificationHelper.html
+    ///   [`VerificationHelper::check`]: trait.VerificationHelper.html#tymethod.check
+    ///   [`MessageStructure`]: struct.MessageStructure.html
     ///
     /// # Examples
     ///
