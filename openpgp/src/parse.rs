@@ -5601,4 +5601,22 @@ mod test {
             panic!("expected unknown packet, got: {:?}", packet);
         }
     }
+
+    /// Copying body changes hash
+    #[test]
+    fn hash_packet() -> Result<()> {
+        let ppr1 = PacketParser::from_bytes(
+            crate::tests::message("literal-mode-b.gpg"))?;
+        let mut pp1 = ppr1.unwrap();
+        let (packet1, _) = pp1.recurse()?;
+
+        let ppr2 = PacketParser::from_bytes(
+            crate::tests::message("literal-mode-b.gpg"))?;
+        let mut pp2 = ppr2.unwrap();
+        io::copy(&mut pp2, &mut io::sink())?;
+        let (packet2, _) = pp2.recurse()?;
+
+        assert_eq!(packet1, packet2);
+        Ok(())
+    }
 }
