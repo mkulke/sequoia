@@ -1370,7 +1370,7 @@ impl Unencrypted {
             self.map(|mpis| mpis.serialize_chksumd(&mut encryptor))?;
         }
 
-        Ok(Encrypted { s2k, algo, ciphertext: esk.into_boxed_slice() })
+        Ok(Encrypted::new(s2k, algo, esk.into_boxed_slice()))
     }
 }
 
@@ -1386,12 +1386,29 @@ pub struct Encrypted {
     /// Symmetric algorithm used to encrypt the secret key material.
     algo: SymmetricAlgorithm,
     /// Encrypted MPIs prefixed with the IV.
-    ciphertext: Box<[u8]>,
+    ///
+    /// If we recognized the S2K object during parsing, we can
+    /// successfully parse the data into S2K, IV, and ciphertext.
+    /// However, if we do not recognize the S2K type, we do not know
+    /// how large its parameters are, so we cannot cleanly parse it,
+    /// and have to accept that the S2K's body bleeds into the rest of
+    /// the data.
+    ciphertext: std::result::Result<Box<[u8]>,  // IV + ciphertext.
+                                    Box<[u8]>>, // S2K body + IV + ciphertext.
 }
 
 impl Encrypted {
     /// Creates a new encrypted key object.
     pub fn new(s2k: S2K, algo: SymmetricAlgorithm, ciphertext: Box<[u8]>)
+        -> Self
+    {
+        Self::new_raw(s2k, algo, Ok(ciphertext))
+    }
+
+    /// Creates a new encrypted key object.
+    pub(crate) fn new_raw(s2k: S2K, algo: SymmetricAlgorithm,
+                          ciphertext: std::result::Result<Box<[u8]>,
+                                                          Box<[u8]>>)
         -> Self
     {
         Encrypted { s2k, algo, ciphertext }
@@ -1409,8 +1426,26 @@ impl Encrypted {
     }
 
     /// Returns the encrypted secret key material.
+    ///
+    /// If the [`S2K`] mechanism is not supported by Sequoia, this
+    /// function will fail.
+    ///
+    ///   [`S2K`]: ../../crypto/enum.S2K.html
     pub fn ciphertext(&self) -> Result<&[u8]> {
-        Ok(&self.ciphertext)
+        self.ciphertext
+            .as_ref()
+            .map(|ciphertext| &ciphertext[..])
+            .map_err(|_| Error::MalformedPacket(
+                format!("Unknown S2K: {:?}", self.s2k)).into())
+    }
+
+    /// Returns the encrypted secret key material, possibly including
+    /// the body of the S2K object.
+    pub(crate) fn raw_ciphertext(&self) -> &[u8] {
+        match self.ciphertext.as_ref() {
+            Ok(ciphertext) => &ciphertext[..],
+            Err(s2k_ciphertext) => &s2k_ciphertext[..],
+        }
     }
 
     /// Decrypts the secret key material using `password`.
@@ -1425,7 +1460,7 @@ impl Encrypted {
         use crate::crypto::symmetric::Decryptor;
 
         let key = self.s2k.derive_key(password, self.algo.key_size()?)?;
-        let cur = Cursor::new(&self.ciphertext);
+        let cur = Cursor::new(self.ciphertext()?);
         let mut dec = Decryptor::new(self.algo, &key, cur)?;
 
         // Consume the first block.
