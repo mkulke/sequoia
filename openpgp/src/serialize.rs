@@ -1819,7 +1819,7 @@ impl<P, R> Key4<P, R>
                     write_byte(o, 254)?;
                     write_byte(o, e.algo().into())?;
                     e.s2k().serialize(o)?;
-                    o.write_all(e.ciphertext())?;
+                    o.write_all(e.ciphertext()?)?;
                 },
             }
         }
@@ -1840,7 +1840,8 @@ impl<P, R> Key4<P, R>
                         u.map(|mpis| mpis.serialized_len())
                         + 2, // Two octet checksum.
                     SecretKeyMaterial::Encrypted(ref e) =>
-                        1 + e.s2k().serialized_len() + e.ciphertext().len(),
+                        1 + e.s2k().serialized_len()
+                        + e.ciphertext().unwrap().len(),
                 }
             } else {
                 0
