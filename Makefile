@@ -173,4 +173,4 @@ sanity-check-versions:
 codespell:
 	$(CODESPELL) $(CODESPELL_FLAGS) \
 	  -L "ede,iff,mut,nd,te,uint" \
-	  -S "*.bin,*.gpg,*.pgp,./.git,./target,data,highlight.js"
+	  -S "*.bin,*.gpg,*.pgp,./.git,data,highlight.js,*/target,Makefile"
