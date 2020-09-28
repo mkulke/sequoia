@@ -6004,7 +6004,7 @@ mod test {
                 message, signing_keypair,
                 signature::SignatureBuilder::new(SignatureType::Text)
             ).detached().build()?;
-            message.write_all(data)?;
+            message.write_all(data)?
             message.finalize()?;
         }
 
