@@ -119,13 +119,12 @@ windows-msvc:
   - web
   - scheduled
   before_script:
+  - $env:Path += ";$env:ProgramFiles\cargo\bin"
   - Get-Date
-  - $env:CARGO_HOME = "$env:ProgramFiles\cargo"
-  - $env:RUSTUP_HOME = "$env:ProgramFiles\rustup"
+  # - $env:CARGO_HOME = "$env:ProgramFiles\cargo"
+  # - $env:RUSTUP_HOME = "$env:ProgramFiles\rustup"
   - Invoke-WebRequest https://win.rustup.rs -OutFile rustup-init.exe
   - .\rustup-init.exe -y --default-toolchain none --default-host x86_64-pc-windows-msvc --profile minimal
-  - Get-Date
-  - refreshenv
   - Get-Date
   - rustup -V
   - rustc -vV
