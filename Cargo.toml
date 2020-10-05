@@ -23,20 +23,25 @@ maintenance = { status = "actively-developed" }
 [workspace]
 
 [dependencies]
-buffered-reader = { path = "buffered-reader", version = "0.18" }
-sequoia-openpgp = { path = "openpgp", version = "0.19" }
-sequoia-openpgp-ffi = { path = "openpgp-ffi", version = "0.19" }
-sequoia-autocrypt = { path = "autocrypt", version = "0.19" }
-sequoia-core = { path = "core", version = "0.19" }
-sequoia-ffi = { path = "ffi", version = "0.19" }
-sequoia-ffi-macros = { path = "ffi-macros", version = "0.19" }
-sequoia-ipc = { path = "ipc", version = "0.19" }
-sequoia-net = { path = "net", version = "0.19" }
-sequoia-store = { path = "store", version = "0.19" }
-sequoia-tool = { path = "tool", version = "0.19" }
-sequoia-sop = { path = "sop", version = "0.19" }
-sequoia-sqv = { path = "sqv", version = "0.19" }
-sequoia-guide = { path = "guide", version = "0.19" }
+buffered-reader = { path = "buffered-reader" }
+sequoia-openpgp = { path = "openpgp", default-features = false }
+sequoia-openpgp-ffi = { path = "openpgp-ffi" }
+sequoia-autocrypt = { path = "autocrypt" }
+sequoia-core = { path = "core" }
+sequoia-ffi = { path = "ffi" }
+sequoia-ffi-macros = { path = "ffi-macros" }
+sequoia-ipc = { path = "ipc" }
+sequoia-net = { path = "net" }
+sequoia-store = { path = "store" }
+sequoia-tool = { path = "tool" }
+sequoia-sop = { path = "sop" }
+sequoia-sqv = { path = "sqv" }
+sequoia-guide = { path = "guide" }
+
+[features]
+default = ["crypto-nettle"]
+crypto-nettle = ["sequoia-openpgp/crypto-nettle"]
+crypto-cng = ["sequoia-openpgp/crypto-cng"]
 
 [lib]
 name = "sequoia"

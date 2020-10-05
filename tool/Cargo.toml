@@ -23,7 +23,7 @@ maintenance = { status = "actively-developed" }
 
 [dependencies]
 buffered-reader = { path = "../buffered-reader", version = "0.18" }
-sequoia-openpgp = { path = "../openpgp", version = "0.19" }
+sequoia-openpgp = { path = "../openpgp", version = "0.19", default-features = false }
 sequoia-autocrypt = { path = "../autocrypt", version = "0.19" }
 sequoia-core = { path = "../core", version = "0.19" }
 sequoia-ipc = { path = "../ipc", version = "0.19" }
