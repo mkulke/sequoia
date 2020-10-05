@@ -61,7 +61,6 @@ rpassword = "5.0"
 [features]
 default = ["compression", "crypto-cng"]
 # TODO(#333): Allow for/implement more backends
-crypto-nettle = ["nettle"]
 crypto-cng = ["winapi", "win-crypto-ng", "ed25519-dalek", "num-bigint-dig"]
 
 # The compression algorithms.
