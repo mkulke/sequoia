@@ -1,11 +1,26 @@
-//! Multi Precision Integers.
+//! Multiprecision Integers.
+//!
+//! Cryptographic objects like [public keys], [secret keys],
+//! [ciphertexts], and [signatures] are scalar numbers of arbitrary
+//! precision.  OpenPGP specifies that these are stored encoded as
+//! big-endian integers with leading zeros stripped (See [Section 3.2
+//! of RFC 4880]).  Multiprecision integers in OpenPGP are extended by
+//! [RFC 6637] to store curves and coordinates used in elliptic curve
+//! cryptography (ECC).
+//!
+//!   [public keys]: enum.PublicKey.html
+//!   [secret keys]: enum.SecretKeyMaterial.html
+//!   [ciphertexts]: enum.Ciphertext.html
+//!   [signatures]: enum.Signature.html
+//!   [Section 3.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-3.2
+//!   [RFC 6637]: https://tools.ietf.org/html/rfc6637
 
 use std::fmt;
 use std::cmp::Ordering;
 
-#[cfg(any(test, feature = "quickcheck"))]
+#[cfg(test)]
 use quickcheck::{Arbitrary, Gen};
-#[cfg(any(test, feature = "quickcheck"))]
+#[cfg(test)]
 use rand::Rng;
 
 use crate::types::{
@@ -21,10 +36,10 @@ use crate::serialize::Marshal;
 use crate::Error;
 use crate::Result;
 
-/// Holds a single MPI.
+/// A Multiprecision Integer.
 #[derive(Clone)]
 pub struct MPI {
-    /// Integer value as big-endian.
+    /// Integer value as big-endian with leading zeros stripped.
     value: Box<[u8]>,
 }
 
@@ -37,7 +52,7 @@ impl From<Vec<u8>> for MPI {
 impl MPI {
     /// Creates a new MPI.
     ///
-    /// This function takes care of leading zeros.
+    /// This function takes care of removing leading zeros.
     pub fn new(value: &[u8]) -> Self {
         let mut leading_zeros = 0;
         for b in value {
@@ -55,8 +70,20 @@ impl MPI {
         }
     }
 
-    /// Creates new MPI for EC point.
-    pub fn new_weierstrass(x: &[u8], y: &[u8], field_bits: usize) -> Self {
+    /// Creates new MPI encoding an uncompressed EC point.
+    ///
+    /// Encodes the given point on a elliptic curve (see [Section 6 of
+    /// RFC 6637] for details).  This is used to encode public keys
+    /// and ciphertexts for the NIST curves (`NistP256`, `NistP384`,
+    /// and `NistP521`).
+    ///
+    ///   [Section 6 of RFC 6637]: https://tools.ietf.org/html/rfc6637#section-6
+    pub fn new_point(x: &[u8], y: &[u8], field_bits: usize) -> Self {
+        Self::new_point_common(x, y, field_bits).into()
+    }
+
+    /// Common implementation shared between MPI and ProtectedMPI.
+    fn new_point_common(x: &[u8], y: &[u8], field_bits: usize) -> Vec<u8> {
         let field_sz = if field_bits % 8 > 0 { 1 } else { 0 } + field_bits / 8;
         let mut val = vec![0x0u8; 1 + 2 * field_sz];
         let x_missing = field_sz - x.len();
@@ -65,13 +92,33 @@ impl MPI {
         val[0] = 0x4;
         val[1 + x_missing..1 + field_sz].copy_from_slice(x);
         val[1 + field_sz + y_missing..].copy_from_slice(y);
+        val
+    }
 
-        MPI{
-            value: val.into_boxed_slice(),
-        }
+    /// Creates new MPI encoding a compressed EC point using native
+    /// encoding.
+    ///
+    /// Encodes the given point on a elliptic curve (see [Section 13.2
+    /// of RFC4880bis] for details).  This is used to encode public
+    /// keys and ciphertexts for the Bernstein curves (currently
+    /// `X25519`).
+    ///
+    ///   [Section 13.2 of RFC4880bis]: https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-09#section-13.2
+    pub fn new_compressed_point(x: &[u8]) -> Self {
+        Self::new_compressed_point_common(x).into()
+    }
+
+    /// Common implementation shared between MPI and ProtectedMPI.
+    fn new_compressed_point_common(x: &[u8]) -> Vec<u8> {
+        let mut val = vec![0; 1 + x.len()];
+        val[0] = 0x40;
+        val[1..].copy_from_slice(x);
+        val
     }
 
     /// Returns the length of the MPI in bits.
+    ///
+    /// Leading zero-bits are not included in the returned size.
     pub fn bits(&self) -> usize {
         self.value.len() * 8
             - self.value.get(0).map(|&b| b.leading_zeros() as usize)
@@ -79,12 +126,22 @@ impl MPI {
     }
 
     /// Returns the value of this MPI.
+    ///
+    /// Note that due to stripping of zero-bytes, the returned value
+    /// may be shorter than expected.
     pub fn value(&self) -> &[u8] {
         &self.value
     }
 
-    /// Dissects this MPI describing a point into the individual
-    /// coordinates.
+    /// Decodes an EC point encoded as MPI.
+    ///
+    /// Decodes the MPI into a point on an elliptic curve (see
+    /// [Section 6 of RFC 6637] and [Section 13.2 of RFC4880bis] for
+    /// details).  If the point is not compressed, the function
+    /// returns `(x, y)`.  If it is compressed, `y` will be empty.
+    ///
+    ///   [Section 6 of RFC 6637]: https://tools.ietf.org/html/rfc6637#section-6
+    ///   [Section 13.2 of RFC4880bis]: https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-09#section-13.2
     ///
     /// # Errors
     ///
@@ -92,6 +149,12 @@ impl MPI {
     /// supported, `Error::MalformedMPI` if the point is formatted
     /// incorrectly.
     pub fn decode_point(&self, curve: &Curve) -> Result<(&[u8], &[u8])> {
+        Self::decode_point_common(self.value(), curve)
+    }
+
+    /// Common implementation shared between MPI and ProtectedMPI.
+    fn decode_point_common<'a>(value: &'a [u8], curve: &Curve)
+                               -> Result<(&'a [u8], &'a [u8])> {
         const ED25519_KEY_SIZE: usize = 32;
         const CURVE25519_SIZE: usize = 32;
         use self::Curve::*;
@@ -100,21 +163,21 @@ impl MPI {
                 assert_eq!(CURVE25519_SIZE, ED25519_KEY_SIZE);
                 // This curve uses a custom compression format which
                 // only contains the X coordinate.
-                if self.value().len() != 1 + CURVE25519_SIZE {
+                if value.len() != 1 + CURVE25519_SIZE {
                     return Err(Error::MalformedMPI(
                         format!("Bad size of Curve25519 key: {} expected: {}",
-                                self.value().len(),
+                                value.len(),
                                 1 + CURVE25519_SIZE
                         )
                     ).into());
                 }
 
-                if self.value().get(0).map(|&b| b != 0x40).unwrap_or(true) {
+                if value.get(0).map(|&b| b != 0x40).unwrap_or(true) {
                     return Err(Error::MalformedMPI(
                         "Bad encoding of Curve25519 key".into()).into());
                 }
 
-                Ok((&self.value()[1..], &[]))
+                Ok((&value[1..], &[]))
             },
 
             _ => {
@@ -128,30 +191,25 @@ impl MPI {
                     + (2 // (x, y)
                        * coordinate_length);
 
-                if self.value().len() != expected_length {
+                if value.len() != expected_length {
                     return Err(Error::MalformedMPI(
                         format!("Invalid length of MPI: {} (expected {})",
-                                self.value().len(), expected_length)).into());
+                                value.len(), expected_length)).into());
                 }
 
-                if self.value().get(0).map(|&b| b != 0x04).unwrap_or(true) {
+                if value.get(0).map(|&b| b != 0x04).unwrap_or(true) {
                     return Err(Error::MalformedMPI(
                         format!("Bad prefix: {:?} (expected Some(0x04))",
-                                self.value().get(0))).into());
+                                value.get(0))).into());
                 }
 
-                Ok((&self.value()[1..1 + coordinate_length],
-                    &self.value()[1 + coordinate_length..]))
+                Ok((&value[1..1 + coordinate_length],
+                    &value[1 + coordinate_length..]))
             },
         }
     }
 
-    pub(crate) fn secure_memzero(&mut self) {
-        unsafe {
-            ::memsec::memzero(self.value.as_mut_ptr(), self.value.len());
-        }
-    }
-
+    /// Securely compares two MPIs in constant time.
     fn secure_memcmp(&self, other: &Self) -> Ordering {
         let cmp = unsafe {
             if self.value.len() == other.value.len() {
@@ -179,7 +237,6 @@ impl fmt::Debug for MPI {
 }
 
 impl Hash for MPI {
-    /// Update the Hash with a hash of the MPIs.
     fn hash(&self, hash: &mut hash::Context) {
         let len = self.bits() as u16;
 
@@ -188,7 +245,7 @@ impl Hash for MPI {
     }
 }
 
-#[cfg(any(test, feature = "quickcheck"))]
+#[cfg(test)]
 impl Arbitrary for MPI {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         loop {
@@ -229,7 +286,10 @@ impl std::hash::Hash for MPI {
 
 /// Holds a single MPI containing secrets.
 ///
-/// The memory will be cleared when the object is dropped.
+/// The memory will be cleared when the object is dropped.  Used by
+/// [`SecretKeyMaterial`] to protect secret keys.
+///
+///   [`SecretKeyMaterial`]: enum.SecretKeyMaterial.html
 #[derive(Clone)]
 pub struct ProtectedMPI {
     /// Integer value as big-endian.
@@ -256,6 +316,26 @@ impl From<MPI> for ProtectedMPI {
     }
 }
 
+impl PartialOrd for ProtectedMPI {
+    fn partial_cmp(&self, other: &ProtectedMPI) -> Option<Ordering> {
+        Some(self.secure_memcmp(other))
+    }
+}
+
+impl Ord for ProtectedMPI {
+    fn cmp(&self, other: &ProtectedMPI) -> Ordering {
+        self.partial_cmp(other).unwrap()
+    }
+}
+
+impl PartialEq for ProtectedMPI {
+    fn eq(&self, other: &ProtectedMPI) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for ProtectedMPI {}
+
 impl std::hash::Hash for ProtectedMPI {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.value.hash(state);
@@ -263,7 +343,34 @@ impl std::hash::Hash for ProtectedMPI {
 }
 
 impl ProtectedMPI {
+    /// Creates new MPI encoding an uncompressed EC point.
+    ///
+    /// Encodes the given point on a elliptic curve (see [Section 6 of
+    /// RFC 6637] for details).  This is used to encode public keys
+    /// and ciphertexts for the NIST curves (`NistP256`, `NistP384`,
+    /// and `NistP521`).
+    ///
+    ///   [Section 6 of RFC 6637]: https://tools.ietf.org/html/rfc6637#section-6
+    pub fn new_point(x: &[u8], y: &[u8], field_bits: usize) -> Self {
+        MPI::new_point_common(x, y, field_bits).into()
+    }
+
+    /// Creates new MPI encoding a compressed EC point using native
+    /// encoding.
+    ///
+    /// Encodes the given point on a elliptic curve (see [Section 13.2
+    /// of RFC4880bis] for details).  This is used to encode public
+    /// keys and ciphertexts for the Bernstein curves (currently
+    /// `X25519`).
+    ///
+    ///   [Section 13.2 of RFC4880bis]: https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-09#section-13.2
+    pub fn new_compressed_point(x: &[u8]) -> Self {
+        MPI::new_compressed_point_common(x).into()
+    }
+
     /// Returns the length of the MPI in bits.
+    ///
+    /// Leading zero-bits are not included in the returned size.
     pub fn bits(&self) -> usize {
         self.value.len() * 8
             - self.value.get(0).map(|&b| b.leading_zeros() as usize)
@@ -271,8 +378,38 @@ impl ProtectedMPI {
     }
 
     /// Returns the value of this MPI.
+    ///
+    /// Note that due to stripping of zero-bytes, the returned value
+    /// may be shorter than expected.
     pub fn value(&self) -> &[u8] {
         &self.value
+    }
+
+    /// Decodes an EC point encoded as MPI.
+    ///
+    /// Decodes the MPI into a point on an elliptic curve (see
+    /// [Section 6 of RFC 6637] and [Section 13.2 of RFC4880bis] for
+    /// details).  If the point is not compressed, the function
+    /// returns `(x, y)`.  If it is compressed, `y` will be empty.
+    ///
+    ///   [Section 6 of RFC 6637]: https://tools.ietf.org/html/rfc6637#section-6
+    ///   [Section 13.2 of RFC4880bis]: https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-09#section-13.2
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::UnsupportedEllipticCurve` if the curve is not
+    /// supported, `Error::MalformedMPI` if the point is formatted
+    /// incorrectly.
+    pub fn decode_point(&self, curve: &Curve) -> Result<(&[u8], &[u8])> {
+        MPI::decode_point_common(self.value(), curve)
+    }
+
+    /// Securely compares two MPIs in constant time.
+    fn secure_memcmp(&self, other: &Self) -> Ordering {
+        (self.value.len() as i32).cmp(&(other.value.len() as i32))
+            .then(
+                // Protected compares in constant time.
+                self.value.cmp(&other.value))
     }
 }
 
@@ -288,10 +425,15 @@ impl fmt::Debug for ProtectedMPI {
     }
 }
 
-/// Holds a public key.
+/// A public key.
 ///
 /// Provides a typed and structured way of storing multiple MPIs (and
-/// the occasional elliptic curve) in packets.
+/// the occasional elliptic curve) in [`Key`] packets.
+///
+///   [`Key`]: ../../packet/enum.Key.html
+///
+/// Note: This enum cannot be exhaustively matched to allow future
+/// extensions.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub enum PublicKey {
     /// RSA public key.
@@ -408,13 +550,12 @@ impl PublicKey {
 }
 
 impl Hash for PublicKey {
-    /// Update the Hash with a hash of the MPIs.
     fn hash(&self, hash: &mut hash::Context) {
         self.serialize(hash).expect("hashing does not fail")
     }
 }
 
-#[cfg(any(test, feature = "quickcheck"))]
+#[cfg(test)]
 impl Arbitrary for PublicKey {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         use self::PublicKey::*;
@@ -459,12 +600,20 @@ impl Arbitrary for PublicKey {
     }
 }
 
-/// Holds a secret key.
+/// A secret key.
 ///
 /// Provides a typed and structured way of storing multiple MPIs in
-/// packets.
+/// [`Key`] packets.  Secret key components are protected by storing
+/// them using [`ProtectedMPI`].
+///
+///   [`Key`]: ../../packet/enum.Key.html
+///   [`ProtectedMPI`]: struct.ProtectedMPI.html
+///
+/// Note: This enum cannot be exhaustively matched to allow future
+/// extensions.
 // Deriving Hash here is okay: PartialEq is manually implemented to
 // ensure that secrets are compared in constant-time.
+#[allow(clippy::derive_hash_xor_eq)]
 #[derive(Clone, Hash)]
 pub enum SecretKeyMaterial {
     /// RSA secret key.
@@ -564,13 +713,6 @@ impl fmt::Debug for SecretKeyMaterial {
     }
 }
 
-fn secure_mpi_cmp(a: &ProtectedMPI, b: &ProtectedMPI) -> Ordering {
-    let ord1 = a.bits().cmp(&b.bits());
-    let ord2 = secure_cmp(&a.value, &b.value);
-
-    if ord1 == Ordering::Equal { ord2 } else { ord1 }
-}
-
 impl PartialOrd for SecretKeyMaterial {
     fn partial_cmp(&self, other: &SecretKeyMaterial) -> Option<Ordering> {
         use std::iter;
@@ -591,10 +733,10 @@ impl PartialOrd for SecretKeyMaterial {
         let ret = match (self, other) {
             (&SecretKeyMaterial::RSA{ d: ref d1, p: ref p1, q: ref q1, u: ref u1 }
             ,&SecretKeyMaterial::RSA{ d: ref d2, p: ref p2, q: ref q2, u: ref u2 }) => {
-                let o1 = secure_mpi_cmp(d1, d2);
-                let o2 = secure_mpi_cmp(p1, p2);
-                let o3 = secure_mpi_cmp(q1, q2);
-                let o4 = secure_mpi_cmp(u1, u2);
+                let o1 = d1.cmp(d2);
+                let o2 = p1.cmp(p2);
+                let o3 = q1.cmp(q2);
+                let o4 = u1.cmp(u2);
 
                 if o1 != Ordering::Equal { return Some(o1); }
                 if o2 != Ordering::Equal { return Some(o2); }
@@ -603,36 +745,34 @@ impl PartialOrd for SecretKeyMaterial {
             }
             (&SecretKeyMaterial::DSA{ x: ref x1 }
             ,&SecretKeyMaterial::DSA{ x: ref x2 }) => {
-                secure_mpi_cmp(x1, x2)
+                x1.cmp(x2)
             }
             (&SecretKeyMaterial::ElGamal{ x: ref x1 }
             ,&SecretKeyMaterial::ElGamal{ x: ref x2 }) => {
-                secure_mpi_cmp(x1, x2)
+                x1.cmp(x2)
             }
             (&SecretKeyMaterial::EdDSA{ scalar: ref scalar1 }
             ,&SecretKeyMaterial::EdDSA{ scalar: ref scalar2 }) => {
-                secure_mpi_cmp(scalar1, scalar2)
+                scalar1.cmp(scalar2)
             }
             (&SecretKeyMaterial::ECDSA{ scalar: ref scalar1 }
             ,&SecretKeyMaterial::ECDSA{ scalar: ref scalar2 }) => {
-                secure_mpi_cmp(scalar1, scalar2)
+                scalar1.cmp(scalar2)
             }
             (&SecretKeyMaterial::ECDH{ scalar: ref scalar1 }
             ,&SecretKeyMaterial::ECDH{ scalar: ref scalar2 }) => {
-                secure_mpi_cmp(scalar1, scalar2)
+                scalar1.cmp(scalar2)
             }
             (&SecretKeyMaterial::Unknown{ mpis: ref mpis1, rest: ref rest1 }
             ,&SecretKeyMaterial::Unknown{ mpis: ref mpis2, rest: ref rest2 }) => {
                 let o1 = secure_cmp(rest1, rest2);
                 let on = mpis1.iter().zip(mpis2.iter()).map(|(a,b)| {
-                    secure_mpi_cmp(a, b)
+                    a.cmp(b)
                 }).collect::<Vec<_>>();
 
-                iter::once(&o1)
-                    .chain(on.iter())
-                    .find(|&&x| x != Ordering::Equal)
-                    .cloned()
-                    .unwrap_or(Ordering::Equal)
+                iter::once(o1)
+                    .chain(on.iter().cloned())
+                    .fold(Ordering::Equal, |acc, x| acc.then(x))
             }
 
             (a, b) => {
@@ -678,13 +818,12 @@ impl SecretKeyMaterial {
 }
 
 impl Hash for SecretKeyMaterial {
-    /// Update the Hash with a hash of the MPIs.
     fn hash(&self, hash: &mut hash::Context) {
         self.serialize(hash).expect("hashing does not fail")
     }
 }
 
-#[cfg(any(test, feature = "quickcheck"))]
+#[cfg(test)]
 impl Arbitrary for SecretKeyMaterial {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         match g.gen_range(0, 6) {
@@ -720,10 +859,36 @@ impl Arbitrary for SecretKeyMaterial {
     }
 }
 
-/// Holds a ciphertext.
+/// Checksum method for secret key material.
+///
+/// Secret key material may be protected by a checksum.  See [Section
+/// 5.5.3 of RFC 4880] for details.
+///
+///   [Section 5.5.3 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.5.3
+#[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
+pub enum SecretKeyChecksum {
+    /// SHA1 over the decrypted secret key.
+    SHA1,
+
+    /// Sum of the decrypted secret key octets modulo 65536.
+    Sum16,
+}
+
+impl Default for SecretKeyChecksum {
+    fn default() -> Self {
+        SecretKeyChecksum::SHA1
+    }
+}
+
+/// An encrypted session key.
 ///
 /// Provides a typed and structured way of storing multiple MPIs in
-/// packets.
+/// [`PKESK`] packets.
+///
+///   [`PKESK`]: ../../packet/enum.PKESK.html
+///
+/// Note: This enum cannot be exhaustively matched to allow future
+/// extensions.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub enum Ciphertext {
     /// RSA ciphertext.
@@ -732,7 +897,7 @@ pub enum Ciphertext {
         c: MPI,
     },
 
-    /// ElGamal ciphertext
+    /// ElGamal ciphertext.
     ElGamal {
         /// Ephemeral key.
         e: MPI,
@@ -781,13 +946,12 @@ impl Ciphertext {
 }
 
 impl Hash for Ciphertext {
-    /// Update the Hash with a hash of the MPIs.
     fn hash(&self, hash: &mut hash::Context) {
         self.serialize(hash).expect("hashing does not fail")
     }
 }
 
-#[cfg(any(test, feature = "quickcheck"))]
+#[cfg(test)]
 impl Arbitrary for Ciphertext {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         match g.gen_range(0, 3) {
@@ -802,17 +966,26 @@ impl Arbitrary for Ciphertext {
 
             2 => Ciphertext::ECDH {
                 e: MPI::arbitrary(g),
-                key: <Vec<u8>>::arbitrary(g).into_boxed_slice()
+                key: {
+                    let mut k = <Vec<u8>>::arbitrary(g);
+                    k.truncate(255);
+                    k.into_boxed_slice()
+                },
             },
             _ => unreachable!(),
         }
     }
 }
 
-/// Holds a signature.
+/// A cryptographic signature.
 ///
 /// Provides a typed and structured way of storing multiple MPIs in
-/// packets.
+/// [`Signature`] packets.
+///
+///   [`Signature`]: ../../packet/enum.Signature.html
+///
+/// Note: This enum cannot be exhaustively matched to allow future
+/// extensions.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub enum Signature {
     /// RSA signature.
@@ -867,13 +1040,12 @@ pub enum Signature {
 }
 
 impl Hash for Signature {
-    /// Update the Hash with a hash of the MPIs.
     fn hash(&self, hash: &mut hash::Context) {
         self.serialize(hash).expect("hashing does not fail")
     }
 }
 
-#[cfg(any(test, feature = "quickcheck"))]
+#[cfg(test)]
 impl Arbitrary for Signature {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         match g.gen_range(0, 4) {
@@ -919,31 +1091,24 @@ mod tests {
             use std::io::Cursor;
             use crate::PublicKeyAlgorithm::*;
 
-            let buf = Vec::<u8>::default();
-            let mut cur = Cursor::new(buf);
-
-            pk.serialize(&mut cur).unwrap();
+            let mut buf = Vec::new();
+            pk.serialize(&mut buf).unwrap();
+            let cur = Cursor::new(buf);
 
             #[allow(deprecated)]
             let pk_ = match &pk {
                 PublicKey::RSA { .. } =>
-                    PublicKey::parse(
-                        RSAEncryptSign, cur.into_inner()).unwrap(),
+                    PublicKey::parse(RSAEncryptSign, cur).unwrap(),
                 PublicKey::DSA { .. } =>
-                    PublicKey::parse(
-                        DSA, cur.into_inner()).unwrap(),
+                    PublicKey::parse(DSA, cur).unwrap(),
                 PublicKey::ElGamal { .. } =>
-                    PublicKey::parse(
-                        ElGamalEncrypt, cur.into_inner()).unwrap(),
+                    PublicKey::parse(ElGamalEncrypt, cur).unwrap(),
                 PublicKey::EdDSA { .. } =>
-                    PublicKey::parse(
-                        EdDSA, cur.into_inner()).unwrap(),
+                    PublicKey::parse(EdDSA, cur).unwrap(),
                 PublicKey::ECDSA { .. } =>
-                    PublicKey::parse(
-                        ECDSA, cur.into_inner()).unwrap(),
+                    PublicKey::parse(ECDSA, cur).unwrap(),
                 PublicKey::ECDH { .. } =>
-                    PublicKey::parse(
-                        ECDH, cur.into_inner()).unwrap(),
+                    PublicKey::parse(ECDH, cur).unwrap(),
 
                 PublicKey::Unknown { .. } => unreachable!(),
                 PublicKey::__Nonexhaustive => unreachable!(),
@@ -977,31 +1142,24 @@ mod tests {
             use std::io::Cursor;
             use crate::PublicKeyAlgorithm::*;
 
-            let buf = Vec::<u8>::default();
-            let mut cur = Cursor::new(buf);
-
-            sk.serialize(&mut cur).unwrap();
+            let mut buf = Vec::new();
+            sk.serialize(&mut buf).unwrap();
+            let cur = Cursor::new(buf);
 
             #[allow(deprecated)]
             let sk_ = match &sk {
                 SecretKeyMaterial::RSA { .. } =>
-                    SecretKeyMaterial::parse(
-                        RSAEncryptSign, cur.into_inner()).unwrap(),
+                    SecretKeyMaterial::parse(RSAEncryptSign, cur).unwrap(),
                 SecretKeyMaterial::DSA { .. } =>
-                    SecretKeyMaterial::parse(
-                        DSA, cur.into_inner()).unwrap(),
+                    SecretKeyMaterial::parse(DSA, cur).unwrap(),
                 SecretKeyMaterial::EdDSA { .. } =>
-                    SecretKeyMaterial::parse(
-                        EdDSA, cur.into_inner()).unwrap(),
+                    SecretKeyMaterial::parse(EdDSA, cur).unwrap(),
                 SecretKeyMaterial::ECDSA { .. } =>
-                    SecretKeyMaterial::parse(
-                        ECDSA, cur.into_inner()).unwrap(),
+                    SecretKeyMaterial::parse(ECDSA, cur).unwrap(),
                 SecretKeyMaterial::ECDH { .. } =>
-                    SecretKeyMaterial::parse(
-                        ECDH, cur.into_inner()).unwrap(),
+                    SecretKeyMaterial::parse(ECDH, cur).unwrap(),
                 SecretKeyMaterial::ElGamal { .. } =>
-                    SecretKeyMaterial::parse(
-                        ElGamalEncrypt, cur.into_inner()).unwrap(),
+                    SecretKeyMaterial::parse(ElGamalEncrypt, cur).unwrap(),
 
                 SecretKeyMaterial::Unknown { .. } => unreachable!(),
                 SecretKeyMaterial::__Nonexhaustive => unreachable!(),
@@ -1016,22 +1174,18 @@ mod tests {
             use std::io::Cursor;
             use crate::PublicKeyAlgorithm::*;
 
-            let buf = Vec::<u8>::default();
-            let mut cur = Cursor::new(buf);
-
-            ct.serialize(&mut cur).unwrap();
+            let mut buf = Vec::new();
+            ct.serialize(&mut buf).unwrap();
+            let cur = Cursor::new(buf);
 
             #[allow(deprecated)]
             let ct_ = match &ct {
                 Ciphertext::RSA { .. } =>
-                    Ciphertext::parse(
-                        RSAEncryptSign, cur.into_inner()).unwrap(),
+                    Ciphertext::parse(RSAEncryptSign, cur).unwrap(),
                 Ciphertext::ElGamal { .. } =>
-                    Ciphertext::parse(
-                        ElGamalEncrypt, cur.into_inner()).unwrap(),
+                    Ciphertext::parse(ElGamalEncrypt, cur).unwrap(),
                 Ciphertext::ECDH { .. } =>
-                    Ciphertext::parse(
-                        ECDH, cur.into_inner()).unwrap(),
+                    Ciphertext::parse(ECDH, cur).unwrap(),
 
                 Ciphertext::Unknown { .. } => unreachable!(),
                 Ciphertext::__Nonexhaustive => unreachable!(),
@@ -1046,28 +1200,22 @@ mod tests {
             use std::io::Cursor;
             use crate::PublicKeyAlgorithm::*;
 
-            let buf = Vec::<u8>::default();
-            let mut cur = Cursor::new(buf);
-
-            sig.serialize(&mut cur).unwrap();
+            let mut buf = Vec::new();
+            sig.serialize(&mut buf).unwrap();
+            let cur = Cursor::new(buf);
 
             #[allow(deprecated)]
             let sig_ = match &sig {
                 Signature::RSA { .. } =>
-                    Signature::parse(
-                        RSAEncryptSign, cur.into_inner()).unwrap(),
+                    Signature::parse(RSAEncryptSign, cur).unwrap(),
                 Signature::DSA { .. } =>
-                    Signature::parse(
-                        DSA, cur.into_inner()).unwrap(),
+                    Signature::parse(DSA, cur).unwrap(),
                 Signature::ElGamal { .. } =>
-                    Signature::parse(
-                        ElGamalEncryptSign, cur.into_inner()).unwrap(),
+                    Signature::parse(ElGamalEncryptSign, cur).unwrap(),
                 Signature::EdDSA { .. } =>
-                    Signature::parse(
-                        EdDSA, cur.into_inner()).unwrap(),
+                    Signature::parse(EdDSA, cur).unwrap(),
                 Signature::ECDSA { .. } =>
-                    Signature::parse(
-                        ECDSA, cur.into_inner()).unwrap(),
+                    Signature::parse(ECDSA, cur).unwrap(),
 
                 Signature::Unknown { .. } => unreachable!(),
                 Signature::__Nonexhaustive => unreachable!(),

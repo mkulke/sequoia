@@ -1,38 +1,84 @@
 //! Cryptographic primitives.
+//!
+//! This module contains cryptographic primitives as defined and used
+//! by OpenPGP.  It abstracts over the cryptographic library chosen at
+//! compile time.  Most of the time, it will not be necessary to
+//! explicitly use types from this module directly, but they are used
+//! in the API (e.g. [`Password`]).  Advanced users may use these
+//! primitives to provide custom extensions to OpenPGP.
+//!
+//!   [`Password`]: struct.Password.html
+//!
+//! # Common Operations
+//!
+//!  - *Converting a string to a [`Password`]*: Use [`Password::from`].
+//!  - *Create a session key*: Use [`SessionKey::new`].
+//!  - *Use secret keys*: See the [`KeyPair` example].
+//!
+//!   [`Password::from`]: https://doc.rust-lang.org/std/convert/trait.From.html
+//!   [`SessionKey::new`]: struct.SessionKey.html#method.new
+//!   [`KeyPair` example]: struct.KeyPair.html#examples
 
-use std::io::Read;
 use std::ops::{Deref, DerefMut};
 use std::fmt;
-
-use buffered_reader::BufferedReader;
-
-use crate::types::HashAlgorithm;
-use crate::Result;
 
 pub(crate) mod aead;
 mod asymmetric;
 pub use self::asymmetric::{Signer, Decryptor, KeyPair};
 mod backend;
 pub use backend::random;
-pub(crate) mod ecdh;
+pub mod ecdh;
 pub mod hash;
-mod keygrip;
-pub use self::keygrip::Keygrip;
 pub mod mem;
 pub mod mpi;
 mod s2k;
 pub use s2k::S2K;
-pub mod sexp;
 pub(crate) mod symmetric;
 
 /// Holds a session key.
 ///
-/// The session key is cleared when dropped.
+/// The session key is cleared when dropped.  Sequoia uses this type
+/// to ensure that session keys are not left in memory returned to the
+/// allocator.
+///
+/// Session keys can be generated using [`SessionKey::new`], or
+/// converted from various types using [`From`].
+///
+///   [`SessionKey::new`]: #method.new
+///   [`From`]: https://doc.rust-lang.org/std/convert/trait.From.html
 #[derive(Clone, PartialEq, Eq)]
 pub struct SessionKey(mem::Protected);
 
 impl SessionKey {
     /// Creates a new session key.
+    ///
+    /// Creates a new session key `size` bytes in length initialized
+    /// using a strong cryptographic number generator.
+    ///
+    /// # Examples
+    ///
+    /// This creates a session key and encrypts it for a given
+    /// recipient key producing a [`PKESK`] packet.
+    ///
+    ///   [`PKESK`]: ../packet/enum.PKESK.html
+    ///
+    /// ```
+    /// # fn main() -> sequoia_openpgp::Result<()> {
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::types::{Curve, SymmetricAlgorithm};
+    /// use openpgp::crypto::SessionKey;
+    /// use openpgp::packet::prelude::*;
+    ///
+    /// let cipher = SymmetricAlgorithm::AES256;
+    /// let sk = SessionKey::new(cipher.key_size().unwrap());
+    ///
+    /// let key: Key<key::SecretParts, key::UnspecifiedRole> =
+    ///     Key4::generate_ecc(false, Curve::Cv25519)?.into();
+    ///
+    /// let pkesk: PKESK =
+    ///     PKESK3::for_recipient(cipher, &sk, &key)?.into();
+    /// # Ok(()) }
+    /// ```
     pub fn new(size: usize) -> Self {
         let mut sk: mem::Protected = vec![0; size].into();
         random(&mut sk);
@@ -98,10 +144,30 @@ impl fmt::Debug for SessionKey {
 
 /// Holds a password.
 ///
+/// `Password`s can be converted from various types using [`From`].
 /// The password is encrypted in memory and only decrypted on demand.
 /// See [`mem::Encrypted`] for details.
 ///
-///  [`mem::Encrypted`]: mem/struct.Encrypted.html
+///   [`From`]: https://doc.rust-lang.org/std/convert/trait.From.html
+///   [`mem::Encrypted`]: mem/struct.Encrypted.html
+///
+/// # Examples
+///
+/// ```
+/// use sequoia_openpgp as openpgp;
+/// use openpgp::crypto::Password;
+///
+/// // Convert from a &str.
+/// let p: Password = "hunter2".into();
+///
+/// // Convert from a &[u8].
+/// let p: Password = b"hunter2"[..].into();
+///
+/// // Convert from a String.
+/// let p: Password = String::from("hunter2").into();
+///
+/// // ...
+/// ```
 #[derive(Clone, PartialEq, Eq)]
 pub struct Password(mem::Encrypted);
 
@@ -147,77 +213,22 @@ impl fmt::Debug for Password {
 
 impl Password {
     /// Maps the given function over the password.
+    ///
+    /// The password is stored encrypted in memory.  This function
+    /// temporarily decrypts it for the given function to use.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::crypto::Password;
+    ///
+    /// let p: Password = "hunter2".into();
+    /// p.map(|p| assert_eq!(p.as_ref(), &b"hunter2"[..]));
+    /// ```
     pub fn map<F, T>(&self, fun: F) -> T
         where F: FnMut(&mem::Protected) -> T
     {
         self.0.map(fun)
-    }
-}
-
-
-/// Hashes the given reader.
-///
-/// This can be used to verify detached signatures.  For a more
-/// convenient method, see [`DetachedVerifier`].
-///
-///  [`DetachedVerifier`]: ../parse/stream/struct.DetachedVerifier.html
-pub fn hash_reader<R: Read>(reader: R, algos: &[HashAlgorithm])
-    -> Result<Vec<hash::Context>>
-{
-    let reader
-        = buffered_reader::Generic::with_cookie(
-            reader, None, Default::default());
-    hash_buffered_reader(reader, algos)
-}
-
-/// Hashes the given buffered reader.
-///
-/// This can be used to verify detached signatures.  For a more
-/// convenient method, see [`DetachedVerifier`].
-///
-///  [`DetachedVerifier`]: ../parse/stream/struct.DetachedVerifier.html
-pub(crate) fn hash_buffered_reader<R>(reader: R, algos: &[HashAlgorithm])
-    -> Result<Vec<hash::Context>>
-    where R: BufferedReader<crate::parse::Cookie>,
-{
-    use std::mem;
-
-    use crate::parse::HashedReader;
-    use crate::parse::HashesFor;
-
-    let mut reader
-        = HashedReader::new(reader, HashesFor::Signature, algos.to_vec());
-
-    // Hash all of the data.
-    reader.drop_eof()?;
-
-    let hashes =
-        mem::replace(&mut reader.cookie_mut().sig_group_mut().hashes,
-                     Default::default());
-    Ok(hashes)
-}
-
-
-#[test]
-fn hash_reader_test() {
-    use std::collections::HashMap;
-
-    let expected: HashMap<HashAlgorithm, &str> = [
-        (HashAlgorithm::SHA1, "7945E3DA269C25C04F9EF435A5C0F25D9662C771"),
-        (HashAlgorithm::SHA512, "DDE60DB05C3958AF1E576CD006A7F3D2C343DD8C8DECE789A15D148DF90E6E0D1454DE734F8343502CA93759F22C8F6221BE35B6BDE9728BD12D289122437CB1"),
-    ].iter().cloned().collect();
-
-    let result =
-        hash_reader(std::io::Cursor::new(crate::tests::manifesto()),
-                    &expected.keys().cloned().collect::<Vec<HashAlgorithm>>())
-        .unwrap();
-
-    for mut hash in result.into_iter() {
-        let algo = hash.algo();
-        let mut digest = vec![0u8; hash.digest_size()];
-        hash.digest(&mut digest);
-
-        assert_eq!(*expected.get(&algo).unwrap(),
-                   &crate::fmt::to_hex(&digest[..], false));
     }
 }

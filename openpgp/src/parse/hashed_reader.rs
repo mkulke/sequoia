@@ -6,8 +6,11 @@ use std::fmt;
 use buffered_reader::BufferedReader;
 use buffered_reader::buffered_reader_generic_read_impl;
 
-use crate::HashAlgorithm;
-use crate::parse::{Cookie, HashesFor, Hashing};
+use crate::{
+    Result,
+    types::HashAlgorithm,
+};
+use crate::parse::{Cookie, HashesFor, Hashing, HashingMode};
 
 const TRACE : bool = false;
 
@@ -35,18 +38,50 @@ impl<R: BufferedReader<Cookie>> HashedReader<R> {
     /// Instantiates a new hashed reader.  `hashes_for` is the hash's
     /// purpose.  `algos` is a list of algorithms for which we should
     /// compute the hash.
-    pub fn new(reader: R, hashes_for: HashesFor, algos: Vec<HashAlgorithm>)
+    pub fn new(reader: R, hashes_for: HashesFor,
+               algos: Vec<HashingMode<HashAlgorithm>>)
             -> Self {
         let mut cookie = Cookie::default();
-        for &algo in &algos {
+        for mode in &algos {
             cookie.sig_group_mut().hashes
-                .push(algo.context().unwrap());
+                .push(mode.map(|algo| algo.context().unwrap())); // XXX: Don't unwrap.
         }
         cookie.hashes_for = hashes_for;
 
         HashedReader {
             reader,
             cookie,
+        }
+    }
+}
+
+/// Updates the given hash context normalizing line endings to "\r\n"
+/// on the fly.
+pub(crate) fn hash_update_text(h: &mut crate::crypto::hash::Context,
+                               text: &[u8]) {
+    let mut line = text;
+    while ! line.is_empty() {
+        let mut next = 0;
+        for (i, c) in line.iter().cloned().enumerate() {
+            match c {
+                b'\r' | b'\n' => {
+                    h.update(&line[..i]);
+                    h.update(b"\r\n");
+                    next = i + 1;
+                    if c == b'\r' && line.get(next) == Some(&b'\n') {
+                        next += 1;
+                    }
+                    break;
+                },
+                _ => (),
+            }
+        }
+
+        if next > 0 {
+            line = &line[next..];
+        } else {
+            h.update(line);
+            break;
         }
     }
 }
@@ -69,12 +104,16 @@ impl Cookie {
             // We fix that here by hashing the stashed data into the
             // former topmost signature-group's hash.
             assert!(ngroups > 1);
-            for h in self.sig_groups[ngroups-2].hashes.iter_mut()
+            for mode in self.sig_groups[ngroups-2].hashes.iter_mut()
             {
                 t!("({:?}): group {} {:?} hashing {} stashed bytes.",
-                   hashes_for, ngroups-2, h.algo(), data.len());
+                   hashes_for, ngroups-2, mode.map(|ctx| ctx.algo()),
+                   data.len());
 
-                h.update(&stashed_data);
+                match mode {
+                    HashingMode::Binary(h) => h.update(&stashed_data),
+                    HashingMode::Text(h) => hash_update_text(h, &stashed_data),
+                }
             }
         }
 
@@ -100,10 +139,13 @@ impl Cookie {
                 return;
             }
 
-            for h in sig_group.hashes.iter_mut() {
+            for mode in sig_group.hashes.iter_mut() {
                 t!("{:?}): group {} {:?} hashing {} bytes.",
-                   hashes_for, i, h.algo(), data.len());
-                h.update(data);
+                   hashes_for, i, mode.map(|ctx| ctx.algo()), data.len());
+                match mode {
+                    HashingMode::Binary(h) => h.update(&data),
+                    HashingMode::Text(h) => hash_update_text(h, &data),
+                }
             }
         }
     }
@@ -221,6 +263,29 @@ impl<R: BufferedReader<Cookie>>
     }
 }
 
+/// Hashes the given buffered reader.
+///
+/// This can be used to verify detached signatures.  For a more
+/// convenient method, see [`DetachedVerifier`].
+///
+///  [`DetachedVerifier`]: ../parse/stream/struct.DetachedVerifier.html
+pub(crate) fn hash_buffered_reader<R>(reader: R,
+                                      algos: &[HashingMode<HashAlgorithm>])
+    -> Result<Vec<HashingMode<crate::crypto::hash::Context>>>
+    where R: BufferedReader<crate::parse::Cookie>,
+{
+    let mut reader
+        = HashedReader::new(reader, HashesFor::Signature, algos.to_vec());
+
+    // Hash all of the data.
+    reader.drop_eof()?;
+
+    let hashes =
+        mem::replace(&mut reader.cookie_mut().sig_group_mut().hashes,
+                     Default::default());
+    Ok(hashes)
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -256,7 +321,7 @@ mod test {
                     "5bea68c8c696bbed95e152d61c446ad0e05bf68f7df39cbfeae568bee6f6691c840fb1d5dd2599737b08dbb33eed344b"),
                     (HashAlgorithm::SHA512,
                      "5fa032487774082af5cc833c2db5f943e31cc75cd2bfaa7d9bbd0ccabf5403b6dbcb484254727a524588f20e9ef336d8ce8533332c5ac1b9d50af3003a0da8d8"),
-                ].iter().cloned().collect(),
+                ].iter().filter(|(hash, _)| hash.is_supported()).cloned().collect(),
             },
         ];
 
@@ -266,7 +331,9 @@ mod test {
                     test.data, None, Default::default());
             let mut reader
                 = HashedReader::new(reader, HashesFor::MDC,
-                                    test.expected.keys().cloned().collect());
+                                    test.expected.keys().cloned()
+                                    .map(|algo| HashingMode::Binary(algo))
+                                    .collect());
 
             assert_eq!(reader.steal_eof().unwrap(), test.data);
 
@@ -274,7 +341,8 @@ mod test {
 
             let mut hashes = mem::replace(&mut cookie.sig_group_mut().hashes,
                                           Default::default());
-            for hash in hashes.iter_mut() {
+            for mode in hashes.iter_mut() {
+                let hash = mode.as_mut();
                 let algo = hash.algo();
                 let mut digest = vec![0u8; hash.digest_size()];
                 hash.digest(&mut digest);
@@ -285,6 +353,60 @@ mod test {
                            .unwrap()[..],
                            "Algo: {:?}", algo);
             }
+        }
+    }
+
+    #[test]
+    fn hash_update_text() -> crate::Result<()> {
+        for text in &[
+            "one\r\ntwo\r\nthree",
+            "one\ntwo\nthree",
+            "one\rtwo\rthree",
+            "one\ntwo\r\nthree",
+        ] {
+            let mut ctx = HashAlgorithm::SHA256.context()?;
+            super::hash_update_text(&mut ctx, text.as_bytes());
+            let mut digest = vec![0; ctx.digest_size()];
+            ctx.digest(&mut digest);
+            assert_eq!(
+                &crate::fmt::hex::encode(&digest),
+                "5536758151607BB81CE8D6F49189B2E84763DA9EA84965AB7327E704DAE415EB");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn hash_reader_test() {
+        use std::collections::HashMap;
+
+        let expected: HashMap<HashAlgorithm, &str> = [
+            (HashAlgorithm::SHA1, "7945E3DA269C25C04F9EF435A5C0F25D9662C771"),
+            (HashAlgorithm::SHA512, "DDE60DB05C3958AF1E576CD006A7F3D2C343DD8C\
+                                     8DECE789A15D148DF90E6E0D1454DE734F834350\
+                                     2CA93759F22C8F6221BE35B6BDE9728BD12D2891\
+                                     22437CB1"),
+        ].iter().cloned().collect();
+
+        let reader
+            = buffered_reader::Generic::with_cookie(
+                std::io::Cursor::new(crate::tests::manifesto()),
+                None, Default::default());
+        let result =
+            hash_buffered_reader(
+                reader,
+                &expected.keys().cloned()
+                    .map(|algo| HashingMode::Binary(algo)).
+                    collect::<Vec<_>>())
+            .unwrap();
+
+        for mut mode in result.into_iter() {
+            let hash = mode.as_mut();
+            let algo = hash.algo();
+            let mut digest = vec![0u8; hash.digest_size()];
+            hash.digest(&mut digest);
+
+            assert_eq!(*expected.get(&algo).unwrap(),
+                       &crate::fmt::to_hex(&digest[..], false));
         }
     }
 }

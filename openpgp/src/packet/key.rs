@@ -91,7 +91,7 @@ use std::cmp::Ordering;
 use std::convert::TryInto;
 use std::time;
 
-#[cfg(any(test, feature = "quickcheck"))]
+#[cfg(test)]
 use quickcheck::{Arbitrary, Gen};
 
 use crate::Error;
@@ -1345,10 +1345,10 @@ impl Unencrypted {
     /// Encrypts the secret key material using `password`.
     ///
     /// This encrypts the secret key material using an [AES 256] key
-    /// derived from the `password` using the default [`s2k`] scheme.
+    /// derived from the `password` using the default [`S2K`] scheme.
     ///
     /// [AES 256]: ../../types/enum.SymmetricAlgorithm.html#variant.AES256
-    /// [`s2k`]: ../../crypto/enum.S2K.html
+    /// [`S2K`]: ../../crypto/enum.S2K.html
     pub fn encrypt(&self, password: &Password)
         -> Result<Encrypted>
     {
@@ -1363,14 +1363,16 @@ impl Unencrypted {
         let mut trash = vec![0u8; algo.block_size()?];
         crypto::random(&mut trash);
 
+        let checksum = Default::default();
         let mut esk = Vec::new();
         {
             let mut encryptor = Encryptor::new(algo, &key, &mut esk)?;
             encryptor.write_all(&trash)?;
-            self.map(|mpis| mpis.serialize_chksumd(&mut encryptor))?;
+            self.map(|mpis| mpis.serialize_with_checksum(&mut encryptor,
+                                                         checksum))?;
         }
 
-        Ok(Encrypted { s2k, algo, ciphertext: esk.into_boxed_slice() })
+        Ok(Encrypted::new(s2k, algo, Some(checksum), esk.into_boxed_slice()))
     }
 }
 
@@ -1379,22 +1381,76 @@ impl Unencrypted {
 /// This data structure is used by the [`SecretKeyMaterial`] enum.
 ///
 /// [`SecretKeyMaterial`]: enum.SecretKeyMaterial.html
-#[derive(PartialEq, Eq, Hash, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct Encrypted {
     /// Key derivation mechanism to use.
     s2k: S2K,
     /// Symmetric algorithm used to encrypt the secret key material.
     algo: SymmetricAlgorithm,
+    /// Checksum method.
+    checksum: Option<mpi::SecretKeyChecksum>,
     /// Encrypted MPIs prefixed with the IV.
-    ciphertext: Box<[u8]>,
+    ///
+    /// If we recognized the S2K object during parsing, we can
+    /// successfully parse the data into S2K, IV, and ciphertext.
+    /// However, if we do not recognize the S2K type, we do not know
+    /// how large its parameters are, so we cannot cleanly parse it,
+    /// and have to accept that the S2K's body bleeds into the rest of
+    /// the data.
+    ciphertext: std::result::Result<Box<[u8]>,  // IV + ciphertext.
+                                    Box<[u8]>>, // S2K body + IV + ciphertext.
+}
+
+// Because the S2K and ciphertext cannot be cleanly separated at parse
+// time, we need to carefully compare and hash encrypted key packets.
+
+impl PartialEq for Encrypted {
+    fn eq(&self, other: &Encrypted) -> bool {
+        self.algo == other.algo
+            // Treat S2K and ciphertext as opaque blob.
+            && {
+                // XXX: This would be nicer without the allocations.
+                use crate::serialize::MarshalInto;
+                let mut a = self.s2k.to_vec().unwrap();
+                let mut b = other.s2k.to_vec().unwrap();
+                a.extend_from_slice(self.raw_ciphertext());
+                b.extend_from_slice(other.raw_ciphertext());
+                a == b
+            }
+    }
+}
+
+impl Eq for Encrypted {}
+
+impl std::hash::Hash for Encrypted {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.algo.hash(state);
+        // Treat S2K and ciphertext as opaque blob.
+        // XXX: This would be nicer without the allocations.
+        use crate::serialize::MarshalInto;
+        let mut a = self.s2k.to_vec().unwrap();
+        a.extend_from_slice(self.raw_ciphertext());
+        a.hash(state);
+    }
 }
 
 impl Encrypted {
     /// Creates a new encrypted key object.
-    pub fn new(s2k: S2K, algo: SymmetricAlgorithm, ciphertext: Box<[u8]>)
+    pub fn new(s2k: S2K, algo: SymmetricAlgorithm,
+               checksum: Option<mpi::SecretKeyChecksum>, ciphertext: Box<[u8]>)
         -> Self
     {
-        Encrypted { s2k, algo, ciphertext }
+        Self::new_raw(s2k, algo, checksum, Ok(ciphertext))
+    }
+
+    /// Creates a new encrypted key object.
+    pub(crate) fn new_raw(s2k: S2K, algo: SymmetricAlgorithm,
+                          checksum: Option<mpi::SecretKeyChecksum>,
+                          ciphertext: std::result::Result<Box<[u8]>,
+                                                          Box<[u8]>>)
+        -> Self
+    {
+        Encrypted { s2k, algo, checksum, ciphertext }
     }
 
     /// Returns the key derivation mechanism.
@@ -1408,9 +1464,35 @@ impl Encrypted {
         self.algo
     }
 
+    /// Returns the checksum method used to protect the encrypted
+    /// secret key material, if any.
+    pub fn checksum(&self) -> Option<mpi::SecretKeyChecksum> {
+        self.checksum
+    }
+
     /// Returns the encrypted secret key material.
-    pub fn ciphertext(&self) -> &[u8] {
-        &self.ciphertext
+    ///
+    /// If the [`S2K`] mechanism is not supported by Sequoia, this
+    /// function will fail.  Note that the information is not lost,
+    /// but stored in the packet.  If the packet is serialized again,
+    /// it is written out.
+    ///
+    ///   [`S2K`]: ../../crypto/enum.S2K.html
+    pub fn ciphertext(&self) -> Result<&[u8]> {
+        self.ciphertext
+            .as_ref()
+            .map(|ciphertext| &ciphertext[..])
+            .map_err(|_| Error::MalformedPacket(
+                format!("Unknown S2K: {:?}", self.s2k)).into())
+    }
+
+    /// Returns the encrypted secret key material, possibly including
+    /// the body of the S2K object.
+    pub(crate) fn raw_ciphertext(&self) -> &[u8] {
+        match self.ciphertext.as_ref() {
+            Ok(ciphertext) => &ciphertext[..],
+            Err(s2k_ciphertext) => &s2k_ciphertext[..],
+        }
     }
 
     /// Decrypts the secret key material using `password`.
@@ -1425,18 +1507,20 @@ impl Encrypted {
         use crate::crypto::symmetric::Decryptor;
 
         let key = self.s2k.derive_key(password, self.algo.key_size()?)?;
-        let cur = Cursor::new(&self.ciphertext);
+        let cur = Cursor::new(self.ciphertext()?);
         let mut dec = Decryptor::new(self.algo, &key, cur)?;
 
         // Consume the first block.
         let mut trash = vec![0u8; self.algo.block_size()?];
         dec.read_exact(&mut trash)?;
 
-        mpi::SecretKeyMaterial::parse_chksumd(pk_algo, &mut dec).map(|m| m.into())
+        mpi::SecretKeyMaterial::parse_with_checksum(
+            pk_algo, &mut dec, self.checksum.unwrap_or_default())
+            .map(|m| m.into())
     }
 }
 
-#[cfg(any(test, feature = "quickcheck"))]
+#[cfg(test)]
 impl<P, R> Arbitrary for super::Key<P, R>
     where P: KeyParts, P: Clone,
           R: KeyRole, R: Clone,
@@ -1447,7 +1531,7 @@ impl<P, R> Arbitrary for super::Key<P, R>
     }
 }
 
-#[cfg(any(test, feature = "quickcheck"))]
+#[cfg(test)]
 impl Arbitrary for Key4<PublicParts, UnspecifiedRole> {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         let mpis = mpi::PublicKey::arbitrary(g);
@@ -1464,7 +1548,7 @@ impl Arbitrary for Key4<PublicParts, UnspecifiedRole> {
     }
 }
 
-#[cfg(any(test, feature = "quickcheck"))]
+#[cfg(test)]
 impl Arbitrary for Key4<SecretParts, UnspecifiedRole> {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         use rand::Rng;
@@ -1709,7 +1793,7 @@ mod tests {
         let sk = SessionKey::from(Vec::from(&dek[..]));
 
         // Expected
-        let got_enc = ecdh::encrypt_shared(&key.parts_into_public(),
+        let got_enc = ecdh::encrypt_wrap(&key.parts_into_public(),
                                            &sk, eph_pubkey, &shared_sec)
             .unwrap();
 
@@ -1826,7 +1910,7 @@ mod tests {
                                   mpi::Signature::EdDSA{
                                       r: mpi::MPI::new(r), s: mpi::MPI::new(s)
                                   });
-        let sig: Signature = sig.into();
+        let mut sig: Signature = sig.into();
         sig.verify_message(&key, b"Hello, World\n").unwrap();
     }
 
@@ -1864,5 +1948,23 @@ mod tests {
             }
         }
         assert!(pki == pks.len() && ski == sks.len());
+    }
+
+    #[test]
+    fn encrypt_huge_plaintext() -> Result<()> {
+        let sk = crate::crypto::SessionKey::new(256);
+        let rsa2k: Key<SecretParts, UnspecifiedRole> =
+            Key4::generate_rsa(2048)?.into();
+        assert!(destructures_to!(
+            crate::Error::InvalidArgument(_) =
+                rsa2k.encrypt(&sk).unwrap_err().downcast().unwrap()));
+
+        let cv25519: Key<SecretParts, UnspecifiedRole> =
+            Key4::generate_ecc(false, Curve::Cv25519)?.into();
+        assert!(destructures_to!(
+            crate::Error::InvalidArgument(_) =
+                cv25519.encrypt(&sk).unwrap_err().downcast().unwrap()));
+
+        Ok(())
     }
 }

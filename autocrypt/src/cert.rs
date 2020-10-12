@@ -28,13 +28,13 @@ pub fn cert_builder<'a, V, U>(version: V, userid: Option<U>)
             Autocrypt::V1_1 => CipherSuite::Cv25519,
         })
         .set_primary_key_flags(
-            KeyFlags::default()
-                .set_certification(true)
-                .set_signing(true))
+            KeyFlags::empty()
+                .set_certification()
+                .set_signing())
         .add_subkey(
-            KeyFlags::default()
-                .set_transport_encryption(true)
-                .set_storage_encryption(true),
+            KeyFlags::empty()
+                .set_transport_encryption()
+                .set_storage_encryption(),
             None,
             None);
 

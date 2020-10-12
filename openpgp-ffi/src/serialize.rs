@@ -13,7 +13,6 @@ use libc::{c_char, size_t, ssize_t};
 extern crate sequoia_openpgp as openpgp;
 
 use self::openpgp::types::{
-    AEADAlgorithm,
     SymmetricAlgorithm,
 };
 
@@ -267,8 +266,14 @@ fn pgp_recipient_keyid(recipient: *const Recipient) -> *mut KeyID {
 ///
 /// Consumes `keyid`.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
-fn pgp_recipient_set_keyid(recipient: *mut Recipient, keyid: *mut KeyID) {
-    recipient.ref_mut_raw().set_keyid(keyid.move_from_raw());
+fn pgp_recipient_set_keyid(recipient: *mut *mut Recipient, keyid: *mut KeyID) {
+    assert!(! recipient.is_null());
+    unsafe {
+        *recipient =
+            (*recipient).move_from_raw()
+            .set_keyid(keyid.move_from_raw())
+            .move_into_raw();
+    }
 }
 
 /// Collects recipients from a `pgp_cert_key_iter_t`.
@@ -352,8 +357,7 @@ pub extern "C" fn pgp_encryptor_new<'a>
      inner: *mut Message<'a>,
      passwords: Option<&*const c_char>, passwords_len: size_t,
      recipients: Option<&*mut Recipient<'a>>, recipients_len: size_t,
-     cipher_algo: u8,
-     aead_algo: u8)
+     cipher_algo: u8)
      -> *mut Message<'a>
 {
     ffi_make_fry_from_errp!(errp);
@@ -384,11 +388,6 @@ pub extern "C" fn pgp_encryptor_new<'a>
     } else {
         Some(cipher_algo.into())
     };
-    let aead_algo : Option<AEADAlgorithm> = if aead_algo == 0 {
-        None
-    } else {
-        Some(aead_algo.into())
-    };
     if passwords_.len() + recipients_.len() == 0 {
         ffi_try!(Err(anyhow::anyhow!(
             "Neither recipient nor password given")));
@@ -398,9 +397,6 @@ pub extern "C" fn pgp_encryptor_new<'a>
         .add_passwords(passwords_);
     if let Some(algo) = cipher_algo {
         encryptor = encryptor.symmetric_algo(algo);
-    }
-    if let Some(algo) = aead_algo {
-        encryptor = encryptor.aead_algo(algo);
     }
     ffi_try_box!(encryptor.build())
 }

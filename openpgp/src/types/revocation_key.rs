@@ -1,4 +1,4 @@
-#[cfg(any(test, feature = "quickcheck"))]
+#[cfg(test)]
 use quickcheck::{Arbitrary, Gen};
 
 use crate::{
@@ -42,17 +42,17 @@ use crate::{
 /// // Make Alice a designated revoker for Bob.
 /// let (bob, _) =
 ///     CertBuilder::general_purpose(None, Some("bob@example.org"))
-///     .set_revocation_keys(vec![ (&alice).into() ])
+///     .set_revocation_keys(vec![(&alice).into()])
 ///     .generate()?;
 ///
 /// // Make sure Alice is listed as a designated revoker for Bob
 /// // on a component.
 /// assert_eq!(bob.with_policy(p, None)?.primary_userid()?.revocation_keys(p)
 ///                .collect::<Vec<&RevocationKey>>(),
-///            vec![ &(&alice).into() ]);
+///            vec![&(&alice).into()]);
 /// # Ok(()) }
 /// ```
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RevocationKey {
     /// The public key algorithm used by the authorized key.
     pk_algo: PublicKeyAlgorithm,
@@ -149,7 +149,7 @@ const REVOCATION_KEY_FLAG_SENSITIVE: u8 = 0x40;
 const REVOCATION_KEY_MASK_UNKNOWN: u8 = ! (REVOCATION_KEY_FLAG_MUST_BE_SET
                                            | REVOCATION_KEY_FLAG_SENSITIVE);
 
-#[cfg(any(test, feature = "quickcheck"))]
+#[cfg(test)]
 impl Arbitrary for RevocationKey {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         RevocationKey {

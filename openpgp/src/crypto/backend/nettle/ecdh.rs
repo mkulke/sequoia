@@ -4,11 +4,11 @@ use nettle::{curve25519, ecc, ecdh, random::Yarrow};
 
 use crate::{Error, Result};
 use crate::crypto::SessionKey;
-use crate::crypto::ecdh::{aes_key_wrap, aes_key_unwrap, kdf, pkcs5_pad, pkcs5_unpad};
+use crate::crypto::ecdh::{encrypt_wrap, decrypt_unwrap};
 use crate::crypto::mem::Protected;
 use crate::crypto::mpi::{MPI, PublicKey, SecretKeyMaterial, Ciphertext};
 use crate::packet::{key, Key};
-use crate::types::{Curve, HashAlgorithm, SymmetricAlgorithm, PublicKeyAlgorithm};
+use crate::types::Curve;
 
 /// Wraps a session key using Elliptic Curve Diffie-Hellman.
 #[allow(non_snake_case)]
@@ -31,12 +31,11 @@ pub fn encrypt<R>(recipient: &Key<key::PublicParts, R>,
                 let v: Protected =
                     curve25519::private_key(&mut rng).into();
 
-                // Compute the public key.  We need to add an encoding
-                // octet in front of the key.
-                let mut VB = [0x40; 1 + curve25519::CURVE25519_SIZE];
-                curve25519::mul_g(&mut VB[1..], &v)
+                // Compute the public key.
+                let mut VB = [0; curve25519::CURVE25519_SIZE];
+                curve25519::mul_g(&mut VB, &v)
                     .expect("buffers are of the wrong size");
-                let VB = MPI::new(&VB);
+                let VB = MPI::new_compressed_point(&VB);
 
                 // Compute the shared point S = vR;
                 let mut S: Protected =
@@ -44,7 +43,7 @@ pub fn encrypt<R>(recipient: &Key<key::PublicParts, R>,
                 curve25519::mul(&mut S, &v, R)
                     .expect("buffers are of the wrong size");
 
-                encrypt_shared(recipient, session_key, VB, &S)
+                encrypt_wrap(recipient, session_key, VB, &S)
             }
             Curve::NistP256 | Curve::NistP384 | Curve::NistP521 => {
                 // Obtain the authenticated recipient public key R and
@@ -84,7 +83,7 @@ pub fn encrypt<R>(recipient: &Key<key::PublicParts, R>,
                 // Compute the public key.
                 let VB = ecdh::point_mul_g(&v);
                 let (VBx, VBy) = VB.as_bytes();
-                let VB = MPI::new_weierstrass(&VBx, &VBy, field_sz);
+                let VB = MPI::new_point(&VBx, &VBy, field_sz);
 
                 // Compute the shared point S = vR;
                 let S = ecdh::point_mul(&v, &R)?;
@@ -100,7 +99,7 @@ pub fn encrypt<R>(recipient: &Key<key::PublicParts, R>,
                     Sx.insert(0, 0);
                 }
 
-                encrypt_shared(recipient, session_key, VB, &Sx.into())
+                encrypt_wrap(recipient, session_key, VB, &Sx.into())
             }
 
             // Not implemented in Nettle
@@ -115,54 +114,6 @@ pub fn encrypt<R>(recipient: &Key<key::PublicParts, R>,
         }
     } else {
         Err(Error::InvalidArgument("Expected an ECDHPublicKey".into()).into())
-    }
-}
-
-/// Wraps a session key.
-///
-/// After using Elliptic Curve Diffie-Hellman to compute a shared
-/// secret, this function deterministically encrypts the given session
-/// key.
-///
-/// `VB` is the ephemeral public key (with 0x40 prefix), `S` is the
-/// shared Diffie-Hellman secret.
-#[allow(non_snake_case)]
-pub fn encrypt_shared<R>(recipient: &Key<key::PublicParts, R>,
-                         session_key: &SessionKey, VB: MPI,
-                         S: &Protected)
-    -> Result<Ciphertext>
-    where R: key::KeyRole
-{
-    match recipient.mpis() {
-        &PublicKey::ECDH{ ref curve, ref hash, ref sym,.. } => {
-            // m = sym_alg_ID || session key || checksum || pkcs5_padding;
-            let mut m = Vec::with_capacity(40);
-            m.extend_from_slice(session_key);
-            let m = pkcs5_pad(m.into(), 40);
-            // Note: We always pad up to 40 bytes to obfuscate the
-            // length of the symmetric key.
-
-            // Compute KDF input.
-            let param = make_param(recipient, curve, hash, sym);
-
-            // Z_len = the key size for the KEK_alg_ID used with AESKeyWrap
-            // Compute Z = KDF( S, Z_len, Param );
-            #[allow(non_snake_case)]
-            let Z = kdf(S, sym.key_size()?, *hash, &param)?;
-
-            // Compute C = AESKeyWrap( Z, m ) as per [RFC3394]
-            #[allow(non_snake_case)]
-            let C = aes_key_wrap(*sym, &Z, &m)?;
-
-            // Output (MPI(VB) || len(C) || C).
-            Ok(Ciphertext::ECDH {
-                e: VB,
-                key: C.into_boxed_slice(),
-            })
-        }
-
-        _ =>
-            Err(Error::InvalidArgument("Expected an ECDHPublicKey".into()).into()),
     }
 }
 
@@ -266,88 +217,10 @@ pub fn decrypt<R>(recipient: &Key<key::PublicParts, R>,
                 }
             };
 
-            decrypt_shared(recipient, &S, ciphertext)
+            decrypt_unwrap(recipient, &S, ciphertext)
         }
 
         _ =>
             Err(Error::InvalidArgument("Expected an ECDHPublicKey".into()).into()),
     }
-}
-
-/// Unwraps a session key.
-///
-/// After using Elliptic Curve Diffie-Hellman to compute the shared
-/// secret, this function decrypts the given encrypted session key.
-///
-/// `recipient` is the message receiver's public key, `S` is the
-/// shared Diffie-Hellman secret used to encrypt `ciphertext`.
-#[allow(non_snake_case)]
-pub fn decrypt_shared<R>(recipient: &Key<key::PublicParts, R>,
-                         S: &Protected,
-                         ciphertext: &Ciphertext)
-    -> Result<SessionKey>
-    where R: key::KeyRole
-{
-    match (recipient.mpis(), ciphertext) {
-        (PublicKey::ECDH { ref curve, ref hash, ref sym, ..},
-         Ciphertext::ECDH { ref key, .. }) => {
-            // Compute KDF input.
-            let param = make_param(recipient, curve, hash, sym);
-
-            // Z_len = the key size for the KEK_alg_ID used with AESKeyWrap
-            // Compute Z = KDF( S, Z_len, Param );
-            #[allow(non_snake_case)]
-            let Z = kdf(&S, sym.key_size()?, *hash, &param)?;
-
-            // Compute m = AESKeyUnwrap( Z, C ) as per [RFC3394]
-            let m = aes_key_unwrap(*sym, &Z, key)?;
-            let cipher = SymmetricAlgorithm::from(m[0]);
-            let m = pkcs5_unpad(m, 1 + cipher.key_size()? + 2)?;
-
-            Ok(m.into())
-        },
-
-        _ =>
-            Err(Error::InvalidArgument(
-                "Expected an ECDH key and ciphertext".into()).into()),
-    }
-}
-
-fn make_param<P, R>(recipient: &Key<P, R>,
-              curve: &Curve, hash: &HashAlgorithm,
-              sym: &SymmetricAlgorithm)
-    -> Vec<u8>
-    where P: key::KeyParts,
-          R: key::KeyRole
-{
-    // Param = curve_OID_len || curve_OID ||
-    // public_key_alg_ID || 03 || 01 || KDF_hash_ID ||
-    // KEK_alg_ID for AESKeyWrap || "Anonymous Sender    " ||
-    // recipient_fingerprint;
-    let fp = recipient.fingerprint();
-
-    let mut param = Vec::with_capacity(
-        1 + curve.oid().len()        // Length and Curve OID,
-            + 1                      // Public key algorithm ID,
-            + 4                      // KDF parameters,
-            + 20                     // "Anonymous Sender    ",
-            + fp.as_bytes().len());  // Recipients key fingerprint.
-
-    param.push(curve.oid().len() as u8);
-    param.extend_from_slice(curve.oid());
-    param.push(PublicKeyAlgorithm::ECDH.into());
-    param.push(3);
-    param.push(1);
-    param.push((*hash).into());
-    param.push((*sym).into());
-    param.extend_from_slice(b"Anonymous Sender    ");
-    param.extend_from_slice(fp.as_bytes());
-    assert_eq!(param.len(),
-               1 + curve.oid().len()    // Length and Curve OID,
-               + 1                      // Public key algorithm ID,
-               + 4                      // KDF parameters,
-               + 20                     // "Anonymous Sender    ",
-               + fp.as_bytes().len());  // Recipients key fingerprint.
-
-    param
 }

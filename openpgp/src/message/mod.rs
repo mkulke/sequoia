@@ -35,7 +35,7 @@ use crate::packet::Tag;
 use crate::parse::Parse;
 
 mod lexer;
-mod grammar;
+lalrpop_util::lalrpop_mod!(#[allow(clippy::all)] grammar, "/message/grammar.rs");
 
 use self::lexer::{Lexer, LexicalError};
 pub use self::lexer::Token;
@@ -167,8 +167,8 @@ impl MessageValidator {
 
     /// Add the token `token` at position `path` to the token stream.
     ///
-    /// Note: top-level packets are at `[ n ]`, their immediate
-    /// children are at `[ n, m ]`, etc.
+    /// Note: top-level packets are at `[n]`, their immediate
+    /// children are at `[n, m]`, etc.
     ///
     /// This function pushes any required `Token::Pop` tokens based on
     /// changes in the `path`.
@@ -200,8 +200,8 @@ impl MessageValidator {
     /// Add a packet of type `tag` at position `path` to the token
     /// stream.
     ///
-    /// Note: top-level packets are at `[ n ]`, their immediate
-    /// children are at `[ n, m ]`, etc.
+    /// Note: top-level packets are at `[n]`, their immediate
+    /// children are at `[n, m]`, etc.
     ///
     /// Unlike `push_token`, this function does not automatically
     /// account for changes in the depth.  If you use this function
@@ -328,7 +328,7 @@ use super::*;
 ///
 /// # Examples
 ///
-/// Creating a Messaage encrypted with a password.
+/// Creating a Message encrypted with a password.
 ///
 /// ```
 /// # use sequoia_openpgp as openpgp;
@@ -1052,9 +1052,12 @@ mod tests {
         // 0: SK-ESK
         // => bad.
         let mut packets : Vec<Packet> = Vec::new();
-        let sk = crate::crypto::SessionKey::new(8);
+        let cipher = SymmetricAlgorithm::AES256;
+        let sk = crate::crypto::SessionKey::new(cipher.key_size().unwrap());
+        #[allow(deprecated)]
         packets.push(SKESK4::with_password(
-            SymmetricAlgorithm::AES256,
+            cipher,
+            cipher,
             S2K::Simple { hash: HashAlgorithm::SHA256 },
             &sk,
             &"12345678".into()).unwrap().into());

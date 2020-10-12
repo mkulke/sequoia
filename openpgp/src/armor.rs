@@ -15,10 +15,10 @@
 //! Both the reader and the writer allocate memory in the order of the
 //! size of chunks read or written.
 //!
-//! # Example
+//! # Examples
 //!
 //! ```rust, no_run
-//! extern crate sequoia_openpgp as openpgp;
+//! use sequoia_openpgp as openpgp;
 //! use std::fs::File;
 //! use openpgp::armor::{Reader, ReaderMode, Kind};
 //!
@@ -35,7 +35,7 @@ use std::cmp;
 use std::str;
 use std::borrow::Cow;
 
-#[cfg(any(test, feature = "quickcheck"))]
+#[cfg(test)]
 use quickcheck::{Arbitrary, Gen};
 
 use crate::vec_truncate;
@@ -70,7 +70,7 @@ pub enum Kind {
     File,
 }
 
-#[cfg(any(test, feature = "quickcheck"))]
+#[cfg(test)]
 impl Arbitrary for Kind {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         use self::Kind::*;
@@ -156,14 +156,14 @@ pub struct Writer<W: Write> {
 impl<W: Write> Writer<W> {
     /// Constructs a new filter for the given type of data.
     ///
-    /// # Example
+    /// # Examples
     ///
     /// ```
     /// use std::io::{Read, Write, Cursor};
     /// use sequoia_openpgp as openpgp;
     /// use openpgp::armor::{Writer, Kind};
-    /// # fn main() { f().unwrap(); }
-    /// # fn f() -> std::io::Result<()> {
+    ///
+    /// # fn main() -> std::io::Result<()> {
     /// let mut writer = Writer::new(Vec::new(), Kind::File)?;
     /// writer.write_all(b"Hello world!")?;
     /// let buffer = writer.finalize()?;
@@ -184,16 +184,16 @@ impl<W: Write> Writer<W> {
 
     /// Constructs a new filter for the given type of data.
     ///
-    /// # Example
+    /// # Examples
     ///
     /// ```
     /// use std::io::{Read, Write, Cursor};
     /// use sequoia_openpgp as openpgp;
     /// use openpgp::armor::{Writer, Kind};
-    /// # fn main() { f().unwrap(); }
-    /// # fn f() -> std::io::Result<()> {
+    ///
+    /// # fn main() -> std::io::Result<()> {
     /// let mut writer = Writer::with_headers(Vec::new(), Kind::File,
-    ///     vec![ ("Key", "Value") ])?;
+    ///     vec![("Key", "Value")])?;
     /// writer.write_all(b"Hello world!")?;
     /// let buffer = writer.finalize()?;
     /// assert_eq!(
@@ -263,9 +263,7 @@ impl<W: Write> Writer<W> {
 
     /// Writes the footer.
     ///
-    /// No more data can be written after this call.  If this is not
-    /// called explicitly, the footer is written once the writer is
-    /// dropped.
+    /// This function needs to be called explicitly before the writer is dropped.
     pub fn finalize(mut self) -> Result<W> {
         if ! self.dirty {
             // No data was written to us, don't emit anything.
@@ -473,17 +471,16 @@ impl<'a> Reader<'a> {
     ///
     ///   [ASCII Armor]: https://tools.ietf.org/html/rfc4880#section-6.2
     ///
-    /// # Example
+    /// # Examples
     ///
     /// ```
-    /// # use std::io::Read;
-    /// # extern crate sequoia_openpgp as openpgp;
-    /// # use openpgp::{Result, Message};
-    /// # use openpgp::armor::{Reader, ReaderMode};
-    /// # use openpgp::parse::Parse;
-    /// # use std::io;
-    /// # fn main() { f().unwrap(); }
-    /// # fn f() -> Result<()> {
+    /// use std::io::{self, Read};
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::Message;
+    /// use openpgp::armor::{Reader, ReaderMode};
+    /// use openpgp::parse::Parse;
+    ///
+    /// # fn main() -> openpgp::Result<()> {
     /// let data = "yxJiAAAAAABIZWxsbyB3b3JsZCE="; // base64 over literal data packet
     ///
     /// let mut cursor = io::Cursor::new(&data);
@@ -502,12 +499,11 @@ impl<'a> Reader<'a> {
     /// Or, in strict mode:
     ///
     /// ```
-    /// # use std::io::Read;
-    /// # extern crate sequoia_openpgp as openpgp;
-    /// # use openpgp::armor::{Reader, ReaderMode, Kind};
-    /// # use std::io::{self, Result};
-    /// # fn main() { f().unwrap(); }
-    /// # fn f() -> Result<()> {
+    /// use std::io::{self, Result, Read};
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::armor::{Reader, ReaderMode, Kind};
+    ///
+    /// # fn main() -> Result<()> {
     /// let data =
     ///     "-----BEGIN PGP ARMORED FILE-----
     ///
@@ -600,6 +596,35 @@ impl<'a> Reader<'a> {
     /// Note: if a key occurs multiple times, then there are multiple
     /// entries in the vector with the same key; values with the same
     /// key are *not* combined.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::io::{self, Read};
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::armor::{Reader, ReaderMode, Kind};
+    ///
+    /// # fn main() -> std::io::Result<()> {
+    /// let data =
+    ///     "-----BEGIN PGP ARMORED FILE-----
+    ///      First: value
+    ///      Header: value
+    ///
+    ///      SGVsbG8gd29ybGQh
+    ///      =s4Gu
+    ///      -----END PGP ARMORED FILE-----";
+    ///
+    /// let mut cursor = io::Cursor::new(&data);
+    /// let mut reader = Reader::new(&mut cursor, ReaderMode::Tolerant(Some(Kind::File)));
+    ///
+    /// let mut content = String::new();
+    /// reader.read_to_string(&mut content)?;
+    /// assert_eq!(reader.headers().unwrap(),
+    ///    &[("First".into(), "value".into()),
+    ///      ("Header".into(), "value".into())]);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn headers(&mut self) -> Result<&[(String, String)]> {
         self.initialize()?;
         Ok(&self.headers[..])
@@ -618,7 +643,9 @@ impl<'a> Reader<'a> {
                 for &tag in &[ Tag::PKESK, Tag::SKESK,
                               Tag::OnePassSig, Tag::Signature,
                               Tag::PublicKey, Tag::SecretKey,
-                              Tag::CompressedData, Tag::Literal ] {
+                              Tag::CompressedData, Tag::Literal,
+                              Tag::Marker,
+                ] {
                     let mut ctb = [ 0u8; 1 ];
                     let mut o = [ 0u8; 4 ];
 
@@ -839,7 +866,7 @@ impl<'a> Reader<'a> {
                     break;
                 }
             } else {
-                let key = key_value[0];
+                let key = key_value[0].trim_start();
                 let value = key_value[1];
 
                 self.headers.push((key.into(), value.into()));
@@ -876,7 +903,7 @@ impl<'a> Reader<'a> {
 // This function returns ("abcd", 6), because the 'd' is the last
 // character in the last complete base64 chunk, and it is at offset 5.
 //
-// If 'd' is follow by whitespace, it is undefined whether that
+// If 'd' is followed by whitespace, it is undefined whether that
 // whitespace is included in the count.
 //
 // This function only returns full chunks of base64 data.  As a
@@ -1276,7 +1303,7 @@ struct CRC {
     n: u32,
 }
 
-/// Computess the CRC-24, (see [RFC 4880, section 6.1]).
+/// Computes the CRC-24, (see [RFC 4880, section 6.1]).
 ///
 /// [RFC 4880, section 6.1]: https://tools.ietf.org/html/rfc4880#section-6.1
 impl CRC {
@@ -1657,6 +1684,8 @@ mod test {
     }
 
     /// Tests issue #404, zero-sized reads break reader.
+    ///
+    /// See: https://gitlab.com/sequoia-pgp/sequoia/-/issues/404
     #[test]
     fn zero_sized_read() {
         let mut r = Reader::from_bytes(crate::tests::file("armor/test-1.asc"),
@@ -1668,6 +1697,8 @@ mod test {
 
     /// Crash in armor parser due to indexing not aligned with UTF-8
     /// characters.
+    ///
+    /// See: https://gitlab.com/sequoia-pgp/sequoia/-/issues/515
     #[test]
     fn issue_515() {
         let data = [63, 9, 45, 10, 45, 10, 45, 45, 45, 45, 45, 66, 69,
@@ -1685,6 +1716,8 @@ mod test {
 
     /// Crash in armor parser due to improper use of the buffered
     /// reader protocol when consuming quoting prefix.
+    ///
+    /// See: https://gitlab.com/sequoia-pgp/sequoia/-/issues/516
     #[test]
     fn issue_516() {
         let data = [
@@ -1711,6 +1744,8 @@ mod test {
 
     /// Crash in armor parser due to improper use of the buffered
     /// reader protocol when consuming quoting prefix.
+    ///
+    /// See: https://gitlab.com/sequoia-pgp/sequoia/-/issues/517
     #[test]
     fn issue_517() {
         let data = [13, 45, 45, 45, 45, 45, 66, 69, 71, 73, 78, 32, 80,

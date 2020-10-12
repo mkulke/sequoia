@@ -138,11 +138,19 @@ pub fn dump<W>(input: &mut dyn io::Read, output: &mut dyn io::Write,
         let map = pp.take_map();
 
         let recursion_depth = pp.recursion_depth();
-        let (packet, ppr_) = pp.recurse()?;
-        ppr = ppr_;
+        let packet = pp.packet.clone();
 
         dumper.packet(output, recursion_depth as usize,
                       header, packet, map, additional_fields)?;
+
+        let (_, ppr_) = match pp.recurse() {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                let _ = dumper.flush(output);
+                Err(e)
+            },
+        }?;
+        ppr = ppr_;
     }
 
     dumper.flush(output)?;
@@ -268,12 +276,23 @@ impl PacketDumper {
         if let Some(tag) = p.kind() {
             write!(output, "{}", tag)?;
         } else {
-            write!(output, "Unknown Packet")?;
+            write!(output, "Unknown or Unsupported Packet")?;
         }
 
         if let Some(h) = header {
-            write!(output, ", {} CTB, {}",
+            write!(output, ", {} CTB, {}{}",
                    if let CTB::Old(_) = h.ctb() { "old" } else { "new" },
+                   if let Some(map) = map {
+                       format!("{} header bytes + ",
+                               map.iter().take(2).map(|f| f.as_bytes().len())
+                                   .sum::<usize>())
+                   } else {
+                       // XXX: Mapping is disabled.  No can do for
+                       // now.  Once we save the header in
+                       // packet::Common, we can use this instead of
+                       // relying on the map.
+                       "".into()
+                   },
                    match h.length() {
                        BodyLength::Full(n) =>
                            format!("{} bytes", n),
@@ -355,7 +374,6 @@ impl PacketDumper {
             }
 
             if let Some(secrets) = k.optional_secret() {
-                use self::openpgp::packet::key::SecretKeyMaterial;
                 writeln!(output, "{}", i)?;
                 writeln!(output, "{}  Secret Key:", i)?;
 
@@ -422,8 +440,10 @@ impl PacketDumper {
                         writeln!(output, "{}  Sym. algo: {}", ii,
                                  e.algo())?;
                         if pd.mpis {
-                            pd.dump_mpis(output, &ii, &[e.ciphertext()],
-                                         &["ciphertext"])?;
+                            if let Ok(ciphertext) = e.ciphertext() {
+                                pd.dump_mpis(output, &ii, &[ciphertext],
+                                             &["ciphertext"])?;
+                            }
                         }
                     },
                 }
@@ -634,7 +654,7 @@ impl PacketDumper {
                                  s.symmetric_algo())?;
                         write!(output, "{}  S2K: ", i)?;
                         self.dump_s2k(output, i, s.s2k())?;
-                        if let Some(esk) = s.esk() {
+                        if let Ok(Some(esk)) = s.esk() {
                             writeln!(output, "{}  ESK: {}", i,
                                      hex::encode(esk))?;
                         }
@@ -647,9 +667,11 @@ impl PacketDumper {
                                  s.aead_algo())?;
                         write!(output, "{}  S2K: ", i)?;
                         self.dump_s2k(output, i, s.s2k())?;
-                        writeln!(output, "{}  IV: {}", i,
-                                 hex::encode(s.aead_iv()))?;
-                        if let Some(esk) = s.esk() {
+                        if let Ok(iv) = s.aead_iv() {
+                            writeln!(output, "{}  IV: {}", i,
+                                     hex::encode(iv))?;
+                        }
+                        if let Ok(Some(esk)) = s.esk() {
                             writeln!(output, "{}  ESK: {}", i,
                                      hex::encode(esk))?;
                         }
@@ -847,6 +869,7 @@ impl PacketDumper {
     fn dump_s2k(&self, output: &mut dyn io::Write, i: &str, s2k: &S2K)
                 -> Result<()> {
         use self::S2K::*;
+        #[allow(deprecated)]
         match s2k {
             Simple { hash } => {
                 writeln!(output, "Simple")?;
@@ -863,10 +886,21 @@ impl PacketDumper {
                 writeln!(output, "{}    Salt: {}", i, hex::encode(salt))?;
                 writeln!(output, "{}    Hash bytes: {}", i, hash_bytes)?;
             },
-            Private(n) =>
-                writeln!(output, "Private({})", n)?,
-            Unknown(n) =>
-                writeln!(output, "Unknown({})", n)?,
+            Private { tag, parameters } => {
+                writeln!(output, "Private")?;
+                writeln!(output, "{}    Tag: {}", i, tag)?;
+                if let Some(p) = parameters.as_ref() {
+                    writeln!(output, "{}    Parameters: {:?}", i, p)?;
+                }
+            },
+            Unknown { tag, parameters } => {
+                writeln!(output, "Unknown")?;
+                writeln!(output, "{}    Tag: {}", i, tag)?;
+                if let Some(p) = parameters.as_ref() {
+                    writeln!(output, "{}    Parameters: {:?}", i, p)?;
+                }
+            },
+            __Nonexhaustive => unreachable!(),
         }
         Ok(())
     }

@@ -49,12 +49,14 @@ use std::fmt;
 use std::str::FromStr;
 use std::result;
 
-#[cfg(any(test, feature = "quickcheck"))]
+#[cfg(test)]
 use quickcheck::{Arbitrary, Gen};
 
 use crate::Error;
 use crate::Result;
 
+mod bitfield;
+pub(crate) use bitfield::Bitfield;
 mod compression_level;
 pub use compression_level::CompressionLevel;
 mod features;
@@ -69,20 +71,11 @@ mod timestamp;
 pub use timestamp::{Timestamp, Duration};
 pub(crate) use timestamp::normalize_systemtime;
 
-/// Removes padding bytes from bitfields.
-///
-/// Returns the size of the original bitfield, i.e. the number of
-/// bytes the output has to be padded to when serialized.
-pub(crate) fn bitfield_remove_padding(b: &mut Vec<u8>) -> usize {
-    let pad_to = b.len();
-    while b.last() == Some(&0) {
-        b.pop();
-    }
-    pad_to
-}
-
 /// The OpenPGP public key algorithms as defined in [Section 9.1 of
 /// RFC 4880], and [Section 5 of RFC 6637].
+///
+/// Note: This enum cannot be exhaustively matched to allow future
+/// extensions.
 ///
 /// # Examples
 ///
@@ -104,13 +97,11 @@ pub(crate) fn bitfield_remove_padding(b: &mut Vec<u8>) -> usize {
 pub enum PublicKeyAlgorithm {
     /// RSA (Encrypt or Sign)
     RSAEncryptSign,
-    /// RSA Encrypt-Only
-    #[deprecated(since = "rfc4880",
-                 note = "Use `PublicKeyAlgorithm::RSAEncryptSign`.")]
+    /// RSA Encrypt-Only, deprecated in RFC 4880.
+    #[deprecated(note = "Use `PublicKeyAlgorithm::RSAEncryptSign`.")]
     RSAEncrypt,
-    /// RSA Sign-Only
-    #[deprecated(since = "rfc4880",
-                 note = "Use `PublicKeyAlgorithm::RSAEncryptSign`.")]
+    /// RSA Sign-Only, deprecated in RFC 4880.
+    #[deprecated(note = "Use `PublicKeyAlgorithm::RSAEncryptSign`.")]
     RSASign,
     /// ElGamal (Encrypt-Only)
     ElGamalEncrypt,
@@ -120,9 +111,8 @@ pub enum PublicKeyAlgorithm {
     ECDH,
     /// Elliptic curve DSA
     ECDSA,
-    /// ElGamal (Encrypt or Sign)
-    #[deprecated(since = "rfc4880",
-                 note = "If you really must, use \
+    /// ElGamal (Encrypt or Sign), deprecated in RFC 4880.
+    #[deprecated(note = "If you really must, use \
                          `PublicKeyAlgorithm::ElGamalEncrypt`.")]
     ElGamalEncryptSign,
     /// "Twisted" Edwards curve DSA
@@ -274,14 +264,14 @@ impl fmt::Display for PublicKeyAlgorithm {
     }
 }
 
-#[cfg(any(test, feature = "quickcheck"))]
+#[cfg(test)]
 impl Arbitrary for PublicKeyAlgorithm {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         u8::arbitrary(g).into()
     }
 }
 
-#[cfg(any(test, feature = "quickcheck"))]
+#[cfg(test)]
 impl PublicKeyAlgorithm {
     pub(crate) fn arbitrary_for_signing<G: Gen>(g: &mut G) -> Self {
         use rand::Rng;
@@ -306,6 +296,9 @@ impl PublicKeyAlgorithm {
 /// curves.  Instead, the curve is specified using an OID prepended to
 /// the key material.  We provide this type to be able to match on the
 /// curves.
+///
+/// Note: This enum cannot be exhaustively matched to allow future
+/// extensions.
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Curve {
     /// NIST curve P-256.
@@ -512,7 +505,7 @@ impl Curve {
     }
 }
 
-#[cfg(any(test, feature = "quickcheck"))]
+#[cfg(test)]
 impl Arbitrary for Curve {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         match u8::arbitrary(g) % 8 {
@@ -523,7 +516,11 @@ impl Arbitrary for Curve {
             4 => Curve::BrainpoolP512,
             5 => Curve::Ed25519,
             6 => Curve::Cv25519,
-            7 => Curve::Unknown(Vec::<u8>::arbitrary(g).into_boxed_slice()),
+            7 => Curve::Unknown({
+                let mut k = <Vec<u8>>::arbitrary(g);
+                k.truncate(255);
+                k.into_boxed_slice()
+            }),
             _ => unreachable!(),
         }
     }
@@ -539,6 +536,9 @@ impl Arbitrary for Curve {
 /// symbolic one.
 ///
 ///   [`SymmetricAlgorithm::from`]: https://doc.rust-lang.org/std/convert/trait.From.html
+///
+/// Note: This enum cannot be exhaustively matched to allow future
+/// extensions.
 ///
 /// # Examples
 ///
@@ -596,35 +596,6 @@ pub enum SymmetricAlgorithm {
 impl Default for SymmetricAlgorithm {
     fn default() -> Self {
         SymmetricAlgorithm::AES256
-    }
-}
-
-impl SymmetricAlgorithm {
-    /// Returns whether this algorithm is supported.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use sequoia_openpgp as openpgp;
-    /// use openpgp::types::SymmetricAlgorithm;
-    ///
-    /// assert!(SymmetricAlgorithm::AES256.is_supported());
-    /// assert!(SymmetricAlgorithm::TripleDES.is_supported());
-    ///
-    /// assert!(!SymmetricAlgorithm::IDEA.is_supported());
-    /// assert!(!SymmetricAlgorithm::Unencrypted.is_supported());
-    /// assert!(!SymmetricAlgorithm::Private(101).is_supported());
-    /// ```
-    pub fn is_supported(&self) -> bool {
-        use self::SymmetricAlgorithm::*;
-        match &self {
-            TripleDES | CAST5 | Blowfish | AES128 | AES192 | AES256 | Twofish
-                | Camellia128 | Camellia192 | Camellia256
-                => true,
-            Unencrypted | IDEA | Private(_) | Unknown(_)
-                => false,
-            __Nonexhaustive => unreachable!(),
-        }
     }
 }
 
@@ -707,7 +678,7 @@ impl fmt::Display for SymmetricAlgorithm {
     }
 }
 
-#[cfg(any(test, feature = "quickcheck"))]
+#[cfg(test)]
 impl Arbitrary for SymmetricAlgorithm {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         u8::arbitrary(g).into()
@@ -725,6 +696,9 @@ impl Arbitrary for SymmetricAlgorithm {
 ///
 ///   [`AEADAlgorithm::from`]: https://doc.rust-lang.org/std/convert/trait.From.html
 ///
+/// Note: This enum cannot be exhaustively matched to allow future
+/// extensions.
+///
 /// This feature is [experimental](../index.html#experimental-features).
 ///
 /// # Examples
@@ -737,7 +711,7 @@ impl Arbitrary for SymmetricAlgorithm {
 /// use openpgp::types::{Features, HashAlgorithm, AEADAlgorithm, SignatureType};
 ///
 /// # fn main() -> openpgp::Result<()> {
-/// let features = Features::default().set_aead(true);
+/// let features = Features::empty().set_aead();
 /// let mut builder = SignatureBuilder::new(SignatureType::DirectKey)
 ///     .set_features(&features)?
 ///     .set_preferred_aead_algorithms(vec![
@@ -824,7 +798,7 @@ impl fmt::Display for AEADAlgorithm {
     }
 }
 
-#[cfg(any(test, feature = "quickcheck"))]
+#[cfg(test)]
 impl Arbitrary for AEADAlgorithm {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         u8::arbitrary(g).into()
@@ -834,6 +808,9 @@ impl Arbitrary for AEADAlgorithm {
 /// The OpenPGP compression algorithms as defined in [Section 9.3 of RFC 4880].
 ///
 ///   [Section 9.3 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-9.3
+///
+/// Note: This enum cannot be exhaustively matched to allow future
+/// extensions.
 ///
 /// # Examples
 ///
@@ -968,7 +945,7 @@ impl fmt::Display for CompressionAlgorithm {
     }
 }
 
-#[cfg(any(test, feature = "quickcheck"))]
+#[cfg(test)]
 impl Arbitrary for CompressionAlgorithm {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         u8::arbitrary(g).into()
@@ -976,6 +953,9 @@ impl Arbitrary for CompressionAlgorithm {
 }
 
 /// The OpenPGP hash algorithms as defined in [Section 9.4 of RFC 4880].
+///
+/// Note: This enum cannot be exhaustively matched to allow future
+/// extensions.
 ///
 /// # Examples
 ///
@@ -1103,7 +1083,7 @@ impl fmt::Display for HashAlgorithm {
     }
 }
 
-#[cfg(any(test, feature = "quickcheck"))]
+#[cfg(test)]
 impl Arbitrary for HashAlgorithm {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         u8::arbitrary(g).into()
@@ -1113,6 +1093,9 @@ impl Arbitrary for HashAlgorithm {
 /// Signature type as defined in [Section 5.2.1 of RFC 4880].
 ///
 ///   [Section 5.2.1 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.1
+///
+/// Note: This enum cannot be exhaustively matched to allow future
+/// extensions.
 ///
 /// # Examples
 ///
@@ -1129,7 +1112,7 @@ impl Arbitrary for HashAlgorithm {
 ///     .set_signature_creation_time(SystemTime::now())?;
 /// # Ok(()) }
 /// ```
-#[derive(Clone, Copy, Hash, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum SignatureType {
     /// Signature over a binary document.
     Binary,
@@ -1261,7 +1244,7 @@ impl fmt::Display for SignatureType {
     }
 }
 
-#[cfg(any(test, feature = "quickcheck"))]
+#[cfg(test)]
 impl Arbitrary for SignatureType {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         u8::arbitrary(g).into()
@@ -1273,6 +1256,9 @@ impl Arbitrary for SignatureType {
 /// See the description of revocation subpackets [Section 5.2.3.23 of RFC 4880].
 ///
 ///   [Section 5.2.3.23 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.23
+///
+/// Note: This enum cannot be exhaustively matched to allow future
+/// extensions.
 ///
 /// # Examples
 ///
@@ -1304,7 +1290,7 @@ impl Arbitrary for SignatureType {
 /// assert_eq!(revocation.typ(), SignatureType::CertificationRevocation);
 ///
 /// // Now merge the revocation signature into the Cert.
-/// let cert = cert.merge_packets(revocation.clone())?;
+/// let cert = cert.insert_packets(revocation.clone())?;
 ///
 /// // Check that it is revoked.
 /// let ca = cert.userids().nth(0).unwrap();
@@ -1406,7 +1392,7 @@ impl fmt::Display for ReasonForRevocation {
     }
 }
 
-#[cfg(any(test, feature = "quickcheck"))]
+#[cfg(test)]
 impl Arbitrary for ReasonForRevocation {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         u8::arbitrary(g).into()
@@ -1463,9 +1449,9 @@ impl Arbitrary for ReasonForRevocation {
 ///     .build(&mut signer, &cert, None)?;
 ///
 /// let t1 = t0 + Duration::from_secs(1200);
-/// let cert1 = cert.clone().merge_packets(sig.clone())?;
+/// let cert1 = cert.clone().insert_packets(sig.clone())?;
 /// assert_eq!(cert1.revocation_status(p, Some(t1)),
-///            RevocationStatus::Revoked(vec![ &sig.into() ]));
+///            RevocationStatus::Revoked(vec![&sig.into()]));
 ///
 /// // Create a soft revocation (KeySuperseded):
 /// let sig = CertRevocationBuilder::new()
@@ -1475,7 +1461,7 @@ impl Arbitrary for ReasonForRevocation {
 ///     .build(&mut signer, &cert, None)?;
 ///
 /// let t1 = t0 + Duration::from_secs(1200);
-/// let cert2 = cert.clone().merge_packets(sig.clone())?;
+/// let cert2 = cert.clone().insert_packets(sig.clone())?;
 /// assert_eq!(cert2.revocation_status(p, Some(t1)),
 ///            RevocationStatus::NotAsFarAsWeKnow);
 /// #     Ok(())
@@ -1534,6 +1520,9 @@ impl ReasonForRevocation {
 /// See the description of literal data packets [Section 5.9 of RFC 4880].
 ///
 ///   [Section 5.9 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.9
+///
+/// Note: This enum cannot be exhaustively matched to allow future
+/// extensions.
 ///
 /// # Examples
 ///
@@ -1654,7 +1643,7 @@ impl fmt::Display for DataFormat {
     }
 }
 
-#[cfg(any(test, feature = "quickcheck"))]
+#[cfg(test)]
 impl Arbitrary for DataFormat {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         u8::arbitrary(g).into()

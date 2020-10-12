@@ -10,10 +10,20 @@ use crate::packet::{UserID, UserAttribute, key, Key, signature, Signature};
 impl<P: key::KeyParts> Key<P, key::SubordinateRole> {
     /// Creates a binding signature.
     ///
-    /// The signature binds this userid to `cert`. `signer` will be used
+    /// The signature binds this subkey to `cert`. `signer` will be used
     /// to create a signature using `signature` as builder.
     /// The`hash_algo` defaults to SHA512, `creation_time` to the
     /// current time.
+    ///
+    /// Note that subkeys with signing capabilities need a [primary
+    /// key binding signature].  If you are creating this binding
+    /// signature from a previous binding signature, you can reuse the
+    /// primary key binding signature if it is still valid and meets
+    /// current algorithm requirements.  Otherwise, you can create one
+    /// using [`SignatureBuilder::sign_primary_key_binding`].
+    ///
+    ///   [primary key binding signature]: https://tools.ietf.org/html/rfc4880#section-5.2.1
+    ///   [`SignatureBuilder::sign_primary_key_binding`]: signature/struct.SignatureBuilder.html#method.sign_primary_key_binding
     ///
     /// This function adds a creation time subpacket, a issuer
     /// fingerprint subpacket, and a issuer subpacket to the
@@ -38,7 +48,7 @@ impl<P: key::KeyParts> Key<P, key::SubordinateRole> {
     ///     .parts_into_secret()?.into_keypair()?;
     ///
     /// // Let's add an encryption subkey.
-    /// let flags = KeyFlags::default().set_storage_encryption(true);
+    /// let flags = KeyFlags::empty().set_storage_encryption();
     /// assert_eq!(cert.keys().with_policy(p, None).alive().revoked(false)
     ///                .key_flags(&flags).count(),
     ///            0);
@@ -52,7 +62,7 @@ impl<P: key::KeyParts> Key<P, key::SubordinateRole> {
     /// let binding = subkey.bind(&mut keypair, &cert, builder)?;
     ///
     /// // Now merge the key and binding signature into the Cert.
-    /// let cert = cert.merge_packets(vec![Packet::from(subkey),
+    /// let cert = cert.insert_packets(vec![Packet::from(subkey),
     ///                                    binding.into()])?;
     ///
     /// // Check that we have an encryption subkey.
@@ -104,7 +114,7 @@ impl UserID {
     /// let binding = userid.bind(&mut keypair, &cert, builder)?;
     ///
     /// // Now merge the userid and binding signature into the Cert.
-    /// let cert = cert.merge_packets(vec![Packet::from(userid),
+    /// let cert = cert.insert_packets(vec![Packet::from(userid),
     ///                                    binding.into()])?;
     ///
     /// // Check that we have a userid.
@@ -146,7 +156,7 @@ impl UserID {
     /// # fn f() -> Result<()> {
     /// // Generate a Cert, and create a keypair from the primary key.
     /// let (alice, _) = CertBuilder::new()
-    ///     .set_primary_key_flags(KeyFlags::default().set_certification(true))
+    ///     .set_primary_key_flags(KeyFlags::empty().set_certification())
     ///     .add_userid("alice@example.org")
     ///     .generate()?;
     /// let mut keypair = alice.primary_key().key().clone()
@@ -154,7 +164,7 @@ impl UserID {
     ///
     /// // Generate a Cert for Bob.
     /// let (bob, _) = CertBuilder::new()
-    ///     .set_primary_key_flags(KeyFlags::default().set_certification(true))
+    ///     .set_primary_key_flags(KeyFlags::empty().set_certification())
     ///     .add_userid("bob@example.org")
     ///     .generate()?;
     ///
@@ -165,7 +175,7 @@ impl UserID {
     ///              None, None)?;
     ///
     /// // `certificate` can now be used, e.g. by merging it into `bob`.
-    /// let bob = bob.merge_packets(certificate)?;
+    /// let bob = bob.insert_packets(certificate)?;
     ///
     /// // Check that we have a certification on the userid.
     /// assert_eq!(bob.userids().nth(0).unwrap()
@@ -220,7 +230,7 @@ impl UserAttribute {
     ///
     /// ```
     /// # use sequoia_openpgp::{*, packet::prelude::*, types::*, cert::*,
-    ///                         packet::user_attribute::*};
+    /// #                       packet::user_attribute::*};
     /// # f().unwrap();
     /// # fn f() -> Result<()> {
     /// // Generate a Cert, and create a keypair from the primary key.
@@ -240,7 +250,7 @@ impl UserAttribute {
     /// let binding = user_attr.bind(&mut keypair, &cert, builder)?;
     ///
     /// // Now merge the user attribute and binding signature into the Cert.
-    /// let cert = cert.merge_packets(vec![Packet::from(user_attr),
+    /// let cert = cert.insert_packets(vec![Packet::from(user_attr),
     ///                                    binding.into()])?;
     ///
     /// // Check that we have a user attribute.
@@ -278,7 +288,7 @@ impl UserAttribute {
     ///
     /// ```
     /// # use sequoia_openpgp::{*, packet::prelude::*, types::*, cert::*,
-    ///                         packet::user_attribute::*};
+    /// #                       packet::user_attribute::*};
     /// # f().unwrap();
     /// # fn f() -> Result<()> {
     /// // Generate a Cert, and create a keypair from the primary key.
@@ -294,7 +304,7 @@ impl UserAttribute {
     ///         Image::Private(100, vec![0, 1, 2].into_boxed_slice())),
     /// ])?;
     /// let (bob, _) = CertBuilder::new()
-    ///     .set_primary_key_flags(KeyFlags::default().set_certification(true))
+    ///     .set_primary_key_flags(KeyFlags::empty().set_certification())
     ///     .add_user_attribute(user_attr)
     ///     .generate()?;
     ///
@@ -305,7 +315,7 @@ impl UserAttribute {
     ///              None, None)?;
     ///
     /// // `certificate` can now be used, e.g. by merging it into `bob`.
-    /// let bob = bob.merge_packets(certificate)?;
+    /// let bob = bob.insert_packets(certificate)?;
     ///
     /// // Check that we have a certification on the userid.
     /// assert_eq!(bob.user_attributes().nth(0).unwrap()

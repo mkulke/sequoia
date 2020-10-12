@@ -136,11 +136,10 @@
 
 use std::io::{self, Write};
 use std::cmp;
-use std::convert::TryFrom;
+use std::convert::{TryFrom, TryInto};
 
 use super::*;
 
-mod sexp;
 mod cert;
 pub use self::cert::TSK;
 mod cert_armored;
@@ -496,8 +495,9 @@ trait NetLength {
 /// For now, we express SerializeInto using Serialize.  In the future,
 /// we may provide implementations not relying on Serialize for a
 /// no_std configuration of this crate.
-fn generic_serialize_into<T: Marshal + MarshalInto>(o: &T, buf: &mut [u8])
-                                                        -> Result<usize> {
+fn generic_serialize_into(o: &dyn Marshal, serialized_len: usize,
+                          buf: &mut [u8])
+                          -> Result<usize> {
     let buf_len = buf.len();
     let mut cursor = ::std::io::Cursor::new(buf);
     match o.serialize(&mut cursor) {
@@ -510,11 +510,11 @@ fn generic_serialize_into<T: Marshal + MarshalInto>(o: &T, buf: &mut [u8])
                     false
                 };
             return if short_write {
-                assert!(buf_len < o.serialized_len(),
+                assert!(buf_len < serialized_len,
                         "o.serialized_len() underestimated the required space");
                 Err(Error::InvalidArgument(
                     format!("Invalid buffer size, expected {}, got {}",
-                            o.serialized_len(), buf_len)).into())
+                            serialized_len, buf_len)).into())
             } else {
                 Err(e)
             }
@@ -523,13 +523,15 @@ fn generic_serialize_into<T: Marshal + MarshalInto>(o: &T, buf: &mut [u8])
     Ok(cursor.position() as usize)
 }
 
+
 /// Provides a generic implementation for SerializeInto::export_into.
 ///
 /// For now, we express SerializeInto using Serialize.  In the future,
 /// we may provide implementations not relying on Serialize for a
 /// no_std configuration of this crate.
-fn generic_export_into<T: Marshal + MarshalInto>(o: &T, buf: &mut [u8])
-                                                        -> Result<usize> {
+fn generic_export_into(o: &dyn Marshal, serialized_len: usize,
+                       buf: &mut [u8])
+                       -> Result<usize> {
     let buf_len = buf.len();
     let mut cursor = ::std::io::Cursor::new(buf);
     match o.export(&mut cursor) {
@@ -542,11 +544,11 @@ fn generic_export_into<T: Marshal + MarshalInto>(o: &T, buf: &mut [u8])
                     false
                 };
             return if short_write {
-                assert!(buf_len < o.serialized_len(),
+                assert!(buf_len < serialized_len,
                         "o.serialized_len() underestimated the required space");
                 Err(Error::InvalidArgument(
                     format!("Invalid buffer size, expected {}, got {}",
-                            o.serialized_len(), buf_len)).into())
+                            serialized_len, buf_len)).into())
             } else {
                 Err(e)
             }
@@ -688,7 +690,7 @@ impl MarshalInto for BodyLength {
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
 
@@ -748,7 +750,7 @@ impl MarshalInto for CTBNew {
     fn serialized_len(&self) -> usize { 1 }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
 
@@ -765,7 +767,7 @@ impl MarshalInto for CTBOld {
     fn serialized_len(&self) -> usize { 1 }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
 
@@ -783,7 +785,7 @@ impl MarshalInto for CTB {
     fn serialized_len(&self) -> usize { 1 }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
 
@@ -792,6 +794,16 @@ impl Marshal for Header {
         self.ctb().serialize(o)?;
         self.length().serialize(o)?;
         Ok(())
+    }
+}
+
+impl MarshalInto for Header {
+    fn serialized_len(&self) -> usize {
+        self.ctb().serialized_len() + self.length().serialized_len()
+    }
+
+    fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
 
@@ -819,7 +831,7 @@ impl MarshalInto for KeyID {
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
 
@@ -842,7 +854,7 @@ impl MarshalInto for Fingerprint {
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
 
@@ -860,7 +872,7 @@ impl MarshalInto for crypto::mpi::MPI {
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
 
@@ -878,8 +890,21 @@ impl MarshalInto for crypto::mpi::ProtectedMPI {
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
+}
+
+/// Writes `buf` into `w` prefixed by the length as u8, bailing out if
+/// the length exceeds 256 bytes.
+fn write_field_with_u8_size(w: &mut dyn Write, name: &str, buf: &[u8])
+                            -> Result<()> {
+    w.write_all(&[buf.len().try_into()
+                  .map_err(|_| anyhow::Error::from(
+                      Error::InvalidArgument(
+                          format!("{} exceeds 255 bytes: {:?}",
+                                  name, buf))))?])?;
+    w.write_all(buf)?;
+    Ok(())
 }
 
 impl Marshal for crypto::mpi::PublicKey {
@@ -906,20 +931,17 @@ impl Marshal for crypto::mpi::PublicKey {
             }
 
             &EdDSA { ref curve, ref q } => {
-                w.write_all(&[curve.oid().len() as u8])?;
-                w.write_all(curve.oid())?;
+                write_field_with_u8_size(w, "Curve's OID", curve.oid())?;
                 q.serialize(w)?;
             }
 
             &ECDSA { ref curve, ref q } => {
-                w.write_all(&[curve.oid().len() as u8])?;
-                w.write_all(curve.oid())?;
+                write_field_with_u8_size(w, "Curve's OID", curve.oid())?;
                 q.serialize(w)?;
             }
 
             &ECDH { ref curve, ref q, hash, sym } => {
-                w.write_all(&[curve.oid().len() as u8])?;
-                w.write_all(curve.oid())?;
+                write_field_with_u8_size(w, "Curve's OID", curve.oid())?;
                 q.serialize(w)?;
                 w.write_all(&[3u8, 1u8, u8::from(hash), u8::from(sym)])?;
             }
@@ -977,7 +999,7 @@ impl MarshalInto for crypto::mpi::PublicKey {
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
 
@@ -1066,22 +1088,35 @@ impl MarshalInto for crypto::mpi::SecretKeyMaterial {
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
 
 impl crypto::mpi::SecretKeyMaterial {
     /// Writes this secret key with a checksum to `w`.
-    pub fn serialize_chksumd<W: io::Write>(&self, w: &mut W) -> Result<()> {
+    pub fn serialize_with_checksum(
+        &self, w: &mut dyn io::Write,
+        checksum: crypto::mpi::SecretKeyChecksum)
+        -> Result<()>
+    {
         // First, the MPIs.
         self.serialize(w)?;
 
-        // The checksum is SHA1 over the serialized MPIs.
-        let mut hash = HashAlgorithm::SHA1.context().unwrap();
-        self.serialize(&mut hash)?;
-        let mut digest = [0u8; 20];
-        hash.digest(&mut digest);
-        w.write_all(&digest)?;
+        match checksum {
+            crypto::mpi::SecretKeyChecksum::SHA1 => {
+                // The checksum is SHA1 over the serialized MPIs.
+                let mut hash = HashAlgorithm::SHA1.context().unwrap();
+                self.serialize(&mut hash)?;
+                let mut digest = [0u8; 20];
+                hash.digest(&mut digest);
+                w.write_all(&digest)?;
+            },
+            crypto::mpi::SecretKeyChecksum::Sum16 => {
+                w.write_all(&self.to_vec()?.iter()
+                            .fold(0u16, |acc, v| acc.wrapping_add(*v as u16))
+                            .to_be_bytes())?;
+            },
+        }
 
         Ok(())
     }
@@ -1103,9 +1138,7 @@ impl Marshal for crypto::mpi::Ciphertext {
 
             &ECDH{ ref e, ref key } => {
                 e.serialize(w)?;
-
-                w.write_all(&[key.len() as u8])?;
-                w.write_all(&key)?;
+                write_field_with_u8_size(w, "Key", key)?;
             }
 
             &Unknown { ref mpis, ref rest } => {
@@ -1148,7 +1181,7 @@ impl MarshalInto for crypto::mpi::Ciphertext {
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
 
@@ -1221,12 +1254,13 @@ impl MarshalInto for crypto::mpi::Signature {
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
 
 impl Marshal for S2K {
     fn serialize(&self, w: &mut dyn std::io::Write) -> Result<()> {
+        #[allow(deprecated)]
         match self {
             &S2K::Simple{ hash } => {
                 w.write_all(&[0, hash.into()])?;
@@ -1240,9 +1274,14 @@ impl Marshal for S2K {
                 w.write_all(&salt[..])?;
                 w.write_all(&[S2K::encode_count(hash_bytes)?])?;
             }
-            &S2K::Private(s2k) | &S2K::Unknown(s2k) => {
-                w.write_all(&[s2k])?;
+            S2K::Private { tag, parameters }
+            | S2K::Unknown { tag, parameters} => {
+                w.write_all(&[*tag])?;
+                if let Some(p) = parameters.as_ref() {
+                    w.write_all(p)?;
+                }
             }
+            S2K::__Nonexhaustive => unreachable!(),
         }
 
         Ok(())
@@ -1251,16 +1290,20 @@ impl Marshal for S2K {
 
 impl MarshalInto for S2K {
     fn serialized_len(&self) -> usize {
+        #[allow(deprecated)]
         match self {
             &S2K::Simple{ .. } => 2,
             &S2K::Salted{ .. } => 2 + 8,
             &S2K::Iterated{ .. } => 2 + 8 + 1,
-            &S2K::Private(_) | &S2K::Unknown(_) => 1,
+            S2K::Private { parameters, .. }
+            | S2K::Unknown { parameters, .. } =>
+                1 + parameters.as_ref().map(|p| p.len()).unwrap_or(0),
+            S2K::__Nonexhaustive => unreachable!(),
         }
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
 
@@ -1283,7 +1326,7 @@ impl MarshalInto for Unknown {
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
 
@@ -1328,7 +1371,7 @@ impl MarshalInto for Subpacket {
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
 
@@ -1360,7 +1403,7 @@ impl Marshal for SubpacketValue {
             Issuer(ref id) =>
                 o.write_all(id.as_bytes())?,
             NotationData(nd) => {
-                write_be_u32(o, nd.flags().raw())?;
+                o.write_all(nd.flags().as_slice())?;
                 write_be_u16(o, nd.name().len() as u16)?;
                 write_be_u16(o, nd.value().len() as u16)?;
                 o.write_all(nd.name().as_bytes())?;
@@ -1375,7 +1418,7 @@ impl Marshal for SubpacketValue {
                     o.write_all(&[(*a).into()])?;
                 },
             KeyServerPreferences(ref p) =>
-                o.write_all(&p.to_vec())?,
+                o.write_all(p.as_slice())?,
             PreferredKeyServer(ref p) =>
                 o.write_all(p)?,
             PrimaryUserID(p) =>
@@ -1383,7 +1426,7 @@ impl Marshal for SubpacketValue {
             PolicyURI(ref p) =>
                 o.write_all(p)?,
             KeyFlags(ref f) =>
-                o.write_all(&f.to_vec())?,
+                o.write_all(f.as_slice())?,
             SignersUserID(ref uid) =>
                 o.write_all(uid)?,
             ReasonForRevocation { ref code, ref reason } => {
@@ -1391,7 +1434,7 @@ impl Marshal for SubpacketValue {
                 o.write_all(reason)?;
             },
             Features(ref f) =>
-                o.write_all(&f.to_vec())?,
+                o.write_all(&f.as_slice())?,
             SignatureTarget { pk_algo, hash_algo, ref digest } => {
                 o.write_all(&[(*pk_algo).into(), (*hash_algo).into()])?;
                 o.write_all(digest)?;
@@ -1442,14 +1485,14 @@ impl MarshalInto for SubpacketValue {
             NotationData(nd) => 4 + 2 + 2 + nd.name().len() + nd.value().len(),
             PreferredHashAlgorithms(ref p) => p.len(),
             PreferredCompressionAlgorithms(ref p) => p.len(),
-            KeyServerPreferences(ref p) => p.to_vec().len(),
+            KeyServerPreferences(ref p) => p.as_slice().len(),
             PreferredKeyServer(ref p) => p.len(),
             PrimaryUserID(_) => 1,
             PolicyURI(ref p) => p.len(),
-            KeyFlags(ref f) => f.to_vec().len(),
+            KeyFlags(ref f) => f.as_slice().len(),
             SignersUserID(ref uid) => uid.len(),
             ReasonForRevocation { ref reason, .. } => 1 + reason.len(),
-            Features(ref f) => f.to_vec().len(),
+            Features(ref f) => f.as_slice().len(),
             SignatureTarget { ref digest, .. } => 2 + digest.len(),
             EmbeddedSignature(sig) => sig.serialized_len(),
             IssuerFingerprint(ref fp) => match fp {
@@ -1473,7 +1516,7 @@ impl MarshalInto for SubpacketValue {
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
 
@@ -1503,7 +1546,7 @@ impl MarshalInto for SubpacketLength {
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
 
@@ -1523,7 +1566,7 @@ impl MarshalInto for RevocationKey {
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
 
@@ -1641,7 +1684,7 @@ impl MarshalInto for Signature4 {
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 
     fn export_into(&self, buf: &mut [u8]) -> Result<usize> {
@@ -1718,7 +1761,7 @@ impl MarshalInto for OnePassSig3 {
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
 
@@ -1780,29 +1823,24 @@ impl<P, R> Key4<P, R>
         self.mpis().serialize(o)?;
 
         if have_secret_key {
+            use crypto::mpi::SecretKeyChecksum;
             match self.optional_secret().unwrap() {
                 SecretKeyMaterial::Unencrypted(ref u) => u.map(|mpis| -> Result<()> {
-                    // S2K usage.
-                    write_byte(o, 0)?;
-
-                    // To compute the checksum, serialize to a buffer first.
-                    let mut buf = Vec::new();
-                    mpis.serialize(&mut buf)?;
-                    let buf: crate::crypto::mem::Protected = buf.into();
-                    let checksum: usize = buf.iter().map(|x| *x as usize)
-                        .sum();
-
-                    // Then, just write out the buffer.
-                    o.write_all(&buf)?;
-                    write_be_u16(o, checksum as u16)?;
-                    Ok(())
+                    write_byte(o, 0)?; // S2K usage.
+                    mpis.serialize_with_checksum(o, SecretKeyChecksum::Sum16)
                 })?,
                 SecretKeyMaterial::Encrypted(ref e) => {
                     // S2K usage.
-                    write_byte(o, 254)?;
+                    write_byte(o, match e.checksum() {
+                        Some(SecretKeyChecksum::SHA1) => 254,
+                        Some(SecretKeyChecksum::Sum16) => 255,
+                        None => return Err(Error::InvalidOperation(
+                            "In Key4 packets, encrypted secret keys must be \
+                             checksummed".into()).into()),
+                    })?;
                     write_byte(o, e.algo().into())?;
                     e.s2k().serialize(o)?;
-                    o.write_all(e.ciphertext())?;
+                    o.write_all(e.raw_ciphertext())?;
                 },
             }
         }
@@ -1823,7 +1861,8 @@ impl<P, R> Key4<P, R>
                         u.map(|mpis| mpis.serialized_len())
                         + 2, // Two octet checksum.
                     SecretKeyMaterial::Encrypted(ref e) =>
-                        1 + e.s2k().serialized_len() + e.ciphertext().len(),
+                        1 + e.s2k().serialized_len()
+                        + e.raw_ciphertext().len(),
                 }
             } else {
                 0
@@ -1840,7 +1879,7 @@ impl<P, R> MarshalInto for Key4<P, R>
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
 
@@ -1863,7 +1902,7 @@ impl MarshalInto for Marker {
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
 
@@ -1886,7 +1925,7 @@ impl MarshalInto for Trust {
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
 
@@ -1909,7 +1948,7 @@ impl MarshalInto for UserID {
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
 
@@ -1932,18 +1971,25 @@ impl MarshalInto for UserAttribute {
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
 
 impl Marshal for user_attribute::Subpacket {
     fn serialize(&self, o: &mut dyn std::io::Write) -> Result<()> {
-        match self {
+        let body_len = match self {
             user_attribute::Subpacket::Image(image) =>
-                image.serialize(o)?,
+                image.serialized_len(),
+            user_attribute::Subpacket::Unknown(_tag, data) =>
+                data.len(),
+        };
+        BodyLength::Full(1 + body_len as u32).serialize(o)?;
+        match self {
+            user_attribute::Subpacket::Image(image) => {
+                write_byte(o, 1)?;
+                image.serialize(o)?;
+            },
             user_attribute::Subpacket::Unknown(tag, data) => {
-                BodyLength::Full(1 + data.len() as u32)
-                    .serialize(o)?;
                 write_byte(o, *tag)?;
                 o.write_all(&data[..])?;
             }
@@ -1955,36 +2001,38 @@ impl Marshal for user_attribute::Subpacket {
 
 impl MarshalInto for user_attribute::Subpacket {
     fn serialized_len(&self) -> usize {
-        match self {
+        let body_len = match self {
             user_attribute::Subpacket::Image(image) =>
                 image.serialized_len(),
-            user_attribute::Subpacket::Unknown(_tag, data) => {
-                let header_len = BodyLength::Full(1 + data.len() as u32)
-                    .serialized_len();
-                header_len + 1 + data.len()
-            }
-        }
+            user_attribute::Subpacket::Unknown(_tag, data) =>
+                data.len(),
+        };
+        let header_len =
+            BodyLength::Full(1 + body_len as u32).serialized_len();
+        header_len + 1 + body_len
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
 
 impl Marshal for user_attribute::Image {
     fn serialize(&self, o: &mut dyn std::io::Write) -> Result<()> {
+        const V1HEADER_TOP: [u8; 3] = [0x10, 0x00, 0x01];
+        const V1HEADER_PAD: [u8; 12] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         match self {
             user_attribute::Image::JPEG(data) => {
-                let header = BodyLength::Full(1 + data.len() as u32);
-                header.serialize(o)?;
-                write_byte(o, 0)?;
+                o.write_all(&V1HEADER_TOP[..])?;
+                write_byte(o, 1)?;
+                o.write_all(&V1HEADER_PAD[..])?;
                 o.write_all(&data[..])?;
             }
             user_attribute::Image::Unknown(tag, data)
             | user_attribute::Image::Private(tag, data) => {
-                let header = BodyLength::Full(1 + data.len() as u32);
-                header.serialize(o)?;
+                o.write_all(&V1HEADER_TOP[..])?;
                 write_byte(o, *tag)?;
+                o.write_all(&V1HEADER_PAD[..])?;
                 o.write_all(&data[..])?;
             }
         }
@@ -1995,17 +2043,21 @@ impl Marshal for user_attribute::Image {
 
 impl MarshalInto for user_attribute::Image {
     fn serialized_len(&self) -> usize {
+        const V1HEADER_LEN: usize =
+            2     /* Length */
+            + 1   /* Version */
+            + 1   /* Tag */
+            + 12; /* Reserved padding */
         match self {
             user_attribute::Image::JPEG(data)
             | user_attribute::Image::Unknown(_, data)
             | user_attribute::Image::Private(_, data) =>
-                1 + BodyLength::Full(1 + data.len() as u32).serialized_len()
-                + data.len(),
+                V1HEADER_LEN + data.len(),
         }
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
 
@@ -2072,7 +2124,7 @@ impl MarshalInto for Literal {
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
 
@@ -2170,7 +2222,7 @@ impl MarshalInto for CompressedData {
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
 
@@ -2193,7 +2245,8 @@ impl MarshalInto for PKESK {
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
         match self {
-            &PKESK::V3(ref p) => generic_serialize_into(p, buf),
+            PKESK::V3(p) =>
+                generic_serialize_into(p, MarshalInto::serialized_len(p), buf),
             PKESK::__Nonexhaustive => unreachable!(),
         }
     }
@@ -2225,7 +2278,7 @@ impl MarshalInto for PKESK3 {
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
 
@@ -2260,8 +2313,10 @@ impl MarshalInto for SKESK {
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
         match self {
-            &SKESK::V4(ref s) => generic_serialize_into(s, buf),
-            &SKESK::V5(ref s) => generic_serialize_into(s, buf),
+            SKESK::V4(s) =>
+                generic_serialize_into(s, MarshalInto::serialized_len(s), buf),
+            SKESK::V5(s) =>
+                generic_serialize_into(s, MarshalInto::serialized_len(s), buf),
             SKESK::__Nonexhaustive => unreachable!(),
         }
     }
@@ -2272,10 +2327,7 @@ impl Marshal for SKESK4 {
         write_byte(o, 4)?; // Version.
         write_byte(o, self.symmetric_algo().into())?;
         self.s2k().serialize(o)?;
-        if let Some(ref esk) = self.esk() {
-            o.write_all(&esk[..])?;
-        }
-
+        o.write_all(self.raw_esk())?;
         Ok(())
     }
 }
@@ -2285,7 +2337,7 @@ impl NetLength for SKESK4 {
         1 // Version.
             + 1 // Algo.
             + self.s2k().serialized_len()
-            + self.esk().map(|esk| esk.len()).unwrap_or(0)
+            + self.raw_esk().len()
     }
 }
 
@@ -2295,7 +2347,7 @@ impl MarshalInto for SKESK4 {
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
 
@@ -2305,10 +2357,10 @@ impl Marshal for SKESK5 {
         write_byte(o, self.symmetric_algo().into())?;
         write_byte(o, self.aead_algo().into())?;
         self.s2k().serialize(o)?;
-        o.write_all(self.aead_iv())?;
-        if let Some(ref esk) = self.esk() {
-            o.write_all(&esk[..])?;
+        if let Ok(iv) = self.aead_iv() {
+            o.write_all(iv)?;
         }
+        o.write_all(self.raw_esk())?;
         o.write_all(self.aead_digest())?;
 
         Ok(())
@@ -2321,8 +2373,8 @@ impl NetLength for SKESK5 {
             + 1 // Cipher algo.
             + 1 // AEAD algo.
             + self.s2k().serialized_len()
-            + self.aead_iv().len()
-            + self.esk().map(|esk| esk.len()).unwrap_or(0)
+            + self.aead_iv().map(|iv| iv.len()).unwrap_or(0)
+            + self.raw_esk().len()
             + self.aead_digest().len()
     }
 }
@@ -2333,7 +2385,7 @@ impl MarshalInto for SKESK5 {
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
 
@@ -2375,7 +2427,7 @@ impl MarshalInto for SEIP {
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
 
@@ -2398,7 +2450,7 @@ impl MarshalInto for MDC {
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
 
@@ -2480,7 +2532,7 @@ impl MarshalInto for AED1 {
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
 
@@ -2626,11 +2678,11 @@ impl MarshalInto for Packet {
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 
     fn export_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_export_into(self, buf)
+        generic_export_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
 
@@ -2851,11 +2903,11 @@ impl<'a> MarshalInto for PacketRef<'a> {
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 
     fn export_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_export_into(self, buf)
+        generic_export_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
 
@@ -2889,11 +2941,11 @@ impl MarshalInto for PacketPile {
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_serialize_into(self, buf)
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 
     fn export_into(&self, buf: &mut [u8]) -> Result<usize> {
-        generic_export_into(self, buf)
+        generic_export_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
 

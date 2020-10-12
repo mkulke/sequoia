@@ -4,7 +4,7 @@ use std::fmt;
 use std::time::{SystemTime, Duration as SystemDuration, UNIX_EPOCH};
 use std::u32;
 
-#[cfg(any(test, feature = "quickcheck"))]
+#[cfg(test)]
 use quickcheck::{Arbitrary, Gen};
 
 use crate::{
@@ -47,7 +47,7 @@ use crate::{
 /// let subkey = cert.keys().subkeys().next().unwrap();
 /// let packets = subkey.bundle().self_signatures()[0].hashed_area();
 ///
-/// match packets.lookup(SubpacketTag::SignatureCreationTime).unwrap().value() {
+/// match packets.subpacket(SubpacketTag::SignatureCreationTime).unwrap().value() {
 ///     SubpacketValue::SignatureCreationTime(ts) => assert!(u32::from(*ts) > 0),
 ///     v => panic!("Unexpected subpacket: {:?}", v),
 /// }
@@ -185,14 +185,14 @@ impl Timestamp {
     /// // Generate a Cert for Alice.
     /// let (alice, _) = CertBuilder::new()
     ///     .set_creation_time(cert_creation_alice)
-    ///     .set_primary_key_flags(KeyFlags::default().set_certification(true))
+    ///     .set_primary_key_flags(KeyFlags::empty().set_certification())
     ///     .add_userid("alice@example.org")
     ///     .generate()?;
     ///
     /// // Generate a Cert for Bob.
     /// let (bob, _) = CertBuilder::new()
     ///     .set_creation_time(cert_creation_bob)
-    ///     .set_primary_key_flags(KeyFlags::default().set_certification(true))
+    ///     .set_primary_key_flags(KeyFlags::empty().set_certification())
     ///     .add_userid("bob@example.org")
     ///     .generate()?;
     ///
@@ -244,7 +244,7 @@ impl Timestamp {
     }
 }
 
-#[cfg(any(test, feature = "quickcheck"))]
+#[cfg(test)]
 impl Arbitrary for Timestamp {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         Timestamp(u32::arbitrary(g))
@@ -267,11 +267,11 @@ impl Arbitrary for Timestamp {
 /// let p = &StandardPolicy::new();
 ///
 /// let now = Timestamp::now();
-/// let then = now.checked_add(Duration::days(365)?).unwrap();
+/// let validity_period = Duration::days(365)?;
 ///
 /// let (cert,_) = CertBuilder::new()
 ///     .set_creation_time(now)
-///     .set_expiration_time(then)
+///     .set_validity_period(validity_period)
 ///     .generate()?;
 ///
 /// let vc = cert.with_policy(p, now)?;
@@ -565,7 +565,7 @@ impl Timestamp {
     pub(crate) const Y2106 : Timestamp = Timestamp(4291747200);
 }
 
-#[cfg(any(test, feature = "quickcheck"))]
+#[cfg(test)]
 impl Arbitrary for Duration {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         Duration(u32::arbitrary(g))

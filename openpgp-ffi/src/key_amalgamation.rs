@@ -96,8 +96,52 @@ pub extern "C" fn pgp_valid_key_amalgamation_binding_signature<'a>(ka: *const Va
         .move_into_raw()
 }
 
+/// Returns whether the key is certification capable.
+#[::sequoia_ffi_macros::extern_fn] #[no_mangle]
+pub extern "C" fn pgp_valid_key_amalgamation_for_certification<'a>(ka: *const ValidKeyAmalgamation<'a>)
+    -> bool
+{
+    ka.ref_raw().for_certification()
+}
+
+/// Returns whether the key is signing capable.
+#[::sequoia_ffi_macros::extern_fn] #[no_mangle]
+pub extern "C" fn pgp_valid_key_amalgamation_for_signing<'a>(ka: *const ValidKeyAmalgamation<'a>)
+    -> bool
+{
+    ka.ref_raw().for_signing()
+}
+
+/// Returns whether the key is authentication capable.
+#[::sequoia_ffi_macros::extern_fn] #[no_mangle]
+pub extern "C" fn pgp_valid_key_amalgamation_for_authentication<'a>(ka: *const ValidKeyAmalgamation<'a>)
+    -> bool
+{
+    ka.ref_raw().for_authentication()
+}
+
+/// Returns whether the key is intended for encrypting data at rest.
+#[::sequoia_ffi_macros::extern_fn] #[no_mangle]
+pub extern "C" fn pgp_valid_key_amalgamation_for_storage_encryption<'a>(ka: *const ValidKeyAmalgamation<'a>)
+    -> bool
+{
+    ka.ref_raw().for_storage_encryption()
+}
+
+/// Returns whether the key is intended for encrypting data in transit.
+#[::sequoia_ffi_macros::extern_fn] #[no_mangle]
+pub extern "C" fn pgp_valid_key_amalgamation_for_transport_encryption<'a>(ka: *const ValidKeyAmalgamation<'a>)
+    -> bool
+{
+    ka.ref_raw().for_transport_encryption()
+}
+
 /// Creates one or more self-signatures that when merged with the
 /// certificate cause the key to expire at the specified time.
+///
+/// `subkey_signer` must be `NULL` when updating the expiration of the
+/// primary key, or updating the expiration of a non-signing capable
+/// subkey.  Otherwise, a signer for the subkey must be given.
 ///
 /// The returned buffer must be freed using libc's allocator.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
@@ -105,6 +149,7 @@ fn pgp_valid_key_amalgamation_set_expiration_time(
     errp: Option<&mut *mut crate::error::Error>,
     ka: *const ValidKeyAmalgamation,
     primary_signer: *mut Box<dyn crypto::Signer>,
+    subkey_signer: Option<&'static mut Box<dyn crypto::Signer + 'static>>,
     expiry: time_t,
     sigs: *mut *mut *mut Signature, sig_count: *mut size_t)
     -> Status
@@ -117,7 +162,10 @@ fn pgp_valid_key_amalgamation_set_expiration_time(
     let sigs = ffi_param_ref_mut!(sigs);
     let sig_count = ffi_param_ref_mut!(sig_count);
 
-    match ka.set_expiration_time(signer.as_mut(), expiry) {
+    match ka.set_expiration_time(signer.as_mut(),
+                                 subkey_signer.map(|s| s.as_mut()),
+                                 expiry)
+    {
         Ok(new_sigs) => {
             let buffer = unsafe {
                 libc::calloc(new_sigs.len(), std::mem::size_of::<*mut Signature>())

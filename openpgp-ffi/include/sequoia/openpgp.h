@@ -908,7 +908,7 @@ pgp_cert_t pgp_cert_merge (pgp_error_t *errp,
 /// Consumes `cert` and the packets in `packets`.  The buffer, however,
 /// must be freed by the caller.
 /*/
-pgp_cert_t pgp_cert_merge_packets (pgp_error_t *errp,
+pgp_cert_t pgp_cert_insert_packets (pgp_error_t *errp,
                                pgp_cert_t cert,
                                pgp_packet_t *packets,
                                size_t packets_len);
@@ -1184,8 +1184,37 @@ pgp_revocation_status_t pgp_valid_key_amalgamation_revocation_status (pgp_valid_
 pgp_signature_t pgp_valid_key_amalgamation_binding_signature (pgp_valid_key_amalgamation_t ka);
 
 /*/
+/// Returns whether the key is certification capable.
+/*/
+bool pgp_valid_key_amalgamation_for_certification (pgp_valid_key_amalgamation_t ka);
+
+/*/
+/// Returns whether the key is signing capable.
+/*/
+bool pgp_valid_key_amalgamation_for_signing (pgp_valid_key_amalgamation_t ka);
+
+/*/
+/// Returns whether the key is authentication capable.
+/*/
+bool pgp_valid_key_amalgamation_for_authentication (pgp_valid_key_amalgamation_t ka);
+
+/*/
+/// Returns whether the key is intended for encrypting data at rest.
+/*/
+bool pgp_valid_key_amalgamation_for_storage_encryption (pgp_valid_key_amalgamation_t ka);
+
+/*/
+/// Returns whether the key is intended for encrypting data in transit.
+/*/
+bool pgp_valid_key_amalgamation_for_transport_encryption (pgp_valid_key_amalgamation_t ka);
+
+/*/
 /// Creates one or more self-signatures that when merged with the
 /// certificate cause the key to expire at the specified time.
+///
+/// `subkey_signer` must be `NULL` when updating the expiration of the
+/// primary key, or updating the expiration of a non-signing capable
+/// subkey.  Otherwise, a signer for the subkey must be given.
 ///
 /// The returned buffer must be freed using libc's allocator.
 /*/
@@ -1193,6 +1222,7 @@ pgp_status_t pgp_valid_key_amalgamation_set_expiration_time
   (pgp_error_t *errp,
    pgp_valid_key_amalgamation_t ka,
    pgp_signer_t signer,
+   pgp_signer_t subkey_signer,
    time_t time,
    pgp_signature_t **sigs,
    size_t *sig_count);
@@ -1837,8 +1867,7 @@ pgp_writer_stack_t pgp_encryptor_new (pgp_error_t *errp,
 				      size_t passwords_len,
 				      pgp_recipient_t *recipients,
 				      size_t recipients_len,
-				      uint8_t cipher_algo,
-				      uint8_t aead_algo);
+				      uint8_t cipher_algo);
 
 /*/
 /// Frees this object.

@@ -14,32 +14,27 @@ use crate::crypto::SessionKey;
 
 use std::fmt;
 
-#[cfg(any(test, feature = "quickcheck"))]
+#[cfg(test)]
 use quickcheck::{Arbitrary, Gen};
-#[cfg(any(test, feature = "quickcheck"))]
+#[cfg(test)]
 use rand::Rng;
 
 /// String-to-Key (S2K) specifiers.
 ///
 /// String-to-key (S2K) specifiers are used to convert password
 /// strings into symmetric-key encryption/decryption keys.  See
-/// [Section 3.7 of RFC 4880].
+/// [Section 3.7 of RFC 4880].  This is used to encrypt messages with
+/// a password (see [`SKESK`]), and to protect secret keys (see
+/// [`key::Encrypted`]).
 ///
 ///   [Section 3.7 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-3.7
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+///   [`SKESK`]: ../../packet/enum.SKESK.html
+///   [`key::Encrypted`]: ../../packet/key/struct.Encrypted.html
+///
+/// Note: This enum cannot be exhaustively matched to allow future
+/// extensions.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum S2K {
-    /// Simply hashes the password.
-    Simple {
-        /// Hash used for key derivation.
-        hash: HashAlgorithm
-    },
-    /// Hashes the password with a public `salt` value.
-    Salted {
-        /// Hash used for key derivation.
-        hash: HashAlgorithm,
-        /// Public salt value mixed into the password.
-        salt: [u8; 8],
-    },
     /// Repeatently hashes the password with a public `salt` value.
     Iterated {
         /// Hash used for key derivation.
@@ -47,38 +42,133 @@ pub enum S2K {
         /// Public salt value mixed into the password.
         salt: [u8; 8],
         /// Number of bytes to hash.
+        ///
+        /// This parameter increases the workload for an attacker
+        /// doing a dictionary attack.  Note that not all values are
+        /// representable.  See [`S2K::new_iterated`].
+        ///
+        ///   [`S2K::new_iterated`]: #method.new_iterated
         hash_bytes: u32,
     },
-    /// Private S2K algorithm
-    Private(u8),
-    /// Unknown S2K algorithm
-    Unknown(u8),
+
+    /// Hashes the password with a public `salt` value.
+    ///
+    /// This mechanism does not use iteration to increase the time it
+    /// takes to derive the key from the password.  This makes
+    /// dictionary attacks more feasible.  Do not use this variant.
+    #[deprecated(note = "Use `S2K::Iterated`.")]
+    Salted {
+        /// Hash used for key derivation.
+        hash: HashAlgorithm,
+        /// Public salt value mixed into the password.
+        salt: [u8; 8],
+    },
+
+    /// Simply hashes the password.
+    ///
+    /// This mechanism uses neither iteration to increase the time it
+    /// takes to derive the key from the password nor does it salt the
+    /// password.  This makes dictionary attacks more feasible.
+    ///
+    /// This mechanism has been deprecated in RFC 4880. Do not use this
+    /// variant.
+    #[deprecated(note = "Use `S2K::Iterated`.")]
+    Simple {
+        /// Hash used for key derivation.
+        hash: HashAlgorithm
+    },
+
+    /// Private S2K algorithm.
+    Private {
+        /// Tag identifying the private algorithm.
+        ///
+        /// Tags 100 to 110 are reserved for private use.
+        tag: u8,
+
+        /// The parameters for the private algorithm.
+        ///
+        /// This is optional, because when we parse a packet
+        /// containing an unknown S2K algorithm, we do not know how
+        /// many octets to attribute to the S2K's parameters.  In this
+        /// case, `parameters` is set to `None`.  Note that the
+        /// information is not lost, but stored in the packet.  If the
+        /// packet is serialized again, it is written out.
+        parameters: Option<Box<[u8]>>,
+    },
+
+    /// Unknown S2K algorithm.
+    Unknown {
+        /// Tag identifying the unknown algorithm.
+        tag: u8,
+
+        /// The parameters for the unknown algorithm.
+        ///
+        /// This is optional, because when we parse a packet
+        /// containing an unknown S2K algorithm, we do not know how
+        /// many octets to attribute to the S2K's parameters.  In this
+        /// case, `parameters` is set to `None`.  Note that the
+        /// information is not lost, but stored in the packet.  If the
+        /// packet is serialized again, it is written out.
+        parameters: Option<Box<[u8]>>,
+    },
+
+    /// This marks this enum as non-exhaustive.  Do not use this
+    /// variant.
+    #[doc(hidden)] __Nonexhaustive,
 }
 
 impl Default for S2K {
     fn default() -> Self {
-        let mut salt = [0u8; 8];
-        crate::crypto::random(&mut salt);
-        S2K::Iterated {
+        S2K::new_iterated(
             // SHA2-256, being optimized for implementations on
             // architectures with a word size of 32 bit, has a more
             // consistent runtime across different architectures than
             // SHA2-512.  Furthermore, the digest size is large enough
             // for every cipher algorithm currently in use.
-            hash: HashAlgorithm::SHA256,
-            salt,
+            HashAlgorithm::SHA256,
             // This is the largest count that OpenPGP can represent.
             // On moderate machines, like my Intel(R) Core(TM) i5-2400
             // CPU @ 3.10GHz, it takes ~354ms to derive a key.
-            hash_bytes: 65_011_712,
-        }
+            0x3e00000,
+        ).expect("0x3e00000 is representable")
     }
 }
 
 impl S2K {
-    /// Convert the string to a key using the S2K's parameters.
+    /// Creates a new iterated `S2K` object.
+    ///
+    /// Usually, you should use `S2K`s [`Default`] implementation to
+    /// create `S2K` objects with sane default parameters.  The
+    /// parameters are chosen with contemporary machines in mind, and
+    /// should also be usable on lower-end devices like smart phones.
+    ///
+    ///   [`Default`]: https://doc.rust-lang.org/std/default/trait.Default.html
+    ///
+    /// Using this method, you can tune the parameters for embedded
+    /// devices.  Note, however, that this also decreases the work
+    /// factor for attackers doing dictionary attacks.
+    pub fn new_iterated(hash: HashAlgorithm, approx_hash_bytes: u32)
+                        -> Result<Self> {
+        if approx_hash_bytes > 0x3e00000 {
+            Err(Error::InvalidArgument(format!(
+                "Number of bytes to hash not representable: {}",
+                approx_hash_bytes)).into())
+        } else {
+            let mut salt = [0u8; 8];
+            crate::crypto::random(&mut salt);
+            Ok(S2K::Iterated {
+                hash,
+                salt,
+                hash_bytes:
+                Self::nearest_hash_count(approx_hash_bytes as usize),
+            })
+        }
+    }
+
+    /// Derives a key of the given size from a password.
     pub fn derive_key(&self, password: &Password, key_size: usize)
     -> Result<SessionKey> {
+        #[allow(deprecated)]
         match self {
             &S2K::Simple { hash } | &S2K::Salted { hash, .. }
             | &S2K::Iterated { hash, .. } => password.map(|string| {
@@ -137,7 +227,9 @@ impl S2K {
                                 hash.update(&data[0..tail]);
                             }
                         }
-                        &S2K::Unknown(_) | &S2K::Private(_) => unreachable!(),
+                        S2K::Unknown { .. } | &S2K::Private { .. } =>
+                            unreachable!(),
+                        S2K::__Nonexhaustive => unreachable!(),
                     }
 
                     hash.digest(data);
@@ -146,47 +238,52 @@ impl S2K {
 
                 Ok(ret.into())
             }),
-            &S2K::Unknown(u) | &S2K::Private(u) =>
+            S2K::Unknown { tag, .. } | S2K::Private { tag, .. } =>
                 Err(Error::MalformedPacket(
-                        format!("Unknown S2K type {:#x}", u)).into()),
+                        format!("Unknown S2K type {:#x}", tag)).into()),
+            S2K::__Nonexhaustive => unreachable!(),
         }
     }
 
-    /// This function returns an encodabled iteration count larger or
-    /// equal `hash_bytes`.
+    /// Returns whether this S2K mechanism is supported.
+    pub fn is_supported(&self) -> bool {
+        use self::S2K::*;
+        #[allow(deprecated)]
+        match self {
+            Simple { .. } | Salted { .. } | Iterated { .. } => true,
+            __Nonexhaustive => unreachable!(),
+            _ => false,
+        }
+    }
+
+    /// This function returns an encodable iteration count.
     ///
     /// Not all iteration counts are encodable as *Iterated and Salted
     /// S2K*.  The largest encodable hash count is `0x3e00000`.
-    pub fn nearest_hash_count(hash_bytes: usize) -> u32 {
+    ///
+    /// The returned value is larger or equal `hash_bytes`, or
+    /// `0x3e00000` if `hash_bytes` is larger than or equal
+    /// `0x3e00000`.
+    fn nearest_hash_count(hash_bytes: usize) -> u32 {
         use std::usize;
 
         match hash_bytes {
             0..=1024 => 1024,
-            1025..=2048 => hash_bytes as u32,
             0x3e00001..=usize::MAX => 0x3e00000,
             hash_bytes => {
-                let hash_bytes = hash_bytes as u32;
-                let msb = 32 - hash_bytes.leading_zeros();
-                let mantissa_mask = 0b1111_000000 << (msb - 11);
-                let tail_mask = (1 << (msb - 11)) - 1;
-                let mantissa = (hash_bytes & mantissa_mask) >> (msb - 5);
-                let exp = if msb < 11 { 0 } else { msb - 11 };
-
-                if hash_bytes & tail_mask != 0 {
-                    if mantissa < 0b1111 {
-                        Self::decode_count((mantissa as u8 + 1) | exp as u8)
-                    } else {
-                        Self::decode_count(mantissa as u8 | (exp as u8 + 1))
+                for i in 0..256 {
+                    let n = Self::decode_count(i as u8);
+                    if n as usize >= hash_bytes {
+                        return n;
                     }
-                } else {
-                    hash_bytes
                 }
+                0x3e00000
             }
         }
      }
 
     /// Decodes the OpenPGP encoding of the number of bytes to hash.
-    pub fn decode_count(coded: u8) -> u32 {
+    pub(crate) fn decode_count(coded: u8) -> u32 {
         use std::cmp;
 
         let mantissa = 16 + (coded as u32 & 15);
@@ -203,7 +300,7 @@ impl S2K {
     /// encoded. See also [`S2K::nearest_hash_count()`].
     ///
     /// [`S2K::nearest_hash_count()`]: #method.nearest_hash_count
-    pub fn encode_count(hash_bytes: u32) -> Result<u8> {
+    pub(crate) fn encode_count(hash_bytes: u32) -> Result<u8> {
         // eeee.mmmm -> (16 + mmmm) * 2^(6 + e)
 
         let msb = 32 - hash_bytes.leading_zeros();
@@ -236,7 +333,8 @@ impl S2K {
 
 impl fmt::Display for S2K {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
+        #[allow(deprecated)]
+        match self {
             S2K::Simple{ hash } =>
                 f.write_fmt(format_args!("Simple S2K with {}", hash)),
             S2K::Salted{ hash, salt } => {
@@ -257,17 +355,28 @@ impl fmt::Display for S2K {
                     salt[4], salt[5], salt[6], salt[7],
                     hash_bytes))
             }
-            S2K::Private(u) =>
-                f.write_fmt(format_args!("Private/Experimental S2K {}", u)),
-            S2K::Unknown(u) => f.write_fmt(format_args!("Unknown S2K {}", u)),
+            S2K::Private { tag, parameters } =>
+                if let Some(p) = parameters.as_ref() {
+                    write!(f, "Private/Experimental S2K {}:{:?}", tag, p)
+                } else {
+                    write!(f, "Private/Experimental S2K {}", tag)
+                },
+            S2K::Unknown { tag, parameters } =>
+                if let Some(p) = parameters.as_ref() {
+                    write!(f, "Unknown S2K {}:{:?}", tag, p)
+                } else {
+                    write!(f, "Unknown S2K {}", tag)
+                },
+            S2K::__Nonexhaustive => unreachable!(),
         }
     }
 }
 
-#[cfg(any(test, feature = "quickcheck"))]
+#[cfg(test)]
 impl Arbitrary for S2K {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
-        match g.gen_range(0, 5) {
+        #[allow(deprecated)]
+        match g.gen_range(0, 7) {
             0 => S2K::Simple{ hash: HashAlgorithm::arbitrary(g) },
             1 => S2K::Salted{
                 hash: HashAlgorithm::arbitrary(g),
@@ -278,8 +387,22 @@ impl Arbitrary for S2K {
                 salt: g.gen(),
                 hash_bytes: S2K::nearest_hash_count(g.gen()),
             },
-            3 => S2K::Private(g.gen_range(100, 111)),
-            4 => S2K::Unknown(g.gen_range(4, 100)),
+            3 => S2K::Private {
+                tag: g.gen_range(100, 111),
+                parameters: Option::<Vec<u8>>::arbitrary(g).map(|v| v.into()),
+            },
+            4 => S2K::Unknown {
+                tag: 2,
+                parameters: Option::<Vec<u8>>::arbitrary(g).map(|v| v.into()),
+            },
+            5 => S2K::Unknown {
+                tag: g.gen_range(4, 100),
+                parameters: Option::<Vec<u8>>::arbitrary(g).map(|v| v.into()),
+            },
+            6 => S2K::Unknown {
+                tag: g.gen_range(111, 256) as u8,
+                parameters: Option::<Vec<u8>>::arbitrary(g).map(|v| v.into()),
+            },
             _ => unreachable!(),
         }
     }
@@ -312,6 +435,7 @@ mod tests {
         // SK-ESK packet when invoked with -c, but not -e.  (When
         // invoked with -c and -e, it generates SK-ESK packets that
         // include an encrypted session key.)
+        #[allow(deprecated)]
         let tests = [
             Test {
                 filename: "mode-0-password-1234.gpg",
@@ -397,7 +521,7 @@ mod tests {
             },
         ];
 
-        for test in tests.iter() {
+        for test in tests.iter().filter(|t| t.cipher_algo.is_supported()) {
             let path = crate::tests::message(&format!("s2k/{}", test.filename));
             let pp = PacketParser::from_bytes(path).unwrap().unwrap();
             if let Packet::SKESK(SKESK::V4(ref skesk)) = pp.packet {
@@ -419,30 +543,7 @@ mod tests {
 
             // Get the next packet.
             let (_, ppr) = pp.next().unwrap();
-            assert!(ppr.is_none());
-        }
-    }
-
-    quickcheck! {
-        fn s2k_roundtrip(s2k: S2K) -> bool {
-            use crate::serialize::Marshal;
-            use crate::serialize::MarshalInto;
-
-            eprintln!("in {:?}", s2k);
-            use std::io::Cursor;
-
-            let mut w = Cursor::new(Vec::new());
-            let l = s2k.serialized_len();
-            s2k.serialize(&mut w).unwrap();
-            let buf = w.into_inner();
-            eprintln!("raw: {:?}", buf);
-
-            assert_eq!(buf.len(), l);
-            let mut r = Cursor::new(buf.into_boxed_slice());
-            let s = S2K::from_reader(&mut r).unwrap();
-            eprintln!("out {:?}", s);
-
-            s2k == s
+            assert!(ppr.is_eof());
         }
     }
 
@@ -456,8 +557,10 @@ mod tests {
     quickcheck! {
         fn s2k_parse(s2k: S2K) -> bool {
             match s2k {
-                S2K::Unknown(u) => (u > 3 && u < 100) || u == 2 || u > 110,
-                S2K::Private(u) => u >= 100 && u <= 110,
+                S2K::Unknown { tag, .. } =>
+                    (tag > 3 && tag < 100) || tag == 2 || tag > 110,
+                S2K::Private { tag, .. } =>
+                    tag >= 100 && tag <= 110,
                 _ => true
             }
         }
@@ -473,11 +576,31 @@ mod tests {
     }
 
     quickcheck!{
-        fn s2k_coded_count_approx(i: usize) -> bool {
-            let approx = S2K::nearest_hash_count(i);
+        fn s2k_coded_count_approx(i: u32) -> bool {
+            let approx = S2K::nearest_hash_count(i as usize);
             let cc = S2K::encode_count(approx).unwrap();
 
-            (approx as usize >= i || i > 0x3e00000) && S2K::decode_count(cc) == approx
+            (approx >= i || i > 0x3e00000) && S2K::decode_count(cc) == approx
         }
+    }
+
+    #[test]
+    fn s2k_coded_count_approx_1025() {
+        let i = 1025;
+        let approx = S2K::nearest_hash_count(i);
+        let cc = S2K::encode_count(approx).unwrap();
+
+        assert!(approx as usize >= i || i > 0x3e00000);
+        assert_eq!(S2K::decode_count(cc), approx);
+    }
+
+    #[test]
+    fn s2k_coded_count_approx_0x3e00000() {
+        let i = 0x3e00000;
+        let approx = S2K::nearest_hash_count(i);
+        let cc = S2K::encode_count(approx).unwrap();
+
+        assert!(approx as usize >= i || i > 0x3e00000);
+        assert_eq!(S2K::decode_count(cc), approx);
     }
 }

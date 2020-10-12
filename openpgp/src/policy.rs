@@ -862,6 +862,9 @@ impl<'a> Policy for StandardPolicy<'a> {
 /// Key sizes put into are buckets, rounding down to the nearest
 /// bucket.  For example, a 3253-bit RSA key is categorized as
 /// `RSA3072`.
+///
+/// Note: This enum cannot be exhaustively matched to allow future
+/// extensions.
 #[derive(Clone, Debug)]
 pub enum AsymmetricAlgorithm {
     /// RSA with key sizes up to 2048-1 bit.
@@ -1089,7 +1092,7 @@ mod test {
         assert_eq!(revocation.typ(), SignatureType::CertificationRevocation);
 
         // Now merge the revocation signature into the Cert.
-        let cert = cert.merge_packets(revocation.clone())?;
+        let cert = cert.insert_packets(revocation.clone())?;
 
         // Check that it is revoked.
         assert_eq!(cert.userids().with_policy(p, None).revoked(false).count(), 0);
@@ -1125,7 +1128,7 @@ mod test {
 
         // Now merge the revocation signature into the Cert.
         assert_eq!(cert.keys().with_policy(p, None).revoked(false).count(), 3);
-        let cert = cert.merge_packets(revocation.clone())?;
+        let cert = cert.insert_packets(revocation.clone())?;
         assert_eq!(cert.keys().with_policy(p, None).revoked(false).count(), 2);
 
         // Reject all subkey revocations.
@@ -1369,7 +1372,7 @@ mod test {
             &mut keypair,
             ReasonForRevocation::KeyCompromised,
             b"It was the maid :/")?;
-        let cert_revoked = cert.clone().merge_packets(rev)?;
+        let cert_revoked = cert.clone().insert_packets(rev)?;
 
         match cert_revoked.revocation_status(&DEFAULT, None) {
             RevocationStatus::Revoked(sigs) => {
@@ -1510,11 +1513,11 @@ mod test {
         let subkey: key::SecretSubkey
             = Key4::generate_rsa(4096)?.into();
         let binding = signature::SignatureBuilder::new(SignatureType::SubkeyBinding)
-            .set_key_flags(&KeyFlags::default().set_transport_encryption(true))?
+            .set_key_flags(&KeyFlags::empty().set_transport_encryption())?
             .sign_subkey_binding(&mut pk.clone().into_keypair()?,
                                  &pk, &subkey)?;
 
-        let cert = cert.merge_packets(
+        let cert = cert.insert_packets(
             vec![ Packet::from(subkey), binding.into() ])?;
 
         assert_eq!(cert.keys().with_policy(p, None).count(), 3);
@@ -1533,11 +1536,11 @@ mod test {
         let subkey: key::SecretSubkey
             = key::Key4::generate_ecc(true, Curve::Ed25519)?.into();
         let binding = signature::SignatureBuilder::new(SignatureType::SubkeyBinding)
-            .set_key_flags(&KeyFlags::default().set_transport_encryption(true))?
+            .set_key_flags(&KeyFlags::empty().set_transport_encryption())?
             .sign_subkey_binding(&mut pk.clone().into_keypair()?,
                                  &pk, &subkey)?;
 
-        let cert = cert.merge_packets(
+        let cert = cert.insert_packets(
             vec![ Packet::from(subkey), binding.into() ])?;
 
         assert_eq!(cert.keys().with_policy(p, None).count(), 3);
@@ -1659,7 +1662,8 @@ mod test {
                 .into_keypair().unwrap();
 
             // Create a signature.
-            let sig = signature::SignatureBuilder::new(SignatureType::Binary)
+            let mut sig =
+                signature::SignatureBuilder::new(SignatureType::Binary)
                 .sign_message(&mut keypair, msg).unwrap();
 
             // Make sure the signature is ok.
@@ -1687,7 +1691,7 @@ mod test {
         eprintln!("Trying ECC primary, ECC sub:");
         let (cert,_) = CertBuilder::new()
             .set_cipher_suite(CipherSuite::Cv25519)
-            .add_subkey(KeyFlags::default().set_signing(true), None,
+            .add_subkey(KeyFlags::empty().set_signing(), None,
                         None)
             .generate()?;
 
@@ -1704,7 +1708,7 @@ mod test {
         eprintln!("Trying RSA primary, ECC sub:");
         let (cert,_) = CertBuilder::new()
             .set_cipher_suite(CipherSuite::RSA4k)
-            .add_subkey(KeyFlags::default().set_signing(true), None,
+            .add_subkey(KeyFlags::empty().set_signing(), None,
                         CipherSuite::Cv25519)
             .generate()?;
 
@@ -1721,7 +1725,7 @@ mod test {
         eprintln!("Trying ECC primary, RSA sub:");
         let (cert,_) = CertBuilder::new()
             .set_cipher_suite(CipherSuite::Cv25519)
-            .add_subkey(KeyFlags::default().set_signing(true), None,
+            .add_subkey(KeyFlags::empty().set_signing(), None,
                         CipherSuite::RSA4k)
             .generate()?;
 

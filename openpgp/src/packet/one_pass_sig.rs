@@ -6,7 +6,7 @@
 
 use std::fmt;
 
-#[cfg(any(test, feature = "quickcheck"))]
+#[cfg(test)]
 use quickcheck::{Arbitrary, Gen};
 
 use crate::Error;
@@ -150,7 +150,7 @@ impl<'a> std::convert::TryFrom<&'a Signature> for OnePassSig3 {
     type Error = anyhow::Error;
 
     fn try_from(s: &'a Signature) -> Result<Self> {
-        let issuer = match s.issuer() {
+        let issuer = match s.issuers().nth(0) {
             Some(i) => i.clone(),
             None =>
                 return Err(Error::InvalidArgument(
@@ -168,14 +168,14 @@ impl<'a> std::convert::TryFrom<&'a Signature> for OnePassSig3 {
     }
 }
 
-#[cfg(any(test, feature = "quickcheck"))]
+#[cfg(test)]
 impl Arbitrary for super::OnePassSig {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         OnePassSig3::arbitrary(g).into()
     }
 }
 
-#[cfg(any(test, feature = "quickcheck"))]
+#[cfg(test)]
 impl Arbitrary for OnePassSig3 {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         let mut ops = OnePassSig3::new(SignatureType::arbitrary(g));

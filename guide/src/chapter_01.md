@@ -22,21 +22,23 @@ use openpgp::policy::StandardPolicy as P;
 
 const MESSAGE: &'static str = "дружба";
 
-fn main() {
+fn main() -> openpgp::Result<()> {
     let p = &P::new();
 
     // Generate a key.
-    let key = generate().unwrap();
+    let key = generate()?;
 
     // Sign the message.
     let mut signed_message = Vec::new();
-    sign(p, &mut signed_message, MESSAGE, &key).unwrap();
+    sign(p, &mut signed_message, MESSAGE, &key)?;
 
     // Verify the message.
     let mut plaintext = Vec::new();
-    verify(p, &mut plaintext, &signed_message, &key).unwrap();
+    verify(p, &mut plaintext, &signed_message, &key)?;
 
     assert_eq!(MESSAGE.as_bytes(), &plaintext[..]);
+
+    Ok(())
 }
 #
 # /// Generates an signing-capable key.
@@ -53,7 +55,7 @@ fn main() {
 #
 # /// Signs the given message.
 # fn sign(policy: &dyn Policy,
-#         sink: &mut Write, plaintext: &str, tsk: &openpgp::Cert)
+#         sink: &mut dyn Write, plaintext: &str, tsk: &openpgp::Cert)
 #     -> openpgp::Result<()>
 # {
 #     // Get the keypair to do the signing from the Cert.
@@ -66,24 +68,24 @@ fn main() {
 #     let message = Message::new(sink);
 #
 #     // We want to sign a literal data packet.
-#     let signer = Signer::new(message, keypair).build()?;
+#     let message = Signer::new(message, keypair).build()?;
 #
 #     // Emit a literal data packet.
-#     let mut literal_writer = LiteralWriter::new(signer).build()?;
+#     let mut message = LiteralWriter::new(message).build()?;
 #
 #     // Sign the data.
-#     literal_writer.write_all(plaintext.as_bytes())?;
+#     message.write_all(plaintext.as_bytes())?;
 #
 #     // Finalize the OpenPGP message to make sure that all data is
 #     // written.
-#     literal_writer.finalize()?;
+#     message.finalize()?;
 #
 #     Ok(())
 # }
 #
 # /// Verifies the given message.
 # fn verify(policy: &dyn Policy,
-#           sink: &mut Write, signed_message: &[u8], sender: &openpgp::Cert)
+#           sink: &mut dyn Write, signed_message: &[u8], sender: &openpgp::Cert)
 #           -> openpgp::Result<()> {
 #     // Make a helper that that feeds the sender's public key to the
 #     // verifier.
@@ -171,21 +173,23 @@ create it:
 #
 # const MESSAGE: &'static str = "дружба";
 #
-# fn main() {
+# fn main() -> openpgp::Result<()> {
 #     let p = &P::new();
 #
 #     // Generate a key.
-#     let key = generate().unwrap();
+#     let key = generate()?;
 #
 #     // Sign the message.
 #     let mut signed_message = Vec::new();
-#     sign(p, &mut signed_message, MESSAGE, &key).unwrap();
+#     sign(p, &mut signed_message, MESSAGE, &key)?;
 #
 #     // Verify the message.
 #     let mut plaintext = Vec::new();
-#     verify(p, &mut plaintext, &signed_message, &key).unwrap();
+#     verify(p, &mut plaintext, &signed_message, &key)?;
 #
 #     assert_eq!(MESSAGE.as_bytes(), &plaintext[..]);
+#
+#     Ok(())
 # }
 #
 /// Generates an signing-capable key.
@@ -202,7 +206,7 @@ fn generate() -> openpgp::Result<openpgp::Cert> {
 #
 # /// Signs the given message.
 # fn sign(policy: &dyn Policy,
-#         sink: &mut Write, plaintext: &str, tsk: &openpgp::Cert)
+#         sink: &mut dyn Write, plaintext: &str, tsk: &openpgp::Cert)
 #     -> openpgp::Result<()>
 # {
 #     // Get the keypair to do the signing from the Cert.
@@ -215,24 +219,24 @@ fn generate() -> openpgp::Result<openpgp::Cert> {
 #     let message = Message::new(sink);
 #
 #     // We want to sign a literal data packet.
-#     let signer = Signer::new(message, keypair).build()?;
+#     let message = Signer::new(message, keypair).build()?;
 #
 #     // Emit a literal data packet.
-#     let mut literal_writer = LiteralWriter::new(signer).build()?;
+#     let mut message = LiteralWriter::new(message).build()?;
 #
 #     // Sign the data.
-#     literal_writer.write_all(plaintext.as_bytes())?;
+#     message.write_all(plaintext.as_bytes())?;
 #
 #     // Finalize the OpenPGP message to make sure that all data is
 #     // written.
-#     literal_writer.finalize()?;
+#     message.finalize()?;
 #
 #     Ok(())
 # }
 #
 # /// Verifies the given message.
 # fn verify(policy: &dyn Policy,
-#           sink: &mut Write, signed_message: &[u8], sender: &openpgp::Cert)
+#           sink: &mut dyn Write, signed_message: &[u8], sender: &openpgp::Cert)
 #           -> openpgp::Result<()> {
 #     // Make a helper that that feeds the sender's public key to the
 #     // verifier.
@@ -320,21 +324,23 @@ implements [`io::Write`], and we simply write the plaintext to it.
 #
 # const MESSAGE: &'static str = "дружба";
 #
-# fn main() {
+# fn main() -> openpgp::Result<()> {
 #     let p = &P::new();
 #
 #     // Generate a key.
-#     let key = generate().unwrap();
+#     let key = generate()?;
 #
 #     // Sign the message.
 #     let mut signed_message = Vec::new();
-#     sign(p, &mut signed_message, MESSAGE, &key).unwrap();
+#     sign(p, &mut signed_message, MESSAGE, &key)?;
 #
 #     // Verify the message.
 #     let mut plaintext = Vec::new();
-#     verify(p, &mut plaintext, &signed_message, &key).unwrap();
+#     verify(p, &mut plaintext, &signed_message, &key)?;
 #
 #     assert_eq!(MESSAGE.as_bytes(), &plaintext[..]);
+#
+#     Ok(())
 # }
 #
 # /// Generates an signing-capable key.
@@ -351,7 +357,7 @@ implements [`io::Write`], and we simply write the plaintext to it.
 #
 /// Signs the given message.
 fn sign(policy: &dyn Policy,
-        sink: &mut Write, plaintext: &str, tsk: &openpgp::Cert)
+        sink: &mut dyn Write, plaintext: &str, tsk: &openpgp::Cert)
     -> openpgp::Result<()>
 {
     // Get the keypair to do the signing from the Cert.
@@ -364,24 +370,24 @@ fn sign(policy: &dyn Policy,
     let message = Message::new(sink);
 
     // We want to sign a literal data packet.
-    let signer = Signer::new(message, keypair).build()?;
+    let message = Signer::new(message, keypair).build()?;
 
     // Emit a literal data packet.
-    let mut literal_writer = LiteralWriter::new(signer).build()?;
+    let mut message = LiteralWriter::new(message).build()?;
 
     // Sign the data.
-    literal_writer.write_all(plaintext.as_bytes())?;
+    message.write_all(plaintext.as_bytes())?;
 
     // Finalize the OpenPGP message to make sure that all data is
     // written.
-    literal_writer.finalize()?;
+    message.finalize()?;
 
     Ok(())
 }
 #
 # /// Verifies the given message.
 # fn verify(policy: &dyn Policy,
-#           sink: &mut Write, signed_message: &[u8], sender: &openpgp::Cert)
+#           sink: &mut dyn Write, signed_message: &[u8], sender: &openpgp::Cert)
 #           -> openpgp::Result<()> {
 #     // Make a helper that that feeds the sender's public key to the
 #     // verifier.
@@ -477,41 +483,43 @@ Verified data can be read from this using [`io::Read`].
 # use openpgp::parse::{Parse, stream::*};
 # use openpgp::policy::Policy;
 # use openpgp::policy::StandardPolicy as P;
-# 
+#
 # const MESSAGE: &'static str = "дружба";
-# 
-# fn main() {
+#
+# fn main() -> openpgp::Result<()> {
 #     let p = &P::new();
 #
 #     // Generate a key.
-#     let key = generate().unwrap();
-# 
+#     let key = generate()?;
+#
 #     // Sign the message.
 #     let mut signed_message = Vec::new();
-#     sign(p, &mut signed_message, MESSAGE, &key).unwrap();
-# 
+#     sign(p, &mut signed_message, MESSAGE, &key)?;
+#
 #     // Verify the message.
 #     let mut plaintext = Vec::new();
-#     verify(p, &mut plaintext, &signed_message, &key).unwrap();
-# 
+#     verify(p, &mut plaintext, &signed_message, &key)?;
+#
 #     assert_eq!(MESSAGE.as_bytes(), &plaintext[..]);
+#
+#     Ok(())
 # }
-# 
+#
 # /// Generates an signing-capable key.
 # fn generate() -> openpgp::Result<openpgp::Cert> {
 #     let (cert, _revocation) = CertBuilder::new()
 #         .add_userid("someone@example.org")
 #         .add_signing_subkey()
 #         .generate()?;
-# 
+#
 #     // Save the revocation certificate somewhere.
-# 
+#
 #     Ok(cert)
 # }
-# 
+#
 # /// Signs the given message.
 # fn sign(policy: &dyn Policy,
-#         sink: &mut Write, plaintext: &str, tsk: &openpgp::Cert)
+#         sink: &mut dyn Write, plaintext: &str, tsk: &openpgp::Cert)
 #     -> openpgp::Result<()>
 # {
 #     // Get the keypair to do the signing from the Cert.
@@ -519,29 +527,29 @@ Verified data can be read from this using [`io::Read`].
 #         .keys().unencrypted_secret()
 #         .with_policy(policy, None).alive().revoked(false).for_signing()
 #         .nth(0).unwrap().key().clone().into_keypair()?;
-# 
+#
 #     // Start streaming an OpenPGP message.
 #     let message = Message::new(sink);
-# 
+#
 #     // We want to sign a literal data packet.
-#     let signer = Signer::new(message, keypair).build()?;
-# 
+#     let message = Signer::new(message, keypair).build()?;
+#
 #     // Emit a literal data packet.
-#     let mut literal_writer = LiteralWriter::new(signer).build()?;
-# 
+#     let mut message = LiteralWriter::new(message).build()?;
+#
 #     // Sign the data.
-#     literal_writer.write_all(plaintext.as_bytes())?;
-# 
+#     message.write_all(plaintext.as_bytes())?;
+#
 #     // Finalize the OpenPGP message to make sure that all data is
 #     // written.
-#     literal_writer.finalize()?;
-# 
+#     message.finalize()?;
+#
 #     Ok(())
 # }
-# 
+#
 /// Verifies the given message.
 fn verify(policy: &dyn Policy,
-          sink: &mut Write, signed_message: &[u8], sender: &openpgp::Cert)
+          sink: &mut dyn Write, signed_message: &[u8], sender: &openpgp::Cert)
           -> openpgp::Result<()> {
     // Make a helper that that feeds the sender's public key to the
     // verifier.

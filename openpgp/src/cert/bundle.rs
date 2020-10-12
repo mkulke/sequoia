@@ -290,7 +290,7 @@ impl<C> ComponentBundle<C> {
         // `t`.
         let mut error = None;
 
-        for s in self.self_signatures[i..].iter() {
+        'next_sig: for s in self.self_signatures[i..].iter() {
             if let Err(e) = s.signature_alive(t, time::Duration::new(0, 0)) {
                 // We know that t >= signature's creation time.  So,
                 // it is expired.  But an older signature might not
@@ -306,6 +306,54 @@ impl<C> ComponentBundle<C> {
                     error = Some(e);
                 }
                 continue;
+            }
+
+            // The signature is good, but we may still need to verify the
+            // back sig.
+            if s.typ() == crate::types::SignatureType::SubkeyBinding &&
+                s.key_flags().map(|kf| kf.for_signing()).unwrap_or(false)
+            {
+                let mut n = 0;
+                let mut one_good_backsig = false;
+                'next_backsig: for backsig in s.embedded_signatures() {
+                    n += 1;
+                    if let Err(e) = backsig.signature_alive(
+                        t, time::Duration::new(0, 0))
+                    {
+                        // The primary key binding signature is not
+                        // alive.
+                        if error.is_none() {
+                            error = Some(e);
+                        }
+                        continue 'next_backsig;
+                    }
+
+                    if let Err(e) = policy.signature(backsig) {
+                        if error.is_none() {
+                            error = Some(e);
+                        }
+                        continue 'next_backsig;
+                    }
+
+                    one_good_backsig = true;
+                }
+
+                if n == 0 {
+                    // This shouldn't happen because
+                    // Signature::verify_subkey_binding checks for the
+                    // primary key binding signature.  But, better be
+                    // safe.
+                    if error.is_none() {
+                        error = Some(Error::BadSignature(
+                            "Primary key binding signature missing".into())
+                                     .into());
+                    }
+                    continue 'next_sig;
+                }
+
+                if ! one_good_backsig {
+                    continue 'next_sig;
+                }
             }
 
             sig = Some(s);
@@ -568,26 +616,49 @@ impl<C> ComponentBundle<C> {
     // This function assumes that the signatures have already been
     // cryptographically checked.
     //
-    // Note: this uses Signature::eq to compare signatures.  That
-    // function ignores unhashed packets.  If there are two signatures
-    // that only differ in their unhashed subpackets, they will be
-    // deduped.  The unhashed areas are *not* merged; the one that is
-    // kept is undefined.
+    // Note: this uses Signature::normalized_eq to compare signatures.
+    // That function ignores unhashed packets.  If there are two
+    // signatures that only differ in their unhashed subpackets, they
+    // will be deduped.  The unhashed areas are merged as discussed in
+    // Signature::merge.
     pub(crate) fn sort_and_dedup(&mut self)
     {
+        // `same_bucket` function for Vec::dedup_by that compares
+        // signatures and merges them if they are equal modulo
+        // unhashed subpackets.
+        fn sig_merge(a: &mut Signature, b: &mut Signature) -> bool {
+            // If a == b, a is removed.  Hence, we merge into b.
+            if a.normalized_eq(b) {
+                b.merge_internal(a)
+                    .expect("checked for equality above");
+                true
+            } else {
+                false
+            }
+        }
+
+        self.self_signatures.sort_by(Signature::normalized_cmp);
+        self.self_signatures.dedup_by(sig_merge);
+        // Order self signatures so that the most recent one comes
+        // first.
         self.self_signatures.sort_by(sig_cmp);
-        self.self_signatures.dedup();
 
-        // There is no need to sort the certifications, but we do
-        // want to remove dups and sorting is a prerequisite.
+        self.certifications.sort_by(Signature::normalized_cmp);
+        self.certifications.dedup_by(sig_merge);
+        // There is no need to sort the certifications, but doing so
+        // has the advantage that the most recent ones (and therefore
+        // presumably the more relevant ones) come first.  Also,
+        // cert::test::signature_order checks that the signatures are
+        // sorted.
         self.certifications.sort_by(sig_cmp);
-        self.certifications.dedup();
 
+        self.self_revocations.sort_by(Signature::normalized_cmp);
+        self.self_revocations.dedup_by(sig_merge);
         self.self_revocations.sort_by(sig_cmp);
-        self.self_revocations.dedup();
 
+        self.other_revocations.sort_by(Signature::normalized_cmp);
+        self.other_revocations.dedup_by(sig_merge);
         self.other_revocations.sort_by(sig_cmp);
-        self.other_revocations.dedup();
     }
 }
 

@@ -35,7 +35,7 @@
 //!    also include any secret key material.
 //!  - *Using a certificate*: See the [`Cert`] and [`ValidCert`] data structures.
 //!  - *Revoking a certificate*: See the [`CertRevocationBuilder`] data structure.
-//!  - *Merging packets*: See the [`Cert::merge_packets`] method.
+//!  - *Merging packets*: See the [`Cert::insert_packets`] method.
 //!  - *Merging certificates*: See the [`Cert::merge`] method.
 //!  - *Creating third-party certifications*: See the [`UserID::certify`]
 //!     and [`UserAttribute::certify`] methods.
@@ -118,7 +118,7 @@
 //! [`Cert::as_tsk`]: struct.Cert.html#method.as_tsk
 //! [`ValidCert`]: struct.ValidCert.html
 //! [`CertRevocationBuilder`]: struct.CertRevocationBuilder.html
-//! [`Cert::merge_packets`]: struct.Cert.html#method.merge_packets
+//! [`Cert::insert_packets`]: struct.Cert.html#method.insert_packets
 //! [`Cert::merge`]: struct.Cert.html#method.merge
 //! [`UserID::certify`]: ../packet/struct.UserID.html#method.certify
 //! [`UserAttribute::certify`]: ../packet/user_attribute/struct.UserAttribute.html#method.certify
@@ -227,6 +227,11 @@ fn canonical_signature_order(a: Option<time::SystemTime>, b: Option<time::System
     a.cmp(&b).reverse()
 }
 
+/// Compares two signatures by creation time using the MPIs as tie
+/// breaker.
+///
+/// Useful to sort signatures so that the most recent ones are at the
+/// front.
 fn sig_cmp(a: &Signature, b: &Signature) -> Ordering {
     match canonical_signature_order(a.signature_creation_time(),
                                     b.signature_creation_time()) {
@@ -817,9 +822,9 @@ impl Cert {
     ///
     /// // Merge the revocation certificate.  `cert` is now considered
     /// // to be revoked.
-    /// let cert = cert.merge_packets(rev.clone())?;
+    /// let cert = cert.insert_packets(rev.clone())?;
     /// assert_eq!(cert.revocation_status(p, None),
-    ///            RevocationStatus::Revoked(vec![ &rev.into() ]));
+    ///            RevocationStatus::Revoked(vec![&rev.into()]));
     /// #     Ok(())
     /// # }
     /// ```
@@ -894,7 +899,7 @@ impl Cert {
     /// let rev = cert.revoke(&mut keypair,
     ///                       ReasonForRevocation::KeyCompromised,
     ///                       b"It was the maid :/")?;
-    /// let cert = cert.merge_packets(rev)?;
+    /// let cert = cert.insert_packets(rev)?;
     /// if let RevocationStatus::Revoked(revs) = cert.revocation_status(p, None) {
     ///     assert_eq!(revs.len(), 1);
     ///     let rev = revs[0];
@@ -936,7 +941,7 @@ impl Cert {
         let sigs = primary.set_validity_period_as_of(primary_signer,
                                                      expiration,
                                                      now)?;
-        self.merge_packets(sigs)
+        self.insert_packets(sigs)
     }
 
     /// Sets the certificate to expire at the specified time.
@@ -983,7 +988,7 @@ impl Cert {
     /// let sigs = cert.set_expiration_time(p, None, &mut keypair,
     ///                                     Some(time::SystemTime::now()))?;
     ///
-    /// let cert = cert.merge_packets(sigs)?;
+    /// let cert = cert.insert_packets(sigs)?;
     /// assert!(cert.with_policy(p, None)?.alive().is_err());
     /// # Ok(())
     /// # }
@@ -1032,7 +1037,7 @@ impl Cert {
     /// # // Add a User ID without a binding signature and make sure
     /// # // it is still returned.
     /// # let userid = UserID::from("alice@example.net");
-    /// # let cert = cert.merge_packets(userid)?;
+    /// # let cert = cert.insert_packets(userid)?;
     /// # assert_eq!(cert.userids().count(), 2);
     /// #     Ok(())
     /// # }
@@ -1149,7 +1154,7 @@ impl Cert {
     /// # let tag = Tag::Private(61);
     /// # let unknown
     /// #     = Unknown::new(tag, openpgp::Error::UnsupportedPacketType(tag).into());
-    /// # let cert = cert.merge_packets(unknown).unwrap();
+    /// # let cert = cert.insert_packets(unknown).unwrap();
     /// println!("{}'s has {} unknown components.",
     ///          cert.fingerprint(),
     ///          cert.unknowns().count());
@@ -1228,12 +1233,12 @@ impl Cert {
     /// // Make Alice a designated revoker for Bob.
     /// let (bob, _) =
     ///     CertBuilder::general_purpose(None, Some("bob@example.org"))
-    ///     .set_revocation_keys(vec![ (&alice).into() ])
+    ///     .set_revocation_keys(vec![(&alice).into()])
     ///     .generate()?;
     ///
     /// // Make sure Alice is listed as a designated revoker for Bob.
     /// assert_eq!(bob.revocation_keys(p).collect::<Vec<&RevocationKey>>(),
-    ///            vec![ &(&alice).into() ]);
+    ///            vec![&(&alice).into()]);
     /// # Ok(()) }
     /// ```
     pub fn revocation_keys<'a>(&'a self, policy: &dyn Policy)
@@ -1289,18 +1294,12 @@ impl Cert {
     /// (specifically, if it does not start with a primary key
     /// packet), then this fails.
     ///
-    /// If the sequence contains multiple keys (i.e., it is a keyring)
-    /// and you want all of the certificates, you should use
+    /// If the sequence contains multiple certificates (i.e., it is a
+    /// keyring), or the certificate is followed by an invalid packet
+    /// this function will fail.  To parse keyrings, use
     /// [`CertParser`] instead of this function.
     ///
-    /// This function does *not* fail if the certificate is followed
-    /// by an invalid packet.  In that case, the certificate is
-    /// returned and the packets starting with the first invalid
-    /// packet are ignored.  If you want to make sure that the
-    /// sequence of packets contains exactly one certificate and no
-    /// invalid packets, use [`CertParser`] instead of this function.
-    ///
-    /// [`CertParser`]: struct.CertParser.html
+    ///   [`CertParser`]: struct.CertParser.html
     ///
     /// # Examples
     ///
@@ -1321,17 +1320,23 @@ impl Cert {
     ///
     /// // But a revocation certificate is not a certificate, so this
     /// // will fail.
-    /// let p : Vec<Packet> = vec![ rev.into() ];
+    /// let p : Vec<Packet> = vec![rev.into()];
     /// assert!(Cert::from_packets(p.into_iter()).is_err());
     /// # Ok(())
     /// # }
     /// ```
     pub fn from_packets(p: impl Iterator<Item=Packet>) -> Result<Self> {
         let mut i = parser::CertParser::from_iter(p);
-        match i.next() {
-            Some(Ok(cert)) => Ok(cert),
-            Some(Err(err)) => Err(err),
-            None => Err(Error::MalformedCert("No data".into()).into()),
+        if let Some(cert_result) = i.next() {
+            if i.next().is_some() {
+                Err(Error::MalformedCert(
+                    "Additional packets found, is this a keyring?".into()
+                ).into())
+            } else {
+                cert_result
+            }
+        } else {
+            Err(Error::MalformedCert("No data".into()).into())
         }
     }
 
@@ -1387,7 +1392,7 @@ impl Cert {
                 t!("check!({}, {}, {:?}, {}, ...)",
                    $desc, stringify!($binding), $binding.$sigs,
                    stringify!($verify_method));
-                for sig in mem::replace(&mut $binding.$sigs, Vec::new())
+                for mut sig in mem::replace(&mut $binding.$sigs, Vec::new())
                     .into_iter()
                  {
                      match sig.$verify_method(self.primary.key(),
@@ -1427,7 +1432,7 @@ impl Cert {
                 t!("check_3rd_party!({}, {}, {:?}, {}, {}, ...)",
                    $desc, stringify!($binding), $binding.$sigs,
                    stringify!($verify_method), stringify!($hash_method));
-                for sig in mem::replace(&mut $binding.$sigs, Vec::new())
+                for mut sig in mem::replace(&mut $binding.$sigs, Vec::new())
                     .into_iter()
                 {
                     // Use hash prefix as heuristic.
@@ -1574,13 +1579,25 @@ impl Cert {
             }
         }
 
-        'outer: for (unknown_idx, sig) in bad_sigs {
+        let primary_fp: KeyHandle = self.key_handle();
+        let primary_keyid = KeyHandle::KeyID(primary_fp.clone().into());
+
+        'outer: for (unknown_idx, mut sig) in bad_sigs {
             // Did we find a new place for sig?
             let mut found_component = false;
+
+            // Is this signature a self-signature?
+            let issuers =
+                sig.get_issuers();
+            let is_selfsig =
+                issuers.is_empty()
+                || issuers.contains(&primary_fp)
+                || issuers.contains(&primary_keyid);
 
             macro_rules! check_one {
                 ($desc:expr, $sigs:expr, $sig:expr,
                  $verify_method:ident, $($verify_args:expr),*) => ({
+                   if is_selfsig {
                      t!("check_one!({}, {:?}, {:?}, {}, ...)",
                         $desc, $sigs, $sig,
                         stringify!($verify_method));
@@ -1598,6 +1615,7 @@ impl Cert {
                          $sigs.push($sig);
                          continue 'outer;
                      }
+                   }
                  });
                 ($desc:expr, $sigs:expr, $sig:expr,
                  $verify_method:ident) => ({
@@ -1618,6 +1636,7 @@ impl Cert {
                  $hash_method:ident,    // the method to compute the hash
                  $($verify_args:expr),* // additional arguments for the above
                 ) => ({
+                  if ! is_selfsig {
                     t!("check_one_3rd_party!({}, {}, {:?}, {}, {}, ...)",
                        $desc, stringify!($sigs), $sig,
                        stringify!($verify_method), stringify!($hash_method));
@@ -1659,6 +1678,7 @@ impl Cert {
                             }
                         }
                     }
+                  }
                 });
                 ($desc:expr, $sigs:expr, $sig:ident, $lookup_fn:expr,
                  $verify_method:ident, $hash_method:ident) => ({
@@ -1786,8 +1806,9 @@ impl Cert {
             }
 
             // Keep them for later.
-            t!("Self-sig {:02X}{:02X}, {:?} doesn't belong \
+            t!("{} {:02X}{:02X}, {:?} doesn't belong \
                 to any known component or is bad.",
+               if is_selfsig { "Self-sig" } else { "3rd-party-sig" },
                sig.digest_prefix()[0], sig.digest_prefix()[1],
                sig.typ());
 
@@ -1805,8 +1826,11 @@ impl Cert {
 
         self.primary.sort_and_dedup();
 
+        self.bad.sort_by(Signature::normalized_cmp);
+        self.bad.dedup_by(|a, b| a.normalized_eq(b));
+        // Order bad signatures so that the most recent one comes
+        // first.
         self.bad.sort_by(sig_cmp);
-        self.bad.dedup();
 
         self.userids.sort_and_dedup(UserID::cmp, |_, _| {});
         self.user_attributes.sort_and_dedup(UserAttribute::cmp, |_, _| {});
@@ -1940,10 +1964,10 @@ impl Cert {
     /// returned.
     ///
     /// This routine merges duplicate packets.  This is different from
-    /// [Cert::merge_packets], which prefers keys in the packets that
+    /// [`Cert::insert_packets`], which prefers keys in the packets that
     /// are being merged into the certificate.
     ///
-    /// [Cert::merge_packets]: #method.merge_packets
+    /// [`Cert::insert_packets`]: #method.insert_packets
     ///
     /// # Examples
     ///
@@ -2059,6 +2083,10 @@ impl Cert {
     /// replaces the existing key.  This way, secret key material can
     /// be added, removed, encrypted, or decrypted.
     ///
+    /// Similarly, if a signature is merged that already exists in the
+    /// certificate, it replaces the existing signature.  This way,
+    /// the unhashed subpacket area can be updated.
+    ///
     /// [Known packets that don't belong in a TPK or TSK]: https://tools.ietf.org/html/rfc4880#section-11
     /// [unknown components]: #method.unknowns
     ///
@@ -2082,7 +2110,7 @@ impl Cert {
     ///
     /// // Merge in the revocation certificate.
     /// assert_eq!(cert.primary_key().self_revocations().len(), 0);
-    /// let cert = cert.merge_packets(rev)?;
+    /// let cert = cert.insert_packets(rev)?;
     /// assert_eq!(cert.primary_key().self_revocations().len(), 1);
     ///
     ///
@@ -2092,7 +2120,7 @@ impl Cert {
     ///     openpgp::Error::UnsupportedPacketType(tag).into());
     ///
     /// // It shows up as an unknown component.
-    /// let cert = cert.merge_packets(unknown)?;
+    /// let cert = cert.insert_packets(unknown)?;
     /// assert_eq!(cert.unknowns().count(), 1);
     /// for p in cert.unknowns() {
     ///     assert_eq!(p.tag(), tag);
@@ -2105,7 +2133,7 @@ impl Cert {
     ///
     /// // Merging packets that are known to not belong to a
     /// // certificate result in an error.
-    /// assert!(cert.merge_packets(lit).is_err());
+    /// assert!(cert.insert_packets(lit).is_err());
     /// #     Ok(())
     /// # }
     /// ```
@@ -2135,14 +2163,55 @@ impl Cert {
     ///
     /// // Merge in the public key.  Recall: the packets that are
     /// // being merged into the certificate take precedence.
-    /// let cert = cert.merge_packets(pk)?;
+    /// let cert = cert.insert_packets(pk)?;
     ///
     /// // The secret key material is stripped.
     /// assert!(! cert.primary_key().has_secret());
     /// #     Ok(())
     /// # }
     /// ```
-    pub fn merge_packets<I>(self, packets: I)
+    ///
+    /// Update a binding signature's unhashed subpacket area:
+    ///
+    /// ```
+    /// # fn main() -> sequoia_openpgp::Result<()> {
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::cert::prelude::*;
+    /// use openpgp::packet::prelude::*;
+    /// use openpgp::packet::signature::subpacket::*;
+    ///
+    /// // Create a new key.
+    /// let (cert, _) =
+    ///       CertBuilder::general_purpose(None, Some("alice@example.org"))
+    ///       .generate()?;
+    /// assert_eq!(cert.userids().nth(0).unwrap().self_signatures().len(), 1);
+    ///
+    /// // Grab the binding signature so that we can modify it.
+    /// let mut sig =
+    ///     cert.userids().nth(0).unwrap().self_signatures()[0].clone();
+    ///
+    /// // Add a notation subpacket.  Note that the information is not
+    /// // authenticated, therefore it may only be trusted if the
+    /// // certificate with the signature is placed in a trusted store.
+    /// let notation = NotationData::new("retrieved-from@example.org",
+    ///                                  "generated-locally",
+    ///                                  NotationDataFlags::empty()
+    ///                                      .set_human_readable());
+    /// sig.unhashed_area_mut().add(
+    ///     Subpacket::new(SubpacketValue::NotationData(notation), false)?)?;
+    ///
+    /// // Merge in the signature.  Recall: the packets that are
+    /// // being merged into the certificate take precedence.
+    /// let cert = cert.insert_packets(sig)?;
+    ///
+    /// // The old binding signature is replaced.
+    /// assert_eq!(cert.userids().nth(0).unwrap().self_signatures().len(), 1);
+    /// assert_eq!(cert.userids().nth(0).unwrap().self_signatures()[0]
+    ///                .unhashed_area()
+    ///                .subpackets(SubpacketTag::NotationData).count(), 1);
+    /// # Ok(()) }
+    /// ```
+    pub fn insert_packets<I>(self, packets: I)
         -> Result<Self>
         where I: IntoIterator,
               I::Item: Into<Packet>,
@@ -2175,6 +2244,27 @@ impl Cert {
             acc.push(k.into());
         };
 
+        /// Replaces or pushes a signature.
+        ///
+        /// If `sig` is equal to an existing signature modulo unhashed
+        /// subpacket area, replaces the existing signature with it.
+        /// Otherwise, `sig` is pushed to the vector.
+        fn rop_sig(acc: &mut Vec<Packet>, sig: Signature)
+        {
+            for q in acc.iter_mut() {
+                let replace = match q {
+                    Packet::Signature(s) => s.normalized_eq(&sig),
+                    _ => false,
+                };
+
+                if replace {
+                    *q = sig.into();
+                    return;
+                }
+            }
+            acc.push(sig.into());
+        };
+
         for p in packets {
             let p = p.into();
             Cert::valid_packet(&p)?;
@@ -2183,6 +2273,7 @@ impl Cert {
                 Packet::SecretKey(k) => replace_or_push(&mut combined, k),
                 Packet::PublicSubkey(k) => replace_or_push(&mut combined, k),
                 Packet::SecretSubkey(k) => replace_or_push(&mut combined, k),
+                Packet::Signature(sig) => rop_sig(&mut combined, sig),
                 p => combined.push(p),
             }
         }
@@ -2336,9 +2427,12 @@ impl TryFrom<PacketParserResult<'_>> for Cert {
 
     /// Returns the Cert found in the packet stream.
     ///
-    /// If there are more packets after the Cert, e.g. because the
-    /// packet stream is a keyring, this function will return
-    /// `Error::MalformedCert`.
+    /// If the sequence contains multiple certificates (i.e., it is a
+    /// keyring), or the certificate is followed by an invalid packet
+    /// this function will fail.  To parse keyrings, use
+    /// [`CertParser`] instead of this function.
+    ///
+    ///   [`CertParser`]: struct.CertParser.html
     fn try_from(ppr: PacketParserResult) -> Result<Self> {
         let mut parser = parser::CertParser::from(ppr);
         if let Some(cert_result) = parser.next() {
@@ -2374,14 +2468,15 @@ impl TryFrom<Packet> for Cert {
 impl TryFrom<PacketPile> for Cert {
     type Error = anyhow::Error;
 
-    /// Returns the first certificate found in the `PacketPile`.
+    /// Returns the certificate found in the `PacketPile`.
     ///
     /// If the [`PacketPile`] does not start with a certificate
     /// (specifically, if it does not start with a primary key
     /// packet), then this fails.
     ///
-    /// If the `PacketPile` contains multiple keys (i.e., it is a key
-    /// ring) and you want all of the certificates, you should use
+    /// If the sequence contains multiple certificates (i.e., it is a
+    /// keyring), or the certificate is followed by an invalid packet
+    /// this function will fail.  To parse keyrings, use
     /// [`CertParser`] instead of this function.
     ///
     /// [`PacketPile`]: ../struct.PacketPile.html
@@ -2707,9 +2802,9 @@ impl<'a> ValidCert<'a> {
     ///
     /// // Merge the revocation certificate.  `cert` is now considered
     /// // to be revoked.
-    /// let cert = cert.merge_packets(rev.clone())?;
+    /// let cert = cert.insert_packets(rev.clone())?;
     /// assert_eq!(cert.with_policy(p, None)?.revocation_status(),
-    ///            RevocationStatus::Revoked(vec![ &rev.into() ]));
+    ///            RevocationStatus::Revoked(vec![&rev.into()]));
     /// #     Ok(())
     /// # }
     /// ```
@@ -2745,13 +2840,15 @@ impl<'a> ValidCert<'a> {
     ///
     /// let creation_time = time::SystemTime::now();
     /// let before_creation = creation_time - a_second;
-    /// let expiration_time = creation_time + 60 * a_second;
+    /// let validity_period = 60 * a_second;
+    /// let expiration_time = creation_time + validity_period;
     /// let before_expiration_time = expiration_time - a_second;
     /// let after_expiration_time = expiration_time + a_second;
     ///
     /// let (cert, _) = CertBuilder::new()
     ///     .add_userid("Alice")
-    ///     .set_expiration_time(expiration_time)
+    ///     .set_creation_time(creation_time)
+    ///     .set_validity_period(validity_period)
     ///     .generate()?;
     ///
     /// // There is no binding signature before the certificate was created.
@@ -2914,7 +3011,7 @@ impl<'a> ValidCert<'a> {
     ///     .set_primary_userid(false)?;
     /// let bob: UserID = "Bob".into();
     /// let sig = bob.bind(&mut signer, &cert, sig)?;
-    /// let cert = cert.merge_packets(vec![ Packet::from(bob), sig.into() ])?;
+    /// let cert = cert.insert_packets(vec![Packet::from(bob), sig.into()])?;
     /// # assert_eq!(cert.userids().count(), 2);
     ///
     /// // Alice should still be the primary User ID, because it has the
@@ -2929,7 +3026,7 @@ impl<'a> ValidCert<'a> {
     ///    .set_signature_creation_time(t2)?;
     /// let carol: UserID = "Carol".into();
     /// let sig = carol.bind(&mut signer, &cert, sig)?;
-    /// let cert = cert.merge_packets(vec![ Packet::from(carol), sig.into() ])?;
+    /// let cert = cert.insert_packets(vec![Packet::from(carol), sig.into()])?;
     /// # assert_eq!(cert.userids().count(), 3);
     ///
     /// // It should now be the primary User ID, because it is the
@@ -2978,7 +3075,7 @@ impl<'a> ValidCert<'a> {
     ///     .primary_key().key().clone().parts_into_secret()?.into_keypair()?;
     /// let binding = userid.bind(&mut signer, &cert, sig)?;
     /// // Merge it.
-    /// let cert = cert.merge_packets(
+    /// let cert = cert.insert_packets(
     ///     vec![Packet::from(userid), binding.into()])?;
     ///
     /// // At t0, the new User ID is not yet valid (it doesn't have a
@@ -3063,7 +3160,7 @@ impl<'a> ValidCert<'a> {
     /// # let ua = UserAttribute::new(&[sp]);
     /// #
     /// // Add a User Attribute without a self-signature to the certificate.
-    /// let cert = cert.merge_packets(ua)?;
+    /// let cert = cert.insert_packets(ua)?;
     /// assert_eq!(cert.user_attributes().count(), 1);
     ///
     /// // Without a self-signature, it is definitely not valid.
@@ -3631,7 +3728,7 @@ mod test {
     }
 
     #[test]
-    fn merge_packets() {
+    fn insert_packets() {
         use crate::armor;
         use crate::packet::Tag;
 
@@ -3648,7 +3745,7 @@ mod test {
         assert_eq!(rev[0].tag(), Tag::Signature);
 
         let packets_pre_merge = cert.clone().into_packets().count();
-        let cert = cert.merge_packets(rev).unwrap();
+        let cert = cert.insert_packets(rev).unwrap();
         let packets_post_merge = cert.clone().into_packets().count();
         assert_eq!(packets_post_merge, packets_pre_merge + 1);
     }
@@ -3728,14 +3825,12 @@ mod test {
 
     #[test]
     fn set_validity_period_uidless() {
-        use crate::types::{Duration, Timestamp};
+        use crate::types::Duration;
         let p = &P::new();
 
         let (cert, _) = CertBuilder::new()
-            .set_expiration_time(None) // Just to assert this works.
-            .set_expiration_time(
-                Some(Timestamp::now().checked_add(
-                    Duration::weeks(52).unwrap()).unwrap().into()))
+            .set_validity_period(None) // Just to assert this works.
+            .set_validity_period(Some(Duration::weeks(52).unwrap().try_into().unwrap()))
             .generate().unwrap();
         assert_eq!(cert.clone().into_packet_pile().children().count(),
                    1 // primary key
@@ -3945,11 +4040,12 @@ mod test {
             .build(&mut keypair, &cert, None)
             .unwrap();
         assert_eq!(sig.typ(), SignatureType::KeyRevocation);
-        assert_eq!(sig.issuer(), Some(&cert.keyid()));
-        assert_eq!(sig.issuer_fingerprint(),
-                   Some(&cert.fingerprint()));
+        assert_eq!(sig.issuers().collect::<Vec<_>>(),
+                   vec![ &cert.keyid() ]);
+        assert_eq!(sig.issuer_fingerprints().collect::<Vec<_>>(),
+                   vec![ &cert.fingerprint() ]);
 
-        let cert = cert.merge_packets(sig).unwrap();
+        let cert = cert.insert_packets(sig).unwrap();
         assert_match!(RevocationStatus::Revoked(_) = cert.revocation_status(p, None));
 
 
@@ -3968,9 +4064,10 @@ mod test {
             .unwrap();
 
         assert_eq!(sig.typ(), SignatureType::KeyRevocation);
-        assert_eq!(sig.issuer(), Some(&other.keyid()));
-        assert_eq!(sig.issuer_fingerprint(),
-                   Some(&other.fingerprint()));
+        assert_eq!(sig.issuers().collect::<Vec<_>>(),
+                   vec![ &other.keyid() ]);
+        assert_eq!(sig.issuer_fingerprints().collect::<Vec<_>>(),
+                   vec![ &other.fingerprint() ]);
     }
 
     #[test]
@@ -3995,7 +4092,7 @@ mod test {
                 .unwrap()
         };
         assert_eq!(sig.typ(), SignatureType::SubkeyRevocation);
-        let cert = cert.merge_packets(sig).unwrap();
+        let cert = cert.insert_packets(sig).unwrap();
         assert_eq!(RevocationStatus::NotAsFarAsWeKnow,
                    cert.revocation_status(p, None));
 
@@ -4026,7 +4123,7 @@ mod test {
                 .unwrap()
         };
         assert_eq!(sig.typ(), SignatureType::CertificationRevocation);
-        let cert = cert.merge_packets(sig).unwrap();
+        let cert = cert.insert_packets(sig).unwrap();
         assert_eq!(RevocationStatus::NotAsFarAsWeKnow,
                    cert.revocation_status(p, None));
 
@@ -4054,7 +4151,7 @@ mod test {
          * [t3,t4): valid again (new self sig)
          * [t4,inf): hard revocation (hard revocation)
          *
-         * One the hard revocation is merged, then the Cert is
+         * Once the hard revocation is merged, then the Cert is
          * considered revoked at all times.
          */
         let t1 = time::UNIX_EPOCH + time::Duration::new(946681200, 0);  // 2000-1-1
@@ -4069,7 +4166,7 @@ mod test {
         let (bind1, rev1, bind2, rev2) = {
             let bind1 = signature::SignatureBuilder::new(SignatureType::DirectKey)
                 .set_features(&Features::sequoia()).unwrap()
-                .set_key_flags(&KeyFlags::default()).unwrap()
+                .set_key_flags(&KeyFlags::empty()).unwrap()
                 .set_signature_creation_time(t1).unwrap()
                 .set_key_validity_period(Some(time::Duration::new(10 * 52 * 7 * 24 * 60 * 60, 0))).unwrap()
                 .set_preferred_hash_algorithms(vec![HashAlgorithm::SHA512]).unwrap()
@@ -4083,7 +4180,7 @@ mod test {
 
             let bind2 = signature::SignatureBuilder::new(SignatureType::DirectKey)
                 .set_features(&Features::sequoia()).unwrap()
-                .set_key_flags(&KeyFlags::default()).unwrap()
+                .set_key_flags(&KeyFlags::empty()).unwrap()
                 .set_signature_creation_time(t3).unwrap()
                 .set_key_validity_period(Some(time::Duration::new(10 * 52 * 7 * 24 * 60 * 60, 0))).unwrap()
                 .set_preferred_hash_algorithms(vec![HashAlgorithm::SHA512]).unwrap()
@@ -4120,7 +4217,7 @@ mod test {
         assert_eq!(cert.revocation_status(p, t34), RevocationStatus::NotAsFarAsWeKnow);
 
         // Merge in the hard revocation.
-        let cert = cert.merge_packets(rev2).unwrap();
+        let cert = cert.insert_packets(rev2).unwrap();
         assert_match!(RevocationStatus::Revoked(_) = cert.revocation_status(p, te1));
         assert_match!(RevocationStatus::Revoked(_) = cert.revocation_status(p, t12));
         assert_match!(RevocationStatus::Revoked(_) = cert.revocation_status(p, t23));
@@ -4321,7 +4418,7 @@ mod test {
             check(p, &cert, false, selfsig0);
             check(p, &cert, true, now);
 
-            // A newer self siganture.
+            // A newer self signature.
             let cert = cert.merge(
                 Cert::from_bytes(
                     crate::tests::key(
@@ -4590,7 +4687,7 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
                    .primary_userid().unwrap().userid().value(),
                    b"Eminem");
 
-        // A newer self siganture for "Slim Shady". Unlike for Certs, this
+        // A newer self signature for "Slim Shady". Unlike for Certs, this
         // does NOT trump everything.
         let cert = cert.merge(
             Cert::from_bytes(
@@ -4739,7 +4836,7 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
                               SignatureType::PositiveCertification,
                               None,
                               t1).unwrap();
-        cert = cert.merge_packets(
+        cert = cert.insert_packets(
             vec![Packet::from(uid), sig.into()]).unwrap();
 
         const N: usize = 5;
@@ -4747,7 +4844,7 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
             for i in 0..N {
                 let binding = signature::SignatureBuilder::new(SignatureType::DirectKey)
                     .set_features(&Features::sequoia()).unwrap()
-                    .set_key_flags(&KeyFlags::default()).unwrap()
+                    .set_key_flags(&KeyFlags::empty()).unwrap()
                     .set_signature_creation_time(t1).unwrap()
                     // Vary this...
                     .set_key_validity_period(Some(
@@ -4759,7 +4856,7 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
 
                 let binding : Packet = binding.into();
 
-                cert = cert.merge_packets(binding).unwrap();
+                cert = cert.insert_packets(binding).unwrap();
                 // A time that matches multiple signatures.
                 let direct_signatures =
                     cert.primary_key().bundle().self_signatures();
@@ -4816,14 +4913,14 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
                       .unwrap();
 
             // Have alice cerify the binding "bob@bar.com" and bob's key.
-            let alice_certifies_bob
+            let mut alice_certifies_bob
                 = bob_userid_binding.userid().bind(
                     &mut alice.primary_key().key().clone().parts_into_secret()
                         .unwrap().into_keypair().unwrap(),
                     &bob,
                     sig_template).unwrap();
 
-            let bob = bob.merge_packets(alice_certifies_bob.clone()).unwrap();
+            let bob = bob.insert_packets(alice_certifies_bob.clone()).unwrap();
 
             // Make sure the certification is merged, and put in the right
             // place.
@@ -4862,7 +4959,7 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
         let algo = primary.pk_algo();
         primary.secret_mut()
             .decrypt_in_place(algo, &"streng geheim".into()).unwrap();
-        let cert = cert.merge_packets(
+        let cert = cert.insert_packets(
             primary.parts_into_secret().unwrap().role_into_primary()).unwrap();
 
         assert_eq!(cert.keys().secret().count(), 2);
@@ -4903,7 +5000,7 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
 
         // Add a bare userid.
         let uid = UserID::from("foo@example.org");
-        let cert = cert.merge_packets(uid)?;
+        let cert = cert.insert_packets(uid)?;
         assert_eq!(cert.userids().count(), 1);
         assert_eq!(cert.userids().with_policy(&p, None).count(), 0);
 
@@ -4913,7 +5010,7 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
             Subpacket::Image(
                 Image::Private(100, vec![0, 1, 2].into_boxed_slice())),
         ])?;
-        let cert = cert.merge_packets(ua)?;
+        let cert = cert.insert_packets(ua)?;
         assert_eq!(cert.user_attributes().count(), 1);
         assert_eq!(cert.user_attributes().with_policy(&p, None).count(), 0);
 
@@ -4921,7 +5018,7 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
         let signing_subkey: Key<_, key::SubordinateRole> =
             key::Key4::generate_ecc(true, Curve::Ed25519)?.into();
         let _signing_subkey_pair = signing_subkey.clone().into_keypair()?;
-        let cert = cert.merge_packets(signing_subkey)?;
+        let cert = cert.insert_packets(signing_subkey)?;
         assert_eq!(cert.keys().subkeys().count(), 1);
         assert_eq!(cert.keys().subkeys().with_policy(&p, None).count(), 0);
 
@@ -4932,7 +5029,7 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
         let fake_binding = signature::SignatureBuilder::new(
                 SignatureType::Unknown(SignatureType::SubkeyBinding.into()))
             .sign_standalone(&mut primary_pair)?;
-        let cert = cert.merge_packets(vec![Packet::from(fake_key),
+        let cert = cert.insert_packets(vec![Packet::from(fake_key),
                                            fake_binding.clone().into()])?;
         assert_eq!(cert.unknowns().count(), 1);
         assert_eq!(cert.unknowns().nth(0).unwrap().unknown().tag(),
@@ -5013,8 +5110,8 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
             key::Key4::generate_ecc(false, Curve::Cv25519)?.into();
         let subkey_pub = subkey_sec.clone().take_secret().0;
         let builder = signature::SignatureBuilder::new(SignatureType::SubkeyBinding)
-            .set_key_flags(&KeyFlags::default()
-                           .set_transport_encryption(true))?;
+            .set_key_flags(&KeyFlags::empty()
+                           .set_transport_encryption())?;
         let binding = subkey_sec.bind(&mut primary_pair, &cert, builder)?;
 
         let cert = Cert::try_from(vec![
@@ -5049,7 +5146,7 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
         let p = &P::new();
         let cert_at = cert.with_policy(p,
                                        cert.primary_key().creation_time()
-                                       + time::Duration::new(60, 0))
+                                       + time::Duration::new(300, 0))
             .unwrap();
         assert_eq!(cert_at.userids().count(), 0);
         assert_eq!(cert_at.keys().count(), 2);
@@ -5060,14 +5157,14 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
         let sig = uid.bind(
             &mut primary_pair, &cert,
             signature::SignatureBuilder::new(SignatureType::PositiveCertification))?;
-        let cert = cert.merge_packets(vec![
+        let cert = cert.insert_packets(vec![
             Packet::from(uid),
             sig.into(),
         ])?;
 
         let cert_at = cert.with_policy(p,
                                        cert.primary_key().creation_time()
-                                       + time::Duration::new(60, 0))
+                                       + time::Duration::new(300, 0))
             .unwrap();
         assert_eq!(cert_at.userids().count(), 1);
         assert_eq!(cert_at.keys().count(), 2);
@@ -5130,7 +5227,7 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
             //            Some(KeyServerPreferences::new(&[])));
 
             assert_eq!(userid.features(),
-                       Some(Features::new(&[]).set_mdc(true)));
+                       Some(Features::new(&[]).set_mdc()));
         } else {
             panic!("two user ids");
         }
@@ -5159,7 +5256,7 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
                        Some(KeyServerPreferences::new(&[0x80])));
 
             assert_eq!(userid.features(),
-                       Some(Features::new(&[]).set_mdc(true)));
+                       Some(Features::new(&[]).set_mdc()));
 
             // Using the certificate should choose the primary user
             // id, which is this one (because it is lexicographically
@@ -5205,7 +5302,7 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
                        Some(KeyServerPreferences::new(&[0x80])));
 
             assert_eq!(userid.features(),
-                       Some(Features::new(&[]).set_mdc(true)));
+                       Some(Features::new(&[]).set_mdc()));
         } else {
             panic!("two user ids");
         }
@@ -5236,6 +5333,228 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
 
         assert_eq!(cert.keys().count(), 1 + 4);
         assert_eq!(cert.keys().with_policy(p, None).count(), 1 + 2);
+        Ok(())
+    }
+
+    #[test]
+    fn issue_504() -> Result<()> {
+        let mut keyring = crate::tests::key("testy.pgp").to_vec();
+        keyring.extend_from_slice(crate::tests::key("testy-new.pgp"));
+
+        // TryFrom<PacketPile>
+        let pp = PacketPile::from_bytes(&keyring)?;
+        assert!(destructures_to!(
+            Error::MalformedCert(_) =
+                Cert::try_from(pp.clone()).unwrap_err().downcast().unwrap()));
+
+        // Cert::TryFrom<Vec<Packet>>
+        let v: Vec<Packet> = pp.into();
+        assert!(destructures_to!(
+            Error::MalformedCert(_) =
+                Cert::try_from(v.clone()).unwrap_err().downcast().unwrap()));
+
+        // Cert::from_packet
+        assert!(destructures_to!(
+            Error::MalformedCert(_) =
+                Cert::from_packets(v.into_iter()).unwrap_err()
+                .downcast().unwrap()));
+
+        // Cert::TryFrom<PacketParserResult>
+        let ppr = PacketParser::from_bytes(&keyring)?;
+        assert!(destructures_to!(
+            Error::MalformedCert(_) =
+                Cert::try_from(ppr).unwrap_err().downcast().unwrap()));
+        Ok(())
+    }
+
+    /// Tests whether the policy is applied to primary key binding
+    /// signatures.
+    #[test]
+    fn issue_531() -> Result<()> {
+        let cert =
+            Cert::from_bytes(crate::tests::key("peter-sha1-backsig.pgp"))?;
+        let p = &crate::policy::NullPolicy::new();
+        assert_eq!(cert.with_policy(p, None)?.keys().for_signing().count(), 1);
+        let p = &crate::policy::StandardPolicy::new();
+        assert_eq!(cert.with_policy(p, None)?.keys().for_signing().count(), 0);
+        Ok(())
+    }
+
+    /// Tests whether expired primary key binding signatures are
+    /// rejected.
+    #[test]
+    fn issue_539() -> Result<()> {
+        let cert =
+            Cert::from_bytes(crate::tests::key("peter-expired-backsig.pgp"))?;
+        let p = &crate::policy::NullPolicy::new();
+        assert_eq!(cert.with_policy(p, None)?.keys().for_signing().count(), 0);
+        let p = &crate::policy::StandardPolicy::new();
+        assert_eq!(cert.with_policy(p, None)?.keys().for_signing().count(), 0);
+        Ok(())
+    }
+
+    /// Tests whether signatures are properly deduplicated.
+    #[test]
+    fn issue_568() -> Result<()> {
+        use crate::packet::signature::subpacket::*;
+
+        let (cert, _) = CertBuilder::general_purpose(
+            None, Some("alice@example.org")).generate().unwrap();
+        assert_eq!(cert.userids().count(), 1);
+        assert_eq!(cert.subkeys().count(), 1);
+        assert_eq!(cert.unknowns().count(), 0);
+        assert_eq!(cert.bad_signatures().len(), 0);
+        assert_eq!(cert.userids().nth(0).unwrap().self_signatures().len(), 1);
+        assert_eq!(cert.subkeys().nth(0).unwrap().self_signatures().len(), 1);
+
+        // Create a variant of cert where the signatures have
+        // additional information in the unhashed area.
+        let cert_b = cert.clone();
+        let mut packets = crate::PacketPile::from(cert_b).into_children()
+            .collect::<Vec<_>>();
+        for p in packets.iter_mut() {
+            if let Packet::Signature(sig) = p {
+                assert_eq!(sig.hashed_area().subpackets(
+                    SubpacketTag::IssuerFingerprint).count(),
+                           1);
+                sig.unhashed_area_mut().add(Subpacket::new(
+                    SubpacketValue::Issuer("AAAA BBBB CCCC DDDD".parse()?),
+                    false)?)?;
+            }
+        }
+        let cert_b = Cert::from_packets(packets.into_iter())?;
+        let cert = cert.merge(cert_b)?;
+        assert_eq!(cert.userids().count(), 1);
+        assert_eq!(cert.subkeys().count(), 1);
+        assert_eq!(cert.unknowns().count(), 0);
+        assert_eq!(cert.bad_signatures().len(), 0);
+        assert_eq!(cert.userids().nth(0).unwrap().self_signatures().len(), 1);
+        assert_eq!(cert.subkeys().nth(0).unwrap().self_signatures().len(), 1);
+
+        Ok(())
+    }
+
+    /// Checks that missing or bad embedded signatures cause the
+    /// signature to be considered bad.
+    #[test]
+    fn missing_backsig_is_bad() -> Result<()> {
+        use crate::packet::{
+            key::Key4,
+            signature::{
+                SignatureBuilder,
+                subpacket::{Subpacket, SubpacketValue},
+            },
+        };
+
+        // We'll study this certificate, because it contains a
+        // signing-capable subkey.
+        let cert = crate::Cert::from_bytes(crate::tests::key(
+            "emmelie-dorothea-dina-samantha-awina-ed25519.pgp"))?;
+        let mut pp = crate::PacketPile::from_bytes(crate::tests::key(
+            "emmelie-dorothea-dina-samantha-awina-ed25519.pgp"))?;
+        assert_eq!(pp.children().count(), 5);
+
+        if let Some(Packet::Signature(sig)) = pp.path_ref_mut(&[4]) {
+            // Add a bogus but plausible embedded signature subpacket.
+            let key: key::SecretKey
+                = Key4::generate_ecc(true, Curve::Ed25519)?.into();
+            let mut pair = key.into_keypair()?;
+
+            sig.unhashed_area_mut().replace(Subpacket::new(
+                SubpacketValue::EmbeddedSignature(
+                    SignatureBuilder::new(SignatureType::PrimaryKeyBinding)
+                        .sign_primary_key_binding(
+                            &mut pair,
+                            cert.primary_key().key(),
+                            cert.keys().subkeys().nth(0).unwrap().key())?),
+                false)?)?;
+        } else {
+            panic!("expected a signature");
+        }
+
+        // Parse into cert.
+        use std::convert::TryFrom;
+        let malicious_cert = Cert::try_from(pp)?;
+        // The subkey binding signature should no longer check out.
+        let p = &crate::policy::StandardPolicy::new();
+        assert_eq!(malicious_cert.with_policy(p, None)?.keys().subkeys()
+                   .for_signing().count(), 0);
+        // Instead, it should be considered bad.
+        assert_eq!(malicious_cert.bad_signatures().len(), 1);
+        Ok(())
+    }
+
+    /// Checks that multiple embedded signatures are correctly
+    /// handled.
+    #[test]
+    fn multiple_embedded_signatures() -> Result<()> {
+        use crate::packet::{
+            key::Key4,
+            signature::{
+                SignatureBuilder,
+                subpacket::{Subpacket, SubpacketValue},
+            },
+        };
+
+        // We'll study this certificate, because it contains a
+        // signing-capable subkey.
+        let cert = crate::Cert::from_bytes(crate::tests::key(
+            "emmelie-dorothea-dina-samantha-awina-ed25519.pgp"))?;
+
+        // Add a bogus but plausible embedded signature subpacket with
+        // this key.
+        let key: key::SecretKey
+            = Key4::generate_ecc(true, Curve::Ed25519)?.into();
+        let mut pair = key.into_keypair()?;
+
+        // Create a malicious cert to merge in.
+        let mut pp = crate::PacketPile::from_bytes(crate::tests::key(
+            "emmelie-dorothea-dina-samantha-awina-ed25519.pgp"))?;
+        assert_eq!(pp.children().count(), 5);
+
+        if let Some(Packet::Signature(sig)) = pp.path_ref_mut(&[4]) {
+            // Prepend a bad backsig.
+            let backsig = sig.embedded_signatures().nth(0).unwrap().clone();
+            sig.unhashed_area_mut().replace(Subpacket::new(
+                SubpacketValue::EmbeddedSignature(
+                    SignatureBuilder::new(SignatureType::PrimaryKeyBinding)
+                        .sign_primary_key_binding(
+                            &mut pair,
+                            cert.primary_key().key(),
+                            cert.keys().subkeys().nth(0).unwrap().key())?),
+                false)?)?;
+            sig.unhashed_area_mut().add(Subpacket::new(
+                SubpacketValue::EmbeddedSignature(backsig), false)?)?;
+        } else {
+            panic!("expected a signature");
+        }
+
+        // Parse into cert.
+        use std::convert::TryFrom;
+        let malicious_cert = Cert::try_from(pp)?;
+        // The subkey binding signature should still be fine.
+        let p = &crate::policy::StandardPolicy::new();
+        assert_eq!(malicious_cert.with_policy(p, None)?.keys().subkeys()
+                   .for_signing().count(), 1);
+        assert_eq!(malicious_cert.bad_signatures().len(), 0);
+
+        // Now try to merge it in.
+        let merged = cert.clone().merge(malicious_cert.clone())?;
+        // The subkey binding signature should still be fine.
+        assert_eq!(merged.with_policy(p, None)?.keys().subkeys()
+                   .for_signing().count(), 1);
+        let sig = merged.with_policy(p, None)?.keys().subkeys()
+            .for_signing().nth(0).unwrap().binding_signature();
+        assert_eq!(sig.embedded_signatures().count(), 2);
+
+        // Now the other way around.
+        let merged = malicious_cert.clone().merge(cert.clone())?;
+        // The subkey binding signature should still be fine.
+        assert_eq!(merged.with_policy(p, None)?.keys().subkeys()
+                   .for_signing().count(), 1);
+        let sig = merged.with_policy(p, None)?.keys().subkeys()
+            .for_signing().nth(0).unwrap().binding_signature();
+        assert_eq!(sig.embedded_signatures().count(), 2);
         Ok(())
     }
 }

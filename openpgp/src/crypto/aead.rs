@@ -160,8 +160,7 @@ impl<'a> Decryptor<'a> {
 
     fn make_aead(&mut self) -> Result<Box<dyn Aead>> {
         // The chunk index is XORed into the IV.
-        let mut chunk_index_be64 = vec![0u8; 8];
-        write_be_u64(&mut chunk_index_be64, self.chunk_index);
+        let chunk_index: [u8; 8] = self.chunk_index.to_be_bytes();
 
         match self.aead {
             AEADAlgorithm::EAX => {
@@ -176,7 +175,7 @@ impl<'a> Decryptor<'a> {
                     // The lower eight octets of the associated data
                     // are the big endian representation of the chunk
                     // index.
-                    *o ^= chunk_index_be64[i];
+                    *o ^= chunk_index[i];
                 }
 
                 // Instantiate the AEAD cipher.
@@ -186,7 +185,7 @@ impl<'a> Decryptor<'a> {
                 for (i, o) in &mut self.iv[iv_len - 8..].iter_mut()
                     .enumerate()
                 {
-                    *o ^= chunk_index_be64[i];
+                    *o ^= chunk_index[i];
                 }
 
                 Ok(aead)
@@ -350,8 +349,6 @@ impl<'a> Decryptor<'a> {
                 let mut aead = self.make_aead()?;
                 self.hash_associated_data(&mut aead, true);
 
-                let mut nada = [0; 0];
-                aead.decrypt(&mut nada, b"");
                 aead.digest(&mut digest);
 
                 let final_digest = self.source.data(final_digest_size)?;
@@ -578,8 +575,7 @@ impl<W: io::Write> Encryptor<W> {
 
     fn make_aead(&mut self) -> Result<Box<dyn Aead>> {
         // The chunk index is XORed into the IV.
-        let mut chunk_index_be64 = vec![0u8; 8];
-        write_be_u64(&mut chunk_index_be64, self.chunk_index);
+        let chunk_index: [u8; 8] = self.chunk_index.to_be_bytes();
 
         match self.aead {
             AEADAlgorithm::EAX => {
@@ -594,7 +590,7 @@ impl<W: io::Write> Encryptor<W> {
                     // The lower eight octets of the associated data
                     // are the big endian representation of the chunk
                     // index.
-                    *o ^= chunk_index_be64[i];
+                    *o ^= chunk_index[i];
                 }
 
                 // Instantiate the AEAD cipher.
@@ -604,7 +600,7 @@ impl<W: io::Write> Encryptor<W> {
                 for (i, o) in &mut self.iv[iv_len - 8..].iter_mut()
                     .enumerate()
                 {
-                    *o ^= chunk_index_be64[i];
+                    *o ^= chunk_index[i];
                 }
 
                 Ok(aead)
@@ -700,8 +696,6 @@ impl<W: io::Write> Encryptor<W> {
             // Write final digest.
             let mut aead = self.make_aead()?;
             self.hash_associated_data(&mut aead, true);
-            let mut nada = [0; 0];
-            aead.encrypt(&mut nada, b"");
             aead.digest(&mut self.scratch[..self.digest_size]);
             inner.write_all(&self.scratch[..self.digest_size])?;
 
@@ -775,7 +769,9 @@ mod tests {
                          SymmetricAlgorithm::Twofish,
                          SymmetricAlgorithm::Camellia128,
                          SymmetricAlgorithm::Camellia192,
-                         SymmetricAlgorithm::Camellia256].iter() {
+                         SymmetricAlgorithm::Camellia256]
+                         .iter()
+                         .filter(|algo| algo.is_supported()) {
             for aead in [AEADAlgorithm::EAX].iter() {
                 let version = 1;
                 let chunk_size = 64;

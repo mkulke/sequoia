@@ -1,10 +1,30 @@
 //! Memory protection and encryption.
+//!
+//! Sequoia makes an effort to protect secrets stored in memory.  Even
+//! though a process's memory should be protected from being read by an
+//! adversary, there may be bugs in the program or the architecture
+//! the program is running on that allow (partial) recovery of data.
+//! Or, the process may be serialized to persistent storage, and its
+//! memory may be inspected while it is not running.
+//!
+//! To reduce the window for these kind of exfiltrations, we use
+//! [`Protected`] to clear the memory once it is no longer in use, and
+//! [`Encrypted`] to protect long-term secrets like passwords and
+//! secret keys.
+//!
+//!   [`Protected`]: struct.Protected.html
+//!   [`Encrypted`]: struct.Encrypted.html
+//!
+//! Furthermore, operations involving secrets must be carried out in a
+//! way that avoids leaking information.  For example, comparison
+//! must be done in constant time with [`secure_cmp`].
+//!
+//!   [`secure_cmp`]: fn.secure_cmp.html
 
 use std::cmp::{min, Ordering};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::ops::{Deref, DerefMut};
-use std::pin::Pin;
 
 use memsec;
 
@@ -12,6 +32,8 @@ use memsec;
 ///
 /// The memory is guaranteed not to be copied around, and is cleared
 /// when the object is dropped.
+///
+/// # Examples
 ///
 /// ```rust
 /// use sequoia_openpgp::crypto::mem::Protected;
@@ -24,7 +46,7 @@ use memsec;
 /// // p is cleared once it goes out of scope.
 /// ```
 #[derive(Clone)]
-pub struct Protected(Pin<Box<[u8]>>);
+pub struct Protected(Box<[u8]>);
 
 impl PartialEq for Protected {
     fn eq(&self, other: &Self) -> bool {
@@ -42,8 +64,10 @@ impl Hash for Protected {
 
 impl Protected {
     /// Converts to a buffer for modification.
-    pub(crate) unsafe fn into_vec(self) -> Vec<u8> {
-        self.iter().cloned().collect()
+    ///
+    /// Don't expose `Protected` values unless you know what you're doing.
+    pub(crate) fn expose_into_unprotected_vec(self) -> Vec<u8> {
+        self.0.clone().into()
     }
 }
 
@@ -75,13 +99,16 @@ impl DerefMut for Protected {
 
 impl From<Vec<u8>> for Protected {
     fn from(v: Vec<u8>) -> Self {
-        Protected(Pin::new(v.into_boxed_slice()))
+        // FIXME(xanewok): This can potentially realloc and leave a lingering
+        // copy of the secret somewhere. It'd be great to explicitly move the
+        // source data by copying it and zeroing it explicitly afterwards.
+        Protected(v.into_boxed_slice())
     }
 }
 
 impl From<Box<[u8]>> for Protected {
     fn from(v: Box<[u8]>) -> Self {
-        Protected(Pin::new(v))
+        Protected(v)
     }
 }
 
@@ -133,7 +160,7 @@ impl fmt::Debug for Protected {
 /// adding it can be found
 /// [here](https://marc.info/?l=openbsd-cvs&m=156109087822676).
 ///
-/// # Example
+/// # Examples
 ///
 /// ```rust
 /// use sequoia_openpgp::crypto::mem::Encrypted;
@@ -273,10 +300,9 @@ pub fn secure_cmp(a: &[u8], b: &[u8]) -> Ordering {
         memsec::memcmp(a.as_ptr(), b.as_ptr(), min(a.len(), b.len()))
     };
     let ord2 = match ord2 {
+        1..=std::i32::MAX => Ordering::Greater,
         0 => Ordering::Equal,
-        a if a < 0 => Ordering::Less,
-        a if a > 0 => Ordering::Greater,
-        _ => unreachable!(),
+        std::i32::MIN..=-1 => Ordering::Less,
     };
 
     if ord1 == Ordering::Equal { ord2 } else { ord1 }

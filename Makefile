@@ -10,8 +10,10 @@ CARGO_FLAGS	?=
 CARGO_TARGET_DIR	?= $(shell pwd)/target
 # We currently only support absolute paths.
 CARGO_TARGET_DIR	:= $(abspath $(CARGO_TARGET_DIR))
-# The tests to run.
-CARGO_TEST_ARGS	?= --all
+# The packages to build, test and document, e.g., "-p sequoia-openpgp"
+CARGO_PACKAGES	?= --all
+# Additional arguments to pass to cargo test, e.g., "--doc".
+CARGO_TEST_ARGS	?=
 # Version as stated in the top-level Cargo.toml.
 VERSION		?= $(shell grep '^version[[:space:]]*=[[:space:]]*' Cargo.toml\
                            | cut -d'"' -f2)
@@ -33,6 +35,7 @@ SOURCE_DATE_EPOCH = $(shell git show -s --no-show-signature --format=%cI)
 TAR_FLAGS = --sort=name \
       --mtime="$(SOURCE_DATE_EPOCH)" \
       --owner=0 --group=0 --numeric-owner \
+      --mode=go=rX,u+rw,a-s \
       --pax-option=exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime
 
 ifeq ($(shell uname -s), Darwin)
@@ -48,23 +51,32 @@ export PREFIX
 export DESTDIR
 export CARGO_FLAGS
 export CARGO_TARGET_DIR
+export CARGO_PACKAGES
 export CARGO_TEST_ARGS
 
 all: build examples
 
 .PHONY: build
 build:
-	CARGO_TARGET_DIR=$(CARGO_TARGET_DIR) $(CARGO) build $(CARGO_FLAGS) --all
+	CARGO_TARGET_DIR=$(CARGO_TARGET_DIR) $(CARGO) build $(CARGO_FLAGS) $(CARGO_PACKAGES)
 	$(MAKE) -Copenpgp-ffi build
 	$(MAKE) -Cffi build
 
 # Testing and examples.
+#
+# If CARGO_PACKAGES contains a package specification ("-p foo"), then
+# only run cargo test.
 .PHONY: test check
 test check:
-	CARGO_TARGET_DIR=$(CARGO_TARGET_DIR) $(CARGO) test $(CARGO_FLAGS) $(CARGO_TEST_ARGS)
-	$(MAKE) -Copenpgp-ffi test
-	$(MAKE) -Cffi test
-	$(MAKE) examples
+	CARGO_TARGET_DIR=$(CARGO_TARGET_DIR) $(CARGO) test $(CARGO_FLAGS) $(CARGO_PACKAGES) $(CARGO_TEST_ARGS)
+	if echo "$(CARGO_PACKAGES)" | grep -q -E -e '(^| )[-]p +.'; \
+	then \
+		echo 'WARNING: Not running other tests, because $$CARGO_PACKAGES specifies a package.'; \
+	else \
+		$(MAKE) -Copenpgp-ffi test; \
+		$(MAKE) -Cffi test; \
+		$(MAKE) examples; \
+	fi
 
 .PHONY: examples
 examples:
@@ -80,7 +92,7 @@ doc:
 		> $(CARGO_TARGET_DIR)/inc.html
 	RUSTDOCFLAGS="$$RUSTDOCFLAGS --html-in-header $(CARGO_TARGET_DIR)/inc.html" \
 	CARGO_TARGET_DIR=$(CARGO_TARGET_DIR) \
-	    $(CARGO) doc $(CARGO_FLAGS) --no-deps --all
+	    $(CARGO) doc $(CARGO_FLAGS) --no-deps $(CARGO_PACKAGES)
 
 # Installation.
 .PHONY: build-release
@@ -160,5 +172,5 @@ sanity-check-versions:
 .PHONY: codespell
 codespell:
 	$(CODESPELL) $(CODESPELL_FLAGS) \
-	  -L "ede,iff,mut,nd,te,uint" \
-	  -S "*.bin,*.gpg,*.pgp,./.git,./target,data,highlight.js"
+	  -L "ede,iff,mut,nd,te,uint,KeyServer,keyserver,Keyserver,keyservers,Keyservers,keypair,keypairs,KeyPair,fpr,dedup" \
+	  -S "*.bin,*.gpg,*.pgp,./.git,data,highlight.js,*/target,Makefile"

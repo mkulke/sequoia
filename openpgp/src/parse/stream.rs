@@ -138,6 +138,7 @@ use crate::{
 };
 use crate::parse::{
     Cookie,
+    HashingMode,
     PacketParser,
     PacketParserBuilder,
     PacketParserResult,
@@ -341,6 +342,63 @@ impl<'a> From<VerificationError<'a>> for Error {
     }
 }
 
+/// Like VerificationError, but without referencing the signature.
+///
+/// This avoids borrowing the signature, so that we can continue to
+/// mutably borrow the signature trying other keys.  After all keys
+/// are tried, we attach the reference to the signature, yielding a
+/// `VerificationError`.
+enum VerificationErrorInternal<'a> {
+    // MalformedSignature is not used, so it is omitted here.
+
+    /// Missing Key
+    MissingKey {
+    },
+    /// Unbound key.
+    ///
+    /// There is no valid binding signature at the time the signature
+    /// was created under the given policy.
+    UnboundKey {
+        /// The certificate that made the signature.
+        cert: &'a Cert,
+
+        /// The reason why the key is not bound.
+        error: anyhow::Error,
+    },
+    /// Bad key (have a key, but it is not alive, etc.)
+    BadKey {
+        /// The signing key that made the signature.
+        ka: ValidErasedKeyAmalgamation<'a, key::PublicParts>,
+
+        /// The reason why the key is bad.
+        error: anyhow::Error,
+    },
+    /// Bad signature (have a valid key, but the signature didn't check out)
+    BadSignature {
+        /// The signing key that made the signature.
+        ka: ValidErasedKeyAmalgamation<'a, key::PublicParts>,
+
+        /// The reason why the signature is bad.
+        error: anyhow::Error,
+    },
+}
+
+impl<'a> VerificationErrorInternal<'a> {
+    fn attach_sig(self, sig: &'a Signature) -> VerificationError<'a> {
+        use self::VerificationErrorInternal::*;
+        match self {
+            MissingKey {} =>
+                VerificationError::MissingKey { sig },
+            UnboundKey { cert, error } =>
+                VerificationError::UnboundKey { sig, cert, error },
+            BadKey { ka, error } =>
+                VerificationError::BadKey { sig, ka, error },
+            BadSignature { ka, error } =>
+                VerificationError::BadSignature { sig, ka, error },
+        }
+    }
+}
+
 /// Communicates the message structure to the VerificationHelper.
 ///
 /// A valid OpenPGP message contains one literal data packet with
@@ -453,15 +511,37 @@ impl<'a> IntoIterator for MessageStructure<'a> {
 /// Represents a layer of the message structure.
 ///
 /// A valid OpenPGP message contains one literal data packet with
-/// optional encryption, signing, and compression layers on top.
+/// optional encryption, signing, and compression layers freely
+/// combined on top (see [Section 11.3 of RFC 4880]).  This enum
+/// represents the layers.  The [`MessageStructure`] is communicated
+/// to the [`VerificationHelper::check`].  Iterating over the
+/// [`MessageStructure`] yields the individual message layers.
+///
+///   [Section 11.3 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-11.3
+///   [`MessageStructure`]: struct.MessageStructure.html
+///   [`VerificationHelper::check`]: trait.VerificationHelper.html#tymethod.check
 #[derive(Debug)]
 pub enum MessageLayer<'a> {
     /// Represents an compression container.
+    ///
+    /// Compression is usually transparent in OpenPGP, though it may
+    /// sometimes be interesting for advanced users to indicate that
+    /// the message was compressed, and how (see [Section 5.6 of RFC
+    /// 4880]).
+    ///
+    ///   [Section 5.6 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.6
     Compression {
         /// Compression algorithm used.
         algo: CompressionAlgorithm,
     },
     /// Represents an encryption container.
+    ///
+    /// Indicates the fact that the message was encrypted (see
+    /// [Section 5.13 of RFC 4880]).  If you expect encrypted
+    /// messages, make sure that there is at least one encryption
+    /// container present.
+    ///
+    ///   [Section 5.13 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.13
     Encryption {
         /// Symmetric algorithm used.
         sym_algo: SymmetricAlgorithm,
@@ -473,14 +553,16 @@ pub enum MessageLayer<'a> {
     /// Represents a signature group.
     ///
     /// A signature group consists of all signatures with the same
-    /// level.  Each [`VerificationResult`] represents the result of
-    /// a single signature verification.  In your
-    /// [`VerificationHelper::check`] method, iterate over the
-    /// verification results, see if it meets your policies' demands,
-    /// and communicate it to the user, if applicable.
+    /// level (see [Section 5.2 of RFC 4880]).  Each
+    /// [`VerificationResult`] represents the result of a single
+    /// signature verification.  In your [`VerificationHelper::check`]
+    /// method, iterate over the verification results, see if it meets
+    /// your policies' demands, and communicate it to the user, if
+    /// applicable.
     ///
-    ///  [`VerificationResult`]: type.VerificationResult.html
-    ///  [`VerificationHelper::check`]: trait.VerificationHelper.html#tymethod.check
+    ///   [Section 5.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2
+    ///   [`VerificationResult`]: type.VerificationResult.html
+    ///   [`VerificationHelper::check`]: trait.VerificationHelper.html#tymethod.check
     SignatureGroup {
         /// The results of the signature verifications.
         results: Vec<VerificationResult<'a>>,
@@ -717,6 +799,13 @@ pub trait VerificationHelper {
     ///
     ///   [`Verifier::message_processed`]: struct.Verifier.html#method.message_processed
     ///   [`Decryptor::message_processed`]: struct.Decryptor.html#method.message_processed
+    ///
+    /// When verifying a detached signature using the
+    /// [`DetachedVerifier`], this method will be called with a
+    /// [`MessageStructure`] containing exactly one layer, a signature
+    /// group.
+    ///
+    ///   [`DetachedVerifier`]: struct.DetachedVerifier.html
     ///
     /// # Examples
     ///
@@ -1252,9 +1341,14 @@ impl<'a, H: VerificationHelper> io::Read for Verifier<'a, H> {
 ///   [`Parse`]: ../trait.Parse.html
 ///
 /// See [`GoodChecksum`] for what it means for a signature to be
-/// considered valid.
+/// considered valid.  When the signature(s) are processed,
+/// [`VerificationHelper::check`] will be called with a
+/// [`MessageStructure`] containing exactly one layer, a signature
+/// group.
 ///
 ///   [`GoodChecksum`]: struct.GoodChecksum.html
+///   [`VerificationHelper::check`]: trait.VerificationHelper.html#tymethod.check
+///   [`MessageStructure`]: struct.MessageStructure.html
 ///
 /// # Examples
 ///
@@ -1408,8 +1502,13 @@ impl<'a> DetachedVerifierBuilder<'a> {
     /// Signature verifications are done under the given `policy` and
     /// relative to time `time`, or the current time, if `time` is
     /// `None`.  `helper` is the [`VerificationHelper`] to use.
+    /// [`VerificationHelper::check`] will be called with a
+    /// [`MessageStructure`] containing exactly one layer, a signature
+    /// group.
     ///
     ///   [`VerificationHelper`]: trait.VerificationHelper.html
+    ///   [`VerificationHelper::check`]: trait.VerificationHelper.html#tymethod.check
+    ///   [`MessageStructure`]: struct.MessageStructure.html
     ///
     /// # Examples
     ///
@@ -2359,18 +2458,24 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
         };
 
         // Compute the necessary hashes.
-        let algos: Vec<_> = sigs.iter().map(|s| s.hash_algo()).collect();
-        let hashes = crate::crypto::hash_buffered_reader(data, &algos)?;
+        let algos: Vec<_> = sigs.iter().map(|s| {
+            HashingMode::for_signature(s.hash_algo(), s.typ())
+        }).collect();
+        let hashes =
+            crate::parse::hashed_reader::hash_buffered_reader(data, &algos)?;
 
         // Attach the digests.
         for sig in sigs.iter_mut() {
-            let algo = sig.hash_algo();
+            let need_hash =
+                HashingMode::for_signature(sig.hash_algo(), sig.typ());
             // Note: |hashes| < 10, most likely 1.
-            for hash in hashes.iter().filter(|c| c.algo() == algo) {
+            for mode in hashes.iter()
+                .filter(|m| m.map(|c| c.algo()) == need_hash)
+            {
                 // Clone the hash context, update it with the
                 // signature.
                 use crate::crypto::hash::Hash;
-                let mut hash = hash.clone();
+                let mut hash = mode.as_ref().clone();
                 sig.hash(&mut hash);
 
                 // Attach digest to the signature.
@@ -2453,7 +2558,7 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
         t!("called");
 
         let mut results = MessageStructure::new();
-        for layer in self.structure.layers.iter() {
+        for layer in self.structure.layers.iter_mut() {
             match layer {
                 IMessageLayer::Compression { algo } =>
                     results.new_compression_layer(*algo),
@@ -2461,7 +2566,7 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                     results.new_encryption_layer(*sym_algo, *aead_algo),
                 IMessageLayer::SignatureGroup { sigs, .. } => {
                     results.new_signature_group();
-                    'sigs: for sig in sigs.iter() {
+                    'sigs: for sig in sigs.iter_mut() {
                         let sigid = sig.digest_prefix().clone();
 
                         let sig_time = if let Some(t) = sig.signature_creation_time() {
@@ -2481,9 +2586,7 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                             continue;
                         };
 
-                        let mut err = VerificationError::MissingKey {
-                            sig,
-                        };
+                        let mut err = VerificationErrorInternal::MissingKey {};
 
                         let issuers = sig.get_issuers();
                         // Note: If there are no issuers, the only way
@@ -2512,8 +2615,7 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                                 Err(policy_err) => {
                                     t!("{:02X}{:02X}: key {} rejected by policy: {}",
                                        sigid[0], sigid[1], fingerprint, policy_err);
-                                    err = VerificationError::UnboundKey {
-                                        sig,
+                                    err = VerificationErrorInternal::UnboundKey {
                                         cert,
                                         error: policy_err,
                                     };
@@ -2526,29 +2628,26 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                                 }
                             };
 
-                            err = if let Err(err) = ka.cert().alive() {
+                            err = if let Err(error) = ka.cert().alive() {
                                 t!("{:02X}{:02X}: cert {} not alive: {}",
-                                   sigid[0], sigid[1], ka.cert().fingerprint(), err);
-                                VerificationError::BadKey {
-                                    sig,
+                                   sigid[0], sigid[1], ka.cert().fingerprint(), error);
+                                VerificationErrorInternal::BadKey {
                                     ka,
-                                    error: err,
+                                    error,
                                 }
-                            } else if let Err(err) = ka.alive() {
+                            } else if let Err(error) = ka.alive() {
                                 t!("{:02X}{:02X}: key {} not alive: {}",
-                                   sigid[0], sigid[1], ka.fingerprint(), err);
-                                VerificationError::BadKey {
-                                    sig,
+                                   sigid[0], sigid[1], ka.fingerprint(), error);
+                                VerificationErrorInternal::BadKey {
                                     ka,
-                                    error: err,
+                                    error,
                                 }
                             } else if let
                                 RevocationStatus::Revoked(rev) = ka.cert().revocation_status()
                             {
                                 t!("{:02X}{:02X}: cert {} revoked: {:?}",
                                    sigid[0], sigid[1], ka.cert().fingerprint(), rev);
-                                VerificationError::BadKey {
-                                    sig,
+                                VerificationErrorInternal::BadKey {
                                     ka,
                                     error: Error::InvalidKey(
                                         "certificate is revoked".into())
@@ -2559,8 +2658,7 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                             {
                                 t!("{:02X}{:02X}: key {} revoked: {:?}",
                                    sigid[0], sigid[1], ka.fingerprint(), rev);
-                                VerificationError::BadKey {
-                                    sig,
+                                VerificationErrorInternal::BadKey {
                                     ka,
                                     error: Error::InvalidKey(
                                         "signing key is revoked".into())
@@ -2569,34 +2667,39 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                             } else if ! ka.for_signing() {
                                 t!("{:02X}{:02X}: key {} not signing capable",
                                    sigid[0], sigid[1], ka.fingerprint());
-                                VerificationError::BadKey {
-                                    sig,
+                                VerificationErrorInternal::BadKey {
                                     ka,
                                     error: Error::InvalidKey(
                                         "key is not signing capable".into())
                                         .into(),
                                 }
-                            } else if let Err(err) = sig.signature_alive(
+                            } else if let Err(error) = sig.signature_alive(
                                 self.time, self.clock_skew_tolerance)
                             {
                                 t!("{:02X}{:02X}: Signature not alive: {}",
-                                   sigid[0], sigid[1], err);
-                                VerificationError::BadSignature {
-                                    sig,
+                                   sigid[0], sigid[1], error);
+                                VerificationErrorInternal::BadSignature {
                                     ka,
-                                    error: err,
+                                    error,
                                 }
                             } else if self.identity.as_ref().map(|identity| {
-                                let ir = sig.intended_recipients();
-                                ! ir.is_empty() && ! ir.contains(identity)
+                                let (have_one, contains_identity) =
+                                    sig.intended_recipients()
+                                        .fold((false, false),
+                                              |(_, contains_one), ir| {
+                                                  (
+                                                      true,
+                                                      contains_one || identity == ir
+                                                  )
+                                              });
+                                have_one && ! contains_identity
                             }).unwrap_or(false) {
                                 // The signature contains intended
                                 // recipients, but we are not one.
                                 // Treat the signature as bad.
                                 t!("{:02X}{:02X}: not an intended recipient",
                                    sigid[0], sigid[1]);
-                                VerificationError::BadSignature {
-                                    sig,
+                                VerificationErrorInternal::BadSignature {
                                     ka,
                                     error: Error::BadSignature(
                                         "Not an intended recipient".into())
@@ -2605,13 +2708,12 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                             } else {
                                 match sig.verify(ka.key()) {
                                     Ok(()) => {
-                                        if let Err(err) = self.policy.signature(&sig) {
+                                        if let Err(error) = self.policy.signature(&sig) {
                                             t!("{:02X}{:02X}: signature rejected by policy: {}",
-                                               sigid[0], sigid[1], err);
-                                            VerificationError::BadSignature {
-                                                sig,
+                                               sigid[0], sigid[1], error);
+                                            VerificationErrorInternal::BadSignature {
                                                 ka,
-                                                error: err,
+                                                error,
                                             }
                                         } else {
                                             t!("{:02X}{:02X}: good checksum using {}",
@@ -2625,19 +2727,19 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                                             continue 'sigs;
                                         }
                                     }
-                                    Err(err) => {
+                                    Err(error) => {
                                         t!("{:02X}{:02X} using {}: error: {}",
-                                           sigid[0], sigid[1], ka.fingerprint(), err);
-                                        VerificationError::BadSignature {
-                                            sig,
+                                           sigid[0], sigid[1], ka.fingerprint(), error);
+                                        VerificationErrorInternal::BadSignature {
                                             ka,
-                                            error: err,
+                                            error,
                                         }
                                     }
                                 }
                             }
                         }
 
+                        let err = err.attach_sig(sig);
                         t!("{:02X}{:02X}: returning: {:?}", sigid[0], sigid[1], err);
                         results.push_verification_result(Err(err));
                     }
@@ -2980,7 +3082,7 @@ mod test {
                                 sig, ..
                             }) = &results[0] {
                                 assert_eq!(
-                                    &sig.issuer_fingerprint().unwrap()
+                                    &sig.issuer_fingerprints().nth(0).unwrap()
                                         .to_string(),
                                     match i {
                                         0 => "8E8C 33FA 4626 3379 76D9  7978 069C 0C34 8DD8 2C19",

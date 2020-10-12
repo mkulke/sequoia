@@ -85,7 +85,7 @@ fn real_main() -> Result<()> {
 
         SOP::ExtractCert { no_armor, } => {
             let cert = Cert::from_reader(&mut io::stdin())?;
-            let mut sink = stdout(no_armor, armor::Kind::SecretKey)?;
+            let mut sink = stdout(no_armor, armor::Kind::PublicKey)?;
             cert.serialize(&mut sink)?;
             sink.finalize()?;
         },
@@ -300,14 +300,12 @@ fn real_main() -> Result<()> {
             let message = stdout(no_armor, armor::Kind::Message)?;
 
             // Encrypt the message.
-            let mut encryptor =
+            let encryptor =
                 Encryptor::for_recipients(message, recipients)
                 .add_passwords(passwords)
                 .symmetric_algo(
                     symmetric_algos.get(0).cloned().unwrap_or_default());
-            if let Some(&a) = aead_algos.get(0) {
-                encryptor = encryptor.aead_algo(a);
-            }
+
             let message = encryptor.build()
                 .context("Failed to create encryptor")?;
 

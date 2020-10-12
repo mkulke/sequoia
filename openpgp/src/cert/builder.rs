@@ -125,7 +125,7 @@ impl CipherSuite {
 #[derive(Clone, Debug)]
 pub struct KeyBlueprint {
     flags: KeyFlags,
-    expiration: Option<time::SystemTime>,
+    validity: Option<time::Duration>,
     // If not None, uses the specified ciphersuite.  Otherwise, uses
     // CertBuilder::ciphersuite.
     ciphersuite: Option<CipherSuite>,
@@ -211,8 +211,8 @@ impl CertBuilder {
             creation_time: None,
             ciphersuite: CipherSuite::default(),
             primary: KeyBlueprint{
-                flags: KeyFlags::default().set_certification(true),
-                expiration: None,
+                flags: KeyFlags::empty().set_certification(),
+                validity: None,
                 ciphersuite: None,
             },
             subkeys: vec![],
@@ -254,20 +254,18 @@ impl CertBuilder {
             creation_time: None,
             ciphersuite: ciphersuite.into().unwrap_or(Default::default()),
             primary: KeyBlueprint {
-                flags: KeyFlags::default()
-                    .set_certification(true)
-                    .set_signing(true),
-                expiration: Some(
-                    time::SystemTime::now()
-                        + time::Duration::new(3 * 52 * 7 * 24 * 60 * 60, 0)),
+                flags: KeyFlags::empty()
+                    .set_certification()
+                    .set_signing(),
+                validity: Some(time::Duration::new(3 * 52 * 7 * 24 * 60 * 60, 0)),
                 ciphersuite: None,
             },
             subkeys: vec![
                 KeyBlueprint {
-                    flags: KeyFlags::default()
-                        .set_transport_encryption(true)
-                        .set_storage_encryption(true),
-                    expiration: None,
+                    flags: KeyFlags::empty()
+                        .set_transport_encryption()
+                        .set_storage_encryption(),
+                    validity: None,
                     ciphersuite: None,
                 }
             ],
@@ -280,9 +278,21 @@ impl CertBuilder {
 
     /// Sets the creation time.
     ///
-    /// If `creation_time` is `None`, the default, this causes the
+    /// If `creation_time` is not `None`, this causes the
     /// `CertBuilder` to use that time when [`CertBuilder::generate`]
-    /// is called.
+    /// is called.  If it is `None`, the default, then the current
+    /// time minus 60 seconds is used as creation time.  Backdating
+    /// the certificate by a minute has the advantage that the
+    /// certificate can immediately be customized:
+    ///
+    /// In order to reliably override a binding signature, the
+    /// overriding binding signature must be newer than the existing
+    /// signature.  If, however, the existing signature is created
+    /// `now`, any newer signature must have a future creation time,
+    /// and is considered invalid by Sequoia.  To avoid this, we
+    /// backdate certificate creation times (and hence binding
+    /// signature creation times), so that there is "space" between
+    /// the creation time and now for signature updates.
     ///
     /// Warning: this function takes a [`SystemTime`].  A `SystemTime`
     /// has a higher resolution, and a larger range than an OpenPGP
@@ -328,6 +338,34 @@ impl CertBuilder {
     {
         self.creation_time = creation_time.into();
         self
+    }
+
+    /// Returns the configured creation time, if any.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::time::SystemTime;
+    ///
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::cert::prelude::*;
+    ///
+    /// # fn main() -> openpgp::Result<()> {
+    /// let mut builder = CertBuilder::new();
+    /// assert!(builder.creation_time().is_none());
+    ///
+    /// let now = std::time::SystemTime::now();
+    /// builder = builder.set_creation_time(Some(now));
+    /// assert_eq!(builder.creation_time(), Some(now));
+    ///
+    /// builder = builder.set_creation_time(None);
+    /// assert!(builder.creation_time().is_none());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn creation_time(&self) -> Option<std::time::SystemTime>
+    {
+        self.creation_time
     }
 
     /// Sets the default asymmetric algorithms.
@@ -520,12 +558,12 @@ impl CertBuilder {
     /// assert_eq!(cert.keys().count(), 2);
     /// let ka = cert.with_policy(p, None)?.keys().nth(1).unwrap();
     /// assert_eq!(ka.key_flags(),
-    ///            Some(KeyFlags::empty().set_signing(true)));
+    ///            Some(KeyFlags::empty().set_signing()));
     /// # Ok(())
     /// # }
     /// ```
     pub fn add_signing_subkey(self) -> Self {
-        self.add_subkey(KeyFlags::default().set_signing(true), None, None)
+        self.add_subkey(KeyFlags::empty().set_signing(), None, None)
     }
 
     /// Adds a subkey suitable for transport encryption.
@@ -558,12 +596,12 @@ impl CertBuilder {
     /// assert_eq!(cert.keys().count(), 2);
     /// let ka = cert.with_policy(p, None)?.keys().nth(1).unwrap();
     /// assert_eq!(ka.key_flags(),
-    ///            Some(KeyFlags::empty().set_transport_encryption(true)));
+    ///            Some(KeyFlags::empty().set_transport_encryption()));
     /// # Ok(())
     /// # }
     /// ```
     pub fn add_transport_encryption_subkey(self) -> Self {
-        self.add_subkey(KeyFlags::default().set_transport_encryption(true),
+        self.add_subkey(KeyFlags::empty().set_transport_encryption(),
                         None, None)
     }
 
@@ -597,12 +635,12 @@ impl CertBuilder {
     /// assert_eq!(cert.keys().count(), 2);
     /// let ka = cert.with_policy(p, None)?.keys().nth(1).unwrap();
     /// assert_eq!(ka.key_flags(),
-    ///            Some(KeyFlags::empty().set_storage_encryption(true)));
+    ///            Some(KeyFlags::empty().set_storage_encryption()));
     /// # Ok(())
     /// # }
     /// ```
     pub fn add_storage_encryption_subkey(self) -> Self {
-        self.add_subkey(KeyFlags::default().set_storage_encryption(true),
+        self.add_subkey(KeyFlags::empty().set_storage_encryption(),
                         None, None)
     }
 
@@ -636,12 +674,12 @@ impl CertBuilder {
     /// assert_eq!(cert.keys().count(), 2);
     /// let ka = cert.with_policy(p, None)?.keys().nth(1).unwrap();
     /// assert_eq!(ka.key_flags(),
-    ///            Some(KeyFlags::empty().set_certification(true)));
+    ///            Some(KeyFlags::empty().set_certification()));
     /// # Ok(())
     /// # }
     /// ```
     pub fn add_certification_subkey(self) -> Self {
-        self.add_subkey(KeyFlags::default().set_certification(true), None, None)
+        self.add_subkey(KeyFlags::empty().set_certification(), None, None)
     }
 
     /// Adds an authentication-capable subkey.
@@ -674,12 +712,12 @@ impl CertBuilder {
     /// assert_eq!(cert.keys().count(), 2);
     /// let ka = cert.with_policy(p, None)?.keys().nth(1).unwrap();
     /// assert_eq!(ka.key_flags(),
-    ///            Some(KeyFlags::empty().set_authentication(true)));
+    ///            Some(KeyFlags::empty().set_authentication()));
     /// # Ok(())
     /// # }
     /// ```
     pub fn add_authentication_subkey(self) -> Self {
-        self.add_subkey(KeyFlags::default().set_authentication(true), None, None)
+        self.add_subkey(KeyFlags::empty().set_authentication(), None, None)
     }
 
     /// Adds a custom subkey.
@@ -713,11 +751,11 @@ impl CertBuilder {
     /// // expire in a year.
     /// let (cert,_) = CertBuilder::new()
     ///     .set_creation_time(now)
-    ///     .set_expiration_time(now + 2 * y)
+    ///     .set_validity_period(2 * y)
     ///     .add_subkey(KeyFlags::empty()
-    ///                     .set_storage_encryption(true)
-    ///                     .set_transport_encryption(true),
-    ///                 now + y,
+    ///                     .set_storage_encryption()
+    ///                     .set_transport_encryption(),
+    ///                 y,
     ///                 None)
     ///     .generate()?;
     ///
@@ -728,18 +766,18 @@ impl CertBuilder {
     /// let ka = cert.with_policy(p, None)?.keys().nth(1).unwrap();
     /// assert_eq!(ka.key_flags(),
     ///            Some(KeyFlags::empty()
-    ///                     .set_storage_encryption(true)
-    ///                     .set_transport_encryption(true)));
+    ///                     .set_storage_encryption()
+    ///                     .set_transport_encryption()));
     /// # Ok(()) }
     /// ```
-    pub fn add_subkey<T, C>(mut self, flags: KeyFlags, expiration: T, cs: C)
+    pub fn add_subkey<T, C>(mut self, flags: KeyFlags, validity: T, cs: C)
         -> Self
-        where T: Into<Option<time::SystemTime>>,
+        where T: Into<Option<time::Duration>>,
               C: Into<Option<CipherSuite>>,
     {
         self.subkeys.push(KeyBlueprint {
             flags,
-            expiration: expiration.into(),
+            validity: validity.into(),
             ciphersuite: cs.into(),
         });
         self
@@ -767,13 +805,13 @@ impl CertBuilder {
     /// let (cert, rev) =
     ///     CertBuilder::general_purpose(None,
     ///                                  Some("Alice Lovelace <alice@example.org>"))
-    ///         .set_primary_key_flags(KeyFlags::empty().set_signing(true))
+    ///         .set_primary_key_flags(KeyFlags::empty().set_signing())
     ///         .generate()?;
     ///
     /// // Observe that the primary key's certification capability is
     /// // set implicitly.
     /// assert_eq!(cert.with_policy(p, None)?.primary_key().key_flags(),
-    ///            Some(KeyFlags::empty().set_signing(true).set_certification(true)));
+    ///            Some(KeyFlags::empty().set_signing().set_certification()));
     /// # Ok(()) }
     /// ```
     pub fn set_primary_key_flags(mut self, flags: KeyFlags) -> Self {
@@ -810,9 +848,13 @@ impl CertBuilder {
         self
     }
 
-    /// Sets the certificate's expiration time.
+    /// Sets the certificate's validity period.
     ///
-    /// A value of None means never.
+    /// The determines how long the certificate is valid.  That is,
+    /// after the validity period, the certificate is considered to be
+    /// expired.
+    ///
+    /// A value of None means that the certificate never expires.
     //
     /// # Examples
     ///
@@ -832,7 +874,7 @@ impl CertBuilder {
     /// // Make the certificate expire in 10 minutes.
     /// let (cert,_) = CertBuilder::new()
     ///     .set_creation_time(now)
-    ///     .set_expiration_time(now + 600 * s)
+    ///     .set_validity_period(600 * s)
     ///     .generate()?;
     ///
     /// assert!(cert.with_policy(p, now)?.primary_key().alive().is_ok());
@@ -840,10 +882,10 @@ impl CertBuilder {
     /// assert!(cert.with_policy(p, now + 600 * s)?.primary_key().alive().is_err());
     /// # Ok(()) }
     /// ```
-    pub fn set_expiration_time<T>(mut self, expiration: T) -> Self
-        where T: Into<Option<time::SystemTime>>
+    pub fn set_validity_period<T>(mut self, validity: T) -> Self
+        where T: Into<Option<time::Duration>>
     {
-        self.primary.expiration = expiration.into();
+        self.primary.validity = validity.into();
         self
     }
 
@@ -872,12 +914,12 @@ impl CertBuilder {
     ///         .generate()?;
     /// let (bob, _) =
     ///     CertBuilder::general_purpose(None, Some("bob@example.org"))
-    ///         .set_revocation_keys(vec![ (&alice).into() ])
+    ///         .set_revocation_keys(vec![(&alice).into()])
     ///         .generate()?;
     ///
     /// // Make sure Alice is listed as a designated revoker for Bob.
     /// assert_eq!(bob.revocation_keys(p).collect::<Vec<&RevocationKey>>(),
-    ///            vec![ &(&alice).into() ]);
+    ///            vec![&(&alice).into()]);
     /// # Ok(()) }
     /// ```
     pub fn set_revocation_keys(mut self, revocation_keys: Vec<RevocationKey>)
@@ -912,7 +954,11 @@ impl CertBuilder {
         use std::convert::TryFrom;
 
         let creation_time =
-            self.creation_time.unwrap_or_else(std::time::SystemTime::now);
+            self.creation_time.unwrap_or_else(|| {
+                use crate::packet::signature::SIG_BACKDATE_BY;
+                time::SystemTime::now() -
+                    time::Duration::new(SIG_BACKDATE_BY, 0)
+            });
 
         let mut packets = Vec::<Packet>::with_capacity(
             1 + 1 + self.subkeys.len() + self.userids.len()
@@ -920,7 +966,7 @@ impl CertBuilder {
 
         // make sure the primary key can sign subkeys
         if !self.subkeys.is_empty() {
-            self.primary.flags = self.primary.flags.set_certification(true);
+            self.primary.flags = self.primary.flags.set_certification();
         }
 
         // Generate & self-sign primary key.
@@ -957,7 +1003,7 @@ impl CertBuilder {
                 builder = builder.set_primary_userid(true)?;
             }
             let signature = uid.bind(&mut signer, &cert, builder)?;
-            cert = cert.merge_packets(
+            cert = cert.insert_packets(
                 vec![Packet::from(uid), signature.into()])?;
         }
 
@@ -971,7 +1017,7 @@ impl CertBuilder {
                 builder = builder.set_primary_userid(true)?;
             }
             let signature = ua.bind(&mut signer, &cert, builder)?;
-            cert = cert.merge_packets(
+            cert = cert.insert_packets(
                 vec![Packet::from(ua), signature.into()])?;
         }
 
@@ -990,9 +1036,7 @@ impl CertBuilder {
                 .set_hash_algo(HashAlgorithm::SHA512)
                 .set_features(&Features::sequoia())?
                 .set_key_flags(flags)?
-                .set_key_expiration_time(
-                    &subkey,
-                    blueprint.expiration.or(self.primary.expiration))?;
+                .set_key_validity_period(blueprint.validity.or(self.primary.validity))?;
 
             if flags.for_certification() || flags.for_signing() {
                 // We need to create a primary key binding signature.
@@ -1012,7 +1056,7 @@ impl CertBuilder {
             if let Some(ref password) = self.password {
                 subkey.secret_mut().encrypt_in_place(password)?;
             }
-            cert = cert.merge_packets(vec![Packet::SecretSubkey(subkey),
+            cert = cert.insert_packets(vec![Packet::SecretSubkey(subkey),
                                            signature.into()])?;
         }
 
@@ -1034,7 +1078,7 @@ impl CertBuilder {
     {
         let mut key = self.primary.ciphersuite
             .unwrap_or(self.ciphersuite)
-            .generate_key(&KeyFlags::default().set_certification(true))?;
+            .generate_key(&KeyFlags::empty().set_certification())?;
         key.set_creation_time(creation_time)?;
         let mut sig = signature::SignatureBuilder::new(SignatureType::DirectKey)
             // GnuPG wants at least a 512-bit hash for P521 keys.
@@ -1042,12 +1086,14 @@ impl CertBuilder {
             .set_features(&Features::sequoia())?
             .set_key_flags(&self.primary.flags)?
             .set_signature_creation_time(creation_time)?
-            .set_key_expiration_time(&key, self.primary.expiration)?
+            .set_key_validity_period(self.primary.validity)?
             .set_preferred_hash_algorithms(vec![
-                HashAlgorithm::SHA512
+                HashAlgorithm::SHA512,
+                HashAlgorithm::SHA256,
             ])?
             .set_preferred_symmetric_algorithms(vec![
                 SymmetricAlgorithm::AES256,
+                SymmetricAlgorithm::AES128,
             ])?;
 
         if let Some(ref revocation_keys) = self.revocation_keys {
@@ -1154,7 +1200,7 @@ mod tests {
         let p = &P::new();
         let (cert1, _) = CertBuilder::new()
             .set_cipher_suite(CipherSuite::Cv25519)
-            .set_primary_key_flags(KeyFlags::default())
+            .set_primary_key_flags(KeyFlags::empty())
             .add_transport_encryption_subkey()
             .generate().unwrap();
         assert!(cert1.primary_key().with_policy(p, None).unwrap().for_certification());
@@ -1165,12 +1211,12 @@ mod tests {
     fn gen_wired_subkeys() {
         let (cert1, _) = CertBuilder::new()
             .set_cipher_suite(CipherSuite::Cv25519)
-            .set_primary_key_flags(KeyFlags::default())
-            .add_subkey(KeyFlags::default().set_certification(true), None, None)
+            .set_primary_key_flags(KeyFlags::empty())
+            .add_subkey(KeyFlags::empty().set_certification(), None, None)
             .generate().unwrap();
         let sig_pkts = cert1.subkeys().next().unwrap().bundle().self_signatures[0].hashed_area();
 
-        match sig_pkts.lookup(SubpacketTag::KeyFlags).unwrap().value() {
+        match sig_pkts.subpacket(SubpacketTag::KeyFlags).unwrap().value() {
             SubpacketValue::KeyFlags(ref ks) => assert!(ks.for_certification()),
             v => panic!("Unexpected subpacket: {:?}", v),
         }
@@ -1188,7 +1234,7 @@ mod tests {
         assert_eq!(cert.revocation_status(p, None),
                    RevocationStatus::NotAsFarAsWeKnow);
 
-        let cert = cert.merge_packets(revocation.clone()).unwrap();
+        let cert = cert.insert_packets(revocation.clone()).unwrap();
         assert_eq!(cert.revocation_status(p, None),
                    RevocationStatus::Revoked(vec![ &revocation ]));
     }
@@ -1236,10 +1282,10 @@ mod tests {
 
         let (cert,_) = CertBuilder::new()
             .set_creation_time(now)
-            .set_expiration_time(now + 600 * s)
-            .add_subkey(KeyFlags::default().set_signing(true),
-                        now + 300 * s, None)
-            .add_subkey(KeyFlags::default().set_authentication(true),
+            .set_validity_period(600 * s)
+            .add_subkey(KeyFlags::empty().set_signing(),
+                        300 * s, None)
+            .add_subkey(KeyFlags::empty().set_authentication(),
                         None, None)
             .generate().unwrap();
 
@@ -1374,7 +1420,7 @@ mod tests {
         let sig = signature::SignatureBuilder::new(SignatureType::DirectKey)
             .set_signature_creation_time(then)?
             .sign_hash(&mut primary_signer, hash)?;
-        let cert = cert.merge_packets(sig)?;
+        let cert = cert.insert_packets(sig)?;
 
         assert!(cert.with_policy(p, then)?.primary_userid().is_err());
         assert_eq!(cert.revocation_keys(p).collect::<HashSet<_>>(),

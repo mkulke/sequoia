@@ -1,13 +1,13 @@
 [package]
 name = "sequoia-ipc"
 description = "Interprocess communication infrastructure for Sequoia"
-version = "0.17.0"
+version = "0.19.0"
 authors = [
     "Justus Winter <justus@sequoia-pgp.org>",
     "Kai Michaelis <kai@sequoia-pgp.org>",
     "Neal H. Walfield <neal@sequoia-pgp.org>",
 ]
-documentation = "https://docs.sequoia-pgp.org/0.17.0/sequoia_ipc"
+documentation = "https://docs.sequoia-pgp.org/0.19.0/sequoia_ipc"
 build = "build.rs"
 homepage = "https://sequoia-pgp.org/"
 repository = "https://gitlab.com/sequoia-pgp/sequoia"
@@ -20,16 +20,18 @@ gitlab = { repository = "sequoia-pgp/sequoia" }
 maintenance = { status = "actively-developed" }
 
 [dependencies]
-sequoia-openpgp = { path = "../openpgp", version = "0.17" }
-sequoia-core = { path = "../core", version = "0.17" }
+sequoia-openpgp = { path = "../openpgp", version = "0.19" }
+sequoia-core = { path = "../core", version = "0.19" }
 
 anyhow = "1"
+buffered-reader = { path = "../buffered-reader", version = "0.18", default-features = false }
 capnp-rpc = "0.10"
 fs2 = "0.4.2"
 futures = "0.1"
-lalrpop-util = "0.17"
+lalrpop-util = "0.19"
+lazy_static = "1.3"
 libc = "0.2.33"
-memsec = "0.5.6"
+memsec = { version = "0.6", default-features = false }
 rand = { version = "0.7", default-features = false }
 tempfile = "3.0"
 thiserror = "1"
@@ -37,18 +39,15 @@ tokio = "0.1"
 tokio-core = "0.1"
 tokio-io = "0.1.4"
 parity-tokio-ipc = "0.4"
-
-# XXX: We need to pin some dependencies to keep our MSRV at 1.34.  If
-# you are packaging Sequoia, feel free to drop these pins if your
-# compiler is newer.
-socket2 = "= 0.3.11"
+socket2 = "0.3.11"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", default-features = false, features = ["winsock2"] }
 ctor = "0.1"
 
 [build-dependencies]
-lalrpop = "0.17"
+lalrpop = "0.19"
 
 [dev-dependencies]
 clap = "2.32.0"
+quickcheck = { version = "0.9", default-features = false }

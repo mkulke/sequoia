@@ -9,7 +9,11 @@
 
 use std::env;
 use std::collections::HashMap;
-extern crate sequoia_openpgp as openpgp;
+
+use anyhow::Context;
+
+use sequoia_openpgp as openpgp;
+
 use crate::openpgp::{Packet, Fingerprint, KeyID, KeyHandle};
 use crate::openpgp::types::*;
 use crate::openpgp::packet::{user_attribute, header::BodyLength, Tag};
@@ -17,11 +21,11 @@ use crate::openpgp::packet::signature::subpacket::SubpacketTag;
 use crate::openpgp::parse::{Parse, PacketParserResult, PacketParser};
 use crate::openpgp::serialize::MarshalInto;
 
-fn main() {
+fn main() -> openpgp::Result<()> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        panic!("Collects statistics about OpenPGP packet dumps.\n\n\
-                Usage: {} <packet-dump> [<packet-dump>...]\n", args[0]);
+        return Err(anyhow::anyhow!("Collects statistics about OpenPGP packet dumps.\n\n\
+                Usage: {} <packet-dump> [<packet-dump>...]\n", args[0]));
     }
 
     // Global stats.
@@ -78,6 +82,10 @@ fn main() {
     let mut ua_unknown_count = vec![0; 256];
     let mut ua_invalid_count = 0;
 
+    // Key statistics.
+    let mut pk_algo_size: HashMap<PublicKeyAlgorithm, HashMap<usize, usize>> =
+        Default::default();
+
     // Current certificate.
     let mut current_fingerprint =
         KeyHandle::Fingerprint(Fingerprint::from_bytes(&vec![0; 20]));
@@ -87,7 +95,7 @@ fn main() {
     for input in &args[1..] {
         eprintln!("Parsing {}...", input);
         let mut ppr = PacketParser::from_file(input)
-            .expect("Failed to create reader");
+            .context("Failed to create reader")?;
 
         // Iterate over all packets.
         while let PacketParserResult::Some(pp) = ppr {
@@ -98,7 +106,7 @@ fn main() {
             };
 
             // Get the packet and advance the parser.
-            let (packet, tmp) = pp.next().expect("Failed to get next packet");
+            let (packet, tmp) = pp.next().context("Failed to get next packet")?;
             ppr = tmp;
 
             packet_count += 1;
@@ -242,6 +250,35 @@ fn main() {
                     }
                 },
 
+                _ => (),
+            }
+
+            // Public key algorithm and size statistics.
+            let mut handle_key = |k: &openpgp::packet::Key<_, _>| {
+                let pk = k.pk_algo();
+                let bits = k.mpis().bits().unwrap_or(0);
+                if let Some(size_hash) = pk_algo_size.get_mut(&pk) {
+                    if let Some(count) = size_hash.get_mut(&bits) {
+                        *count = *count + 1;
+                    } else {
+                        size_hash.insert(bits, 1);
+                    }
+                } else {
+                    let mut size_hash: HashMap<usize, usize>
+                        = Default::default();
+                    size_hash.insert(bits, 1);
+                    pk_algo_size.insert(pk, size_hash);
+                }
+            };
+            match packet {
+                Packet::PublicKey(ref k) =>
+                    handle_key(k.parts_as_public().role_as_unspecified()),
+                Packet::SecretKey(ref k) =>
+                    handle_key(k.parts_as_public().role_as_unspecified()),
+                Packet::PublicSubkey(ref k) =>
+                    handle_key(k.parts_as_public().role_as_unspecified()),
+                Packet::SecretSubkey(ref k) =>
+                    handle_key(k.parts_as_public().role_as_unspecified()),
                 _ => (),
             }
 
@@ -512,7 +549,23 @@ fn main() {
     }
 
     if cert_count == 0 {
-        return;
+        return Ok(());
+    }
+
+    println!();
+    println!("# Key statistics\n\n\
+              {:>50} {:>9} {:>9}",
+             "Algorithm", "Key Size", "count");
+    println!("----------------------------------------------------------------------");
+    for t in 0..255u8 {
+        let pk = PublicKeyAlgorithm::from(t);
+        if let Some(size_hash) = pk_algo_size.get(&pk) {
+            let mut sizes: Vec<_> = size_hash.iter().collect();
+            sizes.sort_by_key(|(size, _count)| *size);
+            for (size, count) in sizes {
+                println!("{:>50} {:>9} {:>9}", pk.to_string(), size, count);
+            }
+        }
     }
 
     println!();
@@ -563,6 +616,8 @@ fn main() {
                      max);
         }
     }
+
+    Ok(())
 }
 
 fn subpacket_short_name(t: usize) -> String {

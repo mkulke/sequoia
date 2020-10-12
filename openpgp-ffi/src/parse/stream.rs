@@ -359,22 +359,22 @@ fn $fn_name<'a>(
     }
 }
 
-/// Decomposes a
-/// `VerificationResult::Err(VerificationError::BadKey { .. })`.
-///
-/// Returns `true` iff the given value is a
-/// `VerificationResult::Err(VerificationError::BadKey { .. })`,
-/// and returns the variants members in `sig_r` and the like iff
-/// `sig_r != NULL`.
+// Decomposes a
+// `VerificationResult::Err(VerificationError::BadKey { .. })`.
+//
+// Returns `true` iff the given value is a
+// `VerificationResult::Err(VerificationError::BadKey { .. })`,
+// and returns the variants members in `sig_r` and the like iff
+// `sig_r != NULL`.
 make_decomposition_fn!(pgp_verification_result_bad_key, BadKey);
 
-/// Decomposes a
-/// `VerificationResult::Err(VerificationError::BadSignature { .. })`.
-///
-/// Returns `true` iff the given value is a
-/// `VerificationResult::Err(VerificationError::BadSignature { .. })`,
-/// and returns the variants members in `sig_r` and the like iff
-/// `sig_r != NULL`.
+// Decomposes a
+// `VerificationResult::Err(VerificationError::BadSignature { .. })`.
+//
+// Returns `true` iff the given value is a
+// `VerificationResult::Err(VerificationError::BadSignature { .. })`,
+// and returns the variants members in `sig_r` and the like iff
+// `sig_r != NULL`.
 make_decomposition_fn!(pgp_verification_result_bad_signature, BadSignature);
 
 /// Passed as the first argument to the callbacks used by pgp_verify
@@ -389,7 +389,7 @@ type FreeCallback = fn(*mut c_void);
 ///
 /// If the free callback is not NULL, then it is called to free the
 /// returned array of Certs.
-type GetPublicKeysCallback = fn(*mut HelperCookie,
+type GetPublicKeysCallback = extern fn(*mut HelperCookie,
                                 *const *mut keyid::KeyID, usize,
                                 &mut *mut *mut Cert, *mut usize,
                                 *mut FreeCallback) -> Status;
@@ -398,7 +398,7 @@ type GetPublicKeysCallback = fn(*mut HelperCookie,
 ///
 /// This function is called on every packet that the decryptor
 /// observes.
-type InspectCallback = fn(*mut HelperCookie, *const PacketParser) -> Status;
+type InspectCallback = extern fn(*mut HelperCookie, *const PacketParser) -> Status;
 
 /// Decrypts the message.
 ///
@@ -410,7 +410,7 @@ type InspectCallback = fn(*mut HelperCookie, *const PacketParser) -> Status;
 ///
 /// XXX: This needlessly flattens the complex errors returned by the
 /// `decrypt` function into a status.
-type DecryptCallback = fn(*mut HelperCookie,
+type DecryptCallback = extern fn(*mut HelperCookie,
                           *const *const PKESK, usize,
                           *const *const SKESK, usize,
                           u8, // XXX SymmetricAlgorithm
@@ -425,7 +425,7 @@ type DecryptCallback = fn(*mut HelperCookie,
 ///
 /// If the result is not Status::Success, then this aborts the
 /// Verification.
-type CheckCallback = fn(*mut HelperCookie,
+type CheckCallback = extern fn(*mut HelperCookie,
                                   *const MessageStructure)
                                   -> Status;
 

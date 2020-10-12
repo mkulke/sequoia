@@ -22,15 +22,10 @@ impl mpi::PublicKey {
     /// See [Section 3.2 of RFC 4880] for details.
     ///
     ///   [Section 3.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-3.2
-    pub fn parse<T: AsRef<[u8]>>(
-        algo: PublicKeyAlgorithm, buf: T)
-        -> Result<Self>
+    pub fn parse<R: Read>(algo: PublicKeyAlgorithm, reader: R) -> Result<Self>
     {
-        use std::io::Cursor;
-
-        let cur = Cursor::new(buf);
         let bio = buffered_reader::Generic::with_cookie(
-            cur, None, Cookie::default());
+            reader, None, Cookie::default());
         let mut php = PacketHeaderParser::new_naked(bio);
         Self::_parse(algo, &mut php)
     }
@@ -118,7 +113,12 @@ impl mpi::PublicKey {
                             "wrong kdf length".into()).into());
                 }
 
-                let _reserved = php.parse_u8("kdf_reserved")?;
+                let reserved = php.parse_u8("kdf_reserved")?;
+                if reserved != 1 {
+                    return Err(Error::MalformedPacket(
+                            format!("Reserved kdf field must be 0x01, \
+                                     got 0x{:x}", reserved)).into());
+                }
                 let hash: HashAlgorithm = php.parse_u8("kdf_hash")?.into();
                 let sym: SymmetricAlgorithm = php.parse_u8("kek_symm")?.into();
 
@@ -150,37 +150,17 @@ impl mpi::PublicKey {
 }
 
 impl mpi::SecretKeyMaterial {
-    /// Parses secret key MPIs for `algo` plus their SHA1 checksum. Fails if the
-    /// checksum is wrong.
-    pub fn parse_chksumd<T: Read>(algo: PublicKeyAlgorithm, cur: T)
-                                  -> Result<Self> {
-        use std::io::Cursor;
-        use crate::serialize::Marshal;
-
-        // read mpis
+    /// Parses secret key MPIs for `algo` plus their SHA1 checksum.
+    ///
+    /// Fails if the checksum is wrong.
+    pub fn parse_with_checksum<R: Read>(algo: PublicKeyAlgorithm,
+                                        reader: R,
+                                        checksum: mpi::SecretKeyChecksum)
+                                        -> Result<Self> {
         let bio = buffered_reader::Generic::with_cookie(
-            cur, None, Cookie::default());
+            reader, None, Cookie::default());
         let mut php = PacketHeaderParser::new_naked(bio);
-        let mpis = Self::_parse(algo, &mut php)?;
-
-        // read expected sha1 hash of the mpis
-        let their_chksum = php.parse_bytes("checksum", 20)?;
-        let mut cur = Cursor::new(vec![]);
-
-        // compute sha1 hash
-        mpis.serialize(&mut cur)?;
-        let buf = cur.into_inner();
-        let mut hsh = HashAlgorithm::SHA1.context().unwrap();
-
-        hsh.update(&buf);
-        let mut our_chksum = [0u8; 20];
-        hsh.digest(&mut our_chksum);
-
-        if our_chksum != their_chksum[..] {
-            Err(Error::MalformedMPI("checksum wrong".to_string()).into())
-        } else {
-            Ok(mpis)
-        }
+        Self::_parse(algo, &mut php, Some(checksum))
     }
 
     /// Parses a set of OpenPGP MPIs representing a secret key.
@@ -188,16 +168,12 @@ impl mpi::SecretKeyMaterial {
     /// See [Section 3.2 of RFC 4880] for details.
     ///
     ///   [Section 3.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-3.2
-    pub fn parse<T: AsRef<[u8]>>(algo: PublicKeyAlgorithm, buf: T)
-                                 -> Result<Self>
+    pub fn parse<R: Read>(algo: PublicKeyAlgorithm, reader: R) -> Result<Self>
     {
-        use std::io::Cursor;
-
-        let cur = Cursor::new(buf);
         let bio = buffered_reader::Generic::with_cookie(
-            cur, None, Cookie::default());
+            reader, None, Cookie::default());
         let mut php = PacketHeaderParser::new_naked(bio);
-        Self::_parse(algo, &mut php)
+        Self::_parse(algo, &mut php, None)
     }
 
     /// Parses a set of OpenPGP MPIs representing a secret key.
@@ -207,13 +183,15 @@ impl mpi::SecretKeyMaterial {
     ///   [Section 3.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-3.2
     pub(crate) fn _parse<'a, T: 'a + BufferedReader<Cookie>>(
         algo: PublicKeyAlgorithm,
-        php: &mut PacketHeaderParser<T>)
+        php: &mut PacketHeaderParser<T>,
+        checksum: Option<mpi::SecretKeyChecksum>,
+    )
         -> Result<Self>
     {
         use crate::PublicKeyAlgorithm::*;
 
         #[allow(deprecated)]
-        match algo {
+        let mpis: Result<Self> = match algo {
             RSAEncryptSign | RSAEncrypt | RSASign => {
                 let d = MPI::parse("rsa_secret_d_len", "rsa_secret_d", php)?;
                 let p = MPI::parse("rsa_secret_p_len", "rsa_secret_p", php)?;
@@ -281,6 +259,45 @@ impl mpi::SecretKeyMaterial {
             }
 
             __Nonexhaustive => unreachable!(),
+        };
+        let mpis = mpis?;
+
+        if let Some(checksum) = checksum {
+            use crate::serialize::{Marshal, MarshalInto};
+            let good = match checksum {
+                mpi::SecretKeyChecksum::SHA1 => {
+                    // Read expected SHA1 hash of the MPIs.
+                    let their_chksum = php.parse_bytes("checksum", 20)?;
+
+                    // Compute SHA1 hash.
+                    let mut hsh = HashAlgorithm::SHA1.context().unwrap();
+                    mpis.serialize(&mut hsh)?;
+                    let mut our_chksum = [0u8; 20];
+                    hsh.digest(&mut our_chksum);
+
+                    our_chksum == their_chksum[..]
+                },
+
+                mpi::SecretKeyChecksum::Sum16 => {
+                    // Read expected sum of the MPIs.
+                    let their_chksum = php.parse_bytes("checksum", 2)?;
+
+                    // Compute sum.
+                    let our_chksum = mpis.to_vec()?.iter()
+                        .fold(0u16, |acc, v| acc.wrapping_add(*v as u16))
+                        .to_be_bytes();
+
+                    our_chksum == their_chksum[..]
+                },
+            };
+
+            if good {
+                Ok(mpis)
+            } else {
+                Err(Error::MalformedMPI("checksum wrong".to_string()).into())
+            }
+        } else {
+            Ok(mpis)
         }
     }
 }
@@ -292,13 +309,10 @@ impl mpi::Ciphertext {
     /// See [Section 3.2 of RFC 4880] for details.
     ///
     ///   [Section 3.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-3.2
-    pub fn parse<T: AsRef<[u8]>>(algo: PublicKeyAlgorithm, buf: T)
-                                 -> Result<Self> {
-        use std::io::Cursor;
-
-        let cur = Cursor::new(buf);
+    pub fn parse<R: Read>(algo: PublicKeyAlgorithm, reader: R) -> Result<Self>
+    {
         let bio = buffered_reader::Generic::with_cookie(
-            cur, None, Cookie::default());
+            reader, None, Cookie::default());
         let mut php = PacketHeaderParser::new_naked(bio);
         Self::_parse(algo, &mut php)
     }
@@ -376,13 +390,10 @@ impl mpi::Signature {
     /// See [Section 3.2 of RFC 4880] for details.
     ///
     ///   [Section 3.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-3.2
-    pub fn parse<T: AsRef<[u8]>>(algo: PublicKeyAlgorithm, buf: T)
-                                 -> Result<Self> {
-        use std::io::Cursor;
-
-        let cur = Cursor::new(buf);
+    pub fn parse<R: Read>(algo: PublicKeyAlgorithm, reader: R) -> Result<Self>
+    {
         let bio = buffered_reader::Generic::with_cookie(
-            cur, None, Cookie::default());
+            reader, None, Cookie::default());
         let mut php = PacketHeaderParser::new_naked(bio);
         Self::_parse(algo, &mut php)
     }
@@ -481,13 +492,14 @@ impl mpi::Signature {
 
 #[test]
 fn mpis_parse_test() {
+    use std::io::Cursor;
     use super::Parse;
     use crate::PublicKeyAlgorithm::*;
     use crate::serialize::MarshalInto;
 
     // Dummy RSA public key.
     {
-        let buf = b"\x00\x01\x01\x00\x02\x02".to_vec();
+        let buf = Cursor::new("\x00\x01\x01\x00\x02\x02");
         let mpis = mpi::PublicKey::parse(RSAEncryptSign, buf).unwrap();
 
         //assert_eq!(mpis.serialized_len(), 6);
@@ -507,7 +519,7 @@ fn mpis_parse_test() {
 
     // The number 2.
     {
-        let buf = b"\x00\x02\x02".to_vec();
+        let buf = Cursor::new("\x00\x02\x02");
         let mpis = mpi::Ciphertext::parse(RSAEncryptSign, buf).unwrap();
 
         assert_eq!(mpis.serialized_len(), 3);

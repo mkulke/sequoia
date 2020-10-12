@@ -12,12 +12,13 @@ extern crate tokio_core;
 use crossterm::terminal;
 use anyhow::Context as _;
 use prettytable::{Table, Cell, Row};
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::exit;
 use chrono::{DateTime, offset::Utc};
 
+use buffered_reader::File;
 extern crate sequoia_openpgp as openpgp;
 extern crate sequoia_core;
 extern crate sequoia_net;
@@ -231,13 +232,13 @@ fn main() -> Result<()> {
                 .map(load_certs)
                 .unwrap_or(Ok(vec![]))?;
             let mode = match m.value_of("mode").expect("has default") {
-                "rest" => KeyFlags::default()
-                    .set_storage_encryption(true),
-                "transport" => KeyFlags::default()
-                    .set_transport_encryption(true),
-                "all" => KeyFlags::default()
-                    .set_storage_encryption(true)
-                    .set_transport_encryption(true),
+                "rest" => KeyFlags::empty()
+                    .set_storage_encryption(),
+                "transport" => KeyFlags::empty()
+                    .set_transport_encryption(),
+                "all" => KeyFlags::empty()
+                    .set_storage_encryption()
+                    .set_transport_encryption(),
                 _ => unreachable!("uses possible_values"),
             };
             let time = if let Some(time) = m.value_of("time") {

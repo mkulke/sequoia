@@ -61,8 +61,18 @@ explicitly enable a crypto backend.
 
 ## Crypto backends
 
-Currently, Sequoia only supports the Nettle cryptographic library as
-crypto backend.  To enable it, use the `crypto-nettle` flag.
+Sequoia supports multiple cryptographic libraries that can be selected
+at compile time.  Currently, these libraries are available:
+
+  - The Nettle cryptographic library.  This is the default backend,
+    and is selected by the default feature set.  If you use
+    `default-features = false`, you need to explicitly include
+    the `crypto-nettle` feature to enable it.
+
+  - The Windows Cryptography API: Next Generation (CNG).  To select
+    this backend, use `default-features = false`, and explicitly
+    include the `crypto-cng` feature to enable it.  Currently, the CNG
+    backend requires at least Windows 10.
 
 ## Compression algorithms
 
@@ -71,15 +81,6 @@ algorithms, `compression-deflate` to enable *DEFLATE* and *zlib*
 compression support, and `compression-bzip2` to enable *bzip2*
 support.
 
-## Testing, debugging, and fuzzing
-
-Sequoia uses [`quickcheck`] in tests.  To use it as a downstream user,
-enable the `x-quickcheck` feature (this feature will be called just
-`quickcheck` once [this feature] is implemented).
-
-[`quickcheck`]: https://docs.rs/quickcheck
-[this feature]: https://github.com/rust-lang/cargo/issues/5565
-
 # Minimum Supported Rust Version (MSRV)
 
-`sequoia-openpgp` requires Rust 1.34.
+`sequoia-openpgp` requires Rust 1.46.

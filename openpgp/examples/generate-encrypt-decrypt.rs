@@ -2,7 +2,8 @@
 
 use std::io::{self, Write};
 
-extern crate sequoia_openpgp as openpgp;
+use sequoia_openpgp as openpgp;
+
 use crate::openpgp::cert::prelude::*;
 use crate::openpgp::crypto::SessionKey;
 use crate::openpgp::types::SymmetricAlgorithm;
@@ -13,21 +14,23 @@ use crate::openpgp::policy::StandardPolicy as P;
 
 const MESSAGE: &'static str = "дружба";
 
-fn main() {
+fn main() -> openpgp::Result<()> {
     let p = &P::new();
 
     // Generate a key.
-    let key = generate().unwrap();
+    let key = generate()?;
 
     // Encrypt the message.
     let mut ciphertext = Vec::new();
-    encrypt(p, &mut ciphertext, MESSAGE, &key).unwrap();
+    encrypt(p, &mut ciphertext, MESSAGE, &key)?;
 
     // Decrypt the message.
     let mut plaintext = Vec::new();
-    decrypt(p, &mut plaintext, &ciphertext, &key).unwrap();
+    decrypt(p, &mut plaintext, &ciphertext, &key)?;
 
     assert_eq!(MESSAGE.as_bytes(), &plaintext[..]);
+
+    Ok(())
 }
 
 /// Generates an encryption-capable key.
@@ -55,18 +58,18 @@ fn encrypt(p: &dyn Policy, sink: &mut dyn Write, plaintext: &str,
     let message = Message::new(sink);
 
     // We want to encrypt a literal data packet.
-    let encryptor = Encryptor::for_recipients(message, recipients)
+    let message = Encryptor::for_recipients(message, recipients)
         .build()?;
 
     // Emit a literal data packet.
-    let mut literal_writer = LiteralWriter::new(encryptor).build()?;
+    let mut message = LiteralWriter::new(message).build()?;
 
     // Encrypt the data.
-    literal_writer.write_all(plaintext.as_bytes())?;
+    message.write_all(plaintext.as_bytes())?;
 
     // Finalize the OpenPGP message to make sure that all data is
     // written.
-    literal_writer.finalize()?;
+    message.finalize()?;
 
     Ok(())
 }
@@ -125,7 +128,7 @@ impl<'a> DecryptionHelper for Helper<'a> {
             .for_transport_encryption().nth(0).unwrap().key().clone();
 
         // The secret key is not encrypted.
-        let mut pair = key.into_keypair().unwrap();
+        let mut pair = key.into_keypair()?;
 
         pkesks[0].decrypt(&mut pair, sym_algo)
             .map(|(algo, session_key)| decrypt(algo, &session_key));

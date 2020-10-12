@@ -83,8 +83,9 @@ use crate::parse::Cookie;
 /// }
 ///
 /// let cert = Cert::try_from(pp)?;
-/// if let CouldBe(_) = cert.revocation_status(policy, None) {
+/// if let NotAsFarAsWeKnow = cert.revocation_status(policy, None) {
 ///     // revocation signature is broken and the key is not definitely revoked
+///     assert_eq!(cert.bad_signatures().len(), 1);
 /// }
 /// # else {
 /// #   unreachable!();
@@ -205,7 +206,7 @@ impl PacketPile {
     /// Returns a reference to the packet at the location described by
     /// `pathspec`.
     ///
-    /// `pathspec` is a slice of the form `[ 0, 1, 2 ]`.  Each element
+    /// `pathspec` is a slice of the form `[0, 1, 2]`.  Each element
     /// is the index of packet in a container.  Thus, the previous
     /// path specification means: return the third child of the second
     /// child of the first top-level packet.  In other words, the
@@ -223,7 +224,7 @@ impl PacketPile {
     ///                 *
     /// ```
     ///
-    /// And, `[ 10 ]` means return the 11th top-level packet.
+    /// And, `[10]` means return the 11th top-level packet.
     ///
     /// Note: there is no packet at the root.  Thus, the path `[]`
     /// returns None.
@@ -238,7 +239,7 @@ impl PacketPile {
     /// # fn f() -> Result<()> {
     /// # let mut lit = Literal::new(DataFormat::Text);
     /// # lit.set_body(b"test".to_vec());
-    /// # let packets = vec![ lit.into() ];
+    /// # let packets = vec![lit.into()];
     /// let pile = PacketPile::from(packets);
     ///
     /// if let Some(packet) = pile.path_ref(&[0]) {
@@ -293,7 +294,7 @@ impl PacketPile {
     /// # fn f() -> Result<()> {
     /// # let mut lit = Literal::new(DataFormat::Text);
     /// # lit.set_body(b"test".to_vec());
-    /// # let packets = vec![ lit.into() ];
+    /// # let packets = vec![lit.into()];
     /// let mut pile = PacketPile::from(packets);
     ///
     /// if let Some(ref packet) = pile.path_ref_mut(&[0]) {
@@ -364,8 +365,8 @@ impl PacketPile {
     /// let mut literal = Literal::new(DataFormat::Text);
     /// literal.set_body(b"new".to_vec());
     /// pile.replace(
-    ///     &[ 0, 0 ], 1,
-    ///     [ literal.into() ].to_vec())
+    ///     &[0, 0], 1,
+    ///     [literal.into()].to_vec())
     ///     .unwrap();
     /// # if let Some(Packet::Literal(lit)) = pile.path_ref(&[0, 0]) {
     /// #     assert_eq!(lit.body(), &b"new"[..], "{:#?}", lit);
@@ -444,7 +445,7 @@ impl PacketPile {
     /// let mut lit = Literal::new(DataFormat::Text);
     /// lit.set_body(b"test".to_vec());
     ///
-    /// let pile = PacketPile::from(vec![ lit.into() ]);
+    /// let pile = PacketPile::from(vec![lit.into()]);
     ///
     /// for packet in pile.descendants() {
     ///     assert_eq!(packet.tag(), Tag::Literal);
@@ -467,7 +468,7 @@ impl PacketPile {
     /// let mut lit = Literal::new(DataFormat::Text);
     /// lit.set_body(b"test".to_vec());
     ///
-    /// let pile = PacketPile::from(vec![ lit.into() ]);
+    /// let pile = PacketPile::from(vec![lit.into()]);
     ///
     /// assert_eq!(pile.children().len(), 1);
     /// # Ok(())
@@ -490,7 +491,7 @@ impl PacketPile {
     /// let mut lit = Literal::new(DataFormat::Text);
     /// lit.set_body(b"test".to_vec());
     ///
-    /// let pile = PacketPile::from(vec![ lit.into() ]);
+    /// let pile = PacketPile::from(vec![lit.into()]);
     ///
     /// for packet in pile.into_children() {
     ///     assert_eq!(packet.tag(), Tag::Literal);
@@ -549,7 +550,7 @@ impl<'a> TryFrom<PacketParserResult<'a>> for PacketPile {
 
         let mut last_position = 0;
 
-        if ppr.is_none() {
+        if ppr.is_eof() {
             // Empty message.
             return Ok(PacketPile::from(Vec::new()));
         }
@@ -600,7 +601,7 @@ impl<'a> TryFrom<PacketParserResult<'a>> for PacketPile {
 
                 container.children_mut().unwrap().push(packet);
 
-                if ppr.is_none() {
+                if ppr.is_eof() {
                     break 'outer;
                 }
 
@@ -632,8 +633,8 @@ impl<'a> PacketParserBuilder<'a> {
     /// parsed message.
     ///
     /// Note: calling this function does not change the default
-    /// settings `PacketParserSettings`.  Thus, by default, the
-    /// content of packets will *not* be buffered.
+    /// settings.  Thus, by default, the content of packets will *not*
+    /// be buffered.
     ///
     /// Note: to avoid denial of service attacks, the `PacketParser`
     /// interface should be preferred unless the size of the message
@@ -760,7 +761,7 @@ mod test {
             .buffer_unread_content()
             .try_into().unwrap();
 
-        while let Some(pp) = ppp.as_ref() {
+        while let Ok(pp) = ppp.as_ref() {
             eprintln!("{:?}", pp);
             ppp.recurse().unwrap();
         }
@@ -848,7 +849,7 @@ mod test {
         // recurse should now not recurse.  Since there is nothing
         // following the compressed packet, ppr should be EOF.
         let (packet, ppr) = pp.next().unwrap();
-        assert!(ppr.is_none());
+        assert!(ppr.is_eof());
 
         // Get the rest of the content and put the initial byte that
         // we stole back.
@@ -864,7 +865,7 @@ mod test {
 
         // And we're done...
         let ppr = pp.next().unwrap().1;
-        assert!(ppr.is_none());
+        assert!(ppr.is_eof());
     }
 
     #[test]

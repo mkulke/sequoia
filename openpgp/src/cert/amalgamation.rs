@@ -80,7 +80,7 @@
 //! A consequence of this approach is that even if the self signature
 //! were considered expired at the time the signature was evaluated
 //! (e.g., "now"), this fact doesn't invalidate the signature.  That
-//! is, a self siganture's lifetime does not impact a signature's
+//! is, a self signature's lifetime does not impact a signature's
 //! lifetime; a signature's lifetime is defined by its own creation
 //! time and expiry.  Similarly, a key's lifetime is defined by its
 //! own creation time and expiry.
@@ -858,14 +858,14 @@ impl<'a, C> ComponentAmalgamation<'a, C> {
     /// // Make Alice a designated revoker for Bob.
     /// let (bob, _) =
     ///     CertBuilder::general_purpose(None, Some("bob@example.org"))
-    ///     .set_revocation_keys(vec![ (&alice).into() ])
+    ///     .set_revocation_keys(vec![(&alice).into()])
     ///     .generate()?;
     ///
     /// // Make sure Alice is listed as a designated revoker for Bob
     /// // on a component.
     /// assert_eq!(bob.with_policy(p, None)?.primary_userid()?.revocation_keys(p)
     ///                .collect::<Vec<&RevocationKey>>(),
-    ///            vec![ &(&alice).into() ]);
+    ///            vec![&(&alice).into()]);
     /// # Ok(()) }
     /// ```
     pub fn revocation_keys(&self, policy: &dyn Policy)

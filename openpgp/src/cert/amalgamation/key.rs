@@ -264,18 +264,20 @@ use crate::{
         ValidateAmalgamation,
     },
     cert::ValidCert,
-    crypto::{hash::Hash, Signer},
+    crypto::Signer,
     Error,
     packet::Key,
     packet::key,
-    packet::signature,
     packet::Signature,
+    packet::signature,
+    packet::signature::subpacket::SubpacketTag,
     policy::Policy,
     Result,
-    SignatureType,
-    types::HashAlgorithm,
-    types::KeyFlags,
-    types::RevocationStatus,
+    types::{
+        KeyFlags,
+        RevocationStatus,
+        SignatureType,
+    },
 };
 
 mod iter;
@@ -982,6 +984,19 @@ impl<'a, P: 'a + key::KeyParts> From<ValidPrimaryKeyAmalgamation<'a, P>>
     }
 }
 
+impl<'a, P: 'a + key::KeyParts> From<&ValidPrimaryKeyAmalgamation<'a, P>>
+    for ValidErasedKeyAmalgamation<'a, P>
+{
+    fn from(vka: &ValidPrimaryKeyAmalgamation<'a, P>) -> Self {
+        assert!(std::ptr::eq(vka.ka.cert(), vka.cert.cert()));
+        ValidErasedKeyAmalgamation {
+            ka: vka.ka.clone().into(),
+            cert: vka.cert.clone(),
+            binding_signature: vka.binding_signature,
+        }
+    }
+}
+
 impl<'a, P: 'a + key::KeyParts> From<ValidSubordinateKeyAmalgamation<'a, P>>
     for ValidErasedKeyAmalgamation<'a, P>
 {
@@ -990,6 +1005,19 @@ impl<'a, P: 'a + key::KeyParts> From<ValidSubordinateKeyAmalgamation<'a, P>>
         ValidErasedKeyAmalgamation {
             ka: vka.ka.into(),
             cert: vka.cert,
+            binding_signature: vka.binding_signature,
+        }
+    }
+}
+
+impl<'a, P: 'a + key::KeyParts> From<&ValidSubordinateKeyAmalgamation<'a, P>>
+    for ValidErasedKeyAmalgamation<'a, P>
+{
+    fn from(vka: &ValidSubordinateKeyAmalgamation<'a, P>) -> Self {
+        assert!(std::ptr::eq(vka.ka.cert(), vka.cert.cert()));
+        ValidErasedKeyAmalgamation {
+            ka: vka.ka.clone().into(),
+            cert: vka.cert.clone(),
             binding_signature: vka.binding_signature,
         }
     }
@@ -1007,6 +1035,19 @@ macro_rules! impl_conversion {
                 ValidErasedKeyAmalgamation {
                     ka: vka.ka.into(),
                     cert: vka.cert,
+                    binding_signature: vka.binding_signature,
+                }
+            }
+        }
+
+        impl<'a> From<&$s<'a, $p1>>
+            for ValidErasedKeyAmalgamation<'a, $p2>
+        {
+            fn from(vka: &$s<'a, $p1>) -> Self {
+                assert!(std::ptr::eq(vka.ka.cert(), vka.cert.cert()));
+                ValidErasedKeyAmalgamation {
+                    ka: vka.ka.clone().into(),
+                    cert: vka.cert.clone(),
                     binding_signature: vka.binding_signature,
                 }
             }
@@ -1194,7 +1235,8 @@ impl<'a, P, R, R2> ValidKeyAmalgamation<'a, P, R, R2>
     where P: 'a + key::KeyParts,
           R: 'a + key::KeyRole,
           R2: Copy,
-          Self: ValidAmalgamation<'a, Key<P, R>>
+          Self: ValidAmalgamation<'a, Key<P, R>>,
+          Self: PrimaryKey<'a, P, R>,
 {
     /// Returns whether the key is alive as of the amalgamation's
     /// reference time.
@@ -1202,6 +1244,9 @@ impl<'a, P, R, R2> ValidKeyAmalgamation<'a, P, R, R2>
     /// A `ValidKeyAmalgamation` is guaranteed to have a live binding
     /// signature.  This is independent of whether the component is
     /// live.
+    ///
+    /// If the certificate is not alive as of the reference time, no
+    /// subkey can be alive.
     ///
     /// This function considers both the binding signature and the
     /// direct key signature.  Information in the binding signature
@@ -1238,6 +1283,11 @@ impl<'a, P, R, R2> ValidKeyAmalgamation<'a, P, R, R2>
     /// ```
     pub fn alive(&self) -> Result<()>
     {
+        if ! self.primary() {
+            // First, check the certificate.
+            self.cert().alive()?;
+        }
+
         let sig = {
             let binding : &Signature = self.binding_signature();
             if binding.key_validity_period().is_some() {
@@ -1287,11 +1337,8 @@ impl<'a, P, R, R2> ValidKeyAmalgamation<'a, P, R, R2>
 
 }
 
-impl<'a, P, R, R2> ValidKeyAmalgamation<'a, P, R, R2>
-    where P: 'a + key::KeyParts,
-          R: 'a + key::KeyRole,
-          R2: Copy,
-          Self: PrimaryKey<'a, P, R>,
+impl<'a, P> ValidPrimaryKeyAmalgamation<'a, P>
+    where P: 'a + key::KeyParts
 {
     /// Sets the key to expire in delta seconds.
     ///
@@ -1300,78 +1347,22 @@ impl<'a, P, R, R2> ValidKeyAmalgamation<'a, P, R, R2>
     ///
     /// This function exists to facilitate testing, which is why it is
     /// not exported.
+    #[cfg(test)]
     pub(crate) fn set_validity_period_as_of(&self,
                                             primary_signer: &mut dyn Signer,
                                             expiration: Option<time::Duration>,
                                             now: time::SystemTime)
         -> Result<Vec<Signature>>
     {
-        let hash_algo = HashAlgorithm::SHA512;
-        let mut sigs = Vec::new();
-
-        // There are two cases to consider.  If we are extending the
-        // validity of the primary key, we also need to create new
-        // binding signatures for all userids.
-        if self.primary() {
-            // First, update or create a direct key signature.
-            let template = self.direct_key_signature()
-                .unwrap_or_else(|_| self.binding_signature())
-                .clone();
-
-            let mut builder = signature::SignatureBuilder::from(template)
-                .set_type(SignatureType::DirectKey);
-            builder.remove_all(
-                signature::subpacket::SubpacketTag::PrimaryUserID);
-
-            // Generate the signature.
-            let mut hash = hash_algo.context()?;
-            self.cert().primary_key().hash(&mut hash);
-            sigs.push(builder
-                      .set_key_validity_period(expiration)?
-                      .set_signature_creation_time(now)?
-                      .sign_hash(primary_signer, hash)?);
-
-            // Second, generate a new binding signature for every
-            // userid.  We need to be careful not to change the
-            // primary userid, so we make it explicit using the
-            // primary userid subpacket.
-            for userid in self.cert().userids().revoked(false) {
-                // To extend the validity of the subkey, create a new
-                // binding signature with updated key validity period.
-                let binding_signature = userid.binding_signature();
-                let mut hash = hash_algo.context()?;
-                self.cert().primary.key().hash(&mut hash);
-                userid.hash(&mut hash);
-                sigs.push(signature::SignatureBuilder::from(binding_signature.clone())
-                          .set_key_validity_period(expiration)?
-                          .set_signature_creation_time(now)?
-                          .set_primary_userid(
-                              self.cert().primary_userid().map(|primary| {
-                                  userid.userid() == primary.userid()
-                              }).unwrap_or(false))?
-                          .sign_hash(primary_signer, hash)?);
-            }
-        } else {
-            // To extend the validity of the subkey, create a new
-            // binding signature with updated key validity period.
-            let mut hash = hash_algo.context()?;
-            self.cert().primary.key().hash(&mut hash);
-            self.key().hash(&mut hash);
-            sigs.push(signature::SignatureBuilder::from(self.binding_signature().clone())
-                      .set_key_validity_period(expiration)?
-                      .set_signature_creation_time(now)?
-                      .sign_hash(primary_signer, hash)?);
-        }
-
-        Ok(sigs)
+        ValidErasedKeyAmalgamation::<P>::from(self)
+            .set_validity_period_as_of(primary_signer, None, expiration, now)
     }
 
     /// Creates signatures that cause the key to expire at the specified time.
     ///
     /// This function creates new binding signatures that cause the
     /// key to expire at the specified time when integrated into the
-    /// certificate.  For subkeys, only a single `Signature` is
-    /// returned.  For the primary key, however, it is necessary to
+    /// certificate.  For the primary key, it is necessary to
     /// create a new self-signature for each non-revoked User ID, and
     /// to create a direct key signature.  This is needed, because the
     /// primary User ID is first consulted when determining the
@@ -1405,6 +1396,88 @@ impl<'a, P, R, R2> ValidKeyAmalgamation<'a, P, R, R2>
     /// #     .generate().unwrap();
     /// let vc = cert.with_policy(p, None)?;
     ///
+    /// // Assert that the primary key is not expired.
+    /// assert!(vc.primary_key().alive().is_ok());
+    ///
+    /// // Make the primary key expire in a week.
+    /// let t = time::SystemTime::now()
+    ///     + time::Duration::from_secs(7 * 24 * 60 * 60);
+    ///
+    /// // We assume that the secret key material is available, and not
+    /// // password protected.
+    /// let mut signer = vc.primary_key()
+    ///     .key().clone().parts_into_secret()?.into_keypair()?;
+    ///
+    /// let sigs = vc.primary_key().set_expiration_time(&mut signer, Some(t))?;
+    /// let cert = cert.insert_packets(sigs)?;
+    ///
+    /// // The primary key isn't expired yet.
+    /// let vc = cert.with_policy(p, None)?;
+    /// assert!(vc.primary_key().alive().is_ok());
+    ///
+    /// // But in two weeks, it will be...
+    /// let t = time::SystemTime::now()
+    ///     + time::Duration::from_secs(2 * 7 * 24 * 60 * 60);
+    /// let vc = cert.with_policy(p, t)?;
+    /// assert!(vc.primary_key().alive().is_err());
+    /// # Ok(()) }
+    pub fn set_expiration_time(&self,
+                               primary_signer: &mut dyn Signer,
+                               expiration: Option<time::SystemTime>)
+        -> Result<Vec<Signature>>
+    {
+        ValidErasedKeyAmalgamation::<P>::from(self)
+            .set_expiration_time(primary_signer, None, expiration)
+    }
+}
+
+impl<'a, P> ValidSubordinateKeyAmalgamation<'a, P>
+    where P: 'a + key::KeyParts
+{
+    /// Creates signatures that cause the key to expire at the specified time.
+    ///
+    /// This function creates new binding signatures that cause the
+    /// key to expire at the specified time when integrated into the
+    /// certificate.  For subkeys, a single `Signature` is returned.
+    ///
+    /// Setting a key's expiry time means updating an existing binding
+    /// signature---when looking up information, only one binding
+    /// signature is normally considered, and we don't want to drop
+    /// the other information stored in the current binding signature.
+    /// This function uses the binding signature determined by
+    /// `ValidKeyAmalgamation`'s policy and reference time for this.
+    ///
+    /// When updating the expiration time of signing-capable subkeys,
+    /// we need to create a new [primary key binding signature].
+    /// Therefore, we need a signer for the subkey.  If
+    /// `subkey_signer` is `None`, and this is a signing-capable
+    /// subkey, this function fails with [`Error::InvalidArgument`].
+    /// Likewise, this function fails if `subkey_signer` is not `None`
+    /// when updating the expiration of an non signing-capable subkey.
+    ///
+    ///   [primary key binding signature]: https://tools.ietf.org/html/rfc4880#section-5.2.1
+    ///   [`Error::InvalidArgument`]: ../../../enum.Error.html#variant.InvalidArgument
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::time;
+    /// # extern crate sequoia_openpgp as openpgp;
+    /// # use openpgp::cert::prelude::*;
+    /// use openpgp::policy::StandardPolicy;
+    ///
+    /// # fn main() -> openpgp::Result<()> {
+    /// let p = &StandardPolicy::new();
+    ///
+    /// # let t = time::SystemTime::now() - time::Duration::from_secs(10);
+    /// # let (cert, _) = CertBuilder::new()
+    /// #     .set_creation_time(t)
+    /// #     .add_userid("Alice")
+    /// #     .add_signing_subkey()
+    /// #     .add_transport_encryption_subkey()
+    /// #     .generate().unwrap();
+    /// let vc = cert.with_policy(p, None)?;
+    ///
     /// // Assert that the keys are not expired.
     /// for ka in vc.keys() {
     ///     assert!(ka.alive().is_ok());
@@ -1416,19 +1489,30 @@ impl<'a, P, R, R2> ValidKeyAmalgamation<'a, P, R, R2>
     ///
     /// // We assume that the secret key material is available, and not
     /// // password protected.
-    /// let mut signer = vc.primary_key()
+    /// let mut primary_signer = vc.primary_key()
+    ///     .key().clone().parts_into_secret()?.into_keypair()?;
+    /// let mut signing_subkey_signer = vc.keys().for_signing().nth(0).unwrap()
     ///     .key().clone().parts_into_secret()?.into_keypair()?;
     ///
-    /// let sigs = vc.keys()
-    ///     .flat_map(|ka| {
-    ///         ka.set_expiration_time(&mut signer, Some(t)).unwrap()
-    ///     })
-    ///     // The iterator needs to run to completion before we
-    ///     // Cert::merge_packets, because the iterator has a reference
-    ///     // to cert (via vc), but Cert::merge_packets needs to  take
-    ///     // ownership of it.
-    ///     .collect::<Vec<_>>();
-    /// let cert = cert.merge_packets(sigs)?;
+    /// let mut sigs = Vec::new();
+    /// for ka in vc.keys() {
+    ///     if ! ka.for_signing() {
+    ///         // Non-signing-capable subkeys are easy to update.
+    ///         sigs.append(&mut ka.set_expiration_time(&mut primary_signer,
+    ///                                                 None, Some(t))?);
+    ///     } else {
+    ///         // Signing-capable subkeys need to create a primary
+    ///         // key binding signature with the subkey:
+    ///         assert!(ka.set_expiration_time(&mut primary_signer,
+    ///                                        None, Some(t)).is_err());
+    ///
+    ///         // Here, we need the subkey's signer:
+    ///         sigs.append(&mut ka.set_expiration_time(&mut primary_signer,
+    ///                                                 Some(&mut signing_subkey_signer),
+    ///                                                 Some(t))?);
+    ///     }
+    /// }
+    /// let cert = cert.insert_packets(sigs)?;
     ///
     /// // They aren't expired yet.
     /// let vc = cert.with_policy(p, None)?;
@@ -1446,6 +1530,246 @@ impl<'a, P, R, R2> ValidKeyAmalgamation<'a, P, R, R2>
     /// # Ok(()) }
     pub fn set_expiration_time(&self,
                                primary_signer: &mut dyn Signer,
+                               subkey_signer: Option<&mut dyn Signer>,
+                               expiration: Option<time::SystemTime>)
+        -> Result<Vec<Signature>>
+    {
+        ValidErasedKeyAmalgamation::<P>::from(self)
+            .set_expiration_time(primary_signer, subkey_signer, expiration)
+    }
+}
+
+impl<'a, P> ValidErasedKeyAmalgamation<'a, P>
+    where P: 'a + key::KeyParts
+{
+    /// Sets the key to expire in delta seconds.
+    ///
+    /// Note: the time is relative to the key's creation time, not the
+    /// current time!
+    ///
+    /// This function exists to facilitate testing, which is why it is
+    /// not exported.
+    pub(crate) fn set_validity_period_as_of(&self,
+                                            primary_signer: &mut dyn Signer,
+                                            subkey_signer:
+                                                Option<&mut dyn Signer>,
+                                            expiration: Option<time::Duration>,
+                                            now: time::SystemTime)
+        -> Result<Vec<Signature>>
+    {
+        let mut sigs = Vec::new();
+
+        // There are two cases to consider.  If we are extending the
+        // validity of the primary key, we also need to create new
+        // binding signatures for all userids.
+        if self.primary() {
+            // First, update or create a direct key signature.
+            let template = self.direct_key_signature()
+                .map(|sig| {
+                    signature::SignatureBuilder::from(sig.clone())
+                })
+                .unwrap_or_else(|_| {
+                    let mut template = signature::SignatureBuilder::from(
+                        self.binding_signature().clone())
+                        .set_type(SignatureType::DirectKey);
+
+                    // We're creating a direct signature from a User
+                    // ID self signature.  Remove irrelevant packets.
+                    use SubpacketTag::*;
+                    let ha = template.hashed_area_mut();
+                    ha.remove_all(ExportableCertification);
+                    ha.remove_all(Revocable);
+                    ha.remove_all(TrustSignature);
+                    ha.remove_all(RegularExpression);
+                    ha.remove_all(PrimaryUserID);
+                    ha.remove_all(SignersUserID);
+                    ha.remove_all(ReasonForRevocation);
+                    ha.remove_all(SignatureTarget);
+                    ha.remove_all(EmbeddedSignature);
+
+                    template
+                });
+            let mut builder = template
+                .set_signature_creation_time(now)?
+                .set_key_validity_period(expiration)?;
+            builder.hashed_area_mut().remove_all(
+                signature::subpacket::SubpacketTag::PrimaryUserID);
+
+            // Generate the signature.
+            sigs.push(builder.sign_direct_key(primary_signer,
+                                              &self.cert().primary_key())?);
+
+            // Second, generate a new binding signature for every
+            // userid.  We need to be careful not to change the
+            // primary userid, so we make it explicit using the
+            // primary userid subpacket.
+            for userid in self.cert().userids().revoked(false) {
+                // To extend the validity of the subkey, create a new
+                // binding signature with updated key validity period.
+                let binding_signature = userid.binding_signature();
+
+                let builder = signature::SignatureBuilder::from(binding_signature.clone())
+                    .set_signature_creation_time(now)?
+                    .set_key_validity_period(expiration)?
+                    .set_primary_userid(
+                        self.cert().primary_userid().map(|primary| {
+                            userid.userid() == primary.userid()
+                        }).unwrap_or(false))?;
+
+                sigs.push(builder.sign_userid_binding(primary_signer,
+                                                      &self.cert().primary_key(),
+                                                      &userid)?);
+            }
+        } else {
+            // To extend the validity of the subkey, create a new
+            // binding signature with updated key validity period.
+            let backsig = if self.for_certification() || self.for_signing() {
+                if let Some(subkey_signer) = subkey_signer {
+                    Some(signature::SignatureBuilder::new(
+                        SignatureType::PrimaryKeyBinding)
+                         .set_signature_creation_time(now)?
+                         .set_hash_algo(self.binding_signature.hash_algo())
+                         .sign_primary_key_binding(
+                             subkey_signer,
+                             &self.cert().primary_key(),
+                             self.key().role_as_subordinate())?)
+                } else {
+                    return Err(Error::InvalidArgument(
+                        "Changing expiration of signing-capable subkeys \
+                         requires subkey signer".into()).into());
+                }
+            } else {
+                if subkey_signer.is_some() {
+                    return Err(Error::InvalidArgument(
+                        "Subkey signer given but subkey is not signing-capable"
+                            .into()).into());
+                }
+                None
+            };
+
+            let mut sig =
+                signature::SignatureBuilder::from(
+                        self.binding_signature().clone())
+                    .set_signature_creation_time(now)?
+                    .set_key_validity_period(expiration)?;
+
+            if let Some(bs) = backsig {
+                sig = sig.set_embedded_signature(bs)?;
+            }
+
+            sigs.push(sig.sign_subkey_binding(
+                primary_signer,
+                &self.cert().primary_key(),
+                self.key().role_as_subordinate())?);
+        }
+
+        Ok(sigs)
+    }
+
+    /// Creates signatures that cause the key to expire at the specified time.
+    ///
+    /// This function creates new binding signatures that cause the
+    /// key to expire at the specified time when integrated into the
+    /// certificate.  For subkeys, only a single `Signature` is
+    /// returned.  For the primary key, however, it is necessary to
+    /// create a new self-signature for each non-revoked User ID, and
+    /// to create a direct key signature.  This is needed, because the
+    /// primary User ID is first consulted when determining the
+    /// primary key's expiration time, and certificates can be
+    /// distributed with a possibly empty subset of User IDs.
+    ///
+    /// Setting a key's expiry time means updating an existing binding
+    /// signature---when looking up information, only one binding
+    /// signature is normally considered, and we don't want to drop
+    /// the other information stored in the current binding signature.
+    /// This function uses the binding signature determined by
+    /// `ValidKeyAmalgamation`'s policy and reference time for this.
+    ///
+    /// When updating the expiration time of signing-capable subkeys,
+    /// we need to create a new [primary key binding signature].
+    /// Therefore, we need a signer for the subkey.  If
+    /// `subkey_signer` is `None`, and this is a signing-capable
+    /// subkey, this function fails with [`Error::InvalidArgument`].
+    /// Likewise, this function fails if `subkey_signer` is not `None`
+    /// when updating the expiration of the primary key, or an non
+    /// signing-capable subkey.
+    ///
+    ///   [primary key binding signature]: https://tools.ietf.org/html/rfc4880#section-5.2.1
+    ///   [`Error::InvalidArgument`]: ../../../enum.Error.html#variant.InvalidArgument
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::time;
+    /// # extern crate sequoia_openpgp as openpgp;
+    /// # use openpgp::cert::prelude::*;
+    /// use openpgp::policy::StandardPolicy;
+    ///
+    /// # fn main() -> openpgp::Result<()> {
+    /// let p = &StandardPolicy::new();
+    ///
+    /// # let t = time::SystemTime::now() - time::Duration::from_secs(10);
+    /// # let (cert, _) = CertBuilder::new()
+    /// #     .set_creation_time(t)
+    /// #     .add_userid("Alice")
+    /// #     .add_signing_subkey()
+    /// #     .add_transport_encryption_subkey()
+    /// #     .generate().unwrap();
+    /// let vc = cert.with_policy(p, None)?;
+    ///
+    /// // Assert that the keys are not expired.
+    /// for ka in vc.keys() {
+    ///     assert!(ka.alive().is_ok());
+    /// }
+    ///
+    /// // Make the keys expire in a week.
+    /// let t = time::SystemTime::now()
+    ///     + time::Duration::from_secs(7 * 24 * 60 * 60);
+    ///
+    /// // We assume that the secret key material is available, and not
+    /// // password protected.
+    /// let mut primary_signer = vc.primary_key()
+    ///     .key().clone().parts_into_secret()?.into_keypair()?;
+    /// let mut signing_subkey_signer = vc.keys().for_signing().nth(0).unwrap()
+    ///     .key().clone().parts_into_secret()?.into_keypair()?;
+    ///
+    /// let mut sigs = Vec::new();
+    /// for ka in vc.keys() {
+    ///     if ! ka.for_signing() {
+    ///         // Non-signing-capable subkeys are easy to update.
+    ///         sigs.append(&mut ka.set_expiration_time(&mut primary_signer,
+    ///                                                 None, Some(t))?);
+    ///     } else {
+    ///         // Signing-capable subkeys need to create a primary
+    ///         // key binding signature with the subkey:
+    ///         assert!(ka.set_expiration_time(&mut primary_signer,
+    ///                                        None, Some(t)).is_err());
+    ///
+    ///         // Here, we need the subkey's signer:
+    ///         sigs.append(&mut ka.set_expiration_time(&mut primary_signer,
+    ///                                                 Some(&mut signing_subkey_signer),
+    ///                                                 Some(t))?);
+    ///     }
+    /// }
+    /// let cert = cert.insert_packets(sigs)?;
+    ///
+    /// // They aren't expired yet.
+    /// let vc = cert.with_policy(p, None)?;
+    /// for ka in vc.keys() {
+    ///     assert!(ka.alive().is_ok());
+    /// }
+    ///
+    /// // But in two weeks, they will be...
+    /// let t = time::SystemTime::now()
+    ///     + time::Duration::from_secs(2 * 7 * 24 * 60 * 60);
+    /// let vc = cert.with_policy(p, t)?;
+    /// for ka in vc.keys() {
+    ///     assert!(ka.alive().is_err());
+    /// }
+    /// # Ok(()) }
+    pub fn set_expiration_time(&self,
+                               primary_signer: &mut dyn Signer,
+                               subkey_signer: Option<&mut dyn Signer>,
                                expiration: Option<time::SystemTime>)
         -> Result<Vec<Signature>>
     {
@@ -1463,10 +1787,17 @@ impl<'a, P, R, R2> ValidKeyAmalgamation<'a, P, R, R2>
             None
         };
 
-        self.set_validity_period_as_of(primary_signer, expiration,
-                                       time::SystemTime::now())
+        self.set_validity_period_as_of(primary_signer, subkey_signer,
+                                       expiration, time::SystemTime::now())
     }
+}
 
+impl<'a, P, R, R2> ValidKeyAmalgamation<'a, P, R, R2>
+    where P: 'a + key::KeyParts,
+          R: 'a + key::KeyRole,
+          R2: Copy,
+          Self: ValidAmalgamation<'a, Key<P, R>>
+{
     /// Returns the key's `Key Flags`.
     ///
     /// A Key's [`Key Flags`] holds information about the key.  As of
@@ -1538,8 +1869,8 @@ impl<'a, P, R, R2> ValidKeyAmalgamation<'a, P, R, R2>
     /// #         .generate()?;
     /// for ka in cert.keys().with_policy(p, None) {
     ///     if ka.has_any_key_flag(KeyFlags::empty()
-    ///        .set_storage_encryption(true)
-    ///        .set_transport_encryption(true))
+    ///        .set_storage_encryption()
+    ///        .set_transport_encryption())
     ///     {
     ///         // `ka` is encryption capable.
     ///     }
@@ -1551,7 +1882,7 @@ impl<'a, P, R, R2> ValidKeyAmalgamation<'a, P, R, R2>
     pub fn has_any_key_flag<F>(&self, flags: F) -> bool
         where F: Borrow<KeyFlags>
     {
-        let our_flags = self.key_flags().unwrap_or_default();
+        let our_flags = self.key_flags().unwrap_or_else(KeyFlags::empty);
         !(&our_flags & flags.borrow()).is_empty()
     }
 
@@ -1602,7 +1933,7 @@ impl<'a, P, R, R2> ValidKeyAmalgamation<'a, P, R, R2>
     /// [Section 12.1 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.21
     /// [`ValidKeyAmalgamation::key_flags`]: #method.key_flags
     pub fn for_certification(&self) -> bool {
-        self.has_any_key_flag(KeyFlags::default().set_certification(true))
+        self.has_any_key_flag(KeyFlags::empty().set_certification())
     }
 
     /// Returns whether the key is signing capable.
@@ -1635,7 +1966,7 @@ impl<'a, P, R, R2> ValidKeyAmalgamation<'a, P, R, R2>
     ///
     /// [`ValidKeyAmalgamation::key_flags`]: #method.key_flags
     pub fn for_signing(&self) -> bool {
-        self.has_any_key_flag(KeyFlags::default().set_signing(true))
+        self.has_any_key_flag(KeyFlags::empty().set_signing())
     }
 
     /// Returns whether the key is authentication capable.
@@ -1669,7 +2000,7 @@ impl<'a, P, R, R2> ValidKeyAmalgamation<'a, P, R, R2>
     /// [`ValidKeyAmalgamation::key_flags`]: #method.key_flags
     pub fn for_authentication(&self) -> bool
     {
-        self.has_any_key_flag(KeyFlags::default().set_authentication(true))
+        self.has_any_key_flag(KeyFlags::empty().set_authentication())
     }
 
     /// Returns whether the key is storage-encryption capable.
@@ -1716,7 +2047,7 @@ impl<'a, P, R, R2> ValidKeyAmalgamation<'a, P, R, R2>
     /// [`ValidKeyAmalgamation::key_flags`]: #method.key_flags
     pub fn for_storage_encryption(&self) -> bool
     {
-        self.has_any_key_flag(KeyFlags::default().set_storage_encryption(true))
+        self.has_any_key_flag(KeyFlags::empty().set_storage_encryption())
     }
 
     /// Returns whether the key is transport-encryption capable.
@@ -1763,7 +2094,7 @@ impl<'a, P, R, R2> ValidKeyAmalgamation<'a, P, R, R2>
     /// [`ValidKeyAmalgamation::key_flags`]: #method.key_flags
     pub fn for_transport_encryption(&self) -> bool
     {
-        self.has_any_key_flag(KeyFlags::default().set_transport_encryption(true))
+        self.has_any_key_flag(KeyFlags::empty().set_transport_encryption())
     }
 
     /// Returns how long the key is live.
@@ -1796,12 +2127,11 @@ impl<'a, P, R, R2> ValidKeyAmalgamation<'a, P, R, R2>
     /// let now: time::SystemTime = now.try_into()?;
     ///
     /// let a_week = time::Duration::from_secs(7 * 24 * 60 * 60);
-    /// let a_week_later = now + a_week;
     ///
     /// let (cert, _) =
     ///     CertBuilder::general_purpose(None, Some("alice@example.org"))
     ///     .set_creation_time(now)
-    ///     .set_expiration_time(a_week_later)
+    ///     .set_validity_period(a_week)
     ///     .generate()?;
     ///
     /// assert_eq!(cert.primary_key().with_policy(p, None)?.key_validity_period(),
@@ -1852,7 +2182,7 @@ impl<'a, P, R, R2> ValidKeyAmalgamation<'a, P, R, R2>
     /// let (cert, _) =
     ///     CertBuilder::general_purpose(None, Some("alice@example.org"))
     ///     .set_creation_time(now)
-    ///     .set_expiration_time(a_week_later)
+    ///     .set_validity_period(a_week)
     ///     .generate()?;
     ///
     /// assert_eq!(cert.primary_key().with_policy(p, None)?.key_expiration_time(),
@@ -1908,19 +2238,30 @@ mod test {
             assert!(ka.alive().is_ok());
         }
 
-        let mut primary = cert.primary_key().key().clone()
+        let mut primary_signer = cert.primary_key().key().clone()
             .parts_into_secret().unwrap().into_keypair().unwrap();
+        let mut signing_subkey_signer = cert.with_policy(p, None).unwrap()
+            .keys().for_signing().nth(0).unwrap()
+            .key().clone().parts_into_secret().unwrap()
+            .into_keypair().unwrap();
 
         // Only expire the subkeys.
         let sigs = cert.keys().subkeys().with_policy(p, None)
             .flat_map(|ka| {
-                ka.set_expiration_time(&mut primary, Some(in_a_year))
-                    .unwrap()
+                if ! ka.for_signing() {
+                    ka.set_expiration_time(&mut primary_signer,
+                                           None,
+                                           Some(in_a_year)).unwrap()
+                } else {
+                    ka.set_expiration_time(&mut primary_signer,
+                                           Some(&mut signing_subkey_signer),
+                                           Some(in_a_year)).unwrap()
+                }
                     .into_iter()
                     .map(Into::into)
             })
             .collect::<Vec<Packet>>();
-        let cert = cert.merge_packets(sigs).unwrap();
+        let cert = cert.insert_packets(sigs).unwrap();
 
         for ka in cert.keys().with_policy(p, None) {
             assert!(ka.alive().is_ok());
@@ -1933,5 +2274,83 @@ mod test {
         for ka in cert.keys().subkeys().with_policy(p, in_two_years) {
             assert!(ka.alive().is_err());
         }
+    }
+
+    /// Test that subkeys of expired certificates are also considered
+    /// expired.
+    #[test]
+    fn issue_564() -> Result<()> {
+        use crate::parse::Parse;
+        use crate::packet::signature::subpacket::SubpacketTag;
+        let p = &P::new();
+        let cert = Cert::from_bytes(crate::tests::key("testy.pgp"))?;
+        assert!(cert.with_policy(p, None)?.alive().is_err());
+        let subkey = cert.with_policy(p, None)?.keys().nth(1).unwrap();
+        assert!(subkey.binding_signature().hashed_area()
+                .subpacket(SubpacketTag::KeyExpirationTime).is_none());
+        assert!(subkey.alive().is_err());
+        Ok(())
+    }
+
+    /// When setting the primary key's validity period, we create a
+    /// direct key signature.  Check that this works even when the
+    /// original certificate doesn't have a direct key signature.
+    #[test]
+    fn set_expiry_on_certificate_without_direct_signature() -> Result<()> {
+        use crate::policy::StandardPolicy;
+
+        let p = &StandardPolicy::new();
+
+        let (cert, _) =
+            CertBuilder::general_purpose(None, Some("alice@example.org"))
+            .set_validity_period(None)
+            .generate()?;
+
+        // Remove the direct key signatures.
+        let cert = Cert::from_packets(Vec::from(cert)
+            .into_iter()
+            .filter(|p| {
+                match p {
+                    Packet::Signature(s)
+                        if s.typ() == SignatureType::DirectKey => false,
+                    _ => true,
+                }
+            }))?;
+
+        let vc = cert.with_policy(p, None)?;
+
+        // Assert that the keys are not expired.
+        for ka in vc.keys() {
+            assert!(ka.alive().is_ok());
+        }
+
+        // Make the primary key expire in a week.
+        let t = time::SystemTime::now()
+            + time::Duration::from_secs(7 * 24 * 60 * 60);
+
+        let mut signer = vc
+            .primary_key().key().clone().parts_into_secret()?
+            .into_keypair()?;
+        let sigs = vc.primary_key()
+            .set_expiration_time(&mut signer, Some(t))?;
+
+        assert!(sigs.iter().any(|s| {
+            s.typ() == SignatureType::DirectKey
+        }));
+
+        let cert = cert.insert_packets(sigs)?;
+
+        // Make sure the primary key *and* all subkeys expire in a
+        // week: the subkeys inherit the KeyExpirationTime subpacket
+        // from the direct key signature.
+        for ka in cert.keys() {
+            let ka = ka.with_policy(p, None)?;
+            assert!(ka.alive().is_ok());
+
+            let ka = ka.with_policy(p, t + std::time::Duration::new(1, 0))?;
+            assert!(ka.alive().is_err());
+        }
+
+        Ok(())
     }
 }
