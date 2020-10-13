@@ -9,6 +9,7 @@ members = [
     "ipc",
     "net",
     "openpgp",
+    "openpgp-default",
     "openpgp-ffi",
     "sop",
     "sqv",
