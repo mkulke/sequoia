@@ -355,13 +355,13 @@ impl Server {
     /// On Windows this expects `SOCKET` env var to be set to a listening socket
     /// of the Windows Sockets API `SOCKET` value.
     ///
-    /// # Example
+    /// # Examples
     ///
     /// ```compile_fail
     /// // We cannot run this because sequoia-store is not built yet.
-    /// extern crate sequoia_core;
-    /// extern crate sequoia_net;
-    /// extern crate sequoia_store;
+    /// use sequoia_core;
+    /// use sequoia_net;
+    /// use sequoia_store;
     ///
     /// use sequoia_ipc::Server;
     ///

@@ -7,7 +7,7 @@
 use libc::{c_int, time_t, size_t};
 use std::slice;
 
-extern crate sequoia_openpgp as openpgp;
+use sequoia_openpgp as openpgp;
 use self::openpgp::packet::key;
 use self::openpgp::crypto::Password;
 use super::super::fingerprint::Fingerprint;
@@ -108,7 +108,7 @@ fn pgp_key_has_unencrypted_secret(key: *const Key) -> bool
 /// This function takes ownership of `key`.  On failure, `key` is
 /// deallocated.
 ///
-/// # Example
+/// # Examples
 ///
 /// ```c
 /// #include <assert.h>

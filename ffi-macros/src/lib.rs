@@ -5,15 +5,13 @@
 use std::collections::HashMap;
 use std::io::Write;
 
-extern crate lazy_static;
 use lazy_static::lazy_static;
-extern crate syn;
+use syn;
 use syn::parse_quote;
 use syn::spanned::Spanned;
-extern crate quote;
-extern crate proc_macro;
-extern crate proc_macro2;
-extern crate sha2;
+use proc_macro;
+use proc_macro2;
+use sha2;
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
@@ -108,7 +106,7 @@ fn doc(s: &str, ts: &mut TokenStream2) {
 /// [undefined behavior]: https://doc.rust-lang.org/nomicon/unwinding.html
 /// [catch_unwind]: https://doc.rust-lang.org/std/panic/fn.catch_unwind.html
 ///
-/// # Example
+/// # Examples
 ///
 /// ```rust,ignore
 /// #[ffi_catch_abort]
@@ -177,7 +175,7 @@ pub fn ffi_catch_abort(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
 /// Derives FFI functions for a wrapper type.
 ///
-/// # Example
+/// # Examples
 ///
 /// ```rust,ignore
 /// /// Holds a fingerprint.

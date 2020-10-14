@@ -28,8 +28,8 @@ bullseye:
     - cargo test --all --exclude sequoia-openpgp-ffi
     - make
     - if ! git diff --quiet Cargo.lock ; then echo "Cargo.lock changed.  Please add the change to the corresponding commit." ; false ; fi
-    - make -C tool update-usage
-    - if ! git diff --quiet tool ; then echo "Please run 'make -C tool update-usage' and commit the result." ; false ; fi
+    - make -C sq update-usage
+    - if ! git diff --quiet sq ; then echo "Please run 'make -C sq update-usage' and commit the result." ; false ; fi
     - make -C sqv update-usage
     - if ! git diff --quiet sqv ; then echo "Please run 'make -C sqv update-usage' and commit the result." ; false ; fi
     - if ! git diff --quiet ; then echo "The build changed the source.  Please investigate." ; git diff ; fi
@@ -134,6 +134,8 @@ windows-msvc:
     - cargo --version
   script:
     # https://github.com/rust-lang/cargo/issues/5015
+    - cargo build --manifest-path ffi/Cargo.toml --no-default-features --features crypto-cng,compression
+    - cargo build --manifest-path openpgp-ffi/Cargo.toml --no-default-features --features crypto-cng,compression
     - cargo test --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-cng,compression
   after_script: []
   variables:

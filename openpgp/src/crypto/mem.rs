@@ -45,12 +45,37 @@ use memsec;
 ///
 /// // p is cleared once it goes out of scope.
 /// ```
-#[derive(Clone)]
-pub struct Protected(Box<[u8]>);
+// # Note on the implementation
+//
+// We use a boxed slice, then Box::leak the Box.  This takes the
+// knowledge about the shape of the heap allocation away from Rust,
+// preventing any optimization based on that.
+//
+// For example, Rust could conceivably compact the heap: The borrow
+// checker knows when no references exist, and this is an excellent
+// opportunity to move the object on the heap because only one pointer
+// needs to be updated.
+pub struct Protected(*mut [u8]);
+
+// Safety: Box<[u8]> is Send and Sync, we do not expose any
+// functionality that was not possible before, hence Protected may
+// still be Send and Sync.
+unsafe impl Send for Protected {}
+unsafe impl Sync for Protected {}
+
+impl Clone for Protected {
+    fn clone(&self) -> Self {
+        // Make a vector with the correct size to avoid potential
+        // reallocations when turning it into a `Protected`.
+        let mut p = Vec::with_capacity(self.len());
+        p.extend_from_slice(&self);
+        p.into_boxed_slice().into()
+    }
+}
 
 impl PartialEq for Protected {
     fn eq(&self, other: &Self) -> bool {
-        secure_cmp(&self.0, &other.0) == Ordering::Equal
+        secure_cmp(&self, &other) == Ordering::Equal
     }
 }
 
@@ -58,7 +83,7 @@ impl Eq for Protected {}
 
 impl Hash for Protected {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.0.hash(state);
+        self.as_ref().hash(state);
     }
 }
 
@@ -67,7 +92,9 @@ impl Protected {
     ///
     /// Don't expose `Protected` values unless you know what you're doing.
     pub(crate) fn expose_into_unprotected_vec(self) -> Vec<u8> {
-        self.0.clone().into()
+        let mut p = Vec::with_capacity(self.len());
+        p.extend_from_slice(&self);
+        p
     }
 }
 
@@ -75,40 +102,52 @@ impl Deref for Protected {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        self.as_ref()
     }
 }
 
 impl AsRef<[u8]> for Protected {
     fn as_ref(&self) -> &[u8] {
-        &self.0
+        unsafe { &*self.0 }
     }
 }
 
 impl AsMut<[u8]> for Protected {
     fn as_mut(&mut self) -> &mut [u8] {
-        &mut self.0
+        unsafe { &mut *self.0 }
     }
 }
 
 impl DerefMut for Protected {
     fn deref_mut(&mut self) -> &mut [u8] {
-        &mut self.0
+        self.as_mut()
     }
 }
 
 impl From<Vec<u8>> for Protected {
-    fn from(v: Vec<u8>) -> Self {
-        // FIXME(xanewok): This can potentially realloc and leave a lingering
-        // copy of the secret somewhere. It'd be great to explicitly move the
-        // source data by copying it and zeroing it explicitly afterwards.
-        Protected(v.into_boxed_slice())
+    fn from(mut v: Vec<u8>) -> Self {
+        // Make a vector with the correct size to avoid potential
+        // reallocations when turning it into a `Protected`.
+        let mut p = Vec::with_capacity(v.len());
+        p.extend_from_slice(&v);
+
+        // Now clear the previous allocation.  Just to be safe, we
+        // clear the whole allocation.
+        let capacity = v.capacity();
+        unsafe {
+            // Safety: New size is equal to the capacity, and we
+            // initialize all elements.
+            v.set_len(capacity);
+            memsec::memzero(v.as_mut_ptr(), capacity);
+        }
+
+        p.into_boxed_slice().into()
     }
 }
 
 impl From<Box<[u8]>> for Protected {
     fn from(v: Box<[u8]>) -> Self {
-        Protected(v)
+        Protected(Box::leak(v))
     }
 }
 
@@ -121,7 +160,9 @@ impl From<&[u8]> for Protected {
 impl Drop for Protected {
     fn drop(&mut self) {
         unsafe {
-            memsec::memzero(self.0.as_mut_ptr(), self.0.len());
+            let len = self.len();
+            memsec::memzero(self.as_mut().as_mut_ptr(), len);
+            Box::from_raw(self.0);
         }
     }
 }

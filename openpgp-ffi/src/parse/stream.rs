@@ -13,7 +13,7 @@
 use std::ptr;
 use libc::{c_int, c_void, time_t};
 
-extern crate sequoia_openpgp as openpgp;
+use sequoia_openpgp as openpgp;
 
 use self::openpgp::{
     cert::prelude::*,
@@ -535,7 +535,7 @@ impl VerificationHelper for VHelper {
 /// No attempt is made to decrypt any encryption packets.  These are
 /// treated as opaque containers.
 ///
-/// # Example
+/// # Examples
 ///
 /// ```c
 /// #define _GNU_SOURCE
@@ -663,7 +663,7 @@ pub struct DetachedVerifier(openpgp::parse::stream::DetachedVerifier<'static, VH
 
 /// Verifies a detached OpenPGP signature.
 ///
-/// # Example
+/// # Examples
 ///
 /// ```c
 /// #define _GNU_SOURCE
@@ -904,7 +904,7 @@ impl DecryptionHelper for DHelper {
 ///
 /// Note: all of the parameters are required; none may be NULL.
 ///
-/// # Example
+/// # Examples
 ///
 /// ```c
 /// #define _GNU_SOURCE

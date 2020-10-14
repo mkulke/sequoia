@@ -13,7 +13,7 @@
 use std::slice;
 use libc::{c_char, size_t};
 
-extern crate sequoia_openpgp as openpgp;
+use sequoia_openpgp as openpgp;
 use super::keyid::KeyID;
 use crate::Maybe;
 use crate::MoveIntoRaw;
@@ -48,7 +48,7 @@ fn pgp_fingerprint_from_bytes(buf: *const u8,
 
 /// Reads a hexadecimal fingerprint.
 ///
-/// # Example
+/// # Examples
 ///
 /// ```c
 /// #include <assert.h>

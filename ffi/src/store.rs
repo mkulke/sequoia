@@ -16,7 +16,7 @@
 //!
 //! [network policy]: ../../sequoia_core/enum.NetworkPolicy.html
 //!
-//! # Example
+//! # Examples
 //!
 //! ```c, ignore
 //! XXX
@@ -25,8 +25,6 @@
 
 use libc::c_char;
 use std::ptr;
-
-extern crate sequoia_openpgp as openpgp;
 
 use sequoia_store::{
     self, Mapping, MappingIter, Binding, BundleIter, Key, KeyIter, LogIter, Store,

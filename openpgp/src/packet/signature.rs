@@ -2045,24 +2045,48 @@ impl crate::packet::Signature {
             // cake, hence it is only a best-effort mechanism that
             // silently fails.
             let _ = sig.add_missing_issuers();
+
+            // Normalize the order of subpackets.
+            sig.unhashed_area_mut().sort();
         }
         sig
     }
 
-    /// Adds missing issuer information from `additional_issuers` to
+    /// Adds missing issuer information.
+    ///
+    /// Calling this function adds any missing issuer information to
     /// the unhashed subpacket area.
-    fn add_missing_issuers(&mut self) -> Result<()> {
+    ///
+    /// When a signature is verified, the identity of the signing key
+    /// is computed and stored in the `Signature` struct.  This
+    /// information can be used to complement the issuer information
+    /// stored in the signature.  Note that we don't do this
+    /// automatically when verifying signatures, because that would
+    /// change the serialized representation of the signature as a
+    /// side-effect of verifying the signature.
+    pub fn add_missing_issuers(&mut self) -> Result<()> {
+        if self.additional_issuers.is_empty() {
+            return Ok(());
+        }
+
+        /// Makes an authenticated subpacket.
+        fn authenticated_subpacket(v: SubpacketValue) -> Result<Subpacket> {
+            let mut p = Subpacket::new(v, false)?;
+            p.set_authenticated(true);
+            Ok(p)
+        }
+
         let issuers = self.get_issuers();
         for id in std::mem::replace(&mut self.additional_issuers,
                                     Vec::with_capacity(0)) {
-            if ! issuers.iter().any(|i| i == &id) {
+            if ! issuers.contains(&id) {
                 match id {
                     KeyHandle::KeyID(id) =>
-                        self.unhashed_area_mut().add(Subpacket::new(
-                            SubpacketValue::Issuer(id), false)?)?,
+                        self.unhashed_area_mut().add(authenticated_subpacket(
+                            SubpacketValue::Issuer(id))?)?,
                     KeyHandle::Fingerprint(fp) =>
-                        self.unhashed_area_mut().add(Subpacket::new(
-                            SubpacketValue::IssuerFingerprint(fp), false)?)?,
+                        self.unhashed_area_mut().add(authenticated_subpacket(
+                            SubpacketValue::IssuerFingerprint(fp))?)?,
                 }
             }
         }
@@ -2328,14 +2352,14 @@ impl Signature {
             // contained in the signature.
             let issuers = self.get_issuers();
             let id = KeyHandle::from(key.keyid());
-            if ! (issuers.iter().any(|i| i == &id)
-                  || self.additional_issuers.iter().any(|i| i == &id)) {
+            if ! (issuers.contains(&id)
+                  || self.additional_issuers.contains(&id)) {
                 self.additional_issuers.push(id);
             }
 
             let fp = KeyHandle::from(key.fingerprint());
-            if ! (issuers.iter().any(|i| i == &fp)
-                  || self.additional_issuers.iter().any(|i| i == &fp)) {
+            if ! (issuers.contains(&fp)
+                  || self.additional_issuers.contains(&fp)) {
                 self.additional_issuers.push(fp);
             }
         }
@@ -3449,20 +3473,33 @@ mod test {
             panic!("expected a signature");
         }
 
-        // Parse into cert verifying the signatures.
-        use std::convert::TryFrom;
-        let cert = Cert::try_from(pp)?;
-        assert_eq!(cert.bad_signatures().len(), 0);
-        assert_eq!(cert.keys().subkeys().count(), 1);
-        let subkey = cert.keys().subkeys().nth(0).unwrap();
-        assert_eq!(subkey.self_signatures().len(), 1);
-        let sig = &subkey.self_signatures()[0];
+        // Verify the subkey binding without parsing into cert.
+        let primary_key =
+            if let Some(Packet::PublicKey(key)) = pp.path_ref(&[0]) {
+                key
+            } else {
+                panic!("Expected a primary key");
+            };
+        let subkey =
+            if let Some(Packet::PublicSubkey(key)) = pp.path_ref(&[3]) {
+                key
+            } else {
+                panic!("Expected a subkey");
+            };
+        let mut sig =
+            if let Some(Packet::Signature(sig)) = pp.path_ref(&[4]) {
+                sig.clone()
+            } else {
+                panic!("expected a signature");
+            };
+
 
         // The signature has only an issuer fingerprint.
         assert_eq!(sig.get_issuers().len(), 1);
         assert_eq!(sig.subpackets(SubpacketTag::Issuer).count(), 0);
         // But normalization after verification adds the missing
         // information.
+        sig.verify_subkey_binding(&primary_key, &primary_key, &subkey)?;
         let normalized_sig = sig.normalize();
         assert_eq!(normalized_sig.subpackets(SubpacketTag::Issuer).count(), 1);
         Ok(())
@@ -3513,17 +3550,17 @@ mod test {
         let merged = sig.clone().merge(malicious.clone())?;
         let issuers = merged.get_issuers();
         assert_eq!(issuers.len(), 3);
-        assert!(issuers.iter().any(|i| i == &KeyHandle::from(&fp)));
-        assert!(issuers.iter().any(|i| i == &KeyHandle::from(&keyid)));
-        assert!(issuers.iter().any(|i| i == &KeyHandle::from(&dummy)));
+        assert!(issuers.contains(&KeyHandle::from(&fp)));
+        assert!(issuers.contains(&KeyHandle::from(&keyid)));
+        assert!(issuers.contains(&KeyHandle::from(&dummy)));
 
         // Same, but the other way around.
         let merged = malicious.clone().merge(sig.clone())?;
         let issuers = merged.get_issuers();
         assert_eq!(issuers.len(), 3);
-        assert!(issuers.iter().any(|i| i == &KeyHandle::from(&fp)));
-        assert!(issuers.iter().any(|i| i == &KeyHandle::from(&keyid)));
-        assert!(issuers.iter().any(|i| i == &KeyHandle::from(&dummy)));
+        assert!(issuers.contains(&KeyHandle::from(&fp)));
+        assert!(issuers.contains(&KeyHandle::from(&keyid)));
+        assert!(issuers.contains(&KeyHandle::from(&dummy)));
 
         // Try to displace the issuer information using garbage
         // packets.
@@ -3548,15 +3585,15 @@ mod test {
         let merged = sig.clone().merge(malicious.clone())?;
         let issuers = merged.get_issuers();
         assert_eq!(issuers.len(), 2);
-        assert!(issuers.iter().any(|i| i == &KeyHandle::from(&fp)));
-        assert!(issuers.iter().any(|i| i == &KeyHandle::from(&keyid)));
+        assert!(issuers.contains(&KeyHandle::from(&fp)));
+        assert!(issuers.contains(&KeyHandle::from(&keyid)));
 
         // Same, but the other way around.
         let merged = malicious.clone().merge(sig.clone())?;
         let issuers = merged.get_issuers();
         assert_eq!(issuers.len(), 2);
-        assert!(issuers.iter().any(|i| i == &KeyHandle::from(&fp)));
-        assert!(issuers.iter().any(|i| i == &KeyHandle::from(&keyid)));
+        assert!(issuers.contains(&KeyHandle::from(&fp)));
+        assert!(issuers.contains(&KeyHandle::from(&keyid)));
 
         // Try to displace the issuer information by using random keyids.
         let mut malicious = sig.clone();
@@ -3580,14 +3617,14 @@ mod test {
 
         let merged = verified.clone().merge(malicious.clone())?;
         let issuers = merged.get_issuers();
-        assert!(issuers.iter().any(|i| i == &KeyHandle::from(&fp)));
-        assert!(issuers.iter().any(|i| i == &KeyHandle::from(&keyid)));
+        assert!(issuers.contains(&KeyHandle::from(&fp)));
+        assert!(issuers.contains(&KeyHandle::from(&keyid)));
 
         // Same, but the other way around.
         let merged = malicious.clone().merge(verified.clone())?;
         let issuers = merged.get_issuers();
-        assert!(issuers.iter().any(|i| i == &KeyHandle::from(&fp)));
-        assert!(issuers.iter().any(|i| i == &KeyHandle::from(&keyid)));
+        assert!(issuers.contains(&KeyHandle::from(&fp)));
+        assert!(issuers.contains(&KeyHandle::from(&keyid)));
 
         Ok(())
     }

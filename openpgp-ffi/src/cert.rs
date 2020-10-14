@@ -10,7 +10,7 @@ use std::ptr;
 use std::slice;
 use libc::{c_char, c_int, size_t, time_t};
 
-extern crate sequoia_openpgp as openpgp;
+use sequoia_openpgp as openpgp;
 use self::openpgp::{
     crypto,
     crypto::Password,
@@ -186,7 +186,7 @@ fn int_to_reason_for_revocation(code: c_int) -> ReasonForRevocation {
 ///
 /// This function does *not* consume `cert`.
 ///
-/// # Example
+/// # Examples
 ///
 /// ```c
 /// #include <assert.h>
@@ -217,7 +217,6 @@ fn int_to_reason_for_revocation(code: c_int) -> ReasonForRevocation {
 ///                              "It was the maid :/");
 /// assert (revocation);
 /// pgp_signer_free (primary_signer);
-/// pgp_key_pair_free (primary_keypair);
 ///
 /// pgp_packet_t packet = pgp_signature_into_packet (revocation);
 /// cert = pgp_cert_insert_packets (NULL, cert, &packet, 1);
@@ -376,7 +375,7 @@ pub extern "C" fn pgp_cert_user_id_iter_policy<'a>(
     -> *mut ValidUserIDIterWrapper<'static>
 {
     let policy = policy.ref_raw();
-    let iter_wrapper = ffi_param_ref_mut!(iter_wrapper);
+    let mut iter_wrapper = ffi_param_move!(iter_wrapper);
     if iter_wrapper.next_called {
         panic!("Can't change UserIDIter filter after iterating.");
     }
@@ -547,7 +546,7 @@ pub extern "C" fn pgp_cert_key_iter_policy<'a>(
     -> *mut ValidKeyAmalgamationIterWrapper<'static>
 {
     let policy = policy.ref_raw();
-    let iter_wrapper = ffi_param_ref_mut!(iter_wrapper);
+    let mut iter_wrapper = ffi_param_move!(iter_wrapper);
     if iter_wrapper.next_called {
         panic!("Can't change KeyAmalgamationIter filter after iterating.");
     }
@@ -882,7 +881,7 @@ pub extern "C" fn pgp_cert_parser_free(parser: Option<&mut CertParserWrapper>)
 
 /// Creates a default `pgp_cert_builder_t`.
 ///
-/// # Example
+/// # Examples
 ///
 /// ```c
 /// #include <assert.h>

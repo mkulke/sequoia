@@ -411,7 +411,7 @@ type UnknownBundles = ComponentBundles<Unknown>;
 /// # Examples
 ///
 /// ```
-/// extern crate sequoia_openpgp as openpgp;
+/// use sequoia_openpgp as openpgp;
 /// # use openpgp::Result;
 /// use openpgp::cert::prelude::*;
 /// use sequoia_openpgp::policy::StandardPolicy;
@@ -587,7 +587,7 @@ use super::*;
 /// adapted to suit your policy:
 ///
 /// ```rust
-/// # extern crate sequoia_openpgp as openpgp;
+/// # use sequoia_openpgp as openpgp;
 /// # use openpgp::Result;
 /// # use openpgp::parse::{Parse, PacketParserResult, PacketParser};
 /// use std::convert::TryFrom;
@@ -5555,6 +5555,43 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
         let sig = merged.with_policy(p, None)?.keys().subkeys()
             .for_signing().nth(0).unwrap().binding_signature();
         assert_eq!(sig.embedded_signatures().count(), 2);
+        Ok(())
+    }
+
+    /// Checks that Cert::merge(cert, cert) == cert.
+    #[test]
+    fn issue_579() -> Result<()> {
+        use std::convert::TryFrom;
+        use crate::packet::signature::subpacket::SubpacketTag;
+
+        let mut pp = crate::PacketPile::from_bytes(crate::tests::key(
+            "emmelie-dorothea-dina-samantha-awina-ed25519.pgp"))?;
+        assert_eq!(pp.children().count(), 5);
+        // Drop issuer information from the unhashed areas.
+        if let Some(Packet::Signature(sig)) = pp.path_ref_mut(&[2]) {
+            sig.unhashed_area_mut().remove_all(SubpacketTag::Issuer);
+        } else {
+            panic!("expected a signature");
+        }
+        if let Some(Packet::Signature(sig)) = pp.path_ref_mut(&[4]) {
+            sig.unhashed_area_mut().remove_all(SubpacketTag::Issuer);
+        } else {
+            panic!("expected a signature");
+        }
+
+        let cert = Cert::try_from(pp)?;
+        assert_eq!(cert.clone().merge(cert.clone())?, cert);
+
+        // Specifically, the issuer information should have been added
+        // back by the canonicalization.
+        assert_eq!(
+            cert.userids().nth(0).unwrap().self_signatures()[0]
+                .unhashed_area().subpackets(SubpacketTag::Issuer).count(),
+            1);
+        assert_eq!(
+            cert.keys().subkeys().nth(0).unwrap().self_signatures()[0]
+                .unhashed_area().subpackets(SubpacketTag::Issuer).count(),
+            1);
         Ok(())
     }
 }

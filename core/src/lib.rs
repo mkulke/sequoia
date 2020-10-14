@@ -4,7 +4,7 @@
 //! Therefore, we need you to provide a little information about the
 //! context you are using Sequoia in.
 //!
-/// # Example
+/// # Examples
 ///
 /// A context with reasonable defaults can be created using
 /// `Context::new`:
@@ -18,8 +18,8 @@
 /// # }
 /// ```
 
-extern crate dirs;
-extern crate tempfile;
+use dirs;
+use tempfile;
 
 use std::fmt;
 use std::io;
@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 
 /// A `Context` for Sequoia.
 ///
-/// # Example
+/// # Examples
 ///
 /// A context with reasonable defaults can be created using
 /// `Context::new`:

@@ -4,7 +4,7 @@
 //!
 //! [HKP]: https://tools.ietf.org/html/draft-shaw-openpgp-hkp-00
 //!
-//! # Example
+//! # Examples
 //!
 //! We provide a very reasonable default key server backed by
 //! `hkps.pool.sks-keyservers.net`, the subset of the [SKS keyserver]
@@ -37,8 +37,7 @@ use native_tls::Certificate;
 use std::ptr;
 use std::slice;
 
-extern crate sequoia_openpgp as openpgp;
-extern crate tokio_core;
+use tokio_core;
 
 use sequoia_net::KeyServer;
 
