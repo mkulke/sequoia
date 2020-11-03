@@ -222,7 +222,7 @@ impl CertRevocationBuilder {
     /// #            cert.revocation_status(p, None));
     /// # Ok(())
     /// # }
-    pub fn build<H>(self, signer: &mut dyn Signer, cert: &Cert, hash_algo: H)
+    pub async fn build<H>(self, signer: &mut dyn Signer, cert: &Cert, hash_algo: H)
         -> Result<Signature>
         where H: Into<Option<HashAlgorithm>>
     {
@@ -231,7 +231,7 @@ impl CertRevocationBuilder {
 
         cert.primary_key().hash(&mut hash);
 
-        self.builder.sign_hash(signer, hash)
+        self.builder.sign_hash(signer, hash).await
     }
 }
 
@@ -449,7 +449,7 @@ impl SubkeyRevocationBuilder {
     /// #            cert.keys().subkeys().nth(0).unwrap().revocation_status(p, None));
     /// # Ok(())
     /// # }
-    pub fn build<H, P>(mut self, signer: &mut dyn Signer,
+    pub async fn build<H, P>(mut self, signer: &mut dyn Signer,
                        cert: &Cert, key: &Key<P, key::SubordinateRole>,
                        hash_algo: H)
         -> Result<Signature>
@@ -461,7 +461,7 @@ impl SubkeyRevocationBuilder {
         if let Some(algo) = hash_algo.into() {
             self.builder = self.builder.set_hash_algo(algo);
         }
-        key.bind(signer, cert, self.builder)
+        key.bind(signer, cert, self.builder).await
     }
 }
 
@@ -687,7 +687,7 @@ impl UserIDRevocationBuilder {
     /// #            cert.userids().nth(0).unwrap().revocation_status(p, None));
     /// # Ok(())
     /// # }
-    pub fn build<H>(mut self, signer: &mut dyn Signer,
+    pub async fn build<H>(mut self, signer: &mut dyn Signer,
                     cert: &Cert, userid: &UserID,
                     hash_algo: H)
         -> Result<Signature>
@@ -698,7 +698,7 @@ impl UserIDRevocationBuilder {
         if let Some(algo) = hash_algo.into() {
             self.builder = self.builder.set_hash_algo(algo);
         }
-        userid.bind(signer, cert, self.builder)
+        userid.bind(signer, cert, self.builder).await
     }
 }
 
@@ -938,7 +938,7 @@ impl UserAttributeRevocationBuilder {
     /// #            cert.user_attributes().nth(0).unwrap().revocation_status(p, None));
     /// # Ok(())
     /// # }
-    pub fn build<H>(mut self, signer: &mut dyn Signer,
+    pub async fn build<H>(mut self, signer: &mut dyn Signer,
                     cert: &Cert, ua: &UserAttribute,
                     hash_algo: H)
         -> Result<Signature>
@@ -949,7 +949,7 @@ impl UserAttributeRevocationBuilder {
         if let Some(algo) = hash_algo.into() {
             self.builder = self.builder.set_hash_algo(algo);
         }
-        ua.bind(signer, cert, self.builder)
+        ua.bind(signer, cert, self.builder).await
     }
 }
 

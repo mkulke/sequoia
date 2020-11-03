@@ -87,6 +87,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-trait"
+version = "0.1.41"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b246867b8b3b6ae56035f1eb1ed557c1d8eae97f0d53696138a50fa0e3a3b8c0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "atty"
 version = "0.2.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1888,6 +1899,7 @@ name = "sequoia-openpgp"
 version = "0.20.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "backtrace",
  "base64 0.13.0",
  "buffered-reader",
@@ -1896,6 +1908,7 @@ dependencies = [
  "dyn-clone",
  "ed25519-dalek",
  "flate2",
+ "futures",
  "idna",
  "lalrpop",
  "lalrpop-util",

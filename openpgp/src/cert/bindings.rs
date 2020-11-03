@@ -70,12 +70,12 @@ impl<P: key::KeyParts> Key<P, key::SubordinateRole> {
     ///                .key_flags(flags).count(),
     ///            1);
     /// # Ok(()) }
-    pub fn bind(&self, signer: &mut dyn Signer, cert: &Cert,
+    pub async fn bind(&self, signer: &mut dyn Signer, cert: &Cert,
                 signature: signature::SignatureBuilder)
         -> Result<Signature>
     {
         signature.sign_subkey_binding(
-            signer, cert.primary_key().key(), self)
+            signer, cert.primary_key().key(), self).await
     }
 }
 
@@ -120,12 +120,12 @@ impl UserID {
     /// // Check that we have a userid.
     /// assert_eq!(cert.userids().len(), 1);
     /// # Ok(()) }
-    pub fn bind(&self, signer: &mut dyn Signer, cert: &Cert,
+    pub async fn bind(&self, signer: &mut dyn Signer, cert: &Cert,
                 signature: signature::SignatureBuilder)
                 -> Result<Signature>
     {
         signature.sign_userid_binding(
-            signer, cert.primary_key().key(), self)
+            signer, cert.primary_key().key(), self).await
     }
 
     /// Returns a certificate for the user id.
@@ -181,7 +181,7 @@ impl UserID {
     /// assert_eq!(bob.userids().nth(0).unwrap()
     ///            .certifications().len(), 1);
     /// # Ok(()) }
-    pub fn certify<S, H, T>(&self, signer: &mut dyn Signer, cert: &Cert,
+    pub async fn certify<S, H, T>(&self, signer: &mut dyn Signer, cert: &Cert,
                             signature_type: S,
                             hash_algo: H, creation_time: T)
         -> Result<Signature>
@@ -206,7 +206,7 @@ impl UserID {
         if let Some(creation_time) = creation_time.into() {
             sig = sig.set_signature_creation_time(creation_time)?;
         }
-        self.bind(signer, cert, sig)
+        self.bind(signer, cert, sig).await
     }
 }
 
@@ -256,12 +256,12 @@ impl UserAttribute {
     /// // Check that we have a user attribute.
     /// assert_eq!(cert.user_attributes().count(), 1);
     /// # Ok(()) }
-    pub fn bind(&self, signer: &mut dyn Signer, cert: &Cert,
+    pub async fn bind(&self, signer: &mut dyn Signer, cert: &Cert,
                 signature: signature::SignatureBuilder)
         -> Result<Signature>
     {
         signature.sign_user_attribute_binding(
-            signer, cert.primary_key().key(), self)
+            signer, cert.primary_key().key(), self).await
     }
 
     /// Returns a certificate for the user attribute.
@@ -322,7 +322,7 @@ impl UserAttribute {
     ///            .certifications().len(),
     ///            1);
     /// # Ok(()) }
-    pub fn certify<S, H, T>(&self, signer: &mut dyn Signer, cert: &Cert,
+    pub async fn certify<S, H, T>(&self, signer: &mut dyn Signer, cert: &Cert,
                             signature_type: S,
                             hash_algo: H, creation_time: T)
         -> Result<Signature>
@@ -347,6 +347,6 @@ impl UserAttribute {
         if let Some(creation_time) = creation_time.into() {
             sig = sig.set_signature_creation_time(creation_time)?;
         }
-        self.bind(signer, cert, sig)
+        self.bind(signer, cert, sig).await
     }
 }

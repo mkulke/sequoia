@@ -4,6 +4,7 @@
 //! [`Decryptor`]: ../../asymmetric/trait.Decryptor.html
 //! [`KeyPair`]: ../../asymmetric/struct.KeyPair.html
 
+use async_trait::async_trait;
 use nettle::{curve25519, ecc, ecdh, ecdsa, ed25519, dsa, rsa, random::Yarrow};
 
 use crate::{Error, Result};
@@ -14,12 +15,13 @@ use crate::crypto::mpi::{self, MPI, PublicKey};
 use crate::crypto::SessionKey;
 use crate::types::{Curve, HashAlgorithm};
 
+#[async_trait]
 impl Signer for KeyPair {
     fn public(&self) -> &Key<key::PublicParts, key::UnspecifiedRole> {
         KeyPair::public(self)
     }
 
-    fn sign(&mut self, hash_algo: HashAlgorithm, digest: &[u8])
+    async fn sign(&mut self, hash_algo: HashAlgorithm, digest: &[u8])
             -> Result<mpi::Signature>
     {
         use crate::PublicKeyAlgorithm::*;

@@ -566,7 +566,7 @@ impl SignatureBuilder {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn sign_standalone(mut self, signer: &mut dyn Signer)
+    pub async fn sign_standalone(mut self, signer: &mut dyn Signer)
                            -> Result<Signature>
     {
         match self.typ {
@@ -579,7 +579,7 @@ impl SignatureBuilder {
 
         let digest = Signature::hash_standalone(&self)?;
 
-        self.sign(signer, digest)
+        self.sign(signer, digest).await
     }
 
     /// Generates a Timestamp Signature.
@@ -679,7 +679,7 @@ impl SignatureBuilder {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn sign_timestamp(mut self, signer: &mut dyn Signer)
+    pub async fn sign_timestamp(mut self, signer: &mut dyn Signer)
                           -> Result<Signature>
     {
         match self.typ {
@@ -692,7 +692,7 @@ impl SignatureBuilder {
 
         let digest = Signature::hash_timestamp(&self)?;
 
-        self.sign(signer, digest)
+        self.sign(signer, digest).await
     }
 
     /// Generates a Direct Key Signature.
@@ -799,7 +799,7 @@ impl SignatureBuilder {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn sign_direct_key<P>(mut self, signer: &mut dyn Signer,
+    pub async fn sign_direct_key<P>(mut self, signer: &mut dyn Signer,
                               pk: &Key<P, key::PrimaryRole>)
         -> Result<Signature>
         where P: key::KeyParts,
@@ -815,7 +815,7 @@ impl SignatureBuilder {
 
         let digest = Signature::hash_direct_key(&self, pk)?;
 
-        self.sign(signer, digest)
+        self.sign(signer, digest).await
     }
 
     /// Generates a User ID binding signature.
@@ -932,7 +932,7 @@ impl SignatureBuilder {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn sign_userid_binding<P>(mut self, signer: &mut dyn Signer,
+    pub async fn sign_userid_binding<P>(mut self, signer: &mut dyn Signer,
                                   key: &Key<P, key::PrimaryRole>,
                                   userid: &UserID)
         -> Result<Signature>
@@ -952,7 +952,7 @@ impl SignatureBuilder {
 
         let digest = Signature::hash_userid_binding(&self, key, userid)?;
 
-        self.sign(signer, digest)
+        self.sign(signer, digest).await
     }
 
     /// Generates a subkey binding signature.
@@ -1054,7 +1054,7 @@ impl SignatureBuilder {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn sign_subkey_binding<P, Q>(mut self, signer: &mut dyn Signer,
+    pub async fn sign_subkey_binding<P, Q>(mut self, signer: &mut dyn Signer,
                                      primary: &Key<P, key::PrimaryRole>,
                                      subkey: &Key<Q, key::SubordinateRole>)
         -> Result<Signature>
@@ -1072,7 +1072,7 @@ impl SignatureBuilder {
 
         let digest = Signature::hash_subkey_binding(&self, primary, subkey)?;
 
-        self.sign(signer, digest)
+        self.sign(signer, digest).await
     }
 
     /// Generates a primary key binding signature.
@@ -1202,7 +1202,7 @@ impl SignatureBuilder {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn sign_primary_key_binding<P, Q>(mut self,
+    pub async fn sign_primary_key_binding<P, Q>(mut self,
                                           subkey_signer: &mut dyn Signer,
                                           primary: &Key<P, key::PrimaryRole>,
                                           subkey: &Key<Q, key::SubordinateRole>)
@@ -1221,7 +1221,7 @@ impl SignatureBuilder {
         let digest =
             Signature::hash_primary_key_binding(&self, primary, subkey)?;
 
-        self.sign(subkey_signer, digest)
+        self.sign(subkey_signer, digest).await
     }
 
 
@@ -1335,7 +1335,7 @@ impl SignatureBuilder {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn sign_user_attribute_binding<P>(mut self, signer: &mut dyn Signer,
+    pub async fn sign_user_attribute_binding<P>(mut self, signer: &mut dyn Signer,
                                           key: &Key<P, key::PrimaryRole>,
                                           ua: &UserAttribute)
         -> Result<Signature>
@@ -1356,7 +1356,7 @@ impl SignatureBuilder {
         let digest =
             Signature::hash_user_attribute_binding(&self, key, ua)?;
 
-        self.sign(signer, digest)
+        self.sign(signer, digest).await
     }
 
     /// Generates a signature.
@@ -1395,7 +1395,7 @@ impl SignatureBuilder {
     ///   [`Signature Creation Time`]: https://tools.ietf.org/html/rfc4880#section-5.2.3.4
     ///   [`set_signature_creation_time`]: #method.set_signature_creation_time
     ///   [`preserve_signature_creation_time`]: #method.preserve_signature_creation_time
-    pub fn sign_hash(mut self, signer: &mut dyn Signer,
+    pub async fn sign_hash(mut self, signer: &mut dyn Signer,
                      mut hash: hash::Context)
         -> Result<Signature>
     {
@@ -1407,7 +1407,7 @@ impl SignatureBuilder {
         let mut digest = vec![0u8; hash.digest_size()];
         hash.digest(&mut digest);
 
-        self.sign(signer, digest)
+        self.sign(signer, digest).await
     }
 
     /// Signs a message.
@@ -1502,7 +1502,7 @@ impl SignatureBuilder {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn sign_message<M>(mut self, signer: &mut dyn Signer, msg: M)
+    pub async fn sign_message<M>(mut self, signer: &mut dyn Signer, msg: M)
         -> Result<Signature>
         where M: AsRef<[u8]>
     {
@@ -1523,7 +1523,7 @@ impl SignatureBuilder {
         let mut digest = vec![0u8; hash.digest_size()];
         hash.digest(&mut digest);
 
-        self.sign(signer, digest)
+        self.sign(signer, digest).await
     }
 
     fn pre_sign(mut self, signer: &dyn Signer) -> Result<Self> {
@@ -1565,10 +1565,10 @@ impl SignatureBuilder {
         Ok(self)
     }
 
-    fn sign(self, signer: &mut dyn Signer, digest: Vec<u8>)
+    async fn sign(self, signer: &mut dyn Signer, digest: Vec<u8>)
         -> Result<Signature>
     {
-        let mpis = signer.sign(self.hash_algo, &digest)?;
+        let mpis = signer.sign(self.hash_algo, &digest).await?;
 
         Ok(Signature4 {
             common: Default::default(),

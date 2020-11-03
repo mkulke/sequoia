@@ -1137,7 +1137,7 @@ impl<'a> Signer<'a> {
         Ok(Message::from(Box::new(self)))
     }
 
-    fn emit_signatures(&mut self) -> Result<()> {
+    async fn emit_signatures(&mut self) -> Result<()> {
         if let Some(ref mut sink) = self.inner {
             // Emit the signatures in reverse, so that the
             // one-pass-signature and signature packets "bracket" the
@@ -1159,7 +1159,7 @@ impl<'a> Signer<'a> {
                 }
 
                 // Compute the signature.
-                let sig = sig.sign_hash(signer.as_mut(), hash)?;
+                let sig = sig.sign_hash(signer.as_mut(), hash).await?;
 
                 // And emit the packet.
                 Packet::Signature(sig).serialize(sink)?;
@@ -1233,7 +1233,8 @@ impl<'a> writer::Stackable<'a, Cookie> for Signer<'a> {
     }
     fn into_inner(mut self: Box<Self>)
                   -> Result<Option<writer::BoxStack<'a, Cookie>>> {
-        self.emit_signatures()?;
+        // XXX: OH SHIT
+        futures::executor::block_on(self.emit_signatures())?;
         Ok(self.inner.take())
     }
     fn cookie_set(&mut self, cookie: Cookie) -> Cookie {

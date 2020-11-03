@@ -921,13 +921,13 @@ impl Cert {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn revoke(&self, primary_signer: &mut dyn Signer,
+    pub async fn revoke(&self, primary_signer: &mut dyn Signer,
                   code: ReasonForRevocation, reason: &[u8])
         -> Result<Signature>
     {
         CertRevocationBuilder::new()
             .set_reason_for_revocation(code, reason)?
-            .build(primary_signer, &self, None)
+            .build(primary_signer, &self, None).await
     }
 
     /// Sets the key to expire in delta seconds.
@@ -1000,14 +1000,14 @@ impl Cert {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn set_expiration_time<T>(&self, policy: &dyn Policy, t: T,
+    pub async fn set_expiration_time<T>(&self, policy: &dyn Policy, t: T,
                                   primary_signer: &mut dyn Signer,
                                   expiration: Option<time::SystemTime>)
         -> Result<Vec<Signature>>
         where T: Into<Option<time::SystemTime>>,
     {
         let primary = self.primary_key().with_policy(policy, t.into())?;
-        primary.set_expiration_time(primary_signer, expiration)
+        primary.set_expiration_time(primary_signer, expiration).await
     }
 
     /// Returns the primary User ID at the reference time, if any.

@@ -1421,13 +1421,13 @@ impl<'a, P> ValidPrimaryKeyAmalgamation<'a, P>
     /// let vc = cert.with_policy(p, t)?;
     /// assert!(vc.primary_key().alive().is_err());
     /// # Ok(()) }
-    pub fn set_expiration_time(&self,
+    pub async fn set_expiration_time(&self,
                                primary_signer: &mut dyn Signer,
                                expiration: Option<time::SystemTime>)
         -> Result<Vec<Signature>>
     {
         ValidErasedKeyAmalgamation::<P>::from(self)
-            .set_expiration_time(primary_signer, None, expiration)
+            .set_expiration_time(primary_signer, None, expiration).await
     }
 }
 
@@ -1528,14 +1528,14 @@ impl<'a, P> ValidSubordinateKeyAmalgamation<'a, P>
     ///     assert!(ka.alive().is_err());
     /// }
     /// # Ok(()) }
-    pub fn set_expiration_time(&self,
+    pub async fn set_expiration_time(&self,
                                primary_signer: &mut dyn Signer,
                                subkey_signer: Option<&mut dyn Signer>,
                                expiration: Option<time::SystemTime>)
         -> Result<Vec<Signature>>
     {
         ValidErasedKeyAmalgamation::<P>::from(self)
-            .set_expiration_time(primary_signer, subkey_signer, expiration)
+            .set_expiration_time(primary_signer, subkey_signer, expiration).await
     }
 }
 
@@ -1549,7 +1549,7 @@ impl<'a, P> ValidErasedKeyAmalgamation<'a, P>
     ///
     /// This function exists to facilitate testing, which is why it is
     /// not exported.
-    pub(crate) fn set_validity_period_as_of(&self,
+    pub(crate) async fn set_validity_period_as_of(&self,
                                             primary_signer: &mut dyn Signer,
                                             subkey_signer:
                                                 Option<&mut dyn Signer>,
@@ -1597,7 +1597,7 @@ impl<'a, P> ValidErasedKeyAmalgamation<'a, P>
 
             // Generate the signature.
             sigs.push(builder.sign_direct_key(primary_signer,
-                                              &self.cert().primary_key())?);
+                                              &self.cert().primary_key()).await?);
 
             // Second, generate a new binding signature for every
             // userid.  We need to be careful not to change the
@@ -1618,7 +1618,7 @@ impl<'a, P> ValidErasedKeyAmalgamation<'a, P>
 
                 sigs.push(builder.sign_userid_binding(primary_signer,
                                                       &self.cert().primary_key(),
-                                                      &userid)?);
+                                                      &userid).await?);
             }
         } else {
             // To extend the validity of the subkey, create a new
@@ -1632,7 +1632,7 @@ impl<'a, P> ValidErasedKeyAmalgamation<'a, P>
                          .sign_primary_key_binding(
                              subkey_signer,
                              &self.cert().primary_key(),
-                             self.key().role_as_subordinate())?)
+                             self.key().role_as_subordinate()).await?)
                 } else {
                     return Err(Error::InvalidArgument(
                         "Changing expiration of signing-capable subkeys \
@@ -1660,7 +1660,7 @@ impl<'a, P> ValidErasedKeyAmalgamation<'a, P>
             sigs.push(sig.sign_subkey_binding(
                 primary_signer,
                 &self.cert().primary_key(),
-                self.key().role_as_subordinate())?);
+                self.key().role_as_subordinate()).await?);
         }
 
         Ok(sigs)
@@ -1767,7 +1767,7 @@ impl<'a, P> ValidErasedKeyAmalgamation<'a, P>
     ///     assert!(ka.alive().is_err());
     /// }
     /// # Ok(()) }
-    pub fn set_expiration_time(&self,
+    pub async fn set_expiration_time(&self,
                                primary_signer: &mut dyn Signer,
                                subkey_signer: Option<&mut dyn Signer>,
                                expiration: Option<time::SystemTime>)
@@ -1788,7 +1788,7 @@ impl<'a, P> ValidErasedKeyAmalgamation<'a, P>
         };
 
         self.set_validity_period_as_of(primary_signer, subkey_signer,
-                                       expiration, time::SystemTime::now())
+                                       expiration, time::SystemTime::now()).await
     }
 }
 

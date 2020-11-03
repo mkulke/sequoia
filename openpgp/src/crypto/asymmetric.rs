@@ -1,5 +1,7 @@
 //! Asymmetric crypto operations.
 
+use async_trait::async_trait;
+
 use crate::packet::{self, key, Key};
 use crate::crypto::SessionKey;
 use crate::crypto::mpi;
@@ -36,25 +38,28 @@ use crate::Result;
 ///
 ///   [`KeyPair`]: struct.KeyPair.html
 ///   [`sequoia_rpc::gnupg::KeyPair`]: https://docs.sequoia-pgp.org/sequoia_ipc/gnupg/struct.KeyPair.html
+#[async_trait]
 pub trait Signer {
     /// Returns a reference to the public key.
     fn public(&self) -> &Key<key::PublicParts, key::UnspecifiedRole>;
 
     /// Creates a signature over the `digest` produced by `hash_algo`.
-    fn sign(&mut self, hash_algo: HashAlgorithm, digest: &[u8])
+    async fn sign(&mut self, hash_algo: HashAlgorithm, digest: &[u8])
             -> Result<mpi::Signature>;
 }
 
-impl Signer for Box<dyn Signer> {
-    fn public(&self) -> &Key<key::PublicParts, key::UnspecifiedRole> {
-        self.as_ref().public()
-    }
-
-    fn sign(&mut self, hash_algo: HashAlgorithm, digest: &[u8])
-            -> Result<mpi::Signature> {
-        self.as_mut().sign(hash_algo, digest)
-    }
-}
+//#[async_trait]
+//impl Signer for Box<dyn Signer> {
+//    fn public(&self) -> &Key<key::PublicParts, key::UnspecifiedRole> {
+//        self.as_ref().public()
+//    }
+//
+//    async fn sign(&mut self, hash_algo: HashAlgorithm, digest: &[u8])
+//                  -> Result<mpi::Signature> {
+//        unimplemented!()
+//        //self.as_mut().await.sign(hash_algo, digest)
+//    }
+//}
 
 /// Decrypts a message.
 ///
