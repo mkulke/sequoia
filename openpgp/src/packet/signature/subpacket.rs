@@ -6831,6 +6831,7 @@ impl signature::SignatureBuilder {
 
 #[test]
 fn accessors() {
+    use futures::FutureExt;
     use crate::types::Curve;
 
     let pk_algo = PublicKeyAlgorithm::EdDSA;
@@ -6848,7 +6849,7 @@ fn accessors() {
 
     sig = sig.set_signature_creation_time(now).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).now_or_never().unwrap().unwrap();
     assert_eq!(sig_.signature_creation_time(), Some(now));
 
     let zero_s = time::Duration::new(0, 0);
@@ -6857,7 +6858,7 @@ fn accessors() {
     let ten_minutes = 10 * minute;
     sig = sig.set_signature_validity_period(five_minutes).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).now_or_never().unwrap().unwrap();
     assert_eq!(sig_.signature_validity_period(), Some(five_minutes));
 
     assert!(sig_.signature_alive(None, zero_s).is_ok());
@@ -6870,7 +6871,7 @@ fn accessors() {
         Ok(a)
     }).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).now_or_never().unwrap().unwrap();
     assert_eq!(sig_.signature_validity_period(), None);
 
     assert!(sig_.signature_alive(None, zero_s).is_ok());
@@ -6880,37 +6881,37 @@ fn accessors() {
 
     sig = sig.set_exportable_certification(true).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).now_or_never().unwrap().unwrap();
     assert_eq!(sig_.exportable_certification(), Some(true));
     sig = sig.set_exportable_certification(false).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).now_or_never().unwrap().unwrap();
     assert_eq!(sig_.exportable_certification(), Some(false));
 
     sig = sig.set_trust_signature(2, 3).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).now_or_never().unwrap().unwrap();
     assert_eq!(sig_.trust_signature(), Some((2, 3)));
 
     sig = sig.set_regular_expression(b"foobar").unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).now_or_never().unwrap().unwrap();
     assert_eq!(sig_.regular_expressions().collect::<Vec<&[u8]>>(),
                vec![ &b"foobar"[..] ]);
 
     sig = sig.set_revocable(true).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).now_or_never().unwrap().unwrap();
     assert_eq!(sig_.revocable(), Some(true));
     sig = sig.set_revocable(false).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).now_or_never().unwrap().unwrap();
     assert_eq!(sig_.revocable(), Some(false));
 
     key.set_creation_time(now).unwrap();
     sig = sig.set_key_validity_period(Some(five_minutes)).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).now_or_never().unwrap().unwrap();
     assert_eq!(sig_.key_validity_period(), Some(five_minutes));
 
     assert!(sig_.key_alive(&key, None).is_ok());
@@ -6920,7 +6921,7 @@ fn accessors() {
 
     sig = sig.set_key_validity_period(None).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).now_or_never().unwrap().unwrap();
     assert_eq!(sig_.key_validity_period(), None);
 
     assert!(sig_.key_alive(&key, None).is_ok());
@@ -6933,19 +6934,19 @@ fn accessors() {
                     SymmetricAlgorithm::AES128];
     sig = sig.set_preferred_symmetric_algorithms(pref.clone()).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).now_or_never().unwrap().unwrap();
     assert_eq!(sig_.preferred_symmetric_algorithms(), Some(&pref[..]));
 
     let fp = Fingerprint::from_bytes(b"bbbbbbbbbbbbbbbbbbbb");
     let rk = RevocationKey::new(pk_algo, fp.clone(), true);
     sig = sig.set_revocation_key(vec![ rk.clone() ]).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).now_or_never().unwrap().unwrap();
     assert_eq!(sig_.revocation_keys().nth(0).unwrap(), &rk);
 
     sig = sig.set_issuer(fp.clone().into()).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).now_or_never().unwrap().unwrap();
     assert_eq!(sig_.issuers().collect::<Vec<_>>(),
                vec![ &fp.clone().into() ]);
 
@@ -6954,7 +6955,7 @@ fn accessors() {
                     HashAlgorithm::SHA256];
     sig = sig.set_preferred_hash_algorithms(pref.clone()).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).now_or_never().unwrap().unwrap();
     assert_eq!(sig_.preferred_hash_algorithms(), Some(&pref[..]));
 
     let pref = vec![CompressionAlgorithm::BZip2,
@@ -6962,28 +6963,28 @@ fn accessors() {
                     CompressionAlgorithm::Zip];
     sig = sig.set_preferred_compression_algorithms(pref.clone()).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).now_or_never().unwrap().unwrap();
     assert_eq!(sig_.preferred_compression_algorithms(), Some(&pref[..]));
 
     let pref = KeyServerPreferences::empty()
         .set_no_modify();
     sig = sig.set_key_server_preferences(pref.clone()).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).now_or_never().unwrap().unwrap();
     assert_eq!(sig_.key_server_preferences().unwrap(), pref);
 
     sig = sig.set_primary_userid(true).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).now_or_never().unwrap().unwrap();
     assert_eq!(sig_.primary_userid(), Some(true));
     sig = sig.set_primary_userid(false).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).now_or_never().unwrap().unwrap();
     assert_eq!(sig_.primary_userid(), Some(false));
 
     sig = sig.set_policy_uri(b"foobar").unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).now_or_never().unwrap().unwrap();
     assert_eq!(sig_.policy_uri(), Some(&b"foobar"[..]));
 
     let key_flags = KeyFlags::empty()
@@ -6991,37 +6992,37 @@ fn accessors() {
         .set_signing();
     sig = sig.set_key_flags(&key_flags).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).now_or_never().unwrap().unwrap();
     assert_eq!(sig_.key_flags().unwrap(), key_flags);
 
     sig = sig.set_signers_user_id(b"foobar").unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).now_or_never().unwrap().unwrap();
     assert_eq!(sig_.signers_user_id(), Some(&b"foobar"[..]));
 
     sig = sig.set_reason_for_revocation(ReasonForRevocation::KeyRetired,
                                   b"foobar").unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).now_or_never().unwrap().unwrap();
     assert_eq!(sig_.reason_for_revocation(),
                Some((ReasonForRevocation::KeyRetired, &b"foobar"[..])));
 
     let feats = Features::empty().set_mdc();
     sig = sig.set_features(&feats).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).now_or_never().unwrap().unwrap();
     assert_eq!(sig_.features().unwrap(), feats);
 
     let feats = Features::empty().set_aead();
     sig = sig.set_features(&feats).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).now_or_never().unwrap().unwrap();
     assert_eq!(sig_.features().unwrap(), feats);
 
     let digest = vec![0; hash_algo.context().unwrap().digest_size()];
     sig = sig.set_signature_target(pk_algo, hash_algo, &digest).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).now_or_never().unwrap().unwrap();
     assert_eq!(sig_.signature_target(), Some((pk_algo.into(),
                                              hash_algo.into(),
                                              &digest[..])));
@@ -7029,12 +7030,12 @@ fn accessors() {
     let embedded_sig = sig_.clone();
     sig = sig.set_embedded_signature(embedded_sig.clone()).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).now_or_never().unwrap().unwrap();
     assert_eq!(sig_.embedded_signatures().nth(0), Some(&embedded_sig));
 
     sig = sig.set_issuer_fingerprint(fp.clone()).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).now_or_never().unwrap().unwrap();
     assert_eq!(sig_.issuer_fingerprints().collect::<Vec<_>>(),
                vec![ &fp ]);
 
@@ -7042,7 +7043,7 @@ fn accessors() {
                     AEADAlgorithm::OCB];
     sig = sig.set_preferred_aead_algorithms(pref.clone()).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).now_or_never().unwrap().unwrap();
     assert_eq!(sig_.preferred_aead_algorithms(), Some(&pref[..]));
 
     let fps = vec![
@@ -7051,28 +7052,28 @@ fn accessors() {
     ];
     sig = sig.set_intended_recipients(fps.clone()).unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).now_or_never().unwrap().unwrap();
     assert_eq!(sig_.intended_recipients().collect::<Vec<&Fingerprint>>(),
                fps.iter().collect::<Vec<&Fingerprint>>());
 
     sig = sig.set_notation("test@example.org", &[0, 1, 2], None, false)
         .unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).now_or_never().unwrap().unwrap();
     assert_eq!(sig_.notation("test@example.org").collect::<Vec<&[u8]>>(),
                vec![&[0, 1, 2]]);
 
     sig = sig.add_notation("test@example.org", &[3, 4, 5], None, false)
         .unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).now_or_never().unwrap().unwrap();
     assert_eq!(sig_.notation("test@example.org").collect::<Vec<&[u8]>>(),
                vec![&[0, 1, 2], &[3, 4, 5]]);
 
     sig = sig.set_notation("test@example.org", &[6, 7, 8], None, false)
         .unwrap();
     let sig_ =
-        sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
+        sig.clone().sign_hash(&mut keypair, hash.clone()).now_or_never().unwrap().unwrap();
     assert_eq!(sig_.notation("test@example.org").collect::<Vec<&[u8]>>(),
                vec![&[6, 7, 8]]);
 }
@@ -7703,6 +7704,7 @@ fn subpacket_test_2() {
 
 #[test]
 fn issuer_default() -> Result<()> {
+    use futures::FutureExt;
     use crate::types::Curve;
 
     let hash_algo = HashAlgorithm::SHA512;
@@ -7713,7 +7715,8 @@ fn issuer_default() -> Result<()> {
     let mut keypair = key.into_keypair()?;
 
     // no issuer or issuer_fingerprint present, use default
-    let sig_ = sig.sign_hash(&mut keypair, hash.clone())?;
+    let sig_ = sig.sign_hash(&mut keypair, hash.clone())
+        .now_or_never().unwrap()?;
 
     assert_eq!(sig_.issuers().collect::<Vec<_>>(),
                vec![ &keypair.public().keyid() ]);
@@ -7726,7 +7729,8 @@ fn issuer_default() -> Result<()> {
     let mut sig = signature::SignatureBuilder::new(crate::types::SignatureType::Binary);
 
     sig = sig.set_issuer(fp.clone().into())?;
-    let sig_ = sig.clone().sign_hash(&mut keypair, hash.clone())?;
+    let sig_ = sig.clone().sign_hash(&mut keypair, hash.clone())
+        .now_or_never().unwrap()?;
 
     assert_eq!(sig_.issuers().collect::<Vec<_>>(),
                vec![ &fp.clone().into() ]);
@@ -7736,7 +7740,8 @@ fn issuer_default() -> Result<()> {
     let mut sig = signature::SignatureBuilder::new(crate::types::SignatureType::Binary);
 
     sig = sig.set_issuer_fingerprint(fp.clone())?;
-    let sig_ = sig.clone().sign_hash(&mut keypair, hash.clone())?;
+    let sig_ = sig.clone().sign_hash(&mut keypair, hash.clone())
+        .now_or_never().unwrap()?;
 
     assert_eq!(sig_.issuer_fingerprints().collect::<Vec<_>>(),
                vec![ &fp ]);

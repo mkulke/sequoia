@@ -2931,6 +2931,7 @@ impl_arbitrary_with_bound!(Signature4);
 
 #[cfg(test)]
 mod test {
+    use futures::FutureExt;
     use super::*;
     use crate::KeyID;
     use crate::cert::prelude::*;
@@ -3106,7 +3107,7 @@ mod test {
             let hash = hash_algo.context().unwrap();
 
             // Make signature.
-            let mut sig = sig.sign_hash(&mut pair, hash).unwrap();
+            let mut sig = sig.sign_hash(&mut pair, hash).now_or_never().unwrap().unwrap();
 
             // Good signature.
             let mut hash = hash_algo.context().unwrap();
@@ -3131,7 +3132,7 @@ mod test {
         let msg = b"Hello, World";
         let mut pair = key.into_keypair().unwrap();
         let mut sig = SignatureBuilder::new(SignatureType::Binary)
-            .sign_message(&mut pair, msg).unwrap();
+            .sign_message(&mut pair, msg).now_or_never().unwrap().unwrap();
 
         sig.verify_message(pair.public(), msg).unwrap();
     }
@@ -3173,7 +3174,7 @@ mod test {
         hash.update(&msg[..]);
 
         SignatureBuilder::new(SignatureType::Text)
-            .sign_hash(&mut pair, hash).unwrap();
+            .sign_hash(&mut pair, hash).now_or_never().unwrap().unwrap();
     }
 
     #[test]
@@ -3232,12 +3233,12 @@ mod test {
 
         // Build and add an embedded sig.
         let embedded_sig = SignatureBuilder::new(SignatureType::PrimaryKeyBinding)
-            .sign_hash(&mut pair, hash.clone()).unwrap();
+            .sign_hash(&mut pair, hash.clone()).now_or_never().unwrap().unwrap();
         builder.unhashed_area_mut().add(Subpacket::new(
             SubpacketValue::EmbeddedSignature(embedded_sig.into()), false)
                                         .unwrap()).unwrap();
         let sig = builder.sign_hash(&mut pair,
-                                    hash.clone()).unwrap().normalize();
+                                    hash.clone()).now_or_never().unwrap().unwrap().normalize();
         assert_eq!(sig.unhashed_area().iter().count(), 3);
         assert_eq!(*sig.unhashed_area().iter().nth(0).unwrap(),
                    Subpacket::new(SubpacketValue::Issuer(keyid.clone()),
@@ -3257,7 +3258,7 @@ mod test {
 
         let mut sig = SignatureBuilder::new(SignatureType::Standalone)
             .sign_standalone(&mut pair)
-            .unwrap();
+            .now_or_never().unwrap().unwrap();
 
         sig.verify_standalone(pair.public()).unwrap();
     }
@@ -3285,7 +3286,7 @@ mod test {
 
         let mut sig = SignatureBuilder::new(SignatureType::Timestamp)
             .sign_timestamp(&mut pair)
-            .unwrap();
+            .now_or_never().unwrap().unwrap();
 
         sig.verify_timestamp(pair.public()).unwrap();
     }
@@ -3352,7 +3353,8 @@ mod test {
                               false)?
                 .sign_userid_binding(&mut primary_signer,
                                      &alice.primary_key(),
-                                     &alice.userids().nth(0).unwrap()) {
+                                     &alice.userids().nth(0).unwrap())
+                .now_or_never().unwrap() {
                     Ok(v) => v,
                     Err(e) => if i < SIG_BACKDATE_BY {
                         return Err(e); // Not cool.
@@ -3530,7 +3532,8 @@ mod test {
                     SubpacketValue::Issuer(keyid.clone()), false)?)?;
                 Ok(a)
             })?
-            .sign_hash(&mut pair, hash.clone())?;
+            .sign_hash(&mut pair, hash.clone())
+            .now_or_never().unwrap()?;
 
         // Try to displace the issuer information.
         let dummy: crate::KeyID = "AAAA BBBB CCCC DDDD".parse()?;

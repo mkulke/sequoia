@@ -799,6 +799,7 @@ impl<'a> MarshalInto for TSK<'a> {
 
 #[cfg(test)]
 mod test {
+    use futures::FutureExt;
     use super::*;
     use crate::vec_truncate;
     use crate::parse::Parse;
@@ -900,7 +901,8 @@ mod test {
                 .set_key_flags(
                     &KeyFlags::empty().set_transport_encryption())
                 .unwrap()
-                .set_exportable_certification(false).unwrap()).unwrap();
+                .set_exportable_certification(false).unwrap())
+            .now_or_never().unwrap().unwrap();
 
         let uid = UserID::from("foo");
         let uid_binding = uid.bind(
@@ -910,7 +912,8 @@ mod test {
                     .direct_key_signature().unwrap().clone())
                     .set_type(SignatureType::PositiveCertification)
                     .preserve_signature_creation_time().unwrap()
-                    .set_exportable_certification(false).unwrap()).unwrap();
+                    .set_exportable_certification(false).unwrap())
+            .now_or_never().unwrap().unwrap();
 
         let ua = UserAttribute::new(&[
             Subpacket::Unknown(2, b"foo".to_vec().into_boxed_slice()),
@@ -922,7 +925,8 @@ mod test {
                     .direct_key_signature().unwrap().clone())
                 .set_type(SignatureType::PositiveCertification)
                 .preserve_signature_creation_time().unwrap()
-                .set_exportable_certification(false).unwrap()).unwrap();
+                .set_exportable_certification(false).unwrap())
+            .now_or_never().unwrap().unwrap();
 
         let cert = cert.insert_packets(vec![
             Packet::SecretSubkey(key), key_binding.into(),

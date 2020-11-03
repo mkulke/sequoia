@@ -1348,7 +1348,7 @@ impl<'a, P> ValidPrimaryKeyAmalgamation<'a, P>
     /// This function exists to facilitate testing, which is why it is
     /// not exported.
     #[cfg(test)]
-    pub(crate) fn set_validity_period_as_of(&self,
+    pub(crate) async fn set_validity_period_as_of(&self,
                                             primary_signer: &mut dyn Signer,
                                             expiration: Option<time::Duration>,
                                             now: time::SystemTime)
@@ -1356,6 +1356,7 @@ impl<'a, P> ValidPrimaryKeyAmalgamation<'a, P>
     {
         ValidErasedKeyAmalgamation::<P>::from(self)
             .set_validity_period_as_of(primary_signer, None, expiration, now)
+            .await
     }
 
     /// Creates signatures that cause the key to expire at the specified time.
@@ -1384,7 +1385,9 @@ impl<'a, P> ValidPrimaryKeyAmalgamation<'a, P>
     /// # use openpgp::cert::prelude::*;
     /// use openpgp::policy::StandardPolicy;
     ///
-    /// # fn main() -> openpgp::Result<()> {
+    /// # use futures::FutureExt;
+    /// # fn main() -> openpgp::Result<()> { f().now_or_never().unwrap() }
+    /// # async fn f() -> openpgp::Result<()> {
     /// let p = &StandardPolicy::new();
     ///
     /// # let t = time::SystemTime::now() - time::Duration::from_secs(10);
@@ -1408,7 +1411,7 @@ impl<'a, P> ValidPrimaryKeyAmalgamation<'a, P>
     /// let mut signer = vc.primary_key()
     ///     .key().clone().parts_into_secret()?.into_keypair()?;
     ///
-    /// let sigs = vc.primary_key().set_expiration_time(&mut signer, Some(t))?;
+    /// let sigs = vc.primary_key().set_expiration_time(&mut signer, Some(t)).await?;
     /// let cert = cert.insert_packets(sigs)?;
     ///
     /// // The primary key isn't expired yet.
@@ -1466,7 +1469,9 @@ impl<'a, P> ValidSubordinateKeyAmalgamation<'a, P>
     /// # use openpgp::cert::prelude::*;
     /// use openpgp::policy::StandardPolicy;
     ///
-    /// # fn main() -> openpgp::Result<()> {
+    /// # use futures::FutureExt;
+    /// # fn main() -> openpgp::Result<()> { f().now_or_never().unwrap() }
+    /// # async fn f() -> openpgp::Result<()> {
     /// let p = &StandardPolicy::new();
     ///
     /// # let t = time::SystemTime::now() - time::Duration::from_secs(10);
@@ -1499,17 +1504,17 @@ impl<'a, P> ValidSubordinateKeyAmalgamation<'a, P>
     ///     if ! ka.for_signing() {
     ///         // Non-signing-capable subkeys are easy to update.
     ///         sigs.append(&mut ka.set_expiration_time(&mut primary_signer,
-    ///                                                 None, Some(t))?);
+    ///                                                 None, Some(t)).await?);
     ///     } else {
     ///         // Signing-capable subkeys need to create a primary
     ///         // key binding signature with the subkey:
     ///         assert!(ka.set_expiration_time(&mut primary_signer,
-    ///                                        None, Some(t)).is_err());
+    ///                                        None, Some(t)).await.is_err());
     ///
     ///         // Here, we need the subkey's signer:
     ///         sigs.append(&mut ka.set_expiration_time(&mut primary_signer,
     ///                                                 Some(&mut signing_subkey_signer),
-    ///                                                 Some(t))?);
+    ///                                                 Some(t)).await?);
     ///     }
     /// }
     /// let cert = cert.insert_packets(sigs)?;
@@ -1705,7 +1710,9 @@ impl<'a, P> ValidErasedKeyAmalgamation<'a, P>
     /// # use openpgp::cert::prelude::*;
     /// use openpgp::policy::StandardPolicy;
     ///
-    /// # fn main() -> openpgp::Result<()> {
+    /// # use futures::FutureExt;
+    /// # fn main() -> openpgp::Result<()> { f().now_or_never().unwrap() }
+    /// # async fn f() -> openpgp::Result<()> {
     /// let p = &StandardPolicy::new();
     ///
     /// # let t = time::SystemTime::now() - time::Duration::from_secs(10);
@@ -1738,17 +1745,17 @@ impl<'a, P> ValidErasedKeyAmalgamation<'a, P>
     ///     if ! ka.for_signing() {
     ///         // Non-signing-capable subkeys are easy to update.
     ///         sigs.append(&mut ka.set_expiration_time(&mut primary_signer,
-    ///                                                 None, Some(t))?);
+    ///                                                 None, Some(t)).await?);
     ///     } else {
     ///         // Signing-capable subkeys need to create a primary
     ///         // key binding signature with the subkey:
     ///         assert!(ka.set_expiration_time(&mut primary_signer,
-    ///                                        None, Some(t)).is_err());
+    ///                                        None, Some(t)).await.is_err());
     ///
     ///         // Here, we need the subkey's signer:
     ///         sigs.append(&mut ka.set_expiration_time(&mut primary_signer,
     ///                                                 Some(&mut signing_subkey_signer),
-    ///                                                 Some(t))?);
+    ///                                                 Some(t)).await?);
     ///     }
     /// }
     /// let cert = cert.insert_packets(sigs)?;
@@ -2207,6 +2214,7 @@ impl<'a, P, R, R2> ValidKeyAmalgamation<'a, P, R, R2>
 
 #[cfg(test)]
 mod test {
+    use futures::FutureExt;
     use crate::policy::StandardPolicy as P;
     use crate::cert::prelude::*;
     use crate::packet::Packet;
@@ -2251,11 +2259,13 @@ mod test {
                 if ! ka.for_signing() {
                     ka.set_expiration_time(&mut primary_signer,
                                            None,
-                                           Some(in_a_year)).unwrap()
+                                           Some(in_a_year))
+                        .now_or_never().unwrap().unwrap()
                 } else {
                     ka.set_expiration_time(&mut primary_signer,
                                            Some(&mut signing_subkey_signer),
-                                           Some(in_a_year)).unwrap()
+                                           Some(in_a_year))
+                        .now_or_never().unwrap().unwrap()
                 }
                     .into_iter()
                     .map(Into::into)
@@ -2332,7 +2342,8 @@ mod test {
             .primary_key().key().clone().parts_into_secret()?
             .into_keypair()?;
         let sigs = vc.primary_key()
-            .set_expiration_time(&mut signer, Some(t))?;
+            .set_expiration_time(&mut signer, Some(t))
+            .now_or_never().unwrap()?;
 
         assert!(sigs.iter().any(|s| {
             s.typ() == SignatureType::DirectKey

@@ -971,6 +971,7 @@ impl Policy for NullPolicy {
 
 #[cfg(test)]
 mod test {
+    use futures::FutureExt;
     use std::io::Read;
     use std::time::Duration;
 
@@ -1091,7 +1092,8 @@ mod test {
             .set_reason_for_revocation(
                 ReasonForRevocation::KeyRetired,
                 b"Left example.org.")?
-            .build(&mut keypair, &cert, ca.userid(), None)?;
+            .build(&mut keypair, &cert, ca.userid(), None)
+            .now_or_never().unwrap()?;
         assert_eq!(revocation.typ(), SignatureType::CertificationRevocation);
 
         // Now merge the revocation signature into the Cert.
@@ -1126,7 +1128,8 @@ mod test {
                 .set_reason_for_revocation(
                     ReasonForRevocation::KeyRetired,
                     b"Smells funny.").unwrap()
-                .build(&mut keypair, &cert, subkey.key(), None)?;
+                .build(&mut keypair, &cert, subkey.key(), None)
+            .now_or_never().unwrap()?;
         assert_eq!(revocation.typ(), SignatureType::SubkeyRevocation);
 
         // Now merge the revocation signature into the Cert.
@@ -1374,7 +1377,7 @@ mod test {
         let rev = cert.revoke(
             &mut keypair,
             ReasonForRevocation::KeyCompromised,
-            b"It was the maid :/")?;
+            b"It was the maid :/").now_or_never().unwrap()?;
         let cert_revoked = cert.clone().insert_packets(rev)?;
 
         match cert_revoked.revocation_status(&DEFAULT, None) {
@@ -1518,7 +1521,8 @@ mod test {
         let binding = signature::SignatureBuilder::new(SignatureType::SubkeyBinding)
             .set_key_flags(&KeyFlags::empty().set_transport_encryption())?
             .sign_subkey_binding(&mut pk.clone().into_keypair()?,
-                                 &pk, &subkey)?;
+                                 &pk, &subkey)
+            .now_or_never().unwrap()?;
 
         let cert = cert.insert_packets(
             vec![ Packet::from(subkey), binding.into() ])?;
@@ -1541,7 +1545,8 @@ mod test {
         let binding = signature::SignatureBuilder::new(SignatureType::SubkeyBinding)
             .set_key_flags(&KeyFlags::empty().set_transport_encryption())?
             .sign_subkey_binding(&mut pk.clone().into_keypair()?,
-                                 &pk, &subkey)?;
+                                 &pk, &subkey)
+            .now_or_never().unwrap()?;
 
         let cert = cert.insert_packets(
             vec![ Packet::from(subkey), binding.into() ])?;
@@ -1667,7 +1672,8 @@ mod test {
             // Create a signature.
             let mut sig =
                 signature::SignatureBuilder::new(SignatureType::Binary)
-                .sign_message(&mut keypair, msg).unwrap();
+                .sign_message(&mut keypair, msg)
+                .now_or_never().unwrap().unwrap();
 
             // Make sure the signature is ok.
             sig.verify_message(key, msg).unwrap();

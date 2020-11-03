@@ -884,7 +884,9 @@ impl Cert {
     /// use openpgp::parse::Parse;
     /// use openpgp::policy::StandardPolicy;
     ///
-    /// # fn main() -> Result<()> {
+    /// # use futures::FutureExt;
+    /// # fn main() -> Result<()> { f().now_or_never().unwrap() }
+    /// # async fn f() -> Result<()> {
     /// let p = &StandardPolicy::new();
     ///
     /// let (cert, rev) = CertBuilder::new()
@@ -905,7 +907,7 @@ impl Cert {
     ///     .key().clone().parts_into_secret()?.into_keypair()?;
     /// let rev = cert.revoke(&mut keypair,
     ///                       ReasonForRevocation::KeyCompromised,
-    ///                       b"It was the maid :/")?;
+    ///                       b"It was the maid :/").await?;
     /// let cert = cert.insert_packets(rev)?;
     /// if let RevocationStatus::Revoked(revs) = cert.revocation_status(p, None) {
     ///     assert_eq!(revs.len(), 1);
@@ -938,7 +940,7 @@ impl Cert {
     /// This function exists to facilitate testing, which is why it is
     /// not exported.
     #[cfg(test)]
-    fn set_validity_period_as_of(self, policy: &dyn Policy,
+    async fn set_validity_period_as_of(self, policy: &dyn Policy,
                                  primary_signer: &mut dyn Signer,
                                  expiration: Option<time::Duration>,
                                  now: time::SystemTime)
@@ -947,7 +949,7 @@ impl Cert {
         let primary = self.primary_key().with_policy(policy, now)?;
         let sigs = primary.set_validity_period_as_of(primary_signer,
                                                      expiration,
-                                                     now)?;
+                                                     now).await?;
         self.insert_packets(sigs)
     }
 
@@ -978,7 +980,9 @@ impl Cert {
     /// use openpgp::crypto::KeyPair;
     /// use openpgp::policy::StandardPolicy;
     ///
-    /// # fn main() -> Result<()> {
+    /// # use futures::FutureExt;
+    /// # fn main() -> Result<()> { f().now_or_never().unwrap() }
+    /// # async fn f() -> Result<()> {
     /// let p = &StandardPolicy::new();
     ///
     /// # let t0 = time::SystemTime::now() - time::Duration::from_secs(1);
@@ -993,12 +997,11 @@ impl Cert {
     /// let mut keypair = cert.primary_key()
     ///     .key().clone().parts_into_secret()?.into_keypair()?;
     /// let sigs = cert.set_expiration_time(p, None, &mut keypair,
-    ///                                     Some(time::SystemTime::now()))?;
+    ///                                     Some(time::SystemTime::now())).await?;
     ///
     /// let cert = cert.insert_packets(sigs)?;
     /// assert!(cert.with_policy(p, None)?.alive().is_err());
-    /// # Ok(())
-    /// # }
+    /// # Ok(()) }
     /// ```
     pub async fn set_expiration_time<T>(&self, policy: &dyn Policy, t: T,
                                   primary_signer: &mut dyn Signer,
@@ -3402,6 +3405,7 @@ impl<'a> crate::cert::Preferences<'a> for ValidCert<'a>
 
 #[cfg(test)]
 mod test {
+    use futures::FutureExt;
     use crate::serialize::Serialize;
     use crate::policy::StandardPolicy as P;
     use crate::types::Curve;
@@ -4053,7 +4057,8 @@ mod test {
         // Clear the expiration.
         let as_of1 = now + time::Duration::new(10, 0);
         let cert = cert.set_validity_period_as_of(
-            policy, &mut keypair, None, as_of1).unwrap();
+            policy, &mut keypair, None, as_of1)
+            .now_or_never().unwrap().unwrap();
         {
             // If t < as_of1, we should get the original expiry.
             assert_eq!(cert.primary_key().with_policy(policy, now).unwrap()
@@ -4076,7 +4081,8 @@ mod test {
 
         let as_of2 = as_of1 + time::Duration::new(10, 0);
         let cert = cert.set_validity_period_as_of(
-            policy, &mut keypair, Some(expiry_new), as_of2).unwrap();
+            policy, &mut keypair, Some(expiry_new), as_of2)
+            .now_or_never().unwrap().unwrap();
         {
             // If t < as_of1, we should get the original expiry.
             assert_eq!(cert.primary_key().with_policy(policy, now).unwrap()
@@ -4234,7 +4240,7 @@ mod test {
                 ReasonForRevocation::KeyCompromised,
                 b"It was the maid :/").unwrap()
             .build(&mut keypair, &cert, None)
-            .unwrap();
+            .now_or_never().unwrap().unwrap();
         assert_eq!(sig.typ(), SignatureType::KeyRevocation);
         assert_eq!(sig.issuers().collect::<Vec<_>>(),
                    vec![ &cert.keyid() ]);
@@ -4257,7 +4263,7 @@ mod test {
                 ReasonForRevocation::KeyCompromised,
                 b"It was the maid :/").unwrap()
             .build(&mut keypair, &cert, None)
-            .unwrap();
+            .now_or_never().unwrap().unwrap();
 
         assert_eq!(sig.typ(), SignatureType::KeyRevocation);
         assert_eq!(sig.issuers().collect::<Vec<_>>(),
@@ -4285,7 +4291,7 @@ mod test {
                     ReasonForRevocation::UIDRetired,
                     b"It was the maid :/").unwrap()
                 .build(&mut keypair, &cert, subkey.key(), None)
-                .unwrap()
+                .now_or_never().unwrap().unwrap()
         };
         assert_eq!(sig.typ(), SignatureType::SubkeyRevocation);
         let cert = cert.insert_packets(sig).unwrap();
@@ -4316,7 +4322,7 @@ mod test {
                     ReasonForRevocation::UIDRetired,
                     b"It was the maid :/").unwrap()
                 .build(&mut keypair, &cert, uid.userid(), None)
-                .unwrap()
+                .now_or_never().unwrap().unwrap()
         };
         assert_eq!(sig.typ(), SignatureType::CertificationRevocation);
         let cert = cert.insert_packets(sig).unwrap();
@@ -4366,13 +4372,13 @@ mod test {
                 .set_signature_creation_time(t1).unwrap()
                 .set_key_validity_period(Some(time::Duration::new(10 * 52 * 7 * 24 * 60 * 60, 0))).unwrap()
                 .set_preferred_hash_algorithms(vec![HashAlgorithm::SHA512]).unwrap()
-                .sign_direct_key(&mut pair, &key).unwrap();
+                .sign_direct_key(&mut pair, &key).now_or_never().unwrap().unwrap();
 
             let rev1 = signature::SignatureBuilder::new(SignatureType::KeyRevocation)
                 .set_signature_creation_time(t2).unwrap()
                 .set_reason_for_revocation(ReasonForRevocation::KeySuperseded,
                                            &b""[..]).unwrap()
-                .sign_direct_key(&mut pair, &key).unwrap();
+                .sign_direct_key(&mut pair, &key).now_or_never().unwrap().unwrap();
 
             let bind2 = signature::SignatureBuilder::new(SignatureType::DirectKey)
                 .set_features(&Features::sequoia()).unwrap()
@@ -4380,13 +4386,13 @@ mod test {
                 .set_signature_creation_time(t3).unwrap()
                 .set_key_validity_period(Some(time::Duration::new(10 * 52 * 7 * 24 * 60 * 60, 0))).unwrap()
                 .set_preferred_hash_algorithms(vec![HashAlgorithm::SHA512]).unwrap()
-                .sign_direct_key(&mut pair, &key).unwrap();
+                .sign_direct_key(&mut pair, &key).now_or_never().unwrap().unwrap();
 
             let rev2 = signature::SignatureBuilder::new(SignatureType::KeyRevocation)
                 .set_signature_creation_time(t4).unwrap()
                 .set_reason_for_revocation(ReasonForRevocation::KeyCompromised,
                                            &b""[..]).unwrap()
-                .sign_direct_key(&mut pair, &key).unwrap();
+                .sign_direct_key(&mut pair, &key).now_or_never().unwrap().unwrap();
 
             (bind1, rev1, bind2, rev2)
         };
@@ -5036,7 +5042,7 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
         let sig = uid.certify(&mut pair, &cert,
                               SignatureType::PositiveCertification,
                               None,
-                              t1).unwrap();
+                              t1).now_or_never().unwrap().unwrap();
         cert = cert.insert_packets(
             vec![Packet::from(uid), sig.into()]).unwrap();
 
@@ -5053,7 +5059,7 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
                     .unwrap()
                     .set_preferred_hash_algorithms(vec![HashAlgorithm::SHA512]).unwrap()
                     .set_signature_creation_time(*t).unwrap()
-                    .sign_direct_key(&mut pair, &key).unwrap();
+                    .sign_direct_key(&mut pair, &key).now_or_never().unwrap().unwrap();
 
                 let binding : Packet = binding.into();
 
@@ -5119,7 +5125,7 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
                     &mut alice.primary_key().key().clone().parts_into_secret()
                         .unwrap().into_keypair().unwrap(),
                     &bob,
-                    sig_template).unwrap();
+                    sig_template).now_or_never().unwrap().unwrap();
 
             let bob = bob.insert_packets(alice_certifies_bob.clone()).unwrap();
 
@@ -5229,7 +5235,7 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
         fake_key.set_body("fake key".into());
         let fake_binding = signature::SignatureBuilder::new(
                 SignatureType::Unknown(SignatureType::SubkeyBinding.into()))
-            .sign_standalone(&mut primary_pair)?;
+            .sign_standalone(&mut primary_pair).now_or_never().unwrap()?;
         let cert = cert.insert_packets(vec![Packet::from(fake_key),
                                            fake_binding.clone().into()])?;
         assert_eq!(cert.unknowns().count(), 1);
@@ -5313,7 +5319,8 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
         let builder = signature::SignatureBuilder::new(SignatureType::SubkeyBinding)
             .set_key_flags(&KeyFlags::empty()
                            .set_transport_encryption())?;
-        let binding = subkey_sec.bind(&mut primary_pair, &cert, builder)?;
+        let binding = subkey_sec.bind(&mut primary_pair, &cert, builder)
+            .now_or_never().unwrap()?;
 
         let cert = Cert::try_from(vec![
             primary.clone().into(),
@@ -5357,7 +5364,8 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
         let uid: UserID = "foo@example.org".into();
         let sig = uid.bind(
             &mut primary_pair, &cert,
-            signature::SignatureBuilder::new(SignatureType::PositiveCertification))?;
+            signature::SignatureBuilder::new(SignatureType::PositiveCertification))
+            .now_or_never().unwrap()?;
         let cert = cert.insert_packets(vec![
             Packet::from(uid),
             sig.into(),
@@ -5670,7 +5678,8 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
                         .sign_primary_key_binding(
                             &mut pair,
                             cert.primary_key().key(),
-                            cert.keys().subkeys().nth(0).unwrap().key())?),
+                            cert.keys().subkeys().nth(0).unwrap().key())
+                        .now_or_never().unwrap()?),
                 false)?)?;
         } else {
             panic!("expected a signature");
@@ -5725,7 +5734,8 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
                         .sign_primary_key_binding(
                             &mut pair,
                             cert.primary_key().key(),
-                            cert.keys().subkeys().nth(0).unwrap().key())?),
+                            cert.keys().subkeys().nth(0).unwrap().key())
+                        .now_or_never().unwrap()?),
                 false)?)?;
             sig.unhashed_area_mut().add(Subpacket::new(
                 SubpacketValue::EmbeddedSignature(backsig), false)?)?;

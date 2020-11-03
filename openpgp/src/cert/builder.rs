@@ -1116,6 +1116,7 @@ impl CertBuilder {
 
 #[cfg(test)]
 mod tests {
+    use futures::FutureExt;
     use std::str::FromStr;
 
     use super::*;
@@ -1425,7 +1426,8 @@ mod tests {
             .into_keypair()?;
         let sig = signature::SignatureBuilder::new(SignatureType::DirectKey)
             .set_signature_creation_time(then)?
-            .sign_hash(&mut primary_signer, hash)?;
+            .sign_hash(&mut primary_signer, hash)
+            .now_or_never().unwrap()?;
         let cert = cert.insert_packets(sig)?;
 
         assert!(cert.with_policy(p, then)?.primary_userid().is_err());

@@ -2978,6 +2978,7 @@ impl MarshalInto for Message {
 
 #[cfg(test)]
 mod test {
+    use futures::FutureExt;
     use super::*;
     use crate::types::CompressionAlgorithm;
     use crate::parse::to_unknown_packet;
@@ -3404,7 +3405,7 @@ mod test {
         let sig = uid.bind(
             &mut keypair, &cert,
             signature::SignatureBuilder::new(SignatureType::GenericCertification))
-            .unwrap();
+            .now_or_never().unwrap().unwrap();
 
         // The signature is exportable.  Try to export it in
         // various ways.
@@ -3437,7 +3438,8 @@ mod test {
         let sig = uid.bind(
             &mut keypair, &cert,
             signature::SignatureBuilder::new(SignatureType::GenericCertification)
-                .set_exportable_certification(true).unwrap()).unwrap();
+                .set_exportable_certification(true).unwrap())
+            .now_or_never().unwrap().unwrap();
 
         // The signature is exportable.  Try to export it in
         // various ways.
@@ -3472,7 +3474,8 @@ mod test {
         let sig = uid.bind(
             &mut keypair, &cert,
             signature::SignatureBuilder::new(SignatureType::GenericCertification)
-                .set_exportable_certification(false).unwrap()).unwrap();
+                .set_exportable_certification(false).unwrap())
+            .now_or_never().unwrap().unwrap();
 
         // The signature is not exportable.  Try to export it in
         // various ways.

@@ -524,6 +524,7 @@ impl ::std::ops::Deref for Message {
 
 #[cfg(test)]
 mod tests {
+    use futures::FutureExt;
     use super::*;
 
     use crate::types::DataFormat::Text;
@@ -893,7 +894,8 @@ mod tests {
             .unwrap().into();
         let mut pair = key.clone().into_keypair().unwrap();
         let sig = crate::packet::signature::SignatureBuilder::new(SignatureType::Binary)
-            .sign_hash(&mut pair, hash.context().unwrap()).unwrap();
+            .sign_hash(&mut pair, hash.context().unwrap())
+            .now_or_never().unwrap().unwrap();
 
         // 0: OnePassSig
         // => bad.
@@ -1005,7 +1007,8 @@ mod tests {
             .unwrap().into();
         let mut pair = key.clone().into_keypair().unwrap();
         let sig = crate::packet::signature::SignatureBuilder::new(SignatureType::Binary)
-            .sign_hash(&mut pair, hash.context().unwrap()).unwrap();
+            .sign_hash(&mut pair, hash.context().unwrap())
+            .now_or_never().unwrap().unwrap();
 
         // 0: Signature
         // => bad.
