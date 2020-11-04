@@ -194,8 +194,9 @@ impl<'a, C: 'a> fmt::Debug for PartialBodyFilter<'a, C> {
     }
 }
 
+#[async_trait::async_trait(?Send)]
 impl<'a, C: 'a> writer::Stackable<'a, C> for PartialBodyFilter<'a, C> {
-    fn into_inner(mut self: Box<Self>) -> Result<Option<writer::BoxStack<'a, C>>> {
+    async fn into_inner(mut self: Box<Self>) -> Result<Option<writer::BoxStack<'a, C>>> {
         self.write_out(&b""[..], true)?;
         Ok(self.inner.take())
     }
@@ -236,6 +237,7 @@ impl<'a, C: 'a> writer::Stackable<'a, C> for PartialBodyFilter<'a, C> {
 
 #[cfg(test)]
 mod test {
+    use futures::FutureExt;
     use std::io::Write;
     use super::*;
     use crate::serialize::stream::Message;
@@ -252,7 +254,7 @@ mod test {
                 .unwrap();
             pb.write_all(b"0123").unwrap();
             pb.write_all(b"4567").unwrap();
-            pb.finalize().unwrap();
+            pb.finalize().now_or_never().unwrap().unwrap();
         }
         assert_eq!(&buf,
                    &[8, // no chunking
@@ -270,7 +272,7 @@ mod test {
                 /*   max_chunk_size: */ 16)
                 .unwrap();
             pb.write_all(b"01234567").unwrap();
-            pb.finalize().unwrap();
+            pb.finalize().now_or_never().unwrap().unwrap();
         }
         assert_eq!(&buf,
                    &[0xe0 + 3, // first chunk
@@ -290,7 +292,7 @@ mod test {
                 /*   max_chunk_size: */ 16)
                 .unwrap();
             pb.write_all(b"012345670123456701234567").unwrap();
-            pb.finalize().unwrap();
+            pb.finalize().now_or_never().unwrap().unwrap();
         }
         assert_eq!(&buf,
                    &[0xe0 + 4, // first chunk

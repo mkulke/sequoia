@@ -1794,6 +1794,7 @@ name = "sequoia-autocrypt"
 version = "0.20.0"
 dependencies = [
  "base64 0.13.0",
+ "futures",
  "sequoia-openpgp",
 ]
 
@@ -1947,6 +1948,7 @@ version = "0.20.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "futures",
  "sequoia-openpgp",
  "structopt",
  "thiserror",

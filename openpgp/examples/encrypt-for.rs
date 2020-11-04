@@ -5,6 +5,7 @@ use std::env;
 use std::io;
 
 use anyhow::Context;
+use futures::FutureExt;
 
 use sequoia_openpgp as openpgp;
 
@@ -81,7 +82,7 @@ fn main() -> openpgp::Result<()> {
 
     // Finally, finalize the OpenPGP message by tearing down the
     // writer stack.
-    message.finalize()?;
+    message.finalize().now_or_never().unwrap()?;
 
     Ok(())
 }

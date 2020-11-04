@@ -5273,6 +5273,7 @@ impl<'a> PacketParser<'a> {
 
 #[cfg(test)]
 mod test {
+    use futures::FutureExt;
     use super::*;
 
     enum Data<'a> {
@@ -6030,7 +6031,7 @@ mod test {
                 signature::SignatureBuilder::new(SignatureType::Text)
             ).detached().build()?;
             message.write_all(data)?;
-            message.finalize()?;
+            message.finalize().now_or_never().unwrap()?;
         }
 
         struct Helper {};

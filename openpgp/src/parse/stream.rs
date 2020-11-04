@@ -2808,6 +2808,7 @@ impl<'a, H: VerificationHelper + DecryptionHelper> io::Read for Decryptor<'a, H>
 
 #[cfg(test)]
 mod test {
+    use futures::FutureExt;
     use super::*;
     use std::convert::TryFrom;
     use crate::parse::Parse;
@@ -3200,7 +3201,7 @@ mod test {
             let mut ls = LiteralWriter::new(signer).build().unwrap();
 
             ls.write_all(&mut vec![42u8; 3 * 1024 * 1024]).unwrap();
-            ls.finalize().unwrap();
+            ls.finalize().now_or_never().unwrap().unwrap();
         }
 
         // Test Verifier.

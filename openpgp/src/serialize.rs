@@ -138,6 +138,8 @@ use std::io::{self, Write};
 use std::cmp;
 use std::convert::{TryFrom, TryInto};
 
+use futures::FutureExt;
+
 use super::*;
 
 mod cert;
@@ -2158,7 +2160,7 @@ impl Marshal for CompressedData {
                 let mut o = stream::Compressor::new_naked(
                     o, self.algo(), Default::default(), 0)?;
                 o.write_all(bytes)?;
-                o.finalize()?;
+                o.finalize().now_or_never().unwrap()?;
             },
 
             Body::Structured(children) => {
@@ -2177,7 +2179,7 @@ impl Marshal for CompressedData {
                     (p as &dyn Marshal).serialize(&mut o)?;
                 }
 
-                o.finalize()?;
+                o.finalize().now_or_never().unwrap()?;
             },
         }
         Ok(())

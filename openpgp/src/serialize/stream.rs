@@ -282,8 +282,8 @@ impl<'a> Message<'a> {
     /// message.finalize()?;
     /// # Ok(()) }
     /// ```
-    pub fn finalize_one(self) -> Result<Option<Message<'a>>> {
-        Ok(self.0.into_inner()?.map(|bs| Self::from(bs)))
+    pub async fn finalize_one(self) -> Result<Option<Message<'a>>> {
+        Ok(self.0.into_inner().await?.map(|bs| Self::from(bs)))
     }
 
     /// Finalizes the message.
@@ -313,9 +313,9 @@ impl<'a> Message<'a> {
     /// message.finalize()?;
     /// # Ok(()) }
     /// ```
-    pub fn finalize(self) -> Result<()> {
+    pub async fn finalize(self) -> Result<()> {
         let mut stack = self;
-        while let Some(s) = stack.finalize_one()? {
+        while let Some(s) = stack.finalize_one().await? {
             stack = s;
         }
         Ok(())
@@ -586,9 +586,10 @@ impl<'a> Write for ArbitraryWriter<'a> {
     }
 }
 
+#[async_trait::async_trait(?Send)]
 impl<'a> writer::Stackable<'a, Cookie> for ArbitraryWriter<'a> {
-    fn into_inner(self: Box<Self>) -> Result<Option<writer::BoxStack<'a, Cookie>>> {
-        Box::new(self.inner).into_inner()
+    async fn into_inner(self: Box<Self>) -> Result<Option<writer::BoxStack<'a, Cookie>>> {
+        Box::new(self.inner).into_inner().await
     }
     fn pop(&mut self) -> Result<Option<writer::BoxStack<'a, Cookie>>> {
         unreachable!("Only implemented by Signer")
@@ -1214,6 +1215,7 @@ impl<'a> Write for Signer<'a> {
     }
 }
 
+#[async_trait::async_trait(?Send)]
 impl<'a> writer::Stackable<'a, Cookie> for Signer<'a> {
     fn pop(&mut self) -> Result<Option<writer::BoxStack<'a, Cookie>>> {
         Ok(self.inner.take())
@@ -1231,10 +1233,9 @@ impl<'a> writer::Stackable<'a, Cookie> for Signer<'a> {
     fn inner_ref(&self) -> Option<&dyn writer::Stackable<'a, Cookie>> {
         self.inner.as_ref().map(|r| r.as_ref())
     }
-    fn into_inner(mut self: Box<Self>)
+    async fn into_inner(mut self: Box<Self>)
                   -> Result<Option<writer::BoxStack<'a, Cookie>>> {
-        // XXX: OH SHIT
-        futures::executor::block_on(self.emit_signatures())?;
+        self.emit_signatures().await?;
         Ok(self.inner.take())
     }
     fn cookie_set(&mut self, cookie: Cookie) -> Cookie {
@@ -1496,12 +1497,13 @@ impl<'a> Write for LiteralWriter<'a> {
     }
 }
 
+#[async_trait::async_trait(?Send)]
 impl<'a> writer::Stackable<'a, Cookie> for LiteralWriter<'a> {
-    fn into_inner(mut self: Box<Self>)
+    async fn into_inner(mut self: Box<Self>)
                   -> Result<Option<writer::BoxStack<'a, Cookie>>> {
         let signer = self.signature_writer.take();
         let stack = self.inner
-            .into_inner()?.unwrap(); // Peel off the PartialBodyFilter.
+            .into_inner().await?.unwrap(); // Peel off the PartialBodyFilter.
 
         if let Some(mut signer) = signer {
             // We stashed away a Signer.  Reattach it to the
@@ -1745,9 +1747,10 @@ impl<'a> io::Write for Compressor<'a> {
     }
 }
 
+#[async_trait::async_trait(?Send)]
 impl<'a> writer::Stackable<'a, Cookie> for Compressor<'a> {
-    fn into_inner(self: Box<Self>) -> Result<Option<writer::BoxStack<'a, Cookie>>> {
-        Box::new(self.inner).into_inner()?.unwrap().into_inner()
+    async fn into_inner(self: Box<Self>) -> Result<Option<writer::BoxStack<'a, Cookie>>> {
+        Box::new(self.inner).into_inner().await?.unwrap().into_inner().await
     }
     fn pop(&mut self) -> Result<Option<writer::BoxStack<'a, Cookie>>> {
         unreachable!("Only implemented by Signer")
@@ -2578,7 +2581,7 @@ impl<'a> Encryptor<'a> {
     }
 
     /// Emits the MDC packet and recovers the original writer.
-    fn emit_mdc(&mut self) -> Result<writer::BoxStack<'a, Cookie>> {
+    async fn emit_mdc(&mut self) -> Result<writer::BoxStack<'a, Cookie>> {
         if let Some(mut w) = self.inner.take() {
             // Write the MDC, which must be the last packet inside the
             // encrypted packet stream.  The hash includes the MDC's
@@ -2592,9 +2595,9 @@ impl<'a> Encryptor<'a> {
 
             // Now recover the original writer.  First, strip the
             // Encryptor.
-            let w = w.into_inner()?.unwrap();
+            let w = w.into_inner().await?.unwrap();
             // And the partial body filter.
-            let w = w.into_inner()?.unwrap();
+            let w = w.into_inner().await?.unwrap();
 
             Ok(w)
         } else {
@@ -2632,6 +2635,7 @@ impl<'a> Write for Encryptor<'a> {
     }
 }
 
+#[async_trait::async_trait(?Send)]
 impl<'a> writer::Stackable<'a, Cookie> for Encryptor<'a> {
     fn pop(&mut self) -> Result<Option<writer::BoxStack<'a, Cookie>>> {
         unreachable!("Only implemented by Signer")
@@ -2650,8 +2654,8 @@ impl<'a> writer::Stackable<'a, Cookie> for Encryptor<'a> {
             None
         }
     }
-    fn into_inner(mut self: Box<Self>) -> Result<Option<writer::BoxStack<'a, Cookie>>> {
-        Ok(Some(self.emit_mdc()?))
+    async fn into_inner(mut self: Box<Self>) -> Result<Option<writer::BoxStack<'a, Cookie>>> {
+        Ok(Some(self.emit_mdc().await?))
     }
     fn cookie_set(&mut self, cookie: Cookie) -> Cookie {
         ::std::mem::replace(&mut self.cookie, cookie)
@@ -2669,6 +2673,7 @@ impl<'a> writer::Stackable<'a, Cookie> for Encryptor<'a> {
 
 #[cfg(test)]
 mod test {
+    use futures::FutureExt;
     use std::io::Read;
     use crate::{Packet, PacketPile, packet::CompressedData};
     use crate::parse::{Parse, PacketParserResult, PacketParser};
@@ -2687,7 +2692,7 @@ mod test {
             ustr.write_all(b"\x00").unwrap(); // fn length
             ustr.write_all(b"\x00\x00\x00\x00").unwrap(); // date
             ustr.write_all(b"Hello world.").unwrap(); // body
-            ustr.finalize().unwrap();
+            ustr.finalize().now_or_never().unwrap().unwrap();
         }
 
         let mut pp = PacketParser::from_bytes(&o).unwrap().unwrap();
@@ -2737,14 +2742,14 @@ mod test {
                 .algo(CompressionAlgorithm::Uncompressed).build().unwrap();
             let mut ls = LiteralWriter::new(c).format(T).build().unwrap();
             write!(ls, "one").unwrap();
-            let c = ls.finalize_one().unwrap().unwrap(); // Pop the LiteralWriter.
+            let c = ls.finalize_one().now_or_never().unwrap().unwrap().unwrap(); // Pop the LiteralWriter.
             let mut ls = LiteralWriter::new(c).format(T).build().unwrap();
             write!(ls, "two").unwrap();
-            let c = ls.finalize_one().unwrap().unwrap(); // Pop the LiteralWriter.
-            let c = c.finalize_one().unwrap().unwrap(); // Pop the Compressor.
+            let c = ls.finalize_one().now_or_never().unwrap().unwrap().unwrap(); // Pop the LiteralWriter.
+            let c = c.finalize_one().now_or_never().unwrap().unwrap().unwrap(); // Pop the Compressor.
             let mut ls = LiteralWriter::new(c).format(T).build().unwrap();
             write!(ls, "three").unwrap();
-            ls.finalize().unwrap();
+            ls.finalize().now_or_never().unwrap().unwrap();
         }
 
         let pile = PacketPile::from(reference);
@@ -2799,19 +2804,19 @@ mod test {
                 .algo(CompressionAlgorithm::Uncompressed).build().unwrap();
             let mut ls = LiteralWriter::new(c).format(T).build().unwrap();
             write!(ls, "one").unwrap();
-            let c = ls.finalize_one().unwrap().unwrap();
+            let c = ls.finalize_one().now_or_never().unwrap().unwrap().unwrap();
             let mut ls = LiteralWriter::new(c).format(T).build().unwrap();
             write!(ls, "two").unwrap();
-            let c = ls.finalize_one().unwrap().unwrap();
-            let c0 = c.finalize_one().unwrap().unwrap();
+            let c = ls.finalize_one().now_or_never().unwrap().unwrap().unwrap();
+            let c0 = c.finalize_one().now_or_never().unwrap().unwrap().unwrap();
             let c = Compressor::new(c0)
                 .algo(CompressionAlgorithm::Uncompressed).build().unwrap();
             let mut ls = LiteralWriter::new(c).format(T).build().unwrap();
             write!(ls, "three").unwrap();
-            let c = ls.finalize_one().unwrap().unwrap();
+            let c = ls.finalize_one().now_or_never().unwrap().unwrap().unwrap();
             let mut ls = LiteralWriter::new(c).format(T).build().unwrap();
             write!(ls, "four").unwrap();
-            ls.finalize().unwrap();
+            ls.finalize().now_or_never().unwrap().unwrap();
         }
 
         let pile = PacketPile::from(reference);
@@ -2877,7 +2882,7 @@ mod test {
             let signer = signer.build().unwrap();
             let mut ls = LiteralWriter::new(signer).build().unwrap();
             ls.write_all(b"Tis, tis, tis.  Tis is important.").unwrap();
-            let _ = ls.finalize().unwrap();
+            let _ = ls.finalize().now_or_never().unwrap().unwrap();
         }
 
         let mut ppr = PacketParser::from_bytes(&o).unwrap();
@@ -2911,7 +2916,7 @@ mod test {
             let mut literal = LiteralWriter::new(encryptor).build()
                 .unwrap();
             literal.write_all(message).unwrap();
-            literal.finalize().unwrap();
+            literal.finalize().now_or_never().unwrap().unwrap();
         }
 
         // ... and recover it...
@@ -3097,7 +3102,7 @@ mod test {
                     let mut literal = LiteralWriter::new(encryptor).build()
                         .unwrap();
                     literal.write_all(&content).unwrap();
-                    literal.finalize().unwrap();
+                    literal.finalize().now_or_never().unwrap().unwrap();
                 }
 
                 for &read_len in &[
@@ -3201,8 +3206,8 @@ mod test {
 
             let mut ls = LiteralWriter::new(signer).build().unwrap();
             ls.write_all(b"Tis, tis, tis.  Tis is important.").unwrap();
-            let signer = ls.finalize_one().unwrap().unwrap();
-            let _ = signer.finalize_one().unwrap().unwrap();
+            let signer = ls.finalize_one().now_or_never().unwrap().unwrap().unwrap();
+            let _ = signer.finalize_one().now_or_never().unwrap().unwrap().unwrap();
         }
 
         let mut ppr = PacketParser::from_bytes(&o).unwrap();
@@ -3261,7 +3266,7 @@ mod test {
                     signature::SignatureBuilder::new(SignatureType::Text)
                 ).detached().build()?;
                 message.write_all(data)?;
-                message.finalize()?;
+                message.finalize().now_or_never().unwrap()?;
             }
 
             struct Helper {};

@@ -23,7 +23,7 @@ use crate::{
     create_or_stdout_pgp,
 };
 
-pub fn sign(policy: &dyn Policy,
+pub async fn sign(policy: &dyn Policy,
             input: &mut dyn io::Read, output_path: Option<&str>,
             secrets: Vec<openpgp::Cert>, detached: bool, binary: bool,
             append: bool, notarize: bool, time: Option<SystemTime>,
@@ -32,14 +32,14 @@ pub fn sign(policy: &dyn Policy,
     match (detached, append|notarize) {
         (_, false) | (true, true) =>
             sign_data(policy, input, output_path, secrets, detached, binary,
-                      append, time, force),
+                      append, time, force).await,
         (false, true) =>
             sign_message(policy, input, output_path, secrets, binary, notarize,
-                         time, force),
+                         time, force).await,
     }
 }
 
-fn sign_data(policy: &dyn Policy,
+async fn sign_data(policy: &dyn Policy,
              input: &mut dyn io::Read, output_path: Option<&str>,
              secrets: Vec<openpgp::Cert>, detached: bool, binary: bool,
              append: bool, time: Option<SystemTime>, force: bool)
@@ -128,7 +128,7 @@ fn sign_data(policy: &dyn Policy,
     io::copy(input, &mut writer)
         .context("Failed to sign")?;
 
-    writer.finalize()
+    writer.finalize().await
         .context("Failed to sign")?;
 
     if let Some(path) = tmp_path {
@@ -139,7 +139,7 @@ fn sign_data(policy: &dyn Policy,
     Ok(())
 }
 
-fn sign_message(policy: &dyn Policy,
+async fn sign_message(policy: &dyn Policy,
                 input: &mut dyn io::Read, output_path: Option<&str>,
                 secrets: Vec<openpgp::Cert>, binary: bool, notarize: bool,
                 time: Option<SystemTime>, force: bool)
@@ -148,12 +148,12 @@ fn sign_message(policy: &dyn Policy,
         create_or_stdout_pgp(output_path, force,
                              binary,
                              armor::Kind::Message)?;
-    sign_message_(policy, input, &mut output, secrets, notarize, time)?;
-    output.finalize()?;
+    sign_message_(policy, input, &mut output, secrets, notarize, time).await?;
+    output.finalize().await?;
     Ok(())
 }
 
-fn sign_message_(policy: &dyn Policy,
+async fn sign_message_(policy: &dyn Policy,
                  input: &mut dyn io::Read, output: &mut dyn io::Write,
                  secrets: Vec<openpgp::Cert>, notarize: bool,
                  time: Option<SystemTime>)
@@ -242,7 +242,7 @@ fn sign_message_(policy: &dyn Policy,
             State::Signing { signature_count } if signature_count == 0 => {
                 // All signatures that are being notarized are
                 // written, pop the signer from the writer stack.
-                sink = sink.finalize_one()
+                sink = sink.finalize_one().await
                     .context("Failed to sign data")?
                     .unwrap();
                 state = State::Done;
@@ -275,7 +275,7 @@ fn sign_message_(policy: &dyn Policy,
                 .context("Failed to sign data")?;
 
             // Pop the literal writer.
-            sink = literal.finalize_one()
+            sink = literal.finalize_one().await
                 .context("Failed to sign data")?
                 .unwrap();
         }
@@ -336,7 +336,7 @@ fn sign_message_(policy: &dyn Policy,
     match state {
         State::Signing { signature_count } => {
             assert_eq!(signature_count, 0);
-            sink.finalize()
+            sink.finalize().await
                 .context("Failed to sign data")?;
         },
         State::Done => (),

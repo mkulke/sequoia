@@ -57,12 +57,14 @@ impl<'a> From<Message<'a>> for BoxStack<'a, Cookie> {
 pub(crate) type BoxStack<'a, C> = Box<dyn Stackable<'a, C> + 'a>;
 
 /// Makes a writer stackable and provides convenience functions.
+#[async_trait::async_trait(?Send)]
 pub(crate) trait Stackable<'a, C> : io::Write + fmt::Debug {
     /// Recovers the inner stackable.
     ///
     /// This can fail if the current `Stackable` has buffered data
     /// that hasn't been written to the underlying `Stackable`.
-    fn into_inner(self: Box<Self>) -> Result<Option<BoxStack<'a, C>>>;
+    async fn into_inner(self: Box<Self>) -> Result<Option<BoxStack<'a, C>>>
+        where 'a: 'async_trait;
 
     /// Pops the stackable from the stack, detaching it.
     ///
@@ -115,9 +117,12 @@ pub(crate) trait Stackable<'a, C> : io::Write + fmt::Debug {
 }
 
 /// Make a `Box<Stackable>` look like a Stackable.
+#[async_trait::async_trait(?Send)]
 impl <'a, C> Stackable<'a, C> for BoxStack<'a, C> {
-    fn into_inner(self: Box<Self>) -> Result<Option<BoxStack<'a, C>>> {
-        (*self).into_inner()
+    async fn into_inner(self: Box<Self>) -> Result<Option<BoxStack<'a, C>>>
+        where 'a: 'async_trait
+    {
+        (*self).into_inner().await
     }
     /// Recovers the inner stackable.
     fn pop(&mut self) -> Result<Option<BoxStack<'a, C>>> {
@@ -222,9 +227,10 @@ impl<'a, C> io::Write for Identity<'a, C> {
     }
 }
 
+#[async_trait::async_trait(?Send)]
 impl<'a, C> Stackable<'a, C> for Identity<'a, C> {
     /// Recovers the inner stackable.
-    fn into_inner(self: Box<Self>) -> Result<Option<BoxStack<'a, C>>> {
+    async fn into_inner(self: Box<Self>) -> Result<Option<BoxStack<'a, C>>> {
         Ok(self.inner)
     }
     /// Recovers the inner stackable.
@@ -308,9 +314,12 @@ impl<W: io::Write, C> io::Write for Generic<W, C> {
     }
 }
 
+#[async_trait::async_trait(?Send)]
 impl<'a, W: io::Write, C> Stackable<'a, C> for Generic<W, C> {
     /// Recovers the inner stackable.
-    fn into_inner(self: Box<Self>) -> Result<Option<BoxStack<'a, C>>> {
+    async fn into_inner(self: Box<Self>) -> Result<Option<BoxStack<'a, C>>>
+        where 'a: 'async_trait
+    {
         Ok(None)
     }
     /// Recovers the inner stackable.
@@ -389,8 +398,9 @@ impl<'a, C: 'a> io::Write for Armorer<'a, C> {
     }
 }
 
+#[async_trait::async_trait(?Send)]
 impl<'a, C: 'a> Stackable<'a, C> for Armorer<'a, C> {
-    fn into_inner(self: Box<Self>) -> Result<Option<BoxStack<'a, C>>> {
+    async fn into_inner(self: Box<Self>) -> Result<Option<BoxStack<'a, C>>> {
         let inner = self.inner.inner.finalize()?;
         Ok(Some(inner))
     }
@@ -458,8 +468,9 @@ impl<'a, C: 'a> io::Write for Encryptor<'a, C> {
     }
 }
 
+#[async_trait::async_trait(?Send)]
 impl<'a, C: 'a> Stackable<'a, C> for Encryptor<'a, C> {
-    fn into_inner(mut self: Box<Self>) -> Result<Option<BoxStack<'a, C>>> {
+    async fn into_inner(mut self: Box<Self>) -> Result<Option<BoxStack<'a, C>>> {
         let inner = self.inner.inner.finish()?;
         Ok(Some(inner))
     }
@@ -531,8 +542,9 @@ impl<'a, C: 'a> io::Write for AEADEncryptor<'a, C> {
     }
 }
 
+#[async_trait::async_trait(?Send)]
 impl<'a, C: 'a> Stackable<'a, C> for AEADEncryptor<'a, C> {
-    fn into_inner(mut self: Box<Self>) -> Result<Option<BoxStack<'a, C>>> {
+    async fn into_inner(mut self: Box<Self>) -> Result<Option<BoxStack<'a, C>>> {
         let inner = self.inner.inner.finish()?;
         Ok(Some(inner))
     }

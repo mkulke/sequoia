@@ -21,6 +21,8 @@ use std::path::Path;
 use std::fs::File;
 use std::str;
 
+use futures::FutureExt;
+
 use sequoia_openpgp as openpgp;
 use openpgp::armor;
 use openpgp::Error;
@@ -502,7 +504,7 @@ impl AutocryptSetupMessage {
 
             self.cert.as_tsk().serialize(&mut w)?;
             let m = w.finalize()?;
-            m.finalize()?;
+            m.finalize().now_or_never().expect("no signing involved")?;
         }
         armor_writer.finalize()?;
         Ok(())

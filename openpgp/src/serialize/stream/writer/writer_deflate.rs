@@ -43,8 +43,9 @@ impl<'a, C: 'a> io::Write for ZIP<'a, C> {
     }
 }
 
+#[async_trait::async_trait(?Send)]
 impl<'a, C: 'a> Stackable<'a, C> for ZIP<'a, C> {
-    fn into_inner(self: Box<Self>) -> Result<Option<BoxStack<'a, C>>> {
+    async fn into_inner(self: Box<Self>) -> Result<Option<BoxStack<'a, C>>> {
         let inner = self.inner.inner.finish()?;
         Ok(Some(inner))
     }
@@ -111,8 +112,9 @@ impl<'a, C: 'a> io::Write for ZLIB<'a, C> {
     }
 }
 
+#[async_trait::async_trait(?Send)]
 impl<'a, C: 'a> Stackable<'a, C> for ZLIB<'a, C> {
-    fn into_inner(self: Box<Self>) -> Result<Option<BoxStack<'a, C>>> {
+    async fn into_inner(self: Box<Self>) -> Result<Option<BoxStack<'a, C>>> {
         let inner = self.inner.inner.finish()?;
         Ok(Some(inner))
     }

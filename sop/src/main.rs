@@ -49,8 +49,9 @@ mod dates;
 
 fn main() {
     use std::process::exit;
+    use futures::FutureExt;
 
-    match real_main() {
+    match real_main().now_or_never().expect("uses only local keys") {
         Ok(()) => (),
         Err(e) => {
             print_error_chain(&e);
@@ -62,7 +63,7 @@ fn main() {
     }
 }
 
-fn real_main() -> Result<()> {
+async fn real_main() -> Result<()> {
     let p = &StandardPolicy::default();
 
     match SOP::from_args() {
@@ -80,14 +81,14 @@ fn real_main() -> Result<()> {
 
             let mut sink = stdout(no_armor, armor::Kind::SecretKey)?;
             cert.as_tsk().serialize(&mut sink)?;
-            sink.finalize()?;
+            sink.finalize().await?;
         },
 
         SOP::ExtractCert { no_armor, } => {
             let cert = Cert::from_reader(&mut io::stdin())?;
             let mut sink = stdout(no_armor, armor::Kind::PublicKey)?;
             cert.serialize(&mut sink)?;
-            sink.finalize()?;
+            sink.finalize().await?;
         },
 
         SOP::Sign { no_armor, as_, keys, } => {
@@ -161,7 +162,7 @@ fn real_main() -> Result<()> {
             }
             let mut message = signer.build()?;
             message.write_all(&data)?;
-            message.finalize()?;
+            message.finalize().await?;
         },
 
         SOP::Verify { not_before, not_after, signatures, certs, } => {
@@ -335,7 +336,7 @@ fn real_main() -> Result<()> {
                 .format(as_.into())
                 .build()?;
             message.write_all(&data)?;
-            message.finalize()?;
+            message.finalize().await?;
         },
 
         SOP::Decrypt {
@@ -442,7 +443,7 @@ fn real_main() -> Result<()> {
                 packet.serialize(sink.as_mut().expect("valid at this point"))?;
             }
 
-            sink.expect("valid at this point").finalize()?;
+            sink.expect("valid at this point").finalize().await?;
         },
 
         SOP::Dearmor {} => {

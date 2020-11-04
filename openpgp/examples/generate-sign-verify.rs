@@ -1,6 +1,7 @@
 /// Generates a key, then signs and verifies a message.
 
 use std::io::{self, Write};
+use futures::FutureExt;
 
 use sequoia_openpgp as openpgp;
 
@@ -66,7 +67,7 @@ fn sign(p: &dyn Policy, sink: &mut dyn Write, plaintext: &str, tsk: &openpgp::Ce
 
     // Finalize the OpenPGP message to make sure that all data is
     // written.
-    literal_writer.finalize()?;
+    literal_writer.finalize().now_or_never().unwrap()?;
 
     Ok(())
 }

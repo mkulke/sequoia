@@ -5,6 +5,7 @@ use std::env;
 use std::io;
 
 use anyhow::Context;
+use futures::FutureExt;
 
 use sequoia_openpgp as openpgp;
 
@@ -101,7 +102,7 @@ fn main() -> openpgp::Result<()> {
                 io::copy(&mut pp, &mut literal)
                     .context("Failed to sign data")?;
 
-                    message = literal.finalize_one()
+                    message = literal.finalize_one().now_or_never().unwrap()
                     .context("Failed to sign data")?
                     .unwrap();
             },
@@ -121,7 +122,7 @@ fn main() -> openpgp::Result<()> {
     }
 
     // Finally, teardown the stack to ensure all the data is written.
-    message.finalize()
+    message.finalize().now_or_never().unwrap()
         .context("Failed to write data")?;
 
     Ok(())

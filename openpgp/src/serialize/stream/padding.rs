@@ -218,9 +218,10 @@ impl<'a, P: Fn(u64) -> u64 + 'a> io::Write for Padder<'a, P> {
     }
 }
 
+#[async_trait::async_trait(?Send)]
 impl<'a, P: Fn(u64) -> u64 + 'a> writer::Stackable<'a, Cookie> for Padder<'a, P>
 {
-    fn into_inner(self: Box<Self>)
+    async fn into_inner(self: Box<Self>)
                   -> Result<Option<writer::BoxStack<'a, Cookie>>> {
         // Make a note of the amount of data written to this filter.
         let uncompressed_size = self.position();
@@ -228,7 +229,7 @@ impl<'a, P: Fn(u64) -> u64 + 'a> writer::Stackable<'a, Cookie> for Padder<'a, P>
         // Pop-off us and the compression filter, leaving only our
         // partial body encoder on the stack.  This finalizes the
         // compression.
-        let mut pb_writer = Box::new(self.inner).into_inner()?.unwrap();
+        let mut pb_writer = Box::new(self.inner).into_inner().await?.unwrap();
 
         // Compressed size is what we've actually written out, modulo
         // partial body encoding.
@@ -263,7 +264,7 @@ impl<'a, P: Fn(u64) -> u64 + 'a> writer::Stackable<'a, Cookie> for Padder<'a, P>
             amount -= n as u64;
         }
 
-        pb_writer.into_inner()
+        pb_writer.into_inner().await
     }
     fn pop(&mut self) -> Result<Option<writer::BoxStack<'a, Cookie>>> {
         unreachable!("Only implemented by Signer")
@@ -335,6 +336,7 @@ fn log2(x: u64) -> usize {
 
 #[cfg(test)]
 mod test {
+    use futures::FutureExt;
     use super::*;
 
     #[test]
@@ -408,7 +410,7 @@ mod test {
             let padder = Padder::new(message, padme).unwrap();
             let mut w = LiteralWriter::new(padder).build().unwrap();
             w.write_all(&msg).unwrap();
-            w.finalize().unwrap();
+            w.finalize().now_or_never().unwrap().unwrap();
         }
 
         let m = crate::Message::from_bytes(&padded).unwrap();
@@ -431,7 +433,7 @@ mod test {
             let padder = Padder::new(message, padme).unwrap();
             let mut w = LiteralWriter::new(padder).build().unwrap();
             w.write_all(MSG).unwrap();
-            w.finalize().unwrap();
+            w.finalize().now_or_never().unwrap().unwrap();
         }
 
         assert!(padded.windows(MSG.len()).any(|ch| ch == MSG),

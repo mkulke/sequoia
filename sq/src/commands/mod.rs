@@ -79,7 +79,7 @@ fn get_signing_keys(certs: &[openpgp::Cert], p: &dyn Policy,
     Ok(keys)
 }
 
-pub fn encrypt<'a>(policy: &'a dyn Policy,
+pub async fn encrypt<'a>(policy: &'a dyn Policy,
                    input: &mut dyn io::Read, message: Message<'a>,
                    npasswords: usize, recipients: &'a [openpgp::Cert],
                    signers: Vec<openpgp::Cert>,
@@ -162,7 +162,7 @@ pub fn encrypt<'a>(policy: &'a dyn Policy,
     io::copy(input, &mut literal_writer)
         .context("Failed to encrypt")?;
 
-    literal_writer.finalize()
+    literal_writer.finalize().await
         .context("Failed to encrypt")?;
 
     Ok(())

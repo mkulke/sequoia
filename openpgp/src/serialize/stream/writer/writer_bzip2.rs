@@ -43,8 +43,9 @@ impl<'a, C: 'a> io::Write for BZ<'a, C> {
     }
 }
 
+#[async_trait::async_trait(?Send)]
 impl<'a, C: 'a> Stackable<'a, C> for BZ<'a, C> {
-    fn into_inner(self: Box<Self>) -> Result<Option<BoxStack<'a, C>>> {
+    async fn into_inner(self: Box<Self>) -> Result<Option<BoxStack<'a, C>>> {
         let inner = self.inner.inner.finish()?;
         Ok(Some(inner))
     }

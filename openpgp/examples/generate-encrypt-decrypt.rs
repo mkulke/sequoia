@@ -1,6 +1,7 @@
 /// Generates a key, then encrypts and decrypts a message.
 
 use std::io::{self, Write};
+use futures::FutureExt;
 
 use sequoia_openpgp as openpgp;
 
@@ -69,7 +70,7 @@ fn encrypt(p: &dyn Policy, sink: &mut dyn Write, plaintext: &str,
 
     // Finalize the OpenPGP message to make sure that all data is
     // written.
-    message.finalize()?;
+    message.finalize().now_or_never().unwrap()?;
 
     Ok(())
 }

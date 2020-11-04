@@ -268,7 +268,7 @@ async fn real_main() -> Result<()> {
                               &recipients, additional_secrets,
                               mode,
                               m.value_of("compression").expect("has default"),
-                              time.into())?;
+                              time.into()).await?;
         },
         ("sign",  Some(m)) => {
             let mut input = open_or_stdin(m.value_of("input"))?;
@@ -288,7 +288,7 @@ async fn real_main() -> Result<()> {
                 None
             };
             commands::sign(policy, &mut input, output, secrets, detached, binary,
-                           append, notarize, time, force)?;
+                           append, notarize, time, force).await?;
         },
         ("verify",  Some(m)) => {
             let mut input = open_or_stdin(m.value_of("input"))?;
@@ -317,7 +317,7 @@ async fn real_main() -> Result<()> {
                                      false,
                                      parse_armor_kind(m.value_of("kind")))?;
             io::copy(&mut input, &mut output)?;
-            output.finalize()?;
+            output.finalize().await?;
         },
         ("dearmor",  Some(m)) => {
             let mut input = open_or_stdin(m.value_of("input"))?;
@@ -339,7 +339,7 @@ async fn real_main() -> Result<()> {
                             cert.serialize(&mut output)?;
                         }
                     }
-                    output.finalize()?;
+                    output.finalize().await?;
                 },
                 ("encode-sender",  Some(m)) => {
                     let input = open_or_stdin(m.value_of("input"))?;
@@ -402,7 +402,7 @@ async fn real_main() -> Result<()> {
                     &ctx, policy, &mut mapping,
                     &mut input, &mut output,
                     secrets, m.is_present("dump-session-key"))?;
-                output.finalize()?;
+                output.finalize().await?;
             },
 
             ("split",  Some(m)) => {
@@ -429,7 +429,7 @@ async fn real_main() -> Result<()> {
                                          m.is_present("binary"),
                                          parse_armor_kind(m.value_of("kind")))?;
                 commands::join(m.values_of("input"), &mut output)?;
-                output.finalize()?;
+                output.finalize().await?;
             },
             _ => unreachable!(),
         },
