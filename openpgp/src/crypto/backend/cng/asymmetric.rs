@@ -4,6 +4,8 @@
 use std::time::SystemTime;
 use std::convert::TryInto;
 
+use async_trait::async_trait;
+
 use crate::{Error, Result};
 
 use crate::crypto::asymmetric::{Decryptor, KeyPair, Signer};
@@ -20,12 +22,13 @@ use win_crypto_ng as cng;
 
 const CURVE25519_SIZE: usize = 32;
 
+#[async_trait(?Send)]
 impl Signer for KeyPair {
     fn public(&self) -> &Key<key::PublicParts, key::UnspecifiedRole> {
         KeyPair::public(self)
     }
 
-    fn sign(&mut self, hash_algo: HashAlgorithm, digest: &[u8]) -> Result<mpi::Signature> {
+    async fn sign(&mut self, hash_algo: HashAlgorithm, digest: &[u8]) -> Result<mpi::Signature> {
         use cng::asymmetric::{AsymmetricAlgorithm, AsymmetricAlgorithmId};
         use cng::asymmetric::{AsymmetricKey, Private, Rsa};
         use cng::asymmetric::signature::{Signer, SignaturePadding};
