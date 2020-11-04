@@ -9,6 +9,7 @@ use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use async_trait::async_trait;
 use futures::{Future, Stream};
 
 use std::task::{Poll, self};
@@ -766,12 +767,13 @@ impl<'a> KeyPair<'a> {
     }
 }
 
+#[async_trait(?Send)]
 impl<'a> crypto::Signer for KeyPair<'a> {
     fn public(&self) -> &Key<key::PublicParts, key::UnspecifiedRole> {
         self.public
     }
 
-    fn sign(&mut self, hash_algo: HashAlgorithm, digest: &[u8])
+    async fn sign(&mut self, hash_algo: HashAlgorithm, digest: &[u8])
             -> openpgp::Result<openpgp::crypto::mpi::Signature>
     {
         use crate::openpgp::types::PublicKeyAlgorithm::*;
@@ -785,13 +787,9 @@ impl<'a> crypto::Signer for KeyPair<'a> {
                 | (DSA, PublicKey::DSA { .. })
                 | (EdDSA, PublicKey::EdDSA { .. })
                 | (ECDSA, PublicKey::ECDSA { .. }) => {
-                    let mut rt = tokio::runtime::Runtime::new()?;
-
-                    rt.block_on(async move {
-                        let mut a = Agent::connect_to(&self.agent_socket).await?;
-                        let sig = a.sign(self.public, hash_algo, digest).await?;
-                        Ok(sig)
-                    })
+                    let mut a = Agent::connect_to(&self.agent_socket).await?;
+                    let sig = a.sign(self.public, hash_algo, digest).await?;
+                    Ok(sig)
                 },
 
             (pk_algo, _) => Err(openpgp::Error::InvalidOperation(format!(

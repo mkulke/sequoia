@@ -38,7 +38,7 @@ use crate::Result;
 ///
 ///   [`KeyPair`]: struct.KeyPair.html
 ///   [`sequoia_rpc::gnupg::KeyPair`]: https://docs.sequoia-pgp.org/sequoia_ipc/gnupg/struct.KeyPair.html
-#[async_trait]
+#[async_trait(?Send)]
 pub trait Signer {
     /// Returns a reference to the public key.
     fn public(&self) -> &Key<key::PublicParts, key::UnspecifiedRole>;

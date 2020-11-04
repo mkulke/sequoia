@@ -24,6 +24,7 @@ sequoia-openpgp = { path = "../openpgp", version = "0.20", default-features = fa
 sequoia-core = { path = "../core", version = "0.20" }
 
 anyhow = "1"
+async-trait = "0.1"
 buffered-reader = { path = "../buffered-reader", version = "0.20", default-features = false }
 capnp-rpc = "0.13"
 fs2 = "0.4.2"

@@ -1849,6 +1849,7 @@ name = "sequoia-ipc"
 version = "0.20.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "buffered-reader",
  "capnp-rpc",
  "clap",

@@ -15,7 +15,7 @@ use crate::crypto::mpi::{self, MPI, PublicKey};
 use crate::crypto::SessionKey;
 use crate::types::{Curve, HashAlgorithm};
 
-#[async_trait]
+#[async_trait(?Send)]
 impl Signer for KeyPair {
     fn public(&self) -> &Key<key::PublicParts, key::UnspecifiedRole> {
         KeyPair::public(self)
