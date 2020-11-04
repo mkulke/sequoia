@@ -146,7 +146,30 @@ fn help_warning(arg: &str) {
     }
 }
 
-fn main() -> Result<()> {
+fn print_error_chain(err: &anyhow::Error) {
+    eprintln!("           {}", err);
+    err.chain().skip(1).for_each(|cause| eprintln!("  because: {}", cause));
+}
+
+fn main() {
+    use std::process::exit;
+
+    let mut rt = tokio::runtime::Builder::new()
+        .basic_scheduler()
+        .enable_io()
+        .build()
+        .expect("Failed to initialize runtime environment");
+
+    match rt.block_on(real_main()) {
+        Ok(()) => (),
+        Err(e) => {
+            print_error_chain(&e);
+            exit(1);
+        },
+    }
+}
+
+async fn real_main() -> Result<()> {
     let policy = &mut P::new();
 
     let matches = sq_cli::build().get_matches();
@@ -182,10 +205,6 @@ fn main() -> Result<()> {
         builder = builder.home(dir);
     }
     let ctx = builder.build()?;
-    let mut rt = tokio::runtime::Builder::new()
-        .basic_scheduler()
-        .enable_io()
-        .build()?;
 
     match matches.subcommand() {
         ("decrypt",  Some(m)) => {
@@ -435,7 +454,7 @@ fn main() -> Result<()> {
                     let id = id.unwrap();
 
                     let mut output = create_or_stdout(m.value_of("output"), force)?;
-                    let cert = rt.block_on(ks.get(&id))
+                    let cert = ks.get(&id).await
                         .context("Failed to retrieve key")?;
                     if ! m.is_present("binary") {
                         cert.armored().serialize(&mut output)
@@ -448,7 +467,7 @@ fn main() -> Result<()> {
                     let cert = Cert::from_reader(&mut input).
                         context("Malformed key")?;
 
-                    rt.block_on(ks.send(&cert))
+                    ks.send(&cert).await
                         .context("Failed to send key to server")?;
                 },
                 _ => unreachable!(),
@@ -585,7 +604,7 @@ fn main() -> Result<()> {
                     // stderr and exit.
                     // Because it might be created a WkdServer struct, not
                     // doing it for now.
-                    let certs = rt.block_on(wkd::get(&email_address))?;
+                    let certs = wkd::get(&email_address).await?;
                     // ```text
                     //     The HTTP GET method MUST return the binary representation of the
                     //     OpenPGP key for the given mail address.
