@@ -31,6 +31,7 @@ use crate::types::{
 };
 use crate::crypto::hash::{self, Hash};
 use crate::crypto::mem::{secure_cmp, Protected};
+use crate::seal;
 use crate::serialize::Marshal;
 
 use crate::Error;
@@ -236,6 +237,7 @@ impl fmt::Debug for MPI {
     }
 }
 
+impl seal::Sealed for MPI {}
 impl Hash for MPI {
     fn hash(&self, hash: &mut hash::Context) {
         let len = self.bits() as u16;
@@ -544,6 +546,7 @@ impl PublicKey {
     }
 }
 
+impl seal::Sealed for PublicKey {}
 impl Hash for PublicKey {
     fn hash(&self, hash: &mut hash::Context) {
         self.serialize(hash).expect("hashing does not fail")
@@ -805,6 +808,7 @@ impl SecretKeyMaterial {
     }
 }
 
+impl seal::Sealed for SecretKeyMaterial {}
 impl Hash for SecretKeyMaterial {
     fn hash(&self, hash: &mut hash::Context) {
         self.serialize(hash).expect("hashing does not fail")
@@ -929,6 +933,7 @@ impl Ciphertext {
     }
 }
 
+impl seal::Sealed for Ciphertext {}
 impl Hash for Ciphertext {
     fn hash(&self, hash: &mut hash::Context) {
         self.serialize(hash).expect("hashing does not fail")
@@ -1020,6 +1025,7 @@ pub enum Signature {
     },
 }
 
+impl seal::Sealed for Signature {}
 impl Hash for Signature {
     fn hash(&self, hash: &mut hash::Context) {
         self.serialize(hash).expect("hashing does not fail")

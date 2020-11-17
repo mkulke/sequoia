@@ -21,6 +21,7 @@ use crate::packet::key::Key4;
 use crate::packet::Signature;
 use crate::packet::signature::{self, Signature4};
 use crate::Result;
+use crate::seal;
 use crate::types::Timestamp;
 
 use std::fs::{File, OpenOptions};
@@ -235,11 +236,12 @@ impl Digest for HashDumper {
 /// functions] for how to hash compounds like (Key,UserID)-bindings.
 ///
 ///   [`Signature`'s hashing functions]: ../../packet/enum.Signature.html#hashing-functions
-pub trait Hash {
+pub trait Hash: seal::Sealed {
     /// Updates the given hash with this object.
     fn hash(&self, hash: &mut Context);
 }
 
+impl seal::Sealed for UserID {}
 impl Hash for UserID {
     fn hash(&self, hash: &mut Context) {
         let len = self.value().len() as u32;
@@ -253,6 +255,7 @@ impl Hash for UserID {
     }
 }
 
+impl seal::Sealed for UserAttribute {}
 impl Hash for UserAttribute {
     fn hash(&self, hash: &mut Context) {
         let len = self.value().len() as u32;
@@ -266,6 +269,9 @@ impl Hash for UserAttribute {
     }
 }
 
+impl<P, R> seal::Sealed for Key4<P, R>
+    where P: key::KeyParts,
+          R: key::KeyRole, {}
 impl<P, R> Hash for Key4<P, R>
     where P: key::KeyParts,
           R: key::KeyRole,
@@ -305,6 +311,7 @@ impl<P, R> Hash for Key4<P, R>
     }
 }
 
+impl seal::Sealed for Signature {}
 impl Hash for Signature {
     fn hash(&self, hash: &mut Context) {
         match self {
@@ -313,12 +320,14 @@ impl Hash for Signature {
     }
 }
 
+impl seal::Sealed for Signature4 {}
 impl Hash for Signature4 {
     fn hash(&self, hash: &mut Context) {
         self.fields.hash(hash);
     }
 }
 
+impl seal::Sealed for signature::SignatureFields {}
 impl Hash for signature::SignatureFields {
     fn hash(&self, hash: &mut Context) {
         use crate::serialize::MarshalInto;
