@@ -72,6 +72,8 @@ pub mod sexp;
 #[cfg(test)]
 mod tests;
 
+const TRACE: bool = false;
+
 macro_rules! platform {
     { unix => { $($unix:tt)* }, windows => { $($windows:tt)* } } => {
         if cfg!(unix) {
@@ -376,12 +378,16 @@ impl Server {
     }
 
     fn serve_listener(&mut self, l: TcpListener) -> Result<()> {
+        tracer!(TRACE, "serve_listener");
+        t!("Server starting");
+
         /* The first client tells us our cookie.  */
         let cookie = {
             /* XXX: It'd be nice to recycle this connection.  */
             let mut i = l.accept()?;
             Cookie::receive(&mut i.0)?
         };
+        t!("The initial client communicated the cookie");
 
         /* Tokioize.  */
         let local = tokio::task::LocalSet::new();
@@ -392,12 +398,15 @@ impl Server {
 
             loop {
                 let (mut socket, _) = socket.accept().await?;
+                t!("Accepted connection");
 
-                let _ = socket.set_nodelay(true);
+                socket.set_nodelay(true)?;
                 let received_cookie = Cookie::receive_async(&mut socket).await?;
                 if received_cookie != cookie {
+                    t!("Got bad authentication cookie");
                     return Err(anyhow::anyhow!("Bad cookie"));
                 }
+                t!("Good authentication cookie");
 
                 let (reader, writer) = socket.into_split();
 
@@ -410,6 +419,7 @@ impl Server {
                                             Side::Server, Default::default());
 
                 let rpc_system = handler.handle(network);
+                t!("Handling RPC request");
                 let _ = tokio::task::spawn_local(rpc_system).await;
             }
         };
