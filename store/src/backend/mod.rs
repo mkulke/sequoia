@@ -40,6 +40,8 @@ mod log;
 
 /* Configuration and policy.  */
 
+const TRACE: bool = false;
+
 /// Minimum sleep time.
 fn min_sleep_time() -> Duration {
     Duration::new(5 * 60, 0)
@@ -93,9 +95,12 @@ struct NodeServer {
 
 impl NodeServer {
     fn new(descriptor: ipc::Descriptor, local: &tokio::task::LocalSet) -> Result<Self> {
+        tracer!(TRACE, "NodeServer::new");
+
         let mut db_path = descriptor.context().home().to_path_buf();
         db_path.push("public-key-store.sqlite");
 
+        t!("Opening database");
         let c = Connection::open(db_path)?;
         c.execute_batch("PRAGMA secure_delete = true;")?;
         c.execute_batch("PRAGMA foreign_keys = true;")?;
@@ -103,10 +108,13 @@ impl NodeServer {
             _descriptor: descriptor,
             c: Rc::new(c),
         };
+        t!("Initializing server");
         server.init()?;
 
+        t!("Spawning housekeeping task");
         local.spawn_local(KeyServer::start_housekeeping(server.c.clone()));
 
+        t!("Done");
         Ok(server)
     }
 
@@ -187,6 +195,8 @@ impl node::Server for NodeServer {
               params: node::ImportParams,
               mut results: node::ImportResults)
               -> Promise<(), capnp::Error> {
+        tracer!(TRACE, "NodeServer::import");
+        t!("Handling request");
         bind_results!(results);
         let new = sry!(Cert::from_bytes(&pry!(pry!(params.get()).get_key())));
         let fp = new.fingerprint();
@@ -195,6 +205,7 @@ impl node::Server for NodeServer {
         sry!(key.merge(new));
         pry!(pry!(results.get().get_result())
              .set_ok::<node::key::Client>(capnp_rpc::new_client(key)));
+        t!("Done");
         Promise::ok(())
     }
 
