@@ -1981,6 +1981,7 @@ dependencies = [
  "capnp",
  "capnp-rpc",
  "capnpc",
+ "futures",
  "futures-util",
  "rand",
  "rusqlite",

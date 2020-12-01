@@ -83,6 +83,8 @@ use crate::store_protocol_capnp::node;
 
 pub(crate) mod backend;
 
+pub mod not_sync;
+
 /// Single-threaded Tokio runtime that drives the Cap'n Proto `RpcSystem`.
 struct RpcRuntime {
     runtime: tokio::runtime::Runtime,

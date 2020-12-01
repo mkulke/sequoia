@@ -10,6 +10,15 @@
 // Sends request and decodes result.
 //
 // Sends the given request and decodes the result.
+macro_rules! invoke {
+    ($requ: expr) => {
+        $requ.send().promise.await?.get()?.get_result()?.which()?.into_result()
+    }
+}
+
+// Sends request and decodes result.
+//
+// Sends the given request and decodes the result.
 macro_rules! make_request {
     ( $core: expr, $request: expr ) => {{
         use futures_util::TryFutureExt;
