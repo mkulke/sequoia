@@ -10,6 +10,10 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::exit;
 use chrono::{DateTime, offset::Utc};
+use futures::{
+    stream::{Stream, StreamExt},
+    future::FutureExt,
+};
 
 use buffered_reader::File;
 use sequoia_openpgp as openpgp;
@@ -28,7 +32,7 @@ use crate::openpgp::cert::prelude::*;
 use crate::openpgp::policy::StandardPolicy as P;
 use sequoia_core::{Context, NetworkPolicy};
 use sequoia_net::{KeyServer, wkd};
-use store::{Mapping, LogIter};
+use store::{Mapping, not_sync::Log};
 
 mod sq_cli;
 mod commands;
@@ -505,9 +509,9 @@ fn main() -> Result<()> {
                     if m.is_present("label") {
                         let binding = mapping.lookup(m.value_of("label").unwrap())
                             .context("No such key")?;
-                        print_log(binding.log().context("Failed to get log")?, false);
+                        //print_log(binding.log().context("Failed to get log")?, false);
                     } else {
-                        print_log(mapping.log().context("Failed to get log")?, true);
+                        //print_log(mapping.log().context("Failed to get log")?, true);
                     }
                 },
                 _ => unreachable!(),
@@ -559,7 +563,12 @@ fn main() -> Result<()> {
                     table.printstd();
                 },
                 ("log",  Some(_)) => {
-                    print_log(store::Store::server_log(&ctx)?, true);
+                    async fn print_server_log(ctx: &Context) -> Result<()> {
+                        use store::not_sync::Store;
+                        print_log(Store::server_log(&ctx).await?, true).await
+                    }
+                    tokio::task::LocalSet::new().block_on(
+                        &mut rt, print_server_log(&ctx))?;
                 },
                 _ => unreachable!(),
             }
@@ -647,7 +656,7 @@ fn list_bindings(mapping: &Mapping, realm: &str, name: &str)
     Ok(())
 }
 
-fn print_log(iter: LogIter, with_slug: bool) {
+async fn print_log(entries: impl Stream<Item = Log>, with_slug: bool) -> Result<()> {
     let mut table = Table::new();
     table.set_format(*prettytable::format::consts::FORMAT_NO_LINESEP_WITH_TITLE);
     let mut head = row!["timestamp", "message"];
@@ -656,16 +665,18 @@ fn print_log(iter: LogIter, with_slug: bool) {
     }
     table.set_titles(head);
 
-    for entry in iter {
+    entries.fold(table, |mut table, entry| async move {
         let mut row = row![&entry.timestamp.convert().to_string(),
                            &entry.short()];
         if with_slug {
             row.insert_cell(1, Cell::new(&entry.slug));
         }
         table.add_row(row);
-    }
-
-    table.printstd();
+        table
+    }).then(|table| {
+        table.printstd();
+        futures::future::ok(())
+    }).await
 }
 
 /// Parses the given string depicting a ISO 8601 timestamp.

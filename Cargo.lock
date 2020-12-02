@@ -1949,6 +1949,7 @@ dependencies = [
  "chrono",
  "clap",
  "crossterm",
+ "futures",
  "itertools",
  "prettytable-rs",
  "rpassword",
