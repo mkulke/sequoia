@@ -1,0 +1,23 @@
+[package]
+name = "sequoia-openpgp-default"
+version = "0.1.0"
+authors = ["Sequoia Developers <dev@sequoia-pgp.org>"]
+edition = "2018"
+
+[target.'cfg(not(windows))'.dependencies.sequoia-openpgp]
+path = "../openpgp"
+default-features = false
+features = ["crypto-nettle"]
+
+[target.'cfg(windows)'.dependencies.sequoia-openpgp]
+path = "../openpgp"
+default-features = false
+features = ["crypto-cng"]
+
+[features]
+default = ["compression"]
+
+# The compression algorithms.
+compression = ["sequoia-openpgp/compression"]
+compression-deflate = ["sequoia-openpgp/compression-deflate"]
+compression-bzip2 = ["sequoia-openpgp/compression-bzip2"]

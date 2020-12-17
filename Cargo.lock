@@ -2012,6 +2012,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sequoia-openpgp-default"
+version = "0.1.0"
+dependencies = [
+ "sequoia-openpgp",
+]
+
+[[package]]
 name = "sequoia-openpgp-ffi"
 version = "0.21.0"
 dependencies = [
