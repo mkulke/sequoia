@@ -58,7 +58,7 @@ pub fn build() -> App<'static, 'static> {
                          .takes_value(true)
                          .value_name("CERT-FILE")
                          .number_of_values(1)
-                         .help("The sender's certificate verify signatures \
+                         .help("The sender's certificate to verify signatures \
                                 with, given as a file \
                                 (can be given multiple times)"))
                     .arg(Arg::with_name("secret-key-file")
@@ -152,6 +152,19 @@ pub fn build() -> App<'static, 'static> {
                                 to using the one that expired last"))
         )
 
+        .subcommand(SubCommand::with_name("merge-signatures")
+                    .display_order(31)
+                    .about("Merges two signatures")
+                    .arg(Arg::with_name("input1").value_name("FILE")
+                         .help("Sets the first input file to use"))
+                    .arg(Arg::with_name("input2").value_name("FILE")
+                         .help("Sets the second input file to use"))
+                    .arg(Arg::with_name("output").value_name("FILE")
+                         .long("output")
+                         .short("o")
+                         .help("Sets the output file to use"))
+        )
+
         .subcommand(SubCommand::with_name("sign")
                     .display_order(25)
                     .about("Signs a message")
@@ -217,7 +230,7 @@ pub fn build() -> App<'static, 'static> {
                          .takes_value(true)
                          .value_name("CERT-FILE")
                          .number_of_values(1)
-                         .help("The sender's certificate verify signatures \
+                         .help("The sender's certificate to verify signatures \
                                 with, given as a file \
                                 (can be given multiple times)")))
         .subcommand(SubCommand::with_name("enarmor")
