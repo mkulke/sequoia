@@ -30,6 +30,7 @@
 //!     merge-signatures    Merges two signatures
 //!     keyserver           Interacts with keyservers
 //!     autocrypt           Autocrypt support
+//!     certring            Manipulates certificate rings
 //!     dearmor             Removes ASCII Armor from a file
 //!     enarmor             Applies ASCII Armor to a file
 //!     help                Prints this message or the help of the given subcommand(s)
@@ -423,6 +424,128 @@
 //!     -o, --output <FILE>                      Sets the output file to use
 //!         --prefer-encrypt <prefer-encrypt>    Sets the prefer-encrypt attribute [default: nopreference]  [possible
 //!                                              values: nopreference, mutual]
+//!
+//! ARGS:
+//!     <FILE>    Sets the input file to use
+//! ```
+//!
+//! ## Subcommand certring
+//!
+//! ```text
+//! Manipulates certificate rings
+//!
+//! USAGE:
+//!     sq certring <SUBCOMMAND>
+//!
+//! FLAGS:
+//!     -h, --help      
+//!             Prints help information
+//!
+//!     -V, --version   
+//!             Prints version information
+//!
+//!
+//! SUBCOMMANDS:
+//!     filter    Joins certs into a certring applying a filter
+//!     help      Prints this message or the help of the given subcommand(s)
+//!     join      Joins certs into a certring
+//!     list      Lists certs in a certring
+//!     split     Splits a certring into individual certs
+//! ```
+//!
+//! ### Subcommand certring filter
+//!
+//! ```text
+//! If multiple predicates are given, they are or'ed, i.e. a certificate matches if any of the predicates match.  To require
+//! all predicates to match, chain multiple invocations of this command.
+//!
+//! USAGE:
+//!     sq certring filter [FLAGS] [OPTIONS] [--] [FILE]...
+//!
+//! FLAGS:
+//!     -B, --binary        
+//!             Don't ASCII-armor the certring
+//!
+//!     -h, --help          
+//!             Prints help information
+//!
+//!     -P, --prune-certs   
+//!             Remove certificate components not matching the filter
+//!
+//!     -V, --version       
+//!             Prints version information
+//!
+//!
+//! OPTIONS:
+//!         --domain <FQDN>...     
+//!             Match on this email domain name
+//!
+//!         --email <ADDRESS>...   
+//!             Match on this email address
+//!
+//!         --name <NAME>...       
+//!             Match on this name
+//!
+//!     -o, --output <FILE>        
+//!             Sets the output file to use
+//!
+//!
+//! ARGS:
+//!     <FILE>...   
+//!             Sets the input files to use
+//! ```
+//!
+//! ### Subcommand certring join
+//!
+//! ```text
+//! Joins certs into a certring
+//!
+//! USAGE:
+//!     sq certring join [FLAGS] [OPTIONS] [FILE]...
+//!
+//! FLAGS:
+//!     -B, --binary     Don't ASCII-armor the certring
+//!     -h, --help       Prints help information
+//!     -V, --version    Prints version information
+//!
+//! OPTIONS:
+//!     -o, --output <FILE>    Sets the output file to use
+//!
+//! ARGS:
+//!     <FILE>...    Sets the input files to use
+//! ```
+//!
+//! ### Subcommand certring list
+//!
+//! ```text
+//! Lists certs in a certring
+//!
+//! USAGE:
+//!     sq certring list [FILE]
+//!
+//! FLAGS:
+//!     -h, --help       Prints help information
+//!     -V, --version    Prints version information
+//!
+//! ARGS:
+//!     <FILE>    Sets the input file to use
+//! ```
+//!
+//! ### Subcommand certring split
+//!
+//! ```text
+//! Splits a certring into individual certs
+//!
+//! USAGE:
+//!     sq certring split [OPTIONS] [FILE]
+//!
+//! FLAGS:
+//!     -h, --help       Prints help information
+//!     -V, --version    Prints version information
+//!
+//! OPTIONS:
+//!     -p, --prefix <FILE>    Sets the prefix to use for output files (defaults to the input filename with a dash, or
+//!                            'output' if certring is read from stdin)
 //!
 //! ARGS:
 //!     <FILE>    Sets the input file to use
