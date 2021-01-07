@@ -2650,4 +2650,53 @@ mod test {
         assert_eq!(cert.with_policy(p, t).unwrap().keys().count(), 1);
         Ok(())
     }
+
+    #[test]
+    fn reject_sha1() -> Result<()> {
+        use crate::types::Timestamp;
+        // this is an old cert generated with GnuPG 1.4 riddled with SHA-1s
+        let cert = Cert::from_bytes(r#"-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mQENBF/2uPIBCAC4XUympUs/agTlnG/LfowiBu6dak5tdENWL6kZ14NQazw5XAGl
+I1KdPKfrVWIuAWnJO1nFKImtE4EAVi3M6vdaGTAY0SLyRBXCtyqMIorPqG9rCkoc
+XdNGHvV5SrfZ+/72SMOuUFWxpt4L1ylW/WHxrso+A6i44PB5Q42Yhql5OqhpW28j
+kppyy3iSCPNB5+NxTDKubUXYKjl2HLyxYUc1Q0GJnpWChgFw3e+CD7hKdGZRm13q
+5VuKin8RBAwxQzcQrW1NL1AY+au6SP4aqyT44mSZFMf4NFZ/RJVh1Kxg/DbaEO4m
+Ubz+Fd9dd/eHQjpsRelj1JLwSXh7vjXFYPp3ABEBAAG0CEpvaG4gRG9liQE4BBMB
+AgAiBQJf9rjyAhsDBgsJCAcDAgYVCAIJCgsEFgIDAQIeAQIXgAAKCRB20Duyk/Xg
+zslyB/4vmwN70msPow5ig1B8+tcVBh6t6BofVIIIkFvCug2VFsgbNcKYa6SAFcMR
+TD8ICiY/uBMEdoSV2Lx+Ou3OwwQN1XVwsXItH7faB7vHcnVNmZH1Kz19gmhX7Ykr
+endRdH74L2kM9UYjC9X3W3xSOcHUPARAxcoOvxJ+tcs+hFSh+kc3DC3zNkexbHsb
+b/WnidTTPNHwoqUJUqGdeti5qTKbEII/YUUtIUruZ6+VAFeqtdOv3+dcZQaE5RP2
+cSbfXA+3fh5RaOJyUjY1iKB5yAqtGr8JDv8cXUTTDYyXqXvSBRRVtQdCGa+pUcEL
+6Z27zopvZvTeL9Q33xUnUpEjblV6
+=kcrj
+-----END PGP PUBLIC KEY BLOCK-----"#)?;
+
+        let mut p = StandardPolicy::new();
+        // if we explicitly disallow SHA-1
+        p.reject_hash(HashAlgorithm::SHA1);
+        // then this fails
+        let res = cert.with_policy(&p, Timestamp::Y2050M2);
+        assert!(res.is_err());
+
+        if let Err(e) = res {
+            // a little bit of details on the error
+            assert_eq!(e.to_string(), "No binding signature at time 2050-02-01T00:00:00Z");
+            assert_eq!(e.source().unwrap().to_string(), "Policy rejected non-revocation signature (PositiveCertification) requiring second pre-image resistance");
+            // SHA-1 is not considered secure, as expected
+            assert_eq!(e.source().unwrap().source().unwrap().to_string(), "SHA1 is not considered secure since 1970-01-01T00:00:00Z");
+        }
+
+        // let's try again with a fresh, unaltered StandardPolicy
+        let p = StandardPolicy::new();
+        // but why this doesn't fail in 2050? I thought we "completely reject [SHA1] in 2023":
+        assert!(cert.with_policy(&p, Timestamp::Y2050M2).is_ok()); // <--- why not Err?
+
+        // this is just for comparison
+        let ref p = NullPolicy::new();
+        assert!(cert.with_policy(p, None).is_ok());
+
+        Ok(())
+    }
 }
