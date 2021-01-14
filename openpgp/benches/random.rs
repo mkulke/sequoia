@@ -1,61 +1,36 @@
 use criterion::{black_box, Throughput, criterion_group, criterion_main, Criterion};
 
 use sequoia_openpgp::crypto;
-use sequoia_openpgp::cert::{CertBuilder, Cert};
-use sequoia_openpgp::policy::{Policy, StandardPolicy};
-use std::io::Write;
-use sequoia_openpgp::serialize::stream::{Message, Encryptor, LiteralWriter};
+use sequoia_openpgp::cert::Cert;
+
+use sequoia_openpgp::parse::Parse;
 
 fn run_random(size: usize) {
     let mut buf = vec![0; size];
     crypto::random(&mut buf);
 }
 
-/// Borrowed from the guide, chapter 02
-/// Encrypts the given message.
-fn encrypt(policy: &dyn Policy,
-           sink: &mut Write, plaintext: &str, recipient: &Cert)
-           -> sequoia_openpgp::Result<()> {
-    // Build a vector of recipients to hand to Encryptor.
-    let mut recipients =
-        recipient.keys().with_policy(policy, None).alive().revoked(false)
-            .for_transport_encryption()
-            .map(|ka| ka.key().into())
-            .collect::<Vec<_>>();
-
-    // Start streaming an OpenPGP message.
-    let message = Message::new(sink);
-
-    // We want to encrypt a literal data packet.
-    let mut encryptor = Encryptor::for_recipient(
-        message, recipients.pop().expect("No encryption key found"));
-    for r in recipients {
-        encryptor = encryptor.add_recipient(r)
-    }
-    let encryptor = encryptor.build().expect("Failed to create encryptor");
-
-    // Emit a literal data packet.
-    let mut literal_writer = LiteralWriter::new(encryptor).build()?;
-
-    // Encrypt the data.
-    literal_writer.write_all(plaintext.as_bytes())?;
-
-    // Finalize the OpenPGP message to make sure that all data is
-    // written.
-    literal_writer.finalize()?;
-
-    Ok(())
+fn read_lutz_key() {
+    let _lutz = Cert::from_bytes(sequoia_openpgp::tests::key("lutz.gpg")).unwrap();
 }
 
-fn run_random_use_case() {
-    let (cert, _revocation) = CertBuilder::new()
-        .add_userid("someone@example.org")
-        .add_transport_encryption_subkey()
-        .generate().unwrap();
+fn read_key(bytes: &[u8]) {
 
-    let p = StandardPolicy::new();
-    let mut ciphertext = Vec::new();
-    let _ = encrypt(&p, &mut ciphertext, "message_text", &cert);
+    // copied from cert.rs::test_into_packets
+    // Tests that Cert::into_packets() and Cert::serialize(..) agree.
+    let _dkg = Cert::from_bytes(bytes);
+
+    //let mut buf = Vec::new();
+    //for p in dkg.clone().into_packets() {
+    //    p.serialize(&mut buf)?;
+    //}
+    //let dkg = dkg.to_vec()?;
+    //if false && buf != dkg {
+    //    std::fs::write("/tmp/buf", &buf)?;
+    //    std::fs::write("/tmp/dkg", &dkg)?;
+    //}
+    //assert_eq!(buf, dkg);
+    //Ok(())
 }
 
 fn bench_random(c: &mut Criterion) {
@@ -69,9 +44,15 @@ fn bench_random(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_random_use_case(c: &mut Criterion) {
-    c.bench_function("crypto::random create/encrypt", |b| b.iter(|| run_random_use_case() ));
+fn bench_read_keys(c: &mut Criterion) {
+    let mut group = c.benchmark_group("read keys");
+    let foo = ["dkg.gpg", "lutz.gpg"];
+    foo.iter().for_each(|&filename| {
+        let bytes = sequoia_openpgp::tests::key(filename);
+        group.bench_function(filename, |b| b.iter(|| read_key(bytes)));
+    });
+    group.finish();
 }
 
-criterion_group!(benches, bench_random, bench_random_use_case);
+criterion_group!(benches, bench_read_keys);
 criterion_main!(benches);
