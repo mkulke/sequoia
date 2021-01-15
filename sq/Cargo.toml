@@ -50,6 +50,7 @@ predicates = "1.0.5"
 [[bin]]
 name = "sq"
 path = "src/sq-usage.rs"
+bench = false
 
 [features]
 default = [

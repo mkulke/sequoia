@@ -41,6 +41,9 @@ zbase32 = "0.1.2"
 rand = { version = "0.7", default-features = false }
 tokio = { version = "0.2.19", features = ["full"] }
 
+[lib]
+bench = false
+
 [features]
 default = ["compression"]
 
