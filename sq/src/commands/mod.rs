@@ -7,7 +7,6 @@ use std::time::SystemTime;
 use rpassword;
 
 use sequoia_openpgp as openpgp;
-use sequoia_core::Context;
 use crate::openpgp::types::{
     CompressionAlgorithm,
 };
@@ -26,14 +25,16 @@ use crate::openpgp::serialize::stream::{
     padding::Padder,
 };
 use crate::openpgp::policy::Policy;
-use sequoia_store as store;
+
+use crate::{
+    Config,
+};
 
 pub mod decrypt;
 pub use self::decrypt::decrypt;
 mod sign;
 pub use self::sign::sign;
 pub mod dump;
-use dump::Convert;
 pub use self::dump::dump;
 mod inspect;
 pub use self::inspect::inspect;
@@ -41,6 +42,8 @@ pub mod key;
 pub mod merge_signatures;
 pub use self::merge_signatures::merge_signatures;
 pub mod certring;
+#[cfg(feature = "net")]
+pub mod net;
 
 /// Returns suitable signing keys from a given list of Certs.
 fn get_signing_keys(certs: &[openpgp::Cert], p: &dyn Policy,
@@ -196,9 +199,9 @@ pub fn encrypt<'a>(policy: &'a dyn Policy,
     Ok(())
 }
 
-struct VHelper<'a> {
-    ctx: &'a Context,
-    mapping: &'a mut store::Mapping,
+struct VHelper {
+    #[allow(dead_code)]
+    config: Config,
     signatures: usize,
     certs: Option<Vec<Cert>>,
     labels: HashMap<KeyID, String>,
@@ -211,13 +214,12 @@ struct VHelper<'a> {
     broken_signatures: usize,
 }
 
-impl<'a> VHelper<'a> {
-    fn new(ctx: &'a Context, mapping: &'a mut store::Mapping, signatures: usize,
+impl VHelper {
+    fn new(config: Config, signatures: usize,
            certs: Vec<Cert>)
            -> Self {
         VHelper {
-            ctx: ctx,
-            mapping: mapping,
+            config,
             signatures: signatures,
             certs: Some(certs),
             labels: HashMap::new(),
@@ -323,9 +325,9 @@ impl<'a> VHelper<'a> {
     }
 }
 
-impl<'a> VerificationHelper for VHelper<'a> {
-    fn get_certs(&mut self, ids: &[openpgp::KeyHandle]) -> Result<Vec<Cert>> {
-        let mut certs = self.certs.take().unwrap();
+impl VerificationHelper for VHelper {
+    fn get_certs(&mut self, _ids: &[openpgp::KeyHandle]) -> Result<Vec<Cert>> {
+        let certs = self.certs.take().unwrap();
         // Get all keys.
         let seen: HashSet<_> = certs.iter()
             .flat_map(|cert| {
@@ -335,44 +337,6 @@ impl<'a> VerificationHelper for VHelper<'a> {
         // Explicitly provided keys are trusted.
         self.trusted = seen.clone();
 
-        // Try to get missing Certs from the mapping.
-        for id in ids.iter().map(|i| KeyID::from(i))
-            .filter(|i| !seen.contains(i))
-        {
-            let _ =
-                self.mapping.lookup_by_subkeyid(&id)
-                .and_then(|binding| {
-                    self.labels.insert(id.clone(), binding.label()?);
-
-                    // Keys from our mapping are trusted.
-                    self.trusted.insert(id.clone());
-
-                    binding.cert()
-                })
-                .and_then(|cert| {
-                    certs.push(cert);
-                    Ok(())
-                });
-        }
-
-        // Update seen.
-        let seen = self.trusted.clone();
-
-        // Try to get missing Certs from the pool.
-        for id in ids.iter().map(|i| KeyID::from(i.clone()))
-            .filter(|i| !seen.contains(i))
-        {
-            let _ =
-                store::Store::lookup_by_subkeyid(self.ctx, &id)
-                .and_then(|key| {
-                    // Keys from the pool are NOT trusted.
-                    key.cert()
-                })
-                .and_then(|cert| {
-                    certs.push(cert);
-                    Ok(())
-                });
-        }
         Ok(certs)
     }
 
@@ -403,14 +367,13 @@ impl<'a> VerificationHelper for VHelper<'a> {
     }
 }
 
-pub fn verify(ctx: &Context, policy: &dyn Policy,
-              mapping: &mut store::Mapping,
+pub fn verify(config: Config, policy: &dyn Policy,
               input: &mut (dyn io::Read + Sync + Send),
               detached: Option<&mut (dyn io::Read + Sync + Send)>,
               output: &mut dyn io::Write,
               signatures: usize, certs: Vec<Cert>)
               -> Result<()> {
-    let helper = VHelper::new(ctx, mapping, signatures, certs);
+    let helper = VHelper::new(config, signatures, certs);
     let helper = if let Some(dsig) = detached {
         let mut v = DetachedVerifierBuilder::from_reader(dsig)?
             .with_policy(policy, None, helper)?;
@@ -505,40 +468,5 @@ pub fn join(inputs: Option<clap::Values>, output: &mut dyn io::Write)
             .map(true).build()?;
         copy(ppr, output)?;
     }
-    Ok(())
-}
-
-pub fn mapping_print_stats(mapping: &store::Mapping, label: &str) -> Result<()> {
-    fn print_stamps(st: &store::Stamps) -> Result<()> {
-        println!("{} messages using this key", st.count);
-        if let Some(t) = st.first {
-            println!("    First: {}", t.convert());
-        }
-        if let Some(t) = st.last {
-            println!("    Last: {}", t.convert());
-        }
-        Ok(())
-    }
-
-    fn print_stats(st: &store::Stats) -> Result<()> {
-        if let Some(t) = st.created {
-            println!("  Created: {}", t.convert());
-        }
-        if let Some(t) = st.updated {
-            println!("  Updated: {}", t.convert());
-        }
-        print!("  Encrypted ");
-        print_stamps(&st.encryption)?;
-        print!("  Verified ");
-        print_stamps(&st.verification)?;
-        Ok(())
-    }
-
-    let binding = mapping.lookup(label)?;
-    println!("Binding {:?}", label);
-    print_stats(&binding.stats().context("Failed to get stats")?)?;
-    let key = binding.key().context("Failed to get key")?;
-    println!("Key");
-    print_stats(&key.stats().context("Failed to get stats")?)?;
     Ok(())
 }

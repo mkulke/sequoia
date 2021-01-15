@@ -25,18 +25,14 @@ maintenance = { status = "actively-developed" }
 buffered-reader = { path = "../buffered-reader", version = "1.0.0", default-features = false }
 sequoia-openpgp = { path = "../openpgp", version = "1.0.0", default-features = false }
 sequoia-autocrypt = { path = "../autocrypt", version = "0.22", default-features = false }
-sequoia-core = { path = "../core", version = "0.22", default-features = false }
-sequoia-ipc = { path = "../ipc", version = "0.22", default-features = false }
-sequoia-net = { path = "../net", version = "0.22", default-features = false }
-sequoia-store = { path = "../store", version = "0.22", default-features = false }
+sequoia-net = { path = "../net", version = "0.22", default-features = false, optional = true }
 anyhow = "1.0.18"
 chrono = "0.4.10"
 clap = "2.33"
 itertools = "0.9"
-prettytable-rs = "0.8.0"
 tempfile = "3.1"
-crossterm = "0.13"
-tokio = { version = "0.2.19", features = ["rt-core", "io-util", "io-driver"] }
+term_size = "0.3"
+tokio = { version = "0.2.19", features = ["rt-core", "io-util", "io-driver"], optional = true }
 rpassword = "5.0"
 
 [build-dependencies]
@@ -44,8 +40,6 @@ clap = "2.33"
 
 [dev-dependencies]
 assert_cli = "0.6"
-assert_cmd = "1.0.1"
-predicates = "1.0.5"
 
 [[bin]]
 name = "sq"
@@ -55,10 +49,11 @@ path = "src/sq-usage.rs"
 default = [
     "buffered-reader/compression",
     "sequoia-openpgp/default",
-    "sequoia-store/background-services"
+    "net",
 ]
 crypto-nettle = ["sequoia-openpgp/crypto-nettle"]
 crypto-cng = ["sequoia-openpgp/crypto-cng"]
 compression = ["buffered-reader/compression", "sequoia-openpgp/compression"]
 compression-deflate = ["buffered-reader/compression-deflate", "sequoia-openpgp/compression-deflate"]
 compression-bzip2 = ["buffered-reader/compression-bzip2", "sequoia-openpgp/compression-bzip2"]
+net = ["sequoia-net", "tokio"]
