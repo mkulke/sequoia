@@ -83,5 +83,5 @@ name = "pad"
 required-features = ["compression-deflate"]
 
 [[bench]]
-name = "random"
+name = "read_keys"
 harness = false

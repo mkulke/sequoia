@@ -165,8 +165,7 @@ pub mod policy;
 pub(crate) mod seal;
 pub(crate) mod utils;
 
-//#[cfg(test)]
-//#[cfg(any(bench, test))]
+#[cfg(test)]
 pub mod tests;
 
 /// Returns a timestamp for the tests.
