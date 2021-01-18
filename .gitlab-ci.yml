@@ -49,6 +49,28 @@ bullseye:
     RUSTFLAGS: -D warnings -A unused-parens
   after_script: []
 
+benchmarks:
+  stage: test
+  image: registry.gitlab.com/sequoia-pgp/build-docker-image/bullseye:latest
+  needs: ["rust-stable"]
+
+  before_script:
+    - cargo install critcmp
+
+  script:
+    - cargo bench -- --save-baseline $CI_COMMIT_SHA
+    - $CARGO_HOME/bin/critcmp $CI_COMMIT_SHA $CI_COMMIT_BEFORE_SHA | tee benchmark.txt
+
+  after_script: []
+
+  artifacts:
+    expose_as: 'benchmark results'
+    paths: ['benchmark.txt']
+
+  variables:
+    CARGO_TARGET_DIR: $CI_PROJECT_DIR/../target.benchmarks
+    RUSTFLAGS: -D warnings -A unused-parens
+
 all_commits:
   # Test each commit up to main, to facilitate bisecting.
   stage: test
