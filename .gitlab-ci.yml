@@ -38,6 +38,19 @@ bullseye:
     CARGO_TARGET_DIR: $CI_PROJECT_DIR/../target.$CI_CONCURRENT_ID.bullseye
     RUSTFLAGS: -D warnings -A unused-parens
 
+benchmarks:
+  stage: test
+  image: registry.gitlab.com/sequoia-pgp/build-docker-image/bullseye:latest
+
+  script:
+    - cargo bench -- --save-baseline $CI_COMMIT_SHA
+
+  after_script: []
+
+  variables:
+    CARGO_TARGET_DIR: $CI_PROJECT_DIR/../target.benchmarks
+    RUSTFLAGS: -D warnings -A unused-parens
+
 all_commits:
   # Test each commit up to main, to facilitate bisecting.
   stage: test
