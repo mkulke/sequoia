@@ -41,13 +41,15 @@ bullseye:
 benchmarks:
   stage: test
   image: registry.gitlab.com/sequoia-pgp/build-docker-image/bullseye:latest
+  needs: ["rust-stable"]
 
   before_script:
     - cargo install critcmp
 
   script:
+    - cd openpgp
     - cargo bench -- --save-baseline $CI_COMMIT_SHA
-    - critcmp $CI_COMMIT_SHA $CI_COMMIT_BEFORE_SHA
+    - $CARGO_HOME/bin/critcmp $CI_COMMIT_SHA $CI_COMMIT_BEFORE_SHA
 
   after_script: []
 
