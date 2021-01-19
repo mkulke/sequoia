@@ -386,6 +386,7 @@ pub struct Regex {
     regex: regex::Regex,
     disable_sanitizations: bool,
 }
+assert_send_and_sync!(Regex);
 
 impl Regex {
     /// Parses and compiles the regular expression.
@@ -495,7 +496,9 @@ impl Regex {
 enum RegexSet_ {
     Regex(Regex),
     Invalid,
+    Everything,
 }
+assert_send_and_sync!(RegexSet_);
 
 /// A set of regular expressions.
 ///
@@ -538,6 +541,7 @@ pub struct RegexSet {
     re_set: RegexSet_,
     disable_sanitizations: bool,
 }
+assert_send_and_sync!(RegexSet);
 
 impl RegexSet {
     /// Parses and compiles the regular expressions.
@@ -568,14 +572,15 @@ impl RegexSet {
     ///     "[..",
     /// ];
     ///
-    /// let res = RegexSet::new(res.iter())?;
+    /// let res = RegexSet::new(res)?;
     ///
     /// assert!(res.is_match("Alice <alice@example.org>"));
     /// assert!(! res.is_match("Bob <bob@example.com>"));
     /// # Ok(()) }
     /// ```
-    pub fn new<'a, RE>(res: impl Iterator<Item=RE>) -> Result<Self>
-        where RE: Borrow<&'a str>
+    pub fn new<'a, RE, I>(res: I) -> Result<Self>
+    where RE: Borrow<&'a str>,
+          I: IntoIterator<Item=RE>,
     {
         tracer!(TRACE, "RegexSet::new");
 
@@ -612,13 +617,7 @@ impl RegexSet {
             // Match everything.
             t!("No regular expressions provided.");
             Ok(RegexSet {
-                re_set: RegexSet_::Regex(
-                    Regex {
-                        regex: regex::RegexBuilder::new(
-                            &Hir::empty().to_string())
-                            .build()?,
-                        disable_sanitizations: false,
-                    }),
+                re_set: RegexSet_::Everything,
                 disable_sanitizations: false,
             })
         } else {
@@ -698,13 +697,15 @@ impl RegexSet {
     /// assert!(re_set.is_match("Bob <bob@example.com>"));
     /// # Ok(()) }
     /// ```
-    pub fn from_bytes<'a, RE>(res: impl Iterator<Item=RE>) -> Result<Self>
-        where RE: Borrow<&'a [u8]>
+    pub fn from_bytes<'a, I, RE>(res: I) -> Result<Self>
+    where I: IntoIterator<Item=RE>,
+          RE: Borrow<&'a [u8]>,
     {
         let mut have_valid_utf8 = false;
         let mut have_invalid_utf8 = false;
         let re_set = Self::new(
             res
+                .into_iter()
                 .scan((&mut have_valid_utf8, &mut have_invalid_utf8),
                       |(valid, invalid), re|
                       {
@@ -847,6 +848,69 @@ impl RegexSet {
         Self::from_bytes(sig.regular_expressions())
     }
 
+    /// Returns a `RegexSet` that matches everything.
+    ///
+    /// Note: sanitizations are still enabled.  So, to really match
+    /// everything, you still need to call
+    /// [`RegexSet::disable_sanitizations`].
+    ///
+    ///   [`RegexSet::disable_sanitizations`]: #method.disable_sanitizations
+    ///
+    /// This can be used to optimize the evaluation of scoping rules
+    /// along a path: if a `RegexSet` matches everything, then it
+    /// doesn't further contrain the path.
+    pub fn everything() -> Result<Self>
+    {
+        Ok(Self {
+            re_set: RegexSet_::Everything,
+            disable_sanitizations: false,
+        })
+    }
+
+    /// Returns whether a `RegexSet` matches everything.
+    ///
+    /// Normally, this only returns true if the `RegexSet` was created
+    /// using [`RegexSet::everything`].  [`RegexSet::new`],
+    /// [`RegexSet::from_bytes`], [`RegexSet::from_signature`] do
+    /// detect some regular expressions that match everything (e.g.,
+    /// if no regular expressions are supplied).  But, they do not
+    /// guarantee that a `RegexSet` containing a regular expression
+    /// like `.?`, which does in fact match everything, is detected as
+    /// matching everything.
+    ///
+    ///   [`RegexSet::everything`]: #method.everything
+    ///   [`RegexSet::new`]: #method.everything
+    ///   [`RegexSet::from_bytes`]: #method.from_bytes
+    ///   [`RegexSet::from_signature`]: #method.from_signature
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::regex::RegexSet;
+    ///
+    /// # fn main() -> openpgp::Result<()> {
+    /// assert!(RegexSet::everything()?.matches_everything());
+    /// let empty: &[ &str ] = &[];
+    /// assert!(RegexSet::new(empty)?.matches_everything());
+    ///
+    /// // A regular expression that matches everything.  But
+    /// // `RegexSet` returns false, because it can't detect it.
+    /// let res: &[ &str ] = &[
+    ///     &".?"[..],
+    /// ];
+    /// let re_set = RegexSet::new(res.into_iter())?;
+    /// assert!(! re_set.matches_everything());
+    /// # Ok(()) }
+    /// ```
+    pub fn matches_everything(&self) -> bool {
+        if let RegexSet_::Everything = self.re_set {
+            true
+        } else {
+            false
+        }
+    }
+
     /// Controls whether strings with control characters are allowed.
     ///
     /// If `false` (the default), i.e., sanity checks are enabled, and
@@ -913,6 +977,8 @@ impl RegexSet {
                 re.is_match_clean(s),
             RegexSet_::Invalid =>
                 false,
+            RegexSet_::Everything =>
+                true,
         }
     }
 
@@ -1895,18 +1961,18 @@ mod tests {
 
     #[test]
     fn regex_set() -> Result<()> {
-        let re = RegexSet::new([ "ab", "cd" ].iter())?;
+        let re = RegexSet::new(&[ "ab", "cd" ])?;
         assert!(re.is_match("ab"));
         assert!(re.is_match("cdef"));
         assert!(!re.is_match("xxx"));
 
         // Try to make sure one re does not leak into another.
-        let re = RegexSet::new([ "cd$", "^ab" ].iter())?;
+        let re = RegexSet::new(&[ "cd$", "^ab" ])?;
         assert!(re.is_match("abxx"));
         assert!(re.is_match("xxcd"));
 
         // Invalid regular expressions should be ignored.
-        let re = RegexSet::new([ "[ab", "cd]", "x" ].iter())?;
+        let re = RegexSet::new(&[ "[ab", "cd]", "x" ])?;
         assert!(!re.is_match("a"));
         assert!(!re.is_match("ab"));
         assert!(!re.is_match("[ab"));
@@ -1917,7 +1983,7 @@ mod tests {
 
         // If all regular expressions are invalid, nothing should
         // match.
-        let re = RegexSet::new([ "[ab", "cd]" ].iter())?;
+        let re = RegexSet::new(&[ "[ab", "cd]" ])?;
         assert!(!re.is_match("a"));
         assert!(!re.is_match("ab"));
         assert!(!re.is_match("[ab"));
@@ -1929,7 +1995,7 @@ mod tests {
         // If there are no regular expressions, everything should
         // match.
         let s: [&str; 0] = [];
-        let re = RegexSet::new(s.iter())?;
+        let re = RegexSet::new(&s)?;
         assert!(re.is_match("a"));
         assert!(re.is_match("ab"));
         assert!(re.is_match("[ab"));
