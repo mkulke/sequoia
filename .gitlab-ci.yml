@@ -49,13 +49,13 @@ benchmarks:
   script:
     - cd openpgp
     - cargo bench -- --save-baseline $CI_COMMIT_SHA
-    - $CARGO_HOME/bin/critcmp $CI_COMMIT_SHA $CI_COMMIT_BEFORE_SHA | tee benchmarks.txt
+    - $CARGO_HOME/bin/critcmp $CI_COMMIT_SHA $CI_COMMIT_BEFORE_SHA | tee benchmark.txt
 
   after_script: []
 
   artifacts:
-    expose_as: 'benchmarks'
-    paths: ['openpgp/benchmarks.txt']
+    expose_as: 'benchmark results'
+    paths: ['openpgp/benchmark.txt']
 
   variables:
     CARGO_TARGET_DIR: $CI_PROJECT_DIR/../target.benchmarks
