@@ -11,6 +11,10 @@
 //! of Autocrypt headers and setup messages.  Note: Autocrypt is more
 //! than just headers; it requires tight integration with the MUA.
 
+#![doc(html_favicon_url = "https://docs.sequoia-pgp.org/favicon.png")]
+#![doc(html_logo_url = "https://docs.sequoia-pgp.org/logo.svg")]
+#![warn(missing_docs)]
+
 use base64;
 
 use std::convert::TryFrom;
@@ -179,6 +183,7 @@ impl AutocryptHeader {
         None
     }
 
+    /// Writes a serialized version of the object to `o`.
     pub fn serialize(&self, o: &mut dyn std::io::Write) -> Result<()> {
         if self.key.is_none() {
             return Err(Error::InvalidOperation("No key".into()).into());
