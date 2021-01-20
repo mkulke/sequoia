@@ -15,7 +15,8 @@ pub fn encrypt_to_cert(
         .keys()
         .with_policy(p, None)
         .supported()
-        .for_transport_encryption();
+        .for_transport_encryption()
+        .for_storage_encryption();
     let message =
         Encryptor::for_recipients(Message::new(&mut sink), recipients)
             .build()?;
