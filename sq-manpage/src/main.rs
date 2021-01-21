@@ -2,7 +2,7 @@ use man::prelude::*;
 use std::fs::File;
 use std::io::Write;
 
-use clap::AnyArg;
+use clap::{AnyArg, ArgSettings};
 
 mod sq_cli;
 
@@ -71,7 +71,9 @@ fn create_manpage(app: clap::App, name: Option<&str>) -> Manual {
     for arg in app.p.positionals {
         //arg is a pair of (count, Arg)
         let arg = arg.1;
-        let mut man_arg = man::Arg::new(arg.val_names().unwrap()[0]);
+        let val_name = arg.val_names().unwrap()[0];
+        let required = arg.is_set(ArgSettings::Required);
+        let mut man_arg = man::Arg::new(val_name, required);
         if let Some(help) = arg.long_help().or(arg.help()) {
             man_arg = man_arg.description(help);
         }
