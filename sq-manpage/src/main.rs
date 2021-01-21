@@ -7,8 +7,7 @@ use clap::AnyArg;
 mod sq_cli;
 
 fn main() -> std::io::Result<()> {
-    let mut app = sq_cli::build();
-    app = app.version("0.22.0");
+    let app = sq_cli::build();
 
     let main_manpage = create_manpage(app.clone(), None);
 

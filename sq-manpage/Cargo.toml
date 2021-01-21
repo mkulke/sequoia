@@ -1,6 +1,6 @@
 [package]
 name = "sq-manpage"
-version = "0.1.0"
+version = "0.22.0"
 authors = ["Nora Widdecke <nora@sequoia-pgp.org>"]
 edition = "2018"
 
