@@ -9,3 +9,11 @@ edition = "2018"
 #man = { git = "https://github.com/puzzlewolf/man.git", branch = "for_sequoia" }
 man = { path = "../../man" }
 clap = { path = "../../clap" }
+sequoia-openpgp = { path = "../openpgp", version = "1.0.0", default-features = false }
+
+[build-dependencies]
+# man 0.3.0 with stuff we need (e.g. subcommands)
+#man = { git = "https://github.com/puzzlewolf/man.git", branch = "for_sequoia" }
+man = { path = "../../man" }
+clap = { path = "../../clap" }
+sequoia-openpgp = { path = "../openpgp", version = "1.0.0" }
