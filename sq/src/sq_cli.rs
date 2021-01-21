@@ -218,10 +218,11 @@ pub fn configure(app: App<'static, 'static>) -> App<'static, 'static> {
                          .short("o").long("output").value_name("FILE")
                          .help("Writes to FILE or stdout if omitted"))
                     .arg(Arg::with_name("kind")
-                         .long("kind").value_name("KIND")
-                         .possible_values(&["message", "publickey", "secretkey",
-                                            "signature", "file"])
-                         .default_value("file")
+                         .long("label").value_name("LABEL")
+                         .possible_values(&["auto", "message",
+                                            "cert", "key", "sig",
+                                            "file"])
+                         .default_value("auto")
                          .help("Selects the kind of armor header"))
         )
 
@@ -248,6 +249,9 @@ pub fn configure(app: App<'static, 'static>) -> App<'static, 'static> {
                                 .arg(Arg::with_name("output")
                                      .short("o").long("output").value_name("FILE")
                                      .help("Writes to FILE or stdout if omitted"))
+                                .arg(Arg::with_name("binary")
+                                     .short("B").long("binary")
+                                     .help("Emits binary data"))
                     )
                     .subcommand(SubCommand::with_name("encode-sender")
                                 .about("Encodes the sender's OpenPGP \
@@ -429,7 +433,7 @@ pub fn configure(app: App<'static, 'static>) -> App<'static, 'static> {
                 .about("Manages collections of certificates")
                 .long_about(
                     "Manages collections of certificates \
-                     (also known as 'keyrings)'.")
+                     (also known as 'keyrings').")
                 .setting(AppSettings::SubcommandRequiredElseHelp)
                 .subcommand(
                     SubCommand::with_name("filter")
@@ -705,11 +709,11 @@ pub fn configure(app: App<'static, 'static>) -> App<'static, 'static> {
                                      .short("o").long("output").value_name("FILE")
                                      .help("Writes to FILE or stdout if omitted"))
                                 .arg(Arg::with_name("kind")
-                                     .long("kind").value_name("KIND")
-                                     .possible_values(&["message", "publickey",
-                                                        "secretkey",
-                                                        "signature", "file"])
-                                     .default_value("file")
+                                     .long("label").value_name("LABEL")
+                                     .possible_values(&["auto", "message",
+                                                        "cert", "key", "sig",
+                                                        "file"])
+                                     .default_value("auto")
                                      .conflicts_with("binary")
                                      .help("Selects the kind of armor header"))
                                 .arg(Arg::with_name("binary")

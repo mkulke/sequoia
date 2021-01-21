@@ -321,7 +321,7 @@
 //! ## Subcommand certring
 //!
 //! ```text
-//! Manages collections of certificates (also known as 'keyrings)'.
+//! Manages collections of certificates (also known as 'keyrings').
 //!
 //! USAGE:
 //!     sq certring <SUBCOMMAND>
@@ -560,9 +560,10 @@
 //! Reads Autocrypt-encoded certificates
 //!
 //! USAGE:
-//!     sq autocrypt decode [OPTIONS] [FILE]
+//!     sq autocrypt decode [FLAGS] [OPTIONS] [FILE]
 //!
 //! FLAGS:
+//!     -B, --binary     Emits binary data
 //!     -h, --help       Prints help information
 //!     -V, --version    Prints version information
 //!
@@ -760,9 +761,9 @@
 //!     -h, --help    Prints help information
 //!
 //! OPTIONS:
-//!         --kind <KIND>      Selects the kind of armor header [default: file]
-//!                            [possible values: message, publickey, secretkey,
-//!                            signature, file]
+//!         --label <LABEL>    Selects the kind of armor header [default: auto]
+//!                            [possible values: auto, message, cert, key, sig,
+//!                            file]
 //!     -o, --output <FILE>    Writes to FILE or stdout if omitted
 //!
 //! ARGS:
@@ -918,9 +919,9 @@
 //!     -V, --version    Prints version information
 //!
 //! OPTIONS:
-//!         --kind <KIND>      Selects the kind of armor header [default: file]
-//!                            [possible values: message, publickey, secretkey,
-//!                            signature, file]
+//!         --label <LABEL>    Selects the kind of armor header [default: auto]
+//!                            [possible values: auto, message, cert, key, sig,
+//!                            file]
 //!     -o, --output <FILE>    Writes to FILE or stdout if omitted
 //!
 //! ARGS:
