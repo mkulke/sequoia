@@ -36,7 +36,7 @@ fn create_manpage(app: clap::App, name: Option<String>) -> Manual {
         if let Some(long) = flag.long() {
             man_flag = man_flag.long(&format!("--{}", long));
         }
-        if let Some(help) = flag.help() {
+        if let Some(help) = flag.long_help().or(flag.help()) {
             man_flag = man_flag.help(help);
         }
         manpage = manpage.flag(man_flag);
@@ -49,7 +49,7 @@ fn create_manpage(app: clap::App, name: Option<String>) -> Manual {
         if let Some(long) = option.long() {
             man_option = man_option.long(&format!("--{}", long));
         }
-        if let Some(help) = option.help() {
+        if let Some(help) = option.long_help().or(option.help()) {
             man_option = man_option.help(help);
         }
         manpage = manpage.option(man_option);
