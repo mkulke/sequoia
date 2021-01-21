@@ -51,6 +51,7 @@ fn create_manpage(app: clap::App, name: Option<&str>) -> Manual {
         manpage = manpage.flag(man_flag);
     }
     for option in app.p.opts {
+        //TODO there may be more values
         let mut man_option = Opt::new(option.val_names().unwrap()[0]);
         if let Some(short) = option.short() {
             man_option = man_option.short(&format!("-{}", short));
@@ -62,6 +63,11 @@ fn create_manpage(app: clap::App, name: Option<&str>) -> Manual {
             man_option = man_option.help(help);
         }
         manpage = manpage.option(man_option);
+    }
+    for arg in app.p.positionals {
+        //arg is a pair of (count, value_name)
+        let man_arg = man::Arg::new(arg.1.val_names().unwrap()[0]);
+        manpage = manpage.arg(man_arg);
     }
     for subcommand in app.p.subcommands {
         let mut  man_subcommand = Subcommand::new(&subcommand.p.meta.name);
