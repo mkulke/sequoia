@@ -10,20 +10,28 @@ fn main() -> std::io::Result<()> {
     let mut app = sq_cli::build();
     app = app.version("0.22.0");
 
-    let sq_manpage = create_manpage(app.clone(), None);
+    let main_manpage = create_manpage(app.clone(), None);
 
-    let sq_packet = app.p.subcommands.iter().find(|sc| sc.p.meta.name == "packet").unwrap();
-    let sq_packet_manpage = create_manpage(sq_packet.clone(), Some("sq packet".to_string()));
-    let mut file = File::create("sq_packet_manpage")?;
-    file.write_all(sq_packet_manpage.render().as_bytes())?;
+    let main_manpage = add_help_flag(main_manpage);
+    let main_manpage = add_version_flag(main_manpage);
 
-    let mut file = File::create("sq_manpage")?;
-    file.write_all(sq_manpage.render().as_bytes())?;
+    let mut file = File::create(format!("{}.1", app.p.meta.name))?;
+    file.write_all(main_manpage.render().as_bytes())?;
+
+    for subcommand in app.p.subcommands {
+        let sc_full_name = format!("{} {}", app.p.meta.name, subcommand.p.meta.name);
+        let sc_manpage = create_manpage(subcommand.clone(), Some(&sc_full_name));
+        let sc_manpage = add_help_flag(sc_manpage);
+
+        let mut file = File::create(format!("{}-{}.1", app.p.meta.name, subcommand.p.meta.name))?;
+        file.write_all(sc_manpage.render().as_bytes())?;
+    }
+
     Ok(())
 }
 
-fn create_manpage(app: clap::App, name: Option<String>) -> Manual {
-    let name = name.unwrap_or(app.p.meta.name);
+fn create_manpage(app: clap::App, name: Option<&str>) -> Manual {
+    let name = name.unwrap_or(&app.p.meta.name);
 
     let mut manpage = Manual::new(&name);
     if let Some(about) = app.p.meta.about {
@@ -65,8 +73,6 @@ fn create_manpage(app: clap::App, name: Option<String>) -> Manual {
     if let Some(version) = app.p.meta.version {
         manpage = manpage.version(version);
     };
-    let manpage = add_help_flag(manpage);
-    let manpage = add_version_flag(manpage);
 
     manpage
 }
