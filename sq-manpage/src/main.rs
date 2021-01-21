@@ -19,11 +19,16 @@ fn main() -> std::io::Result<()> {
     file.write_all(main_manpage.render().as_bytes())?;
 
     for subcommand in app.p.subcommands {
-        let sc_full_name = format!("{} {}", app.p.meta.name, subcommand.p.meta.name);
-        let sc_manpage = create_manpage(subcommand.clone(), Some(&sc_full_name));
+        let sc_full_name =
+            format!("{} {}", app.p.meta.name, subcommand.p.meta.name);
+        let sc_manpage =
+            create_manpage(subcommand.clone(), Some(&sc_full_name));
         let sc_manpage = add_help_flag(sc_manpage);
 
-        let mut file = File::create(format!("{}-{}.1", app.p.meta.name, subcommand.p.meta.name))?;
+        let mut file = File::create(format!(
+            "{}-{}.1",
+            app.p.meta.name, subcommand.p.meta.name
+        ))?;
         file.write_all(sc_manpage.render().as_bytes())?;
     }
 
