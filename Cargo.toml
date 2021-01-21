@@ -11,6 +11,7 @@ members = [
     "openpgp",
     "openpgp-ffi",
     "sq",
+    "sq-manpage",
     "sqv",
     "store",
 ]

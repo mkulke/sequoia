@@ -1155,6 +1155,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "man"
+version = "0.3.0"
+source = "git+https://github.com/puzzlewolf/man.git?branch=for_sequoia#1b48536af24a5cb88db2787ece1e34b64ee21d61"
+dependencies = [
+ "roff",
+]
+
+[[package]]
 name = "matches"
 version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1669,6 +1677,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "roff"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e33e4fb37ba46888052c763e4ec2acfedd8f00f62897b630cadb6298b833675e"
+
+[[package]]
 name = "rpassword"
 version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2080,6 +2094,13 @@ name = "spin"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e63cff320ae2c57904679ba7cb63280a3dc4613885beafb148ee7bf9aa9042d"
+
+[[package]]
+name = "sq-manpage"
+version = "0.1.0"
+dependencies = [
+ "man",
+]
 
 [[package]]
 name = "string_cache"
