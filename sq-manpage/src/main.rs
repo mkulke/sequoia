@@ -65,8 +65,12 @@ fn create_manpage(app: clap::App, name: Option<&str>) -> Manual {
         manpage = manpage.option(man_option);
     }
     for arg in app.p.positionals {
-        //arg is a pair of (count, value_name)
-        let man_arg = man::Arg::new(arg.1.val_names().unwrap()[0]);
+        //arg is a pair of (count, Arg)
+        let arg = arg.1;
+        let mut man_arg = man::Arg::new(arg.val_names().unwrap()[0]);
+        if let Some(help) = arg.long_help().or(arg.help()) {
+            man_arg = man_arg.description(help);
+        }
         manpage = manpage.arg(man_arg);
     }
     for subcommand in app.p.subcommands {
