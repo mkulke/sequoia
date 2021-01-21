@@ -38,6 +38,10 @@ fn create_manpage(app: clap::App, name: Option<&str>) -> Manual {
     let name = name.unwrap_or(&app.p.meta.name);
 
     let mut manpage = Manual::new(&name);
+    manpage = add_authors(manpage);
+    manpage = manpage.date("January 2021");
+    manpage  = add_help_flag(manpage);
+
     if let Some(about) = app.p.meta.long_about.filter(|la| !la.is_empty()).or(app.p.meta.about) {
         manpage = manpage.about(about);
     };
@@ -90,10 +94,49 @@ fn create_manpage(app: clap::App, name: Option<&str>) -> Manual {
         };
         manpage = manpage.subcommand(man_subcommand);
     }
+    if let Some(more_help) = app.p.meta.more_help {
+        // this is specific to sequoia
+        manpage = add_examples(manpage, more_help);
+    }
     if let Some(version) = app.p.meta.version {
         manpage = manpage.version(version);
     };
 
+    manpage
+}
+
+fn add_authors(mut manpage: Manual) -> Manual {
+    let authors = [
+        "Justus Winter <justus@sequoia-pgp.org>",
+        "Kai Michaelis <kai@sequoia-pgp.org>",
+        "Neal H. Walfield <neal@sequoia-pgp.org>",
+    ];
+    for author in authors.iter() {
+        let mut split = author.split(" <");
+        let name = split.next().unwrap();
+        let email = split.next().unwrap().replace(">", "");
+        let author = Author::new(name).email(&email);
+        manpage = manpage.author(author);
+    }
+    manpage
+}
+
+/// Parse examples from clap's after_help (called more_help internally)
+fn add_examples(mut manpage: Manual, more_help: &str) -> Manual {
+    let mut lines_iter = more_help.lines();
+    while let Some(line) = lines_iter.next() {
+        if line.is_empty() || line.contains("EXAMPLE") {
+            continue
+        } else {
+            let text = line.replace("# ", "");
+            let command = lines_iter.next().expect("command example expected");
+            let command = command.replace("$ ", "");
+            let example = Example::new()
+                .text(&text)
+                .command(&command);
+            manpage = manpage.example(example);
+        }
+    }
     manpage
 }
 
