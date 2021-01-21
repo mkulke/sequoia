@@ -68,7 +68,12 @@ fn create_manpage(app: clap::App, name: Option<&str>) -> Manual {
             man_option = man_option.long(&format!("--{}", long));
         }
         if let Some(help) = option.long_help().or(option.help()) {
-            man_option = man_option.help(help);
+            if let Some(pvs) = option.possible_vals() {
+                let help = [help, "  Possible values: [", &pvs.join(", "), "]"].join("");
+                man_option = man_option.help(&help);
+            } else {
+                man_option = man_option.help(help);
+            }
         }
         manpage = manpage.option(man_option);
     }
