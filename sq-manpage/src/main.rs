@@ -24,6 +24,7 @@ fn main() -> std::io::Result<()> {
 
 fn create_manpage(app: clap::App, name: Option<String>) -> Manual {
     let name = name.unwrap_or(app.p.meta.name);
+
     let mut manpage = Manual::new(&name);
     if let Some(about) = app.p.meta.about {
         manpage = manpage.about(about);
@@ -64,7 +65,24 @@ fn create_manpage(app: clap::App, name: Option<String>) -> Manual {
     if let Some(version) = app.p.meta.version {
         manpage = manpage.version(version);
     };
+    let manpage = add_help_flag(manpage);
+    let manpage = add_version_flag(manpage);
 
     manpage
 }
 
+fn add_help_flag(manpage: Manual) -> Manual {
+    let help = Flag::new()
+        .short("-h")
+        .long("--help")
+        .help("Prints help information");
+    manpage.flag(help)
+}
+
+fn add_version_flag(manpage: Manual) -> Manual {
+    let version = Flag::new()
+        .short("-V")
+        .long("--version")
+        .help("Prints version information");
+    manpage.flag(version)
+}
