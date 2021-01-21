@@ -38,7 +38,7 @@ fn create_manpage(app: clap::App, name: Option<&str>) -> Manual {
     let name = name.unwrap_or(&app.p.meta.name);
 
     let mut manpage = Manual::new(&name);
-    if let Some(about) = app.p.meta.about {
+    if let Some(about) = app.p.meta.long_about.filter(|la| !la.is_empty()).or(app.p.meta.about) {
         manpage = manpage.about(about);
     };
     for flag in app.p.flags {
@@ -81,8 +81,9 @@ fn create_manpage(app: clap::App, name: Option<&str>) -> Manual {
         manpage = add_help_subcommand(manpage);
     };
     for subcommand in app.p.subcommands {
-        let mut man_subcommand = Subcommand::new(&subcommand.p.meta.name);
-        if let Some(about) = subcommand.p.meta.about {
+        let sc_meta = subcommand.p.meta;
+        let mut man_subcommand = Subcommand::new(&sc_meta.name);
+        if let Some(about) = sc_meta.long_about.filter(|la| !la.is_empty()).or(sc_meta.about) {
             man_subcommand = man_subcommand.description(about);
         };
         manpage = manpage.subcommand(man_subcommand);
