@@ -9,27 +9,23 @@ mod sq_cli;
 fn main() -> std::io::Result<()> {
     let app = sq_cli::build();
 
-    let main_manpage = create_manpage(app.clone(), None);
+    let see_also = Section::new("See also")
+        .paragraph("Full documentation at https://docs.sequoia-pgp.org/sq/");
 
-    let main_manpage = add_help_flag(main_manpage);
-    let main_manpage = add_version_flag(main_manpage);
-
-    let mut file = File::create(format!("{}.1", app.p.meta.name))?;
-    file.write_all(main_manpage.render().as_bytes())?;
+    let mut main_manpage = create_manpage(app.clone(), None);
+    main_manpage = add_version_flag(main_manpage);
+    main_manpage = main_manpage.custom(see_also);
 
     for subcommand in app.p.subcommands {
         let sc_full_name =
-            format!("{} {}", app.p.meta.name, subcommand.p.meta.name);
+            format!("{} {}", main_manpage.name, subcommand.p.meta.name);
         let sc_manpage =
             create_manpage(subcommand.clone(), Some(&sc_full_name));
-        let sc_manpage = add_help_flag(sc_manpage);
 
-        let mut file = File::create(format!(
-            "{}-{}.1",
-            app.p.meta.name, subcommand.p.meta.name
-        ))?;
-        file.write_all(sc_manpage.render().as_bytes())?;
+        write_manpage(sc_manpage)?;
     }
+
+    write_manpage(main_manpage)?;
 
     Ok(())
 }
@@ -40,7 +36,7 @@ fn create_manpage(app: clap::App, name: Option<&str>) -> Manual {
     let mut manpage = Manual::new(&name);
     manpage = add_authors(manpage);
     manpage = manpage.date("January 2021");
-    manpage  = add_help_flag(manpage);
+    manpage = add_help_flag(manpage);
 
     if let Some(about) = app.p.meta.long_about.filter(|la| !la.is_empty()).or(app.p.meta.about) {
         manpage = manpage.about(about);
@@ -166,4 +162,9 @@ fn add_version_flag(manpage: Manual) -> Manual {
         .long("--version")
         .help("Prints version information");
     manpage.flag(version)
+}
+
+fn write_manpage(manpage: Manual) -> std::io::Result<()> {
+    let mut file = File::create(format!("{}.1", manpage.name.replace(" ","-")))?;
+    file.write_all(manpage.render().as_bytes())
 }
