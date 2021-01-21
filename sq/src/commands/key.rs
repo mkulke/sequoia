@@ -16,6 +16,7 @@ use crate::openpgp::serialize::Serialize;
 use crate::openpgp::types::KeyFlags;
 use crate::openpgp::types::SignatureType;
 
+use crate::Config;
 use crate::create_or_stdout;
 use crate::SECONDS_IN_YEAR;
 use crate::parse_duration;
@@ -190,7 +191,7 @@ pub fn generate(m: &ArgMatches, force: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn adopt(m: &ArgMatches, p: &dyn Policy) -> Result<()> {
+pub fn adopt(config: Config, m: &ArgMatches, p: &dyn Policy) -> Result<()> {
     let cert = m.value_of("certificate").unwrap();
     let cert = Cert::from_file(cert)
         .context(format!("Parsing {}", cert))?;
@@ -357,7 +358,8 @@ pub fn adopt(m: &ArgMatches, p: &dyn Policy) -> Result<()> {
     let cert = cert.clone().insert_packets(packets.clone())?;
 
     let mut message = crate::create_or_stdout_pgp(
-        None, false, false, sequoia_openpgp::armor::Kind::SecretKey)?;
+        m.value_of("output"), config.force,
+        m.is_present("binary"), sequoia_openpgp::armor::Kind::SecretKey)?;
     cert.as_tsk().serialize(&mut message)?;
     message.finalize()?;
 
@@ -392,7 +394,8 @@ pub fn adopt(m: &ArgMatches, p: &dyn Policy) -> Result<()> {
     Ok(())
 }
 
-pub fn attest_certifications(m: &ArgMatches, _p: &dyn Policy) -> Result<()> {
+pub fn attest_certifications(config: Config, m: &ArgMatches, _p: &dyn Policy)
+                             -> Result<()> {
     // XXX: This function has to do some steps manually, because
     // Sequoia does not expose this functionality because it has not
     // been standardized yet.
@@ -481,13 +484,55 @@ pub fn attest_certifications(m: &ArgMatches, _p: &dyn Policy) -> Result<()> {
         }
     }
 
-    // XXX: Do the same for user attributes.
+    for ua in key.user_attributes() {
+        let mut attestations = Vec::new();
+
+        if m.is_present("all") {
+            for certification in ua.certifications() {
+                let mut h = hash_algo.context()?;
+                hash_for_confirmation(certification, &mut h);
+                attestations.push(h.into_digest()?);
+            }
+        }
+
+        // Hashes SHOULD be sorted.
+        attestations.sort();
+
+        // All attestation signatures we generate for this component
+        // should have the same creation time.  Fix it now.
+        let t = std::time::SystemTime::now();
+
+        // Hash the components like in a binding signature.
+        let mut hash = hash_algo.context()?;
+        key.primary_key().hash(&mut hash);
+        ua.hash(&mut hash);
+
+        for digests in attestations.chunks(digests_per_sig) {
+            let mut body = Vec::with_capacity(digest_size * digests.len());
+            digests.iter().for_each(|d| body.extend(d));
+
+            attestation_signatures.push(
+                SignatureBuilder::new(SignatureType__AttestedKey)
+                    .set_signature_creation_time(t)?
+                    .modify_hashed_area(|mut a| {
+                        a.add(Subpacket::new(
+                            SubpacketValue::Unknown {
+                                tag: SubpacketTag__AttestedCertifications,
+                                body,
+                            },
+                            true)?)?;
+                        Ok(a)
+                    })?
+                    .sign_hash(&mut pk_signer, hash.clone())?);
+        }
+    }
 
     // Finally, add the new signatures.
     let key = key.insert_packets(attestation_signatures)?;
 
     let mut message = crate::create_or_stdout_pgp(
-        None, false, false, sequoia_openpgp::armor::Kind::SecretKey)?;
+        m.value_of("output"), config.force, m.is_present("binary"),
+        sequoia_openpgp::armor::Kind::SecretKey)?;
     key.as_tsk().serialize(&mut message)?;
     message.finalize()?;
     Ok(())

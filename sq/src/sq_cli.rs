@@ -390,6 +390,12 @@ pub fn configure(app: App<'static, 'static>) -> App<'static, 'static> {
                              .value_name("TARGET-KEY")
                              .required(true)
                              .help("Adds keys to TARGET-KEY"))
+                        .arg(Arg::with_name("output")
+                             .short("o").long("output").value_name("FILE")
+                             .help("Writes to FILE or stdout if omitted"))
+                        .arg(Arg::with_name("binary")
+                             .short("B").long("binary")
+                             .help("Emits binary data"))
                 )
                 .subcommand(
                     SubCommand::with_name("attest-certifications")
@@ -408,6 +414,12 @@ pub fn configure(app: App<'static, 'static>) -> App<'static, 'static> {
                              .value_name("KEY")
                              .required(true)
                              .help("Changes attestations on KEY"))
+                        .arg(Arg::with_name("output")
+                             .short("o").long("output").value_name("FILE")
+                             .help("Writes to FILE or stdout if omitted"))
+                        .arg(Arg::with_name("binary")
+                             .short("B").long("binary")
+                             .help("Emits binary data"))
                 )
         )
 
@@ -461,7 +473,9 @@ pub fn configure(app: App<'static, 'static>) -> App<'static, 'static> {
                     SubCommand::with_name("join")
                         .about("Joins certs or certrings into a single certring")
                         .long_about(
-                            "Unlike 'sq certring merge', multiple versions \
+                            "Joins certs or certrings into a single certring.\n\
+                             \n\
+                             Unlike 'sq certring merge', multiple versions \
                              of the same certificate are not merged \
                              together.")
                         .arg(Arg::with_name("input")
@@ -479,7 +493,9 @@ pub fn configure(app: App<'static, 'static>) -> App<'static, 'static> {
                     SubCommand::with_name("merge")
                         .about("Merges certs or certrings into a single certring")
                         .long_about(
-                            "Unlike 'sq certring join', the certificates \
+                            "Merges certs or certrings into a single certring.\n\
+                             \n\
+                             Unlike 'sq certring join', the certificates \
                              are buffered and multiple versions of the same \
                              certificate are merged together.  Where data \
                              is replaced (e.g., secret key material), data \
@@ -513,12 +529,22 @@ pub fn configure(app: App<'static, 'static>) -> App<'static, 'static> {
                              .help("Writes to files with prefix FILE \
                                     [defaults to the input filename with a \
                                     dash, or 'output' if certring is read \
-                                    from stdin]")))
+                                    from stdin]"))
+                        .arg(Arg::with_name("binary")
+                             .short("B").long("binary")
+                             .help("Emits binary data"))
+                )
         )
 
         .subcommand(SubCommand::with_name("certify")
                     .display_order(320)
                     .about("Certifies a User ID for a Certificate")
+                    .arg(Arg::with_name("output")
+                         .short("o").long("output").value_name("FILE")
+                         .help("Writes to FILE or stdout if omitted"))
+                    .arg(Arg::with_name("binary")
+                         .short("B").long("binary")
+                         .help("Emits binary data"))
                     .arg(Arg::with_name("depth")
                          .short("d").long("depth").value_name("TRUST_DEPTH")
                          .help("Sets the trust depth")

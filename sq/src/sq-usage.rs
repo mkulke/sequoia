@@ -277,13 +277,17 @@
 //! Attests third-party certifications allowing for their distribution
 //!
 //! USAGE:
-//!     sq key attest-certifications [FLAGS] <KEY>
+//!     sq key attest-certifications [FLAGS] [OPTIONS] <KEY>
 //!
 //! FLAGS:
 //!         --all        Attests to all certifications
+//!     -B, --binary     Emits binary data
 //!     -h, --help       Prints help information
 //!         --none       Removes all prior attestations
 //!     -V, --version    Prints version information
+//!
+//! OPTIONS:
+//!     -o, --output <FILE>    Writes to FILE or stdout if omitted
 //!
 //! ARGS:
 //!     <KEY>    Changes attestations on KEY
@@ -301,12 +305,14 @@
 //!         --allow-broken-crypto
 //!             Allows adopting keys from certificates using broken cryptography
 //!
+//!     -B, --binary                 Emits binary data
 //!     -h, --help                   Prints help information
 //!     -V, --version                Prints version information
 //!
 //! OPTIONS:
 //!     -k, --key <KEY>...             Adds the key or subkey KEY to the TARGET-KEY
 //!     -r, --keyring <KEY-RING>...    Supplies keys for use in --key.
+//!     -o, --output <FILE>            Writes to FILE or stdout if omitted
 //!
 //! ARGS:
 //!     <TARGET-KEY>    Adds keys to TARGET-KEY
@@ -368,6 +374,8 @@
 //! ### Subcommand certring join
 //!
 //! ```text
+//! Joins certs or certrings into a single certring.
+//!
 //! Unlike 'sq certring merge', multiple versions of the same certificate are not
 //! merged together.
 //!
@@ -414,6 +422,8 @@
 //! ### Subcommand certring merge
 //!
 //! ```text
+//! Merges certs or certrings into a single certring.
+//!
 //! Unlike 'sq certring join', the certificates are buffered and multiple versions
 //! of the same certificate are merged together.  Where data is replaced (e.g.,
 //! secret key material), data from the later certificate is preferred.
@@ -448,9 +458,10 @@
 //! Splits a certring into individual certs
 //!
 //! USAGE:
-//!     sq certring split [OPTIONS] [FILE]
+//!     sq certring split [FLAGS] [OPTIONS] [FILE]
 //!
 //! FLAGS:
+//!     -B, --binary     Emits binary data
 //!     -h, --help       Prints help information
 //!     -V, --version    Prints version information
 //!
@@ -472,6 +483,9 @@
 //!     sq certify [FLAGS] [OPTIONS] <CERTIFIER-KEY> <CERTIFICATE> <USERID>
 //!
 //! FLAGS:
+//!     -B, --binary
+//!             Emits binary data
+//!
 //!     -h, --help
 //!             Prints help information
 //!
@@ -500,6 +514,9 @@
 //!         --expires-in <DURATION>
 //!             Makes the certification expire after DURATION. Either 'N[ymwd]', for
 //!             N years, months, weeks, or days, or 'never'.  [default: 5y]
+//!     -o, --output <FILE>
+//!             Writes to FILE or stdout if omitted
+//!
 //!     -r, --regex <REGEX>...
 //!             Adds a regular expression to constrain what a trusted introducer can
 //!             certify.  The regular expression must match the certified User ID in

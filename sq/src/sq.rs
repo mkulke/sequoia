@@ -553,9 +553,9 @@ fn main() -> Result<()> {
 
         ("key", Some(m)) => match m.subcommand() {
             ("generate", Some(m)) => commands::key::generate(m, force)?,
-            ("adopt", Some(m)) => commands::key::adopt(m, policy)?,
+            ("adopt", Some(m)) => commands::key::adopt(config, m, policy)?,
             ("attest-certifications", Some(m)) =>
-                commands::key::attest_certifications(m, policy)?,
+                commands::key::attest_certifications(config, m, policy)?,
             _ => unreachable!(),
         },
 
@@ -563,7 +563,7 @@ fn main() -> Result<()> {
         ("wkd",  Some(m)) => commands::net::dispatch_wkd(config, m)?,
 
         ("certify",  Some(m)) => {
-            commands::certify::certify(policy, m, force)?;
+            commands::certify::certify(config, policy, m)?;
         },
 
         _ => unreachable!(),
