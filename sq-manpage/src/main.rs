@@ -20,7 +20,7 @@ fn main() -> std::io::Result<()> {
     let related = related.join(", ");
 
     let see_also = Section::new("See also")
-        .paragraph("Full documentation at https://docs.sequoia-pgp.org/sq/")
+        .paragraph("For the full documentation see <https://docs.sequoia-pgp.org/sq/>.")
         // don't justify and don't hyphenate
         .paragraph(&[".ad l\n.nh\n", &related].join(""));
 
