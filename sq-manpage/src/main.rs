@@ -15,16 +15,18 @@ fn main() -> std::io::Result<()> {
     let mut manpages = Vec::new();
     create_manpage(app.clone(), None, &mut manpages);
 
-
     for manpage in manpages {
         write_manpage(manpage)?;
-    };
+    }
 
     Ok(())
 }
 
-fn create_manpage(app: clap::App, outer_name: Option<&str>, manpages: &mut Vec<Manual>) {
-
+fn create_manpage(
+    app: clap::App,
+    outer_name: Option<&str>,
+    manpages: &mut Vec<Manual>,
+) {
     let name = match outer_name {
         Some(outer_name) => [outer_name, &app.p.meta.name].join(" "),
         None => app.p.meta.name,
@@ -37,7 +39,13 @@ fn create_manpage(app: clap::App, outer_name: Option<&str>, manpages: &mut Vec<M
         manpage = add_version_flag(manpage);
     }
 
-    if let Some(about) = app.p.meta.long_about.filter(|la| !la.is_empty()).or(app.p.meta.about) {
+    if let Some(about) = app
+        .p
+        .meta
+        .long_about
+        .filter(|la| !la.is_empty())
+        .or(app.p.meta.about)
+    {
         manpage = manpage.about(about);
     };
     for flag in app.p.flags {
@@ -54,11 +62,7 @@ fn create_manpage(app: clap::App, outer_name: Option<&str>, manpages: &mut Vec<M
         manpage = manpage.flag(man_flag);
     }
     for option in app.p.opts {
-        //TODO there may be more values
-        //if option.val_names().is_none() {
-        //    println!("{}", option);
-        //    continue;
-        //}
+        // prefer val_name over name. why though?
         let name = option.val_names().map_or(option.name(), |vn| vn[0]);
         let mut man_option = Opt::new(name);
         if let Some(short) = option.short() {
@@ -94,7 +98,11 @@ fn create_manpage(app: clap::App, outer_name: Option<&str>, manpages: &mut Vec<M
     for subcommand in app.p.subcommands.clone() {
         let sc_meta = subcommand.p.meta;
         let mut man_subcommand = Subcommand::new(&sc_meta.name);
-        if let Some(about) = sc_meta.long_about.filter(|la| !la.is_empty()).or(sc_meta.about) {
+        if let Some(about) = sc_meta
+            .long_about
+            .filter(|la| !la.is_empty())
+            .or(sc_meta.about)
+        {
             man_subcommand = man_subcommand.description(about);
         };
         manpage = manpage.subcommand(man_subcommand);
@@ -135,14 +143,12 @@ fn add_examples(mut manpage: Manual, more_help: &str) -> Manual {
     let mut lines_iter = more_help.lines();
     while let Some(line) = lines_iter.next() {
         if line.is_empty() || line.contains("EXAMPLE") {
-            continue
+            continue;
         } else {
             let text = line.replace("# ", "");
             let command = lines_iter.next().expect("command example expected");
             let command = command.replace("$ ", "");
-            let example = Example::new()
-                .text(&text)
-                .command(&command);
+            let example = Example::new().text(&text).command(&command);
             manpage = manpage.example(example);
         }
     }
@@ -173,6 +179,7 @@ fn add_version_flag(manpage: Manual) -> Manual {
 }
 
 fn write_manpage(manpage: Manual) -> std::io::Result<()> {
-    let mut file = File::create(format!("{}.1", manpage.name.replace(" ","-")))?;
+    let mut file =
+        File::create(format!("{}.1", manpage.name.replace(" ", "-")))?;
     file.write_all(manpage.render().as_bytes())
 }
