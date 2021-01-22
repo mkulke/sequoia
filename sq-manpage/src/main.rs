@@ -9,22 +9,60 @@ mod sq_cli;
 fn main() -> std::io::Result<()> {
     let app = sq_cli::build();
 
-
     let mut manpages = Vec::new();
     create_manpage(app.clone(), None, &mut manpages);
 
-    let mut related = manpages.iter().rev()
-        .map(|man| [&man.name.replace(" ", "-"), "(1)"].join(""))
+    let manpage_names = manpages
+        .iter()
+        .map(|man| man.name.clone())
         .collect::<Vec<String>>();
-    related.sort_unstable();
-    let related = related.join(", ");
+    let related = manpage_names
+        .clone()
+        .iter()
+        .cloned()
+        .map(|man| find_related(&man, manpage_names.clone()))
+        .collect::<Vec<Vec<String>>>();
+    let man_plus_related = manpages.into_iter().zip(related);
 
-    let see_also = Section::new("See also")
-        .paragraph("For the full documentation see <https://docs.sequoia-pgp.org/sq/>.")
-        // don't justify and don't hyphenate
-        .paragraph(&[".ad l\n.nh\n", &related].join(""));
+    fn find_related(name: &str, mut candidates: Vec<String>) -> Vec<String> {
+        //reconstruct structure
+        let top_level =
+            candidates.iter().position(|name| name == "sq").unwrap();
+        let top_level = candidates.remove(top_level);
+        let (second_level, third_level): (Vec<String>, Vec<String>) =
+            candidates.iter().cloned().partition(|name| {
+                name.split(' ').collect::<Vec<&str>>().len() == 2
+            });
 
-    for mut manpage in manpages {
+        //Always include first and second level commands
+        let mut output = second_level.clone();
+        output.push(top_level);
+
+        let subcommand: Option<String> =
+            second_level.iter().cloned().find(|sl| name.contains(sl));
+        if let Some(sc) = subcommand {
+            let mut tl = third_level
+                .into_iter()
+                .filter(|tl| tl.contains(&sc))
+                .collect::<Vec<String>>();
+            output.append(&mut tl);
+        }
+        output.sort_unstable();
+        output.dedup();
+        output
+    }
+
+    for (mut manpage, related) in man_plus_related {
+        let related = related
+            .iter()
+            .map(|related| [&related.replace(" ", "-"), "(1)"].join(""))
+            .collect::<Vec<String>>()
+            .join(", ");
+        let see_also = Section::new("See also")
+            .paragraph("For the full documentation see <https://docs.sequoia-pgp.org/sq/>.")
+            // don't justify and don't hyphenate
+            .paragraph(&[".ad l\n.nh\n", &related].join(""));
+
         manpage = manpage.custom(see_also.clone());
         write_manpage(manpage)?;
     }
