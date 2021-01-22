@@ -31,7 +31,7 @@
 //!     sign         Signs messages or data files
 //!     verify       Verifies signed messages or detached signatures
 //!     key          Manages keys
-//!     certring     Manages collections of certificates
+//!     keyring      Manages collections of certificates
 //!     certify      Certifies a User ID for a Certificate
 //!     autocrypt    Communicates certificates using Autocrypt
 //!     keyserver    Interacts with keyservers
@@ -340,13 +340,19 @@
 //!     <TARGET-KEY>    Adds keys to TARGET-KEY
 //! ```
 //!
-//! ## Subcommand certring
+//! ## Subcommand keyring
 //!
 //! ```text
-//! Manages collections of certificates (also known as 'keyrings').
+//! Manages collections of certificates (also known as 'keyrings' when they contain
+//! secret key material, and 'certrings' when they don't).
+//!
+//! To convert a key to a certificate (i.e.,
+//! remove any secret key material), do:
+//!
+//! $ cat keys.pgp | sq keyring filter --to-certificate
 //!
 //! USAGE:
-//!     sq certring <SUBCOMMAND>
+//!     sq keyring <SUBCOMMAND>
 //!
 //! FLAGS:
 //!     -h, --help
@@ -354,27 +360,32 @@
 //!
 //!
 //! SUBCOMMANDS:
-//!     filter    Joins certs into a certring applying a filter
+//!     filter    Joins certs into a keyring applying a filter
 //!     help      Prints this message or the help of the given subcommand(s)
-//!     join      Joins certs or certrings into a single certring
-//!     list      Lists certs in a certring
-//!     merge     Merges certs or certrings into a single certring
-//!     split     Splits a certring into individual certs
+//!     join      Joins certs or keyrings into a single keyring
+//!     list      Lists certs in a keyring
+//!     merge     Merges certs or keyrings into a single keyring
+//!     split     Splits a keyring into individual certs
 //! ```
 //!
-//! ### Subcommand certring filter
+//! ### Subcommand keyring filter
 //!
 //! ```text
-//! Joins certs into a certring applying a filter
+//! Joins certs into a keyring applying a filter
 //!
 //! USAGE:
-//!     sq certring filter [FLAGS] [OPTIONS] [--] [FILE]...
+//!     sq keyring filter [FLAGS] [OPTIONS] [--] [FILE]...
 //!
 //! FLAGS:
-//!     -B, --binary         Emits binary data
-//!     -h, --help           Prints help information
-//!     -P, --prune-certs    Removes certificate components not matching the filter
-//!     -V, --version        Prints version information
+//!     -B, --binary            Emits binary data
+//!     -h, --help              Prints help information
+//!     -P, --prune-certs       Removes certificate components not matching the
+//!                             filter
+//!         --to-certificate    Converts any keys in the input to certificates.
+//!                             Converting a key to a certificate removes secret key
+//!                             material from the key thereby turning it into a
+//!                             certificate.
+//!     -V, --version           Prints version information
 //!
 //! OPTIONS:
 //!         --domain <FQDN>...      Matches on email domain FQDN
@@ -389,24 +400,26 @@
 //! any of the predicates match.  To require all predicates to match, chain multiple
 //! invocations of this command:
 //!
-//! $ cat certs.pgp | sq certring filter --domain example.org | sq certring filter
+//! $ cat certs.pgp | sq keyring filter --domain example.org | sq keyring filter
 //! --name Juliett
+//!
+//! If no filters are supplied, everything matches.
 //! ```
 //!
-//! ### Subcommand certring join
+//! ### Subcommand keyring join
 //!
 //! ```text
-//! Joins certs or certrings into a single certring.
+//! Joins certs or keyrings into a single keyring.
 //!
-//! Unlike 'sq certring merge', multiple versions of the same certificate are not
+//! Unlike 'sq keyring merge', multiple versions of the same certificate are not
 //! merged together.
 //!
 //! USAGE:
-//!     sq certring join [FLAGS] [OPTIONS] [FILE]...
+//!     sq keyring join [FLAGS] [OPTIONS] [FILE]...
 //!
 //! FLAGS:
 //!     -B, --binary
-//!             Don't ASCII-armor the certring
+//!             Don't ASCII-armor the keyring
 //!
 //!     -h, --help
 //!             Prints help information
@@ -425,13 +438,13 @@
 //!             Sets the input files to use
 //! ```
 //!
-//! ### Subcommand certring list
+//! ### Subcommand keyring list
 //!
 //! ```text
-//! Lists certs in a certring
+//! Lists certs in a keyring
 //!
 //! USAGE:
-//!     sq certring list [FILE]
+//!     sq keyring list [FILE]
 //!
 //! FLAGS:
 //!     -h, --help       Prints help information
@@ -441,17 +454,17 @@
 //!     <FILE>    Reads from FILE or stdin if omitted
 //! ```
 //!
-//! ### Subcommand certring merge
+//! ### Subcommand keyring merge
 //!
 //! ```text
-//! Merges certs or certrings into a single certring.
+//! Merges certs or keyrings into a single keyring.
 //!
-//! Unlike 'sq certring join', the certificates are buffered and multiple versions
-//! of the same certificate are merged together.  Where data is replaced (e.g.,
-//! secret key material), data from the later certificate is preferred.
+//! Unlike 'sq keyring join', the certificates are buffered and multiple versions of
+//! the same certificate are merged together.  Where data is replaced (e.g., secret
+//! key material), data from the later certificate is preferred.
 //!
 //! USAGE:
-//!     sq certring merge [FLAGS] [OPTIONS] [FILE]...
+//!     sq keyring merge [FLAGS] [OPTIONS] [FILE]...
 //!
 //! FLAGS:
 //!     -B, --binary
@@ -474,13 +487,13 @@
 //!             Reads from FILE
 //! ```
 //!
-//! ### Subcommand certring split
+//! ### Subcommand keyring split
 //!
 //! ```text
-//! Splits a certring into individual certs
+//! Splits a keyring into individual certs
 //!
 //! USAGE:
-//!     sq certring split [FLAGS] [OPTIONS] [FILE]
+//!     sq keyring split [FLAGS] [OPTIONS] [FILE]
 //!
 //! FLAGS:
 //!     -B, --binary     Emits binary data
@@ -489,8 +502,8 @@
 //!
 //! OPTIONS:
 //!     -p, --prefix <FILE>    Writes to files with prefix FILE [defaults to the
-//!                            input filename with a dash, or 'output' if certring
-//!                            is read from stdin]
+//!                            input filename with a dash, or 'output' if keyring is
+//!                            read from stdin]
 //!
 //! ARGS:
 //!     <FILE>    Reads from FILE or stdin if omitted

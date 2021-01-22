@@ -442,16 +442,23 @@ pub fn configure(app: App<'static, 'static>) -> App<'static, 'static> {
         )
 
         .subcommand(
-            SubCommand::with_name("certring")
+            SubCommand::with_name("keyring")
                 .display_order(310)
                 .about("Manages collections of certificates")
                 .long_about(
                     "Manages collections of certificates \
-                     (also known as 'keyrings').")
+                     (also known as 'keyrings' when they contain \
+                     secret key material, and 'certrings' when they \
+                     don't).\n\
+                     \n\
+                     To convert a key to a certificate (i.e.,\n\
+                     remove any secret key material), do:\n\
+                     \n\
+                     $ cat keys.pgp | sq keyring filter --to-certificate")
                 .setting(AppSettings::SubcommandRequiredElseHelp)
                 .subcommand(
                     SubCommand::with_name("filter")
-                        .about("Joins certs into a certring applying a filter")
+                        .about("Joins certs into a keyring applying a filter")
                         .after_help(
                             "If multiple predicates are given, they are \
                              or'ed, i.e. a certificate matches if any \
@@ -459,7 +466,9 @@ pub fn configure(app: App<'static, 'static>) -> App<'static, 'static> {
                              predicates to match, chain multiple \
                              invocations of this command:\n\
                              \n\
-                             $ cat certs.pgp | sq certring filter --domain example.org | sq certring filter --name Juliett")
+                             $ cat certs.pgp | sq keyring filter --domain example.org | sq keyring filter --name Juliett\n\
+                             \n\
+                             If no filters are supplied, everything matches.")
                         .arg(Arg::with_name("input")
                              .value_name("FILE")
                              .multiple(true)
@@ -486,14 +495,21 @@ pub fn configure(app: App<'static, 'static>) -> App<'static, 'static> {
                         .arg(Arg::with_name("binary")
                              .short("B").long("binary")
                              .help("Emits binary data"))
+                        .arg(Arg::with_name("to-certificate")
+                             .long("to-certificate")
+                             .help("Converts any keys in the input to \
+                                    certificates.  Converting a key to a \
+                                    certificate removes secret key material \
+                                    from the key thereby turning it into \
+                                    a certificate."))
                 )
                 .subcommand(
                     SubCommand::with_name("join")
-                        .about("Joins certs or certrings into a single certring")
+                        .about("Joins certs or keyrings into a single keyring")
                         .long_about(
-                            "Joins certs or certrings into a single certring.\n\
+                            "Joins certs or keyrings into a single keyring.\n\
                              \n\
-                             Unlike 'sq certring merge', multiple versions \
+                             Unlike 'sq keyring merge', multiple versions \
                              of the same certificate are not merged \
                              together.")
                         .arg(Arg::with_name("input")
@@ -505,15 +521,15 @@ pub fn configure(app: App<'static, 'static>) -> App<'static, 'static> {
                              .help("Sets the output file to use"))
                         .arg(Arg::with_name("binary")
                              .short("B").long("binary")
-                             .help("Don't ASCII-armor the certring"))
+                             .help("Don't ASCII-armor the keyring"))
                 )
                 .subcommand(
                     SubCommand::with_name("merge")
-                        .about("Merges certs or certrings into a single certring")
+                        .about("Merges certs or keyrings into a single keyring")
                         .long_about(
-                            "Merges certs or certrings into a single certring.\n\
+                            "Merges certs or keyrings into a single keyring.\n\
                              \n\
-                             Unlike 'sq certring join', the certificates \
+                             Unlike 'sq keyring join', the certificates \
                              are buffered and multiple versions of the same \
                              certificate are merged together.  Where data \
                              is replaced (e.g., secret key material), data \
@@ -531,14 +547,14 @@ pub fn configure(app: App<'static, 'static>) -> App<'static, 'static> {
                 )
                 .subcommand(
                     SubCommand::with_name("list")
-                        .about("Lists certs in a certring")
+                        .about("Lists certs in a keyring")
                         .arg(Arg::with_name("input")
                              .value_name("FILE")
                              .help("Reads from FILE or stdin if omitted"))
                 )
                 .subcommand(
                     SubCommand::with_name("split")
-                        .about("Splits a certring into individual certs")
+                        .about("Splits a keyring into individual certs")
                         .arg(Arg::with_name("input")
                              .value_name("FILE")
                              .help("Reads from FILE or stdin if omitted"))
@@ -546,7 +562,7 @@ pub fn configure(app: App<'static, 'static>) -> App<'static, 'static> {
                              .short("p").long("prefix").value_name("FILE")
                              .help("Writes to files with prefix FILE \
                                     [defaults to the input filename with a \
-                                    dash, or 'output' if certring is read \
+                                    dash, or 'output' if keyring is read \
                                     from stdin]"))
                         .arg(Arg::with_name("binary")
                              .short("B").long("binary")
