@@ -16,6 +16,9 @@ use crate::openpgp::serialize::Serialize;
 use crate::openpgp::types::KeyFlags;
 use crate::openpgp::types::SignatureType;
 
+use crate::{
+    open_or_stdin,
+};
 use crate::Config;
 use crate::create_or_stdout;
 use crate::SECONDS_IN_YEAR;
@@ -192,9 +195,8 @@ pub fn generate(m: &ArgMatches, force: bool) -> Result<()> {
 }
 
 pub fn adopt(config: Config, m: &ArgMatches, p: &dyn Policy) -> Result<()> {
-    let cert = m.value_of("certificate").unwrap();
-    let cert = Cert::from_file(cert)
-        .context(format!("Parsing {}", cert))?;
+    let input = open_or_stdin(m.value_of("certificate"))?;
+    let cert = Cert::from_reader(input)?;
     let mut wanted: Vec<(KeyHandle,
                          Option<(Key<key::PublicParts, key::SubordinateRole>,
                                  SignatureBuilder)>)>
@@ -411,15 +413,17 @@ pub fn attest_certifications(config: Config, m: &ArgMatches, _p: &dyn Policy)
     const SubpacketTag__AttestedCertifications: SubpacketTag =
         SubpacketTag::Unknown(37);
 
+    // Attest to all certifications?
+    let all = ! m.is_present("none"); // All is the default.
+
     // Some configuration.
     let hash_algo = HashAlgorithm::default();
     let digest_size = hash_algo.context()?.digest_size();
     let reserve_area_space = 256; // For the other subpackets.
     let digests_per_sig = ((1usize << 16) - reserve_area_space) / digest_size;
 
-    let key = m.value_of("key").unwrap();
-    let key = Cert::from_file(key)
-        .context(format!("Parsing key {:?}", key))?;
+    let input = open_or_stdin(m.value_of("key"))?;
+    let key = Cert::from_reader(input)?;
 
     // First, remove all attestations.
     let key = Cert::from_packets(
@@ -444,7 +448,7 @@ pub fn attest_certifications(config: Config, m: &ArgMatches, _p: &dyn Policy)
     for uid in key.userids() {
         let mut attestations = Vec::new();
 
-        if m.is_present("all") {
+        if all {
             for certification in uid.certifications() {
                 let mut h = hash_algo.context()?;
                 hash_for_confirmation(certification, &mut h);
@@ -487,7 +491,7 @@ pub fn attest_certifications(config: Config, m: &ArgMatches, _p: &dyn Policy)
     for ua in key.user_attributes() {
         let mut attestations = Vec::new();
 
-        if m.is_present("all") {
+        if all {
             for certification in ua.certifications() {
                 let mut h = hash_algo.context()?;
                 hash_for_confirmation(certification, &mut h);

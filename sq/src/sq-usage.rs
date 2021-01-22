@@ -277,10 +277,10 @@
 //! Attests third-party certifications allowing for their distribution
 //!
 //! USAGE:
-//!     sq key attest-certifications [FLAGS] [OPTIONS] <KEY>
+//!     sq key attest-certifications [FLAGS] [OPTIONS] [KEY]
 //!
 //! FLAGS:
-//!         --all        Attests to all certifications
+//!         --all        Attests to all certifications [default]
 //!     -B, --binary     Emits binary data
 //!     -h, --help       Prints help information
 //!         --none       Removes all prior attestations
@@ -299,7 +299,7 @@
 //! Binds keys from one certificate to another
 //!
 //! USAGE:
-//!     sq key adopt [FLAGS] [OPTIONS] <TARGET-KEY> --key <KEY>...
+//!     sq key adopt [FLAGS] [OPTIONS] --key <KEY>... [--] [TARGET-KEY]
 //!
 //! FLAGS:
 //!         --allow-broken-crypto
