@@ -112,7 +112,12 @@ fn create_manpage(
     }
     if let Some(more_help) = app.p.meta.more_help {
         // this is specific to sequoia
-        //manpage = add_examples(manpage, more_help);
+        if more_help.starts_with("EXAMPLE") {
+            manpage = add_examples(manpage, more_help);
+        } else {
+            let example = Example::new().text(&more_help).prompt("");
+            manpage = manpage.example(example);
+        }
     }
     if let Some(version) = app.p.meta.version {
         manpage = manpage.version(version);
