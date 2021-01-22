@@ -9,13 +9,23 @@ mod sq_cli;
 fn main() -> std::io::Result<()> {
     let app = sq_cli::build();
 
-    //let see_also = Section::new("See also")
-    //    .paragraph("Full documentation at https://docs.sequoia-pgp.org/sq/");
 
     let mut manpages = Vec::new();
     create_manpage(app.clone(), None, &mut manpages);
 
-    for manpage in manpages {
+    let mut related = manpages.iter().rev()
+        .map(|man| [&man.name.replace(" ", "-"), "(1)"].join(""))
+        .collect::<Vec<String>>();
+    related.sort_unstable();
+    let related = related.join(", ");
+
+    let see_also = Section::new("See also")
+        .paragraph("Full documentation at https://docs.sequoia-pgp.org/sq/")
+        // don't justify and don't hyphenate
+        .paragraph(&[".ad l\n.nh\n", &related].join(""));
+
+    for mut manpage in manpages {
+        manpage = manpage.custom(see_also.clone());
         write_manpage(manpage)?;
     }
 
