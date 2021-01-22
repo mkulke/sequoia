@@ -72,12 +72,15 @@ fn create_manpage(
             man_option = man_option.long(&format!("--{}", long));
         }
         if let Some(help) = option.long_help().or(option.help()) {
-            if let Some(pvs) = option.possible_vals() {
-                let help = [help, "  Possible values: [", &pvs.join(", "), "]"].join("");
-                man_option = man_option.help(&help);
-            } else {
-                man_option = man_option.help(help);
-            }
+            let possible_values =
+                option.possible_vals().map_or("".into(), |pvs| {
+                    ["  [possible values: ", &pvs.join(", "), "]"].join("")
+                });
+            let default_value = option.default_val().map_or("".into(), |dv| {
+                ["  [default: ", &dv.to_string_lossy(), "]"].join("")
+            });
+            let help = [help, &default_value, &possible_values].join("");
+            man_option = man_option.help(&help);
         }
         manpage = manpage.option(man_option);
     }
