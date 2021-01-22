@@ -9,34 +9,33 @@ mod sq_cli;
 fn main() -> std::io::Result<()> {
     let app = sq_cli::build();
 
-    let see_also = Section::new("See also")
-        .paragraph("Full documentation at https://docs.sequoia-pgp.org/sq/");
+    //let see_also = Section::new("See also")
+    //    .paragraph("Full documentation at https://docs.sequoia-pgp.org/sq/");
 
-    let mut main_manpage = create_manpage(app.clone(), None);
-    main_manpage = add_version_flag(main_manpage);
-    main_manpage = main_manpage.custom(see_also);
+    let mut manpages = Vec::new();
+    create_manpage(app.clone(), None, &mut manpages);
 
-    for subcommand in app.p.subcommands {
-        let sc_full_name =
-            format!("{} {}", main_manpage.name, subcommand.p.meta.name);
-        let sc_manpage =
-            create_manpage(subcommand.clone(), Some(&sc_full_name));
 
-        write_manpage(sc_manpage)?;
-    }
-
-    write_manpage(main_manpage)?;
+    for manpage in manpages {
+        write_manpage(manpage)?;
+    };
 
     Ok(())
 }
 
-fn create_manpage(app: clap::App, name: Option<&str>) -> Manual {
-    let name = name.unwrap_or(&app.p.meta.name);
+fn create_manpage(app: clap::App, outer_name: Option<&str>, manpages: &mut Vec<Manual>) {
 
+    let name = match outer_name {
+        Some(outer_name) => [outer_name, &app.p.meta.name].join(" "),
+        None => app.p.meta.name,
+    };
     let mut manpage = Manual::new(&name);
     manpage = add_authors(manpage);
     manpage = manpage.date("January 2021");
     manpage = add_help_flag(manpage);
+    if outer_name.is_none() {
+        manpage = add_version_flag(manpage);
+    }
 
     if let Some(about) = app.p.meta.long_about.filter(|la| !la.is_empty()).or(app.p.meta.about) {
         manpage = manpage.about(about);
@@ -56,7 +55,12 @@ fn create_manpage(app: clap::App, name: Option<&str>) -> Manual {
     }
     for option in app.p.opts {
         //TODO there may be more values
-        let mut man_option = Opt::new(option.val_names().unwrap()[0]);
+        //if option.val_names().is_none() {
+        //    println!("{}", option);
+        //    continue;
+        //}
+        let name = option.val_names().map_or(option.name(), |vn| vn[0]);
+        let mut man_option = Opt::new(name);
         if let Some(short) = option.short() {
             man_option = man_option.short(&format!("-{}", short));
         }
@@ -87,7 +91,7 @@ fn create_manpage(app: clap::App, name: Option<&str>) -> Manual {
     if !app.p.subcommands.is_empty() {
         manpage = add_help_subcommand(manpage);
     };
-    for subcommand in app.p.subcommands {
+    for subcommand in app.p.subcommands.clone() {
         let sc_meta = subcommand.p.meta;
         let mut man_subcommand = Subcommand::new(&sc_meta.name);
         if let Some(about) = sc_meta.long_about.filter(|la| !la.is_empty()).or(sc_meta.about) {
@@ -97,13 +101,17 @@ fn create_manpage(app: clap::App, name: Option<&str>) -> Manual {
     }
     if let Some(more_help) = app.p.meta.more_help {
         // this is specific to sequoia
-        manpage = add_examples(manpage, more_help);
+        //manpage = add_examples(manpage, more_help);
     }
     if let Some(version) = app.p.meta.version {
         manpage = manpage.version(version);
     };
 
-    manpage
+    for subcommand in app.p.subcommands {
+        create_manpage(subcommand.clone(), Some(&name), manpages);
+    }
+
+    manpages.push(manpage);
 }
 
 fn add_authors(mut manpage: Manual) -> Manual {
