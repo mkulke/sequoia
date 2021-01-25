@@ -1,0 +1,21 @@
+[package]
+name = "sq-manpage"
+version = "0.22.0"
+authors = ["Nora Widdecke <nora@sequoia-pgp.org>"]
+edition = "2018"
+
+[dependencies]
+# man 0.3.0 with stuff we need (e.g. subcommands)
+#man = { path = "../../man" }
+#clap = { path = "../../clap" }
+man = { git = "https://github.com/puzzlewolf/man.git", branch = "for_sequoia" }
+clap = { git = "https://github.com/puzzlewolf/clap.git", branch = "for_sequoia" }
+sequoia-openpgp = { path = "../openpgp", version = "1.0.0", default-features = false }
+
+[build-dependencies]
+# man 0.3.0 with stuff we need (e.g. subcommands)
+#man = { path = "../../man" }
+#clap = { path = "../../clap" }
+man = { git = "https://github.com/puzzlewolf/man.git", branch = "for_sequoia" }
+clap = { git = "https://github.com/puzzlewolf/clap.git", branch = "for_sequoia" }
+sequoia-openpgp = { path = "../openpgp", version = "1.0.0" }
