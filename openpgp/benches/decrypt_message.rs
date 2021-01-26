@@ -7,36 +7,54 @@ mod common;
 use common::decrypt;
 use common::encrypt;
 
-fn decrypt_cert(bytes: &[u8], cert: Cert) {
+static PASSWORD: &'static str = "password";
+
+lazy_static::lazy_static! {
+    static ref TESTY: Cert =
+        Cert::from_bytes(&include_bytes!("../tests/data/keys/testy-private.pgp")[..])
+        .unwrap();
+    static ref ZEROS_1_MB: Vec<u8> = vec![0; 1 * 1024 * 1024];
+    static ref ZEROS_10_MB: Vec<u8> = vec![0; 10 * 1024 * 1024];
+}
+
+
+fn decrypt_cert(bytes: &[u8], cert: &Cert) {
     let mut sink = Vec::new();
     decrypt::decrypt_with_cert(&mut sink, &bytes, cert).unwrap();
-    assert_eq!(sink.as_slice(), b"Hello world.");
 }
 
 fn decrypt_password(bytes: &[u8]) {
     let mut sink = Vec::new();
-    decrypt::decrypt_with_password(&mut sink, &bytes, "password").unwrap();
-    assert_eq!(sink.as_slice(), b"Hello world.");
+    decrypt::decrypt_with_password(&mut sink, &bytes, PASSWORD).unwrap();
+    // TODO test to ensure decryption was successful
 }
 
 fn bench_decrypt(c: &mut Criterion) {
     let mut group = c.benchmark_group("decrypt message");
 
-    // Decrypt a very short message.
-    let bytes = b"Hello world.";
-    let message = encrypt::encrypt_with_password(bytes, "password").unwrap();
+    // Encrypt a very short, medium and very long message,
+    // and then benchmark decryption.
+    let messages = [b"Hello world.", &ZEROS_1_MB[..], &ZEROS_10_MB[..]];
 
-    group.bench_function(format!("password {:?}", message.len()), |b| {
-        b.iter(|| decrypt_password(&message))
-    });
+    // Encrypt and decrypt with password
+    messages
+        .iter()
+        .map(|m| encrypt::encrypt_with_password(m, PASSWORD).unwrap())
+        .for_each(|encrypted| {
+            group.bench_function(format!("password {:?}", encrypted.len()), |b| {
+                b.iter(|| decrypt_password(&encrypted))
+            });
+        });
 
-    let testy =
-        Cert::from_bytes(&include_bytes!("../tests/data/keys/testy-private.pgp")[..])
-            .unwrap();
-    let message = encrypt::encrypt_to_cert(bytes, &testy).unwrap();
-    group.bench_function(format!("cert {:?}", bytes.len()), |b| {
-        b.iter(|| decrypt_cert(&message, testy.clone()))
-    });
+    // Encrypt and decrypt with a cert
+    messages
+        .iter()
+        .map(|m| encrypt::encrypt_to_cert(m, &TESTY).unwrap())
+        .for_each(|encrypted| {
+            group.bench_function(format!("cert {:?}", encrypted.len()), |b| {
+                b.iter(|| decrypt_cert(&encrypted, &TESTY))
+            });
+        });
 
     group.finish();
 }

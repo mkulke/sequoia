@@ -1,7 +1,7 @@
 use sequoia_openpgp::cert::Cert;
 use sequoia_openpgp::crypto::{Password, SessionKey};
-use sequoia_openpgp::packet::{PKESK, SKESK};
 use sequoia_openpgp::packet::prelude::*;
+use sequoia_openpgp::packet::{PKESK, SKESK};
 use sequoia_openpgp::parse::stream::{
     DecryptionHelper, DecryptorBuilder, MessageStructure, VerificationHelper,
 };
@@ -81,11 +81,11 @@ pub fn decrypt_with_password(
 // Borrowed from the examples at
 // sequoia_openpgp::parse::stream::DecryptionHelper
 // sequoia_openpgp::parse::stream::Decryptor
-struct CertHelper {
-    cert: Cert,
+struct CertHelper<'a> {
+    cert: &'a Cert,
 }
 
-impl VerificationHelper for CertHelper {
+impl VerificationHelper for CertHelper<'_> {
     fn get_certs(&mut self, _ids: &[KeyHandle]) -> Result<Vec<Cert>> {
         Ok(Vec::new())
     }
@@ -94,7 +94,7 @@ impl VerificationHelper for CertHelper {
     }
 }
 
-impl DecryptionHelper for CertHelper {
+impl DecryptionHelper for CertHelper<'_> {
     fn decrypt<D>(
         &mut self,
         pkesks: &[PKESK],
@@ -119,28 +119,28 @@ impl DecryptionHelper for CertHelper {
             .map(|amalgamation| amalgamation.key().clone().into())
             .collect();
 
-        let candidate_pairs = keys
+        let successful_key = keys
             .iter()
+            .cloned()
             .filter_map(|key| {
                 pkesks
-                    .iter()
-                    .find(|&pkesk| pkesk.recipient() == &key.keyid())
+                    .into_iter()
+                    .find(|pkesk| pkesk.recipient() == &key.keyid())
                     .map(|pkesk| (pkesk, key))
             })
-            .collect::<Vec<_>>();
+            .find(|(pkesk, key)| {
+                let mut keypair = key.clone().into_keypair().unwrap();
+                pkesk
+                    .decrypt(&mut keypair, sym_algo)
+                    .map(|(algo, sk)| decrypt(algo, &sk))
+                    .unwrap_or(false)
+            })
+            .map(|(_, key)| key.fingerprint());
 
-        for (pkesk, key) in candidate_pairs {
-            let mut keypair = key.clone().into_keypair()?;
-            if pkesk
-                .decrypt(&mut keypair, sym_algo)
-                .map(|(algo, sk)| decrypt(algo, &sk))
-                .unwrap_or(false)
-            {
-                return Ok(Some(key.fingerprint()));
-            }
+        match successful_key {
+            Some(key) => Ok(Some(key)),
+            None => Err(anyhow::anyhow!("Wrong cert!")),
         }
-
-        Err(anyhow::anyhow!("Wrong cert!"))
     }
 }
 
@@ -151,7 +151,7 @@ impl DecryptionHelper for CertHelper {
 pub fn decrypt_with_cert(
     sink: &mut dyn Write,
     ciphertext: &[u8],
-    cert: Cert,
+    cert: &Cert,
 ) -> sequoia_openpgp::Result<()> {
     // Make a helper that that feeds the password to the decryptor.
     let helper = CertHelper { cert };
