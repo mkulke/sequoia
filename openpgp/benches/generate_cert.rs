@@ -8,7 +8,7 @@ fn generate_cert(cipher: CipherSuite) {
         cipher,
         Some("Alice Lovelace <alice@example.org>"),
     )
-    .generate();
+    .generate().unwrap();
 }
 
 fn bench_generate_certs(c: &mut Criterion) {

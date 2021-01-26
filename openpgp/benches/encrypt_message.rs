@@ -11,15 +11,15 @@ lazy_static::lazy_static! {
     static ref ZEROS_10_MB: Vec<u8> = vec![0; 10 * 1024 * 1024];
 }
 
-pub fn encrypt_to_testy(bytes: &[u8]) -> sequoia_openpgp::Result<Vec<u8>> {
+pub fn encrypt_to_testy(bytes: &[u8]) {
     let testy =
-        Cert::from_bytes(&include_bytes!("../tests/data/keys/testy.pgp")[..])?;
-    encrypt::encrypt_to_cert(bytes, &testy)
+        Cert::from_bytes(&include_bytes!("../tests/data/keys/testy.pgp")[..]).unwrap();
+    encrypt::encrypt_to_cert(bytes, &testy).unwrap();
 }
 
-pub fn encrypt_with_password(bytes: &[u8]) -> sequoia_openpgp::Result<Vec<u8>> {
+pub fn encrypt_with_password(bytes: &[u8]) {
     let password = "ściśle tajne";
-    encrypt::encrypt_with_password(bytes, password)
+    encrypt::encrypt_with_password(bytes, password).unwrap();
 }
 
 fn bench_encrypt(c: &mut Criterion) {

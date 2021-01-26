@@ -6,8 +6,8 @@ use sequoia_openpgp::parse::Parse;
 use std::convert::TryInto;
 
 fn read_cert(bytes: &[u8]) {
-    // Parse the cert, ignore any errors
-    let _ = Cert::from_bytes(bytes);
+    // Parse the cert, unwrap to notice errors
+    Cert::from_bytes(bytes).unwrap();
 }
 
 macro_rules! bench_parse_cert {

@@ -7,18 +7,16 @@ mod common;
 use common::decrypt;
 use common::encrypt;
 
-fn decrypt_cert(bytes: &[u8], cert: Cert) -> sequoia_openpgp::Result<()> {
+fn decrypt_cert(bytes: &[u8], cert: Cert) {
     let mut sink = Vec::new();
-    decrypt::decrypt_with_cert(&mut sink, &bytes, cert)?;
+    decrypt::decrypt_with_cert(&mut sink, &bytes, cert).unwrap();
     assert_eq!(sink.as_slice(), b"Hello world.");
-    Ok(())
 }
 
-fn decrypt_password(bytes: &[u8]) -> sequoia_openpgp::Result<()> {
+fn decrypt_password(bytes: &[u8]) {
     let mut sink = Vec::new();
-    decrypt::decrypt_with_password(&mut sink, &bytes, "password")?;
+    decrypt::decrypt_with_password(&mut sink, &bytes, "password").unwrap();
     assert_eq!(sink.as_slice(), b"Hello world.");
-    Ok(())
 }
 
 fn bench_decrypt(c: &mut Criterion) {
