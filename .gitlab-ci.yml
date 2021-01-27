@@ -4,6 +4,7 @@ stages:
   - test
 
 before_script:
+  - ls $CI_PROJECT_DIR/.. -lah
   - if [ -d $CARGO_TARGET_DIR ]; then find $CARGO_TARGET_DIR | wc --lines; du -sh $CARGO_TARGET_DIR; fi
   - if [ -d $CARGO_HOME ]; then find $CARGO_HOME | wc --lines; du -sh $CARGO_HOME; fi
   - rustc --version
@@ -46,6 +47,7 @@ all_commits:
     - /^pep-engine$/
 
   before_script:
+    - ls $CI_PROJECT_DIR/.. -lah
     - apt update -y -qq
     - apt install --no-install-recommends -y -qq -o=Dpkg::Use-Pty=0 clang libclang-dev llvm pkg-config nettle-dev git
     - if [ -d $CARGO_TARGET_DIR ]; then find $CARGO_TARGET_DIR | wc --lines; du -sh $CARGO_TARGET_DIR; fi
@@ -81,6 +83,7 @@ rust-stable:
   image: rust:1-slim-buster
 
   before_script:
+    - ls $CI_PROJECT_DIR/.. -lah
     - apt update -y -qq
     - apt install --no-install-recommends -y -qq -o=Dpkg::Use-Pty=0 clang libclang-dev llvm pkg-config nettle-dev
     - if [ -d $CARGO_TARGET_DIR ]; then find $CARGO_TARGET_DIR | wc --lines; du -sh $CARGO_TARGET_DIR; fi
