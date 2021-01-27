@@ -1,4 +1,6 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{
+    criterion_group, criterion_main, BenchmarkId, Criterion, Throughput,
+};
 
 use sequoia_openpgp::cert::Cert;
 use sequoia_openpgp::parse::Parse;
@@ -13,7 +15,8 @@ lazy_static::lazy_static! {
 
 pub fn encrypt_to_testy(bytes: &[u8]) {
     let testy =
-        Cert::from_bytes(&include_bytes!("../tests/data/keys/testy.pgp")[..]).unwrap();
+        Cert::from_bytes(&include_bytes!("../tests/data/keys/testy.pgp")[..])
+            .unwrap();
     encrypt::encrypt_to_cert(bytes, &testy).unwrap();
 }
 
@@ -26,15 +29,20 @@ fn bench_encrypt(c: &mut Criterion) {
     let mut group = c.benchmark_group("encrypt message");
 
     // Encrypt a very short, medium and very long message.
-    let messages = [b"Hello world.", &ZEROS_1_MB[..], &ZEROS_10_MB[..]];
+    let messages = &[b"Hello world.", &ZEROS_1_MB[..], &ZEROS_10_MB[..]];
 
-    for message in messages.iter() {
-        group.bench_function(format!("password {:?}", message.len()), |b| {
-            b.iter(|| encrypt_with_password(message))
-        });
-        group.bench_function(format!("recipient {:?}", message.len()), |b| {
-            b.iter(|| encrypt_to_testy(message))
-        });
+    for message in messages {
+        group.throughput(Throughput::Bytes(message.len() as u64));
+        group.bench_with_input(
+            BenchmarkId::new("password", message.len()),
+            &message,
+            |b, m| b.iter(|| encrypt_with_password(&m)),
+        );
+        group.bench_with_input(
+            BenchmarkId::new("cert", message.len()),
+            &message,
+            |b, m| b.iter(|| encrypt_to_testy(&m)),
+        );
     }
     group.finish();
 }

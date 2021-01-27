@@ -1,4 +1,6 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{
+    criterion_group, criterion_main, BenchmarkId, Criterion, Throughput,
+};
 
 use sequoia_openpgp::cert::Cert;
 use sequoia_openpgp::parse::Parse;
@@ -17,7 +19,6 @@ lazy_static::lazy_static! {
     static ref ZEROS_10_MB: Vec<u8> = vec![0; 10 * 1024 * 1024];
 }
 
-
 fn decrypt_cert(bytes: &[u8], cert: &Cert) {
     let mut sink = Vec::new();
     decrypt::decrypt_with_cert(&mut sink, &bytes, cert).unwrap();
@@ -34,16 +35,19 @@ fn bench_decrypt(c: &mut Criterion) {
 
     // Encrypt a very short, medium and very long message,
     // and then benchmark decryption.
-    let messages = [b"Hello world.", &ZEROS_1_MB[..], &ZEROS_10_MB[..]];
+    let messages = &[b"Hello world.", &ZEROS_1_MB[..], &ZEROS_10_MB[..]];
 
     // Encrypt and decrypt with password
     messages
         .iter()
         .map(|m| encrypt::encrypt_with_password(m, PASSWORD).unwrap())
         .for_each(|encrypted| {
-            group.bench_function(format!("password {:?}", encrypted.len()), |b| {
-                b.iter(|| decrypt_password(&encrypted))
-            });
+            group.throughput(Throughput::Bytes(encrypted.len() as u64));
+            group.bench_with_input(
+                BenchmarkId::new("password", encrypted.len()),
+                &encrypted,
+                |b, e| b.iter(|| decrypt_password(&e)),
+            );
         });
 
     // Encrypt and decrypt with a cert
@@ -51,9 +55,12 @@ fn bench_decrypt(c: &mut Criterion) {
         .iter()
         .map(|m| encrypt::encrypt_to_cert(m, &TESTY).unwrap())
         .for_each(|encrypted| {
-            group.bench_function(format!("cert {:?}", encrypted.len()), |b| {
-                b.iter(|| decrypt_cert(&encrypted, &TESTY))
-            });
+            group.throughput(Throughput::Bytes(encrypted.len() as u64));
+            group.bench_with_input(
+                BenchmarkId::new("cert", encrypted.len()),
+                &encrypted,
+                |b, e| b.iter(|| decrypt_cert(&e, &TESTY)),
+            );
         });
 
     group.finish();
