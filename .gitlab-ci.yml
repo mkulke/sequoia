@@ -4,15 +4,12 @@ stages:
   - test
 
 before_script:
-  - if [ -d $CARGO_TARGET_DIR ]; then find $CARGO_TARGET_DIR | wc --lines; du -sh $CARGO_TARGET_DIR; fi
   - if [ -d $CARGO_HOME ]; then find $CARGO_HOME | wc --lines; du -sh $CARGO_HOME; fi
   - rustc --version
   - cargo --version
   - clang --version
 
 after_script:
-  - if [ -d $CARGO_TARGET_DIR ]; then find $CARGO_TARGET_DIR -type f -atime +7 -delete; fi
-  - if [ -d $CARGO_TARGET_DIR ]; then du -sh $CARGO_TARGET_DIR; fi
   - if [ -d $CARGO_HOME ]; then du -sh $CARGO_HOME; fi
 
 bullseye:
@@ -33,8 +30,12 @@ bullseye:
     - if ! git diff --quiet ; then echo "The build changed the source.  Please investigate." ; git diff ; fi
 
   variables:
-    CARGO_TARGET_DIR: $CI_PROJECT_DIR/../target.$CI_CONCURRENT_ID.bullseye
     RUSTFLAGS: -D warnings -A unused-parens
+
+  cache:
+    paths:
+      - target
+    key: ${CI_JOB_NAME}
 
 all_commits:
   # Test each commit up to main, to facilitate bisecting.
@@ -48,7 +49,6 @@ all_commits:
   before_script:
     - apt update -y -qq
     - apt install --no-install-recommends -y -qq -o=Dpkg::Use-Pty=0 clang libclang-dev llvm pkg-config nettle-dev git
-    - if [ -d $CARGO_TARGET_DIR ]; then find $CARGO_TARGET_DIR | wc --lines; du -sh $CARGO_TARGET_DIR; fi
     - if [ -d $CARGO_HOME ]; then find $CARGO_HOME | wc --lines; du -sh $CARGO_HOME; fi
     - rustc --version
     - cargo --version
@@ -58,9 +58,13 @@ all_commits:
     - .ci/all_commits.sh
 
   variables:
-    CARGO_TARGET_DIR: $CI_PROJECT_DIR/../target.$CI_CONCURRENT_ID.all_commits
     RUSTFLAGS: -D warnings -A unused-parens
     GIT_STRATEGY: clone
+
+  cache:
+    paths:
+      - target
+    key: ${CI_JOB_NAME}
 
 codespell:
   tags:
@@ -83,7 +87,6 @@ rust-stable:
   before_script:
     - apt update -y -qq
     - apt install --no-install-recommends -y -qq -o=Dpkg::Use-Pty=0 clang libclang-dev llvm pkg-config nettle-dev
-    - if [ -d $CARGO_TARGET_DIR ]; then find $CARGO_TARGET_DIR | wc --lines; du -sh $CARGO_TARGET_DIR; fi
     - if [ -d $CARGO_HOME ]; then find $CARGO_HOME | wc --lines; du -sh $CARGO_HOME; fi
     - rustc --version
     - cargo --version
@@ -93,8 +96,12 @@ rust-stable:
     - cargo test -p buffered-reader -p sequoia-openpgp -p sequoia-sqv
 
   variables:
-    CARGO_TARGET_DIR: $CI_PROJECT_DIR/../target.$CI_CONCURRENT_ID.rust-stable
     RUSTFLAGS: -D warnings -A unused-parens
+
+  cache:
+    paths:
+      - target
+    key: ${CI_JOB_NAME}
 
 windows-gnu:
   tags:
