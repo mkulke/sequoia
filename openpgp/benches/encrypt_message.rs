@@ -25,33 +25,17 @@ pub fn encrypt_with_password(bytes: &[u8]) {
 fn bench_encrypt(c: &mut Criterion) {
     let mut group = c.benchmark_group("encrypt message");
 
-    // Encrypt a very short message.
-    let bytes = b"Hello world.";
-    group.bench_function(format!("password {:?}", bytes.len()), |b| {
-        b.iter(|| encrypt_with_password(bytes))
-    });
-    group.bench_function(format!("recipient {:?}", bytes.len()), |b| {
-        b.iter(|| encrypt_to_testy(bytes))
-    });
+    // Encrypt a very short, medium and very long message.
+    let messages = [b"Hello world.", &ZEROS_1_MB[..], &ZEROS_10_MB[..]];
 
-    // Encrypt a medium length message.
-    let bytes = &ZEROS_1_MB[..];
-    group.bench_function(format!("password {:?}", bytes.len()), |b| {
-        b.iter(|| encrypt_with_password(bytes))
-    });
-    group.bench_function(format!("recipient {:?}", bytes.len()), |b| {
-        b.iter(|| encrypt_to_testy(bytes))
-    });
-
-    // Encrypt a very long message.
-    let bytes = &ZEROS_10_MB[..];
-    group.bench_function(format!("password {:?}", bytes.len()), |b| {
-        b.iter(|| encrypt_with_password(bytes))
-    });
-    group.bench_function(format!("recipient {:?}", bytes.len()), |b| {
-        b.iter(|| encrypt_to_testy(bytes))
-    });
-
+    for message in messages.iter() {
+        group.bench_function(format!("password {:?}", message.len()), |b| {
+            b.iter(|| encrypt_with_password(message))
+        });
+        group.bench_function(format!("recipient {:?}", message.len()), |b| {
+            b.iter(|| encrypt_to_testy(message))
+        });
+    }
     group.finish();
 }
 
