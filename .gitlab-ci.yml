@@ -49,22 +49,6 @@ bullseye:
     RUSTFLAGS: -D warnings -A unused-parens
   after_script: []
 
-all_commits:
-  # Test each commit up to main, to facilitate bisecting.
-  stage: test
-  image: registry.gitlab.com/sequoia-pgp/build-docker-image/rust-stable-prebuild:latest
-  needs: ["rust-stable"]
-  except:
-    # Do not run for pushes to the pep-engine branch.
-    - /^pep-engine$/
-  script:
-    - .ci/all_commits.sh
-  variables:
-    CARGO_TARGET_DIR: /target
-    CARGO_HOME: /cargo
-    RUSTFLAGS: -D warnings -A unused-parens
-    GIT_STRATEGY: clone
-
 codespell:
   tags:
     - linux
@@ -84,10 +68,51 @@ rust-stable:
   image: registry.gitlab.com/sequoia-pgp/build-docker-image/rust-stable-prebuild:latest
   script:
     - CARGO_PACKAGES="-p buffered-reader -p sequoia-openpgp -p sequoia-sqv" make test
+    - mkdir -p tested_commits
+    # Mark this commit sha as succesfully run, for all_commits.
+    - echo $CI_JOB_URL >> tested_commits/$CI_COMMIT_SHA
   variables:
     CARGO_TARGET_DIR: /target
     CARGO_HOME: /cargo
     RUSTFLAGS: -D warnings -A unused-parens
+  artifacts:
+    paths:
+      - tested_commits
+    expire_in: 1 week
+
+# Only test commits once in all_commits.
+# When a commit has been tested we keep track of it by touching a file named by
+# the commit sha in tested_commits.
+# Before running the tests we check if such a file exists.
+# We store these files as artifacts and load them before runs on the same branch.
+all_commits:
+  # Test each commit up to main, to facilitate bisecting.
+  stage: test
+  image: registry.gitlab.com/sequoia-pgp/build-docker-image/rust-stable-prebuild:latest
+  needs: ["rust-stable"]
+  except:
+    # Do not run for pushes to the pep-engine branch.
+    - /^pep-engine$/
+    # We have a strict farst-forward-merge policy, all commits have been tested by
+    # this job on the source branche anyway.
+    - master
+  script:
+    - echo $ARTIFACTS
+    - 'curl -sL -o artifacts.zip -H "JOB-TOKEN: $CI_JOB_TOKEN" "$ARTIFACTS"'
+    - unzip -n artifacts.zip || echo "No previous runs found."
+    - if [ -d tested_commits ]; then ls tested_commits; fi
+    - .ci/all_commits.sh
+    - if [ -d tested_commits ]; then ls tested_commits; fi
+  variables:
+    CARGO_TARGET_DIR: /target
+    CARGO_HOME: /cargo
+    RUSTFLAGS: -D warnings -A unused-parens
+    GIT_STRATEGY: clone
+    ARTIFACTS: "$CI_API_V4_URL/projects/$CI_PROJECT_ID/jobs/artifacts/$CI_COMMIT_BRANCH/download?job=all_commits"
+  artifacts:
+    paths:
+      - tested_commits
+    expire_in: 1 week
 
 windows-gnu:
   tags:

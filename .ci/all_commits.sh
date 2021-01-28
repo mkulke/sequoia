@@ -14,11 +14,13 @@ git merge-base --is-ancestor HEAD~ origin/main &&
   echo "All commits tested already" &&
   exit 0
 
+# Copy the current version of the test_commit script
+# so we can use it to test all the previous commits:
+cp .ci/test_commit.sh .
+
 # Leave out the last commit - it has already been checked.
 git checkout HEAD~
-git rebase origin/main \
-           --exec 'echo ===; echo ===; echo ===; git log -n 1;' \
-           --exec 'cargo test -p sequoia-openpgp' &&
+git rebase origin/main --exec './test_commit.sh' &&
   echo "All commits passed tests" &&
   exit 0
 
