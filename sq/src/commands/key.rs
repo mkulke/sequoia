@@ -25,7 +25,19 @@ use crate::SECONDS_IN_YEAR;
 use crate::parse_duration;
 use crate::decrypt_key;
 
-pub fn generate(m: &ArgMatches, force: bool) -> Result<()> {
+pub fn dispatch(config: Config, m: &clap::ArgMatches) -> Result<()> {
+    match m.subcommand() {
+        ("generate", Some(m)) => generate(m, config.force)?,
+        ("extract-cert", Some(m)) => extract_cert(config, m)?,
+        ("adopt", Some(m)) => adopt(config, m)?,
+        ("attest-certifications", Some(m)) =>
+            attest_certifications(config, m)?,
+        _ => unreachable!(),
+        }
+    Ok(())
+}
+
+fn generate(m: &ArgMatches, force: bool) -> Result<()> {
     let mut builder = CertBuilder::new();
 
     // User ID
@@ -194,7 +206,20 @@ pub fn generate(m: &ArgMatches, force: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn adopt(config: Config, m: &ArgMatches) -> Result<()> {
+fn extract_cert(config: Config, m: &ArgMatches) -> Result<()> {
+    let input = open_or_stdin(m.value_of("input"))?;
+    let mut output = create_or_stdout(m.value_of("output"), config.force)?;
+
+    let cert = Cert::from_reader(input)?;
+    if m.is_present("binary") {
+        cert.serialize(&mut output)?;
+    } else {
+        cert.armored().serialize(&mut output)?;
+    }
+    Ok(())
+}
+
+fn adopt(config: Config, m: &ArgMatches) -> Result<()> {
     let input = open_or_stdin(m.value_of("certificate"))?;
     let cert = Cert::from_reader(input)?;
     let mut wanted: Vec<(KeyHandle,
@@ -397,8 +422,8 @@ pub fn adopt(config: Config, m: &ArgMatches) -> Result<()> {
     Ok(())
 }
 
-pub fn attest_certifications(config: Config, m: &ArgMatches)
-                             -> Result<()> {
+fn attest_certifications(config: Config, m: &ArgMatches)
+                         -> Result<()> {
     // XXX: This function has to do some steps manually, because
     // Sequoia does not expose this functionality because it has not
     // been standardized yet.
