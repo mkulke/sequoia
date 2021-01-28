@@ -13,7 +13,11 @@ fn main() {
     // XXX: Revisit once
     // https://github.com/rust-lang/rust/issues/44732 is stabilized.
 
-    let mut sq = sq_cli::configure(clap::App::new("sq").set_term_width(80));
+    let mut sq = sq_cli::configure(
+        clap::App::new("sq").set_term_width(80),
+        cfg!(feature = "net"),
+        cfg!(feature = "autocrypt"),
+    );
     let mut main = fs::File::create("src/sq-usage.rs").unwrap();
     dump_help(&mut main,
               &mut sq,

@@ -2,7 +2,7 @@
 
 use anyhow::Context as _;
 use std::fs::OpenOptions;
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use chrono::{DateTime, offset::Utc};
@@ -15,7 +15,6 @@ use openpgp::{
     Result,
 };
 use crate::openpgp::{armor, Cert};
-use sequoia_autocrypt as autocrypt;
 use crate::openpgp::crypto::Password;
 use crate::openpgp::fmt::hex;
 use crate::openpgp::types::KeyFlags;
@@ -328,9 +327,10 @@ fn help_warning(arg: &str) {
     }
 }
 
-#[allow(dead_code)]
-pub struct Config {
+#[derive(Clone)]
+pub struct Config<'a> {
     force: bool,
+    policy: P<'a>,
 }
 
 fn main() -> Result<()> {
@@ -357,6 +357,7 @@ fn main() -> Result<()> {
 
     let config = Config {
         force,
+        policy: policy.clone(),
     };
 
     match matches.subcommand() {
@@ -371,7 +372,7 @@ fn main() -> Result<()> {
             let secrets = m.values_of("secret-key-file")
                 .map(load_keys)
                 .unwrap_or(Ok(vec![]))?;
-            commands::decrypt(config, policy,
+            commands::decrypt(config,
                               &mut input, &mut output,
                               signatures, certs, secrets,
                               m.is_present("dump-session-key"),
@@ -478,7 +479,7 @@ fn main() -> Result<()> {
             let certs = m.values_of("sender-cert-file")
                 .map(load_certs)
                 .unwrap_or(Ok(vec![]))?;
-            commands::verify(config, policy, &mut input,
+            commands::verify(config, &mut input,
                              detached.as_mut().map(|r| r as &mut (dyn io::Read + Sync + Send)),
                              &mut output, signatures, certs)?;
         },
@@ -539,46 +540,8 @@ fn main() -> Result<()> {
             let mut filter = armor::Reader::new(&mut input, None);
             io::copy(&mut filter, &mut output)?;
         },
-        ("autocrypt", Some(m)) => {
-            match m.subcommand() {
-                ("decode",  Some(m)) => {
-                    let input = open_or_stdin(m.value_of("input"))?;
-                    let mut output =
-                        create_or_stdout_pgp(m.value_of("output"), force,
-                                             m.is_present("binary"),
-                                             armor::Kind::PublicKey)?;
-                    let ac = autocrypt::AutocryptHeaders::from_reader(input)?;
-                    for h in &ac.headers {
-                        if let Some(ref cert) = h.key {
-                            cert.serialize(&mut output)?;
-                        }
-                    }
-                    output.finalize()?;
-                },
-                ("encode-sender",  Some(m)) => {
-                    let input = open_or_stdin(m.value_of("input"))?;
-                    let mut output = create_or_stdout(m.value_of("output"),
-                                                      force)?;
-                    let cert = Cert::from_reader(input)?;
-                    let addr = m.value_of("address").map(|a| a.to_string())
-                        .or_else(|| {
-                            cert.with_policy(policy, None)
-                                .and_then(|vcert| vcert.primary_userid()).ok()
-                                .map(|ca| ca.userid().to_string())
-                        });
-                    let ac = autocrypt::AutocryptHeader::new_sender(
-                        policy,
-                        &cert,
-                        &addr.ok_or(anyhow::anyhow!(
-                            "No well-formed primary userid found, use \
-                             --address to specify one"))?,
-                        m.value_of("prefer-encrypt").expect("has default"))?;
-                    write!(&mut output, "Autocrypt: ")?;
-                    ac.serialize(&mut output)?;
-                },
-                _ => unreachable!(),
-            }
-        },
+        #[cfg(feature = "autocrypt")]
+        ("autocrypt", Some(m)) => commands::autocrypt::dispatch(config, m)?,
 
         ("inspect",  Some(m)) => {
             let mut output = create_or_stdout(m.value_of("output"), force)?;
@@ -613,7 +576,7 @@ fn main() -> Result<()> {
                     .map(load_keys)
                     .unwrap_or(Ok(vec![]))?;
                 commands::decrypt::decrypt_unwrap(
-                    config, policy,
+                    config,
                     &mut input, &mut output,
                     secrets, m.is_present("dump-session-key"))?;
                 output.finalize()?;
@@ -647,9 +610,9 @@ fn main() -> Result<()> {
 
         ("key", Some(m)) => match m.subcommand() {
             ("generate", Some(m)) => commands::key::generate(m, force)?,
-            ("adopt", Some(m)) => commands::key::adopt(config, m, policy)?,
+            ("adopt", Some(m)) => commands::key::adopt(config, m)?,
             ("attest-certifications", Some(m)) =>
-                commands::key::attest_certifications(config, m, policy)?,
+                commands::key::attest_certifications(config, m)?,
             _ => unreachable!(),
         },
 
@@ -657,7 +620,7 @@ fn main() -> Result<()> {
         ("wkd",  Some(m)) => commands::net::dispatch_wkd(config, m)?,
 
         ("certify",  Some(m)) => {
-            commands::certify::certify(config, policy, m)?;
+            commands::certify::certify(config, m)?;
         },
 
         _ => unreachable!(),
