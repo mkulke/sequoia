@@ -96,6 +96,33 @@ rust-stable:
     CARGO_TARGET_DIR: $CI_PROJECT_DIR/../target.$CI_CONCURRENT_ID.rust-stable
     RUSTFLAGS: -D warnings -A unused-parens
 
+bullseye_i386:
+  tags:
+    - linux
+  stage: build
+  image: i386/debian:bullseye-slim
+
+  before_script:
+    - apt update -y -qq
+    - apt install --no-install-recommends -y -qq -o=Dpkg::Use-Pty=0 \
+      clang libclang-dev llvm pkg-config nettle-dev \
+      git rustc cargo make \
+      libssl-dev capnproto libsqlite3-dev ca-certificates \
+      python3-dev python3-setuptools python3-cffi python3-pytest \
+      gnupg \
+    - if [ -d $CARGO_TARGET_DIR ]; then find $CARGO_TARGET_DIR | wc --lines; du -sh $CARGO_TARGET_DIR; fi
+    - if [ -d $CARGO_HOME ]; then find $CARGO_HOME | wc --lines; du -sh $CARGO_HOME; fi
+    - rustc --version
+    - cargo --version
+    - clang --version
+
+  script:
+    - cargo test -p buffered-reader -p sequoia-openpgp -p sequoia-sqv
+
+  variables:
+    CARGO_TARGET_DIR: $CI_PROJECT_DIR/../target.$CI_CONCURRENT_ID.bullseye_i386
+    RUSTFLAGS: -D warnings -A unused-parens
+
 windows-gnu:
   tags:
     - win
