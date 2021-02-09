@@ -2,7 +2,6 @@ from _sequoia import ffi, lib
 
 from .error import Error
 from .glue import _str, _static_str, SQObject, sq_iterator, sq_time
-from .net import NetworkPolicy
 from .openpgp import Fingerprint, Cert
 
 class Store(object):
@@ -42,10 +41,8 @@ class Mapping(SQObject):
     REALM_SOFTWARE_UPDATES = _static_str(lib.SQ_REALM_SOFTWARE_UPDATES)
 
     @classmethod
-    def open(cls, ctx, network_policy=NetworkPolicy.Encrypted, realm=REALM_CONTACTS, name="default"):
-        return Mapping(lib.sq_mapping_open(ctx.ref(), network_policy.value,
-                                        realm.encode(), name.encode()),
-                        context=ctx)
+    def open(cls, ctx, realm=REALM_CONTACTS, name="default"):
+        return Mapping(lib.sq_mapping_open(ctx.ref(), realm.encode(), name.encode()), context=ctx)
 
 
     def add(self, label, fingerprint):
