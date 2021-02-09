@@ -38,30 +38,26 @@ fn bench_decrypt(c: &mut Criterion) {
     let messages = &[b"Hello world.", &ZEROS_1_MB[..], &ZEROS_10_MB[..]];
 
     // Encrypt and decrypt with password
-    messages
-        .iter()
-        .map(|m| encrypt::encrypt_with_password(m, PASSWORD).unwrap())
-        .for_each(|encrypted| {
-            group.throughput(Throughput::Bytes(encrypted.len() as u64));
-            group.bench_with_input(
-                BenchmarkId::new("password", encrypted.len()),
-                &encrypted,
-                |b, e| b.iter(|| decrypt_password(&e)),
-            );
-        });
+    messages.iter().for_each(|m| {
+        let encrypted = encrypt::encrypt_with_password(m, PASSWORD).unwrap();
+        group.throughput(Throughput::Bytes(m.len() as u64));
+        group.bench_with_input(
+            BenchmarkId::new("password", m.len()),
+            &encrypted,
+            |b, e| b.iter(|| decrypt_password(&e)),
+        );
+    });
 
     // Encrypt and decrypt with a cert
-    messages
-        .iter()
-        .map(|m| encrypt::encrypt_to_cert(m, &TESTY).unwrap())
-        .for_each(|encrypted| {
-            group.throughput(Throughput::Bytes(encrypted.len() as u64));
-            group.bench_with_input(
-                BenchmarkId::new("cert", encrypted.len()),
-                &encrypted,
-                |b, e| b.iter(|| decrypt_cert(&e, &TESTY)),
-            );
-        });
+    messages.iter().for_each(|m| {
+        let encrypted = encrypt::encrypt_to_cert(m, &TESTY).unwrap();
+        group.throughput(Throughput::Bytes(m.len() as u64));
+        group.bench_with_input(
+            BenchmarkId::new("cert", m.len()),
+            &encrypted,
+            |b, e| b.iter(|| decrypt_cert(&e, &TESTY)),
+        );
+    });
 
     group.finish();
 }
