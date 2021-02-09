@@ -15,50 +15,53 @@ after_script:
   - if [ -d $CARGO_TARGET_DIR ]; then du -sh $CARGO_TARGET_DIR; fi
   - if [ -d $CARGO_HOME ]; then du -sh $CARGO_HOME; fi
 
-bullseye:
+build-bullseye:
   tags:
     - linux
   stage: build
-  image: registry.gitlab.com/sequoia-pgp/build-docker-image/bullseye:latest
+  image: registry.gitlab.com/sequoia-pgp/build-docker-image/bullseye-prebuild:latest
   dependencies:
     - codespell
-
   script:
-    - SEQUOIA_CTEST_VALGRIND=/usr/bin/valgrind cargo test -p sequoia-openpgp-ffi
-    - cargo test --all --exclude sequoia-openpgp-ffi
     - make
     - if ! git diff --quiet Cargo.lock ; then echo "Cargo.lock changed.  Please add the change to the corresponding commit." ; false ; fi
     - if ! git diff --quiet sq ; then echo "Please commit the changes to sq/src/sq-usage.rs." ; false ; fi
     - if ! git diff --quiet sqv ; then echo "Please commit the changes to sqv/src/sqv-usage.rs." ; false ; fi
     - if ! git diff --quiet ; then echo "The build changed the source.  Please investigate." ; git diff ; fi
-
   variables:
-    CARGO_TARGET_DIR: $CI_PROJECT_DIR/../target.$CI_CONCURRENT_ID.bullseye
+    CARGO_TARGET_DIR: /target
+    CARGO_HOME: /cargo
     RUSTFLAGS: -D warnings -A unused-parens
+  after_script: []
+
+bullseye:
+  tags:
+    - linux
+  stage: build
+  image: registry.gitlab.com/sequoia-pgp/build-docker-image/bullseye-prebuild:latest
+  dependencies:
+    - codespell
+  script:
+    - SEQUOIA_CTEST_VALGRIND=/usr/bin/valgrind make test
+  variables:
+    CARGO_TARGET_DIR: /target
+    CARGO_HOME: /cargo
+    RUSTFLAGS: -D warnings -A unused-parens
+  after_script: []
 
 all_commits:
   # Test each commit up to main, to facilitate bisecting.
   stage: test
-  image: rust:1-slim-buster
+  image: registry.gitlab.com/sequoia-pgp/build-docker-image/rust-stable-prebuild:latest
   needs: ["rust-stable"]
   except:
     # Do not run for pushes to the pep-engine branch.
     - /^pep-engine$/
-
-  before_script:
-    - apt update -y -qq
-    - apt install --no-install-recommends -y -qq -o=Dpkg::Use-Pty=0 clang libclang-dev llvm pkg-config nettle-dev git
-    - if [ -d $CARGO_TARGET_DIR ]; then find $CARGO_TARGET_DIR | wc --lines; du -sh $CARGO_TARGET_DIR; fi
-    - if [ -d $CARGO_HOME ]; then find $CARGO_HOME | wc --lines; du -sh $CARGO_HOME; fi
-    - rustc --version
-    - cargo --version
-    - clang --version
-
   script:
     - .ci/all_commits.sh
-
   variables:
-    CARGO_TARGET_DIR: $CI_PROJECT_DIR/../target.$CI_CONCURRENT_ID.all_commits
+    CARGO_TARGET_DIR: /target
+    CARGO_HOME: /cargo
     RUSTFLAGS: -D warnings -A unused-parens
     GIT_STRATEGY: clone
 
@@ -78,22 +81,12 @@ rust-stable:
   tags:
     - linux
   stage: build
-  image: rust:1-slim-buster
-
-  before_script:
-    - apt update -y -qq
-    - apt install --no-install-recommends -y -qq -o=Dpkg::Use-Pty=0 clang libclang-dev llvm pkg-config nettle-dev
-    - if [ -d $CARGO_TARGET_DIR ]; then find $CARGO_TARGET_DIR | wc --lines; du -sh $CARGO_TARGET_DIR; fi
-    - if [ -d $CARGO_HOME ]; then find $CARGO_HOME | wc --lines; du -sh $CARGO_HOME; fi
-    - rustc --version
-    - cargo --version
-    - clang --version
-
+  image: registry.gitlab.com/sequoia-pgp/build-docker-image/rust-stable-prebuild:latest
   script:
-    - cargo test -p buffered-reader -p sequoia-openpgp -p sequoia-sqv
-
+    - CARGO_PACKAGES="-p buffered-reader -p sequoia-openpgp -p sequoia-sqv" make test
   variables:
-    CARGO_TARGET_DIR: $CI_PROJECT_DIR/../target.$CI_CONCURRENT_ID.rust-stable
+    CARGO_TARGET_DIR: /target
+    CARGO_HOME: /cargo
     RUSTFLAGS: -D warnings -A unused-parens
 
 windows-gnu:
