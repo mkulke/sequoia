@@ -11,6 +11,7 @@ authors = [
     "Wiktor Kwapisiewicz <wiktor@sequoia-pgp.org>",
 ]
 build = "build.rs"
+autobenches = false
 documentation = "https://docs.sequoia-pgp.org/0.21.0/sequoia_openpgp"
 homepage = "https://sequoia-pgp.org/"
 repository = "https://gitlab.com/sequoia-pgp/sequoia"
@@ -86,33 +87,5 @@ name = "pad"
 required-features = ["compression-deflate"]
 
 [[bench]]
-name = "generate_cert"
-harness = false
-
-[[bench]]
-name = "parse_cert"
-harness = false
-
-[[bench]]
-name = "encrypt_message"
-harness = false
-
-[[bench]]
-name = "decrypt_message"
-harness = false
-
-[[bench]]
-name = "encrypt_sign_message"
-harness = false
-
-[[bench]]
-name = "decrypt_verify_message"
-harness = false
-
-[[bench]]
-name = "sign_message"
-harness = false
-
-[[bench]]
-name = "verify_message"
+name = "run_benchmarks"
 harness = false

@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{criterion_group, Criterion, Throughput};
 
 use sequoia_openpgp::cert::Cert;
 use sequoia_openpgp::parse::Parse;
@@ -27,4 +27,3 @@ fn bench_parse_certs(c: &mut Criterion) {
 }
 
 criterion_group!(benches, bench_parse_certs);
-criterion_main!(benches);

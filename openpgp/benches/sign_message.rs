@@ -5,8 +5,7 @@ use criterion::{
 use sequoia_openpgp::cert::Cert;
 use sequoia_openpgp::parse::Parse;
 
-mod common;
-use common::encrypt;
+use crate::common::encrypt;
 
 lazy_static::lazy_static! {
     static ref ZEROS_1_MB: Vec<u8> = vec![0; 1 * 1024 * 1024];

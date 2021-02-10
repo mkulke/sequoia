@@ -5,9 +5,7 @@ use criterion::{
 use sequoia_openpgp::cert::Cert;
 use sequoia_openpgp::parse::Parse;
 
-mod common;
-use common::decrypt;
-use common::encrypt;
+use crate::common::{decrypt, encrypt};
 
 lazy_static::lazy_static! {
     static ref SENDER: Cert =
