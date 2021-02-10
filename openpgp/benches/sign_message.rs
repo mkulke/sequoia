@@ -21,7 +21,7 @@ pub fn sign_by_testy(bytes: &[u8]) {
     encrypt::sign(bytes, &testy).unwrap();
 }
 
-fn bench_encrypt(c: &mut Criterion) {
+fn bench_sign(c: &mut Criterion) {
     let mut group = c.benchmark_group("sign message");
 
     // Encrypt a very short, medium and very long message.
@@ -38,5 +38,5 @@ fn bench_encrypt(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_encrypt);
+criterion_group!(benches, bench_sign);
 criterion_main!(benches);

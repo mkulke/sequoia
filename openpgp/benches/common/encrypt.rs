@@ -68,7 +68,7 @@ pub fn encrypt_to_cert_and_sign(
     Ok(sink)
 }
 
-// naively encrypt and sign, without caring for revocation or expiration
+// naively sign, without caring for revocation or expiration
 pub fn sign(bytes: &[u8], sender: &Cert) -> sequoia_openpgp::Result<Vec<u8>> {
     let mut sink = vec![];
 
@@ -87,9 +87,7 @@ pub fn sign(bytes: &[u8], sender: &Cert) -> sequoia_openpgp::Result<Vec<u8>> {
     let message = Message::new(&mut sink);
     let message = Armorer::new(message).build()?;
     let message = Padder::new(message).build()?;
-    let message = Signer::new(message, signing_keypair)
-        //.add_intended_recipient(&recipient)
-        .build()?;
+    let message = Signer::new(message, signing_keypair).build()?;
     let mut w = LiteralWriter::new(message).build()?;
     w.write_all(bytes)?;
     w.finalize()?;

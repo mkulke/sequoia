@@ -4,7 +4,7 @@ use sequoia_openpgp::packet::prelude::*;
 use sequoia_openpgp::packet::{PKESK, SKESK};
 use sequoia_openpgp::parse::stream::{
     DecryptionHelper, DecryptorBuilder, MessageLayer, MessageStructure,
-    VerificationError, VerificationHelper,
+    VerificationHelper, VerifierBuilder,
 };
 use sequoia_openpgp::parse::Parse;
 use sequoia_openpgp::policy::StandardPolicy;
@@ -84,7 +84,7 @@ pub fn decrypt_with_password(
 // sequoia_openpgp::parse::stream::Decryptor
 struct CertHelper<'a> {
     sender: Option<&'a Cert>,
-    recipient: &'a Cert,
+    recipient: Option<&'a Cert>,
 }
 
 impl VerificationHelper for CertHelper<'_> {
@@ -103,9 +103,9 @@ impl VerificationHelper for CertHelper<'_> {
         for (i, layer) in structure.into_iter().enumerate() {
             match layer {
                 MessageLayer::Encryption { .. } if i == 0 => (),
-                MessageLayer::Compression { .. } if i == 1 => (),
+                MessageLayer::Compression { .. } if i == 0 || i == 1 => (),
                 MessageLayer::SignatureGroup { ref results }
-                    if i == 1 || i == 2 =>
+                    if i == 0 || i == 1 || i == 2 =>
                 {
                     if !results.iter().any(|r| r.is_ok()) {
                         for result in results {
@@ -117,8 +117,9 @@ impl VerificationHelper for CertHelper<'_> {
                 }
                 _ => {
                     return Err(anyhow::anyhow!(
-                        "Unexpected message structure {:?}",
-                        layer
+                        "Unexpected message structure {:?} at level {}",
+                        layer,
+                        i
                     ))
                 }
             }
@@ -142,6 +143,7 @@ impl DecryptionHelper for CertHelper<'_> {
 
         let cand_secret_keys: Vec<Key<key::SecretParts, key::UnspecifiedRole>> =
             self.recipient
+                .expect("Cannot decrypt without recipient's cert.")
                 .keys()
                 .with_policy(p, None)
                 .for_transport_encryption()
@@ -189,7 +191,7 @@ pub fn decrypt_with_cert(
     // Make a helper that that feeds the password to the decryptor.
     let helper = CertHelper {
         sender: None,
-        recipient: cert,
+        recipient: Some(cert),
     };
 
     // Now, create a decryptor with a helper using the given Certs.
@@ -216,7 +218,7 @@ pub fn decrypt_and_verify(
     // Make a helper that that feeds the password to the decryptor.
     let helper = CertHelper {
         sender: Some(sender),
-        recipient,
+        recipient: Some(recipient),
     };
 
     // Now, create a decryptor with a helper using the given Certs.
@@ -226,6 +228,32 @@ pub fn decrypt_and_verify(
 
     // Decrypt the data.
     std::io::copy(&mut decryptor, sink)?;
+
+    Ok(())
+}
+
+// This is marked as dead_code. Seems that using a function only from within
+// a benchmark loop hides it from the compiler.
+#[allow(dead_code)]
+// Verifies the given message using the given sender's cert.
+pub fn verify(
+    sink: &mut dyn Write,
+    ciphertext: &[u8],
+    sender: &Cert,
+) -> sequoia_openpgp::Result<()> {
+    // Make a helper that that feeds the sender's cert to the verifier.
+    let helper = CertHelper {
+        sender: Some(sender),
+        recipient: None,
+    };
+
+    // Now, create a verifier with a helper using the given Certs.
+    let p = &StandardPolicy::new();
+    let mut verifier = VerifierBuilder::from_bytes(ciphertext)?
+        .with_policy(p, None, helper)?;
+
+    // Verify the data.
+    std::io::copy(&mut verifier, sink)?;
 
     Ok(())
 }
