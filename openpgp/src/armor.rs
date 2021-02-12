@@ -41,11 +41,13 @@ use std::borrow::Cow;
 #[cfg(test)]
 use quickcheck::{Arbitrary, Gen};
 
-use crate::vec_truncate;
 use crate::packet::prelude::*;
 use crate::packet::header::{BodyLength, CTBNew, CTBOld};
 use crate::parse::Cookie;
 use crate::serialize::MarshalInto;
+
+mod base64_utils;
+use base64_utils::*;
 
 /// The encoded output stream must be represented in lines of no more
 /// than 76 characters each (see (see [RFC 4880, section
@@ -486,7 +488,7 @@ struct IoReader<'a> {
     initialized: bool,
     headers: Vec<(String, String)>,
     finalized: bool,
-    prefix_len: usize,
+    prefix: Vec<u8>,
     prefix_remaining: usize,
 }
 assert_send_and_sync!(IoReader<'_>);
@@ -625,7 +627,7 @@ impl<'a> Reader<'a> {
             headers: Vec::new(),
             initialized: false,
             finalized: false,
-            prefix_len: 0,
+            prefix: Vec::with_capacity(0),
             prefix_remaining: 0,
         };
 
@@ -847,11 +849,17 @@ impl<'a> IoReader<'a> {
         if found_blob {
             // Skip the rest of the initialization.
             self.initialized = true;
-            self.prefix_len = prefix.len();
             self.prefix_remaining = prefix.len();
+            self.prefix = prefix;
             return Ok(());
         }
 
+        self.prefix = prefix;
+        self.read_headers()
+    }
+
+    /// Reads headers and finishes the initialization.
+    fn read_headers(&mut self) -> Result<()> {
         // We consumed the header above, but not any trailing
         // whitespace and the trailing new line.  We do that now.
         // Other data between the header and the new line are not
@@ -865,14 +873,15 @@ impl<'a> IoReader<'a> {
         };
         self.source.consume(n);
 
-        let next_prefix = &self.source.data_hard(prefix.len())?[..prefix.len()];
-        if prefix != next_prefix {
+        let next_prefix =
+            &self.source.data_hard(self.prefix.len())?[..self.prefix.len()];
+        if self.prefix != next_prefix {
             // If the next line doesn't start with the same prefix, we assume
             // it was garbage on the front and drop the prefix so long as it
             // was purely whitespace.  Any non-whitespace remains an error
             // while searching for the armor header if it's not repeated.
-            if prefix.iter().all(|b| (*b as char).is_ascii_whitespace()) {
-                crate::vec_truncate(&mut prefix, 0);
+            if self.prefix.iter().all(|b| (*b as char).is_ascii_whitespace()) {
+                crate::vec_truncate(&mut self.prefix, 0);
             } else {
                 // Nope, we have actually failed to read this properly
                 return Err(
@@ -895,7 +904,7 @@ impl<'a> IoReader<'a> {
             // the control flow wraps around, we need to make sure
             // that we buffer the prefix in addition to the line.
             self.source.consume(
-                prefix_len.take().unwrap_or_else(|| prefix.len()));
+                prefix_len.take().unwrap_or_else(|| self.prefix.len()));
 
             self.source.consume(n);
 
@@ -910,8 +919,9 @@ impl<'a> IoReader<'a> {
                 // Buffer the next line and the prefix that is going
                 // to be consumed in the next iteration.
                 let next_prefix =
-                    &self.source.data_hard(n + prefix.len())?[n..n + prefix.len()];
-                if prefix != next_prefix {
+                    &self.source.data_hard(n + self.prefix.len())?
+                        [n..n + self.prefix.len()];
+                if self.prefix != next_prefix {
                     return Err(
                         Error::new(ErrorKind::InvalidInput,
                                    "Inconsistent quoting of armored data"));
@@ -960,15 +970,16 @@ impl<'a> IoReader<'a> {
             // Buffer the next line and the prefix that is going to be
             // consumed in the next iteration.
             let next_prefix =
-                &self.source.data_hard(n + prefix.len())?[n..n + prefix.len()];
+                &self.source.data_hard(n + self.prefix.len())?
+                    [n..n + self.prefix.len()];
 
             // Sometimes, we find a truncated prefix.
-            let l = common_prefix(&prefix, next_prefix);
-            let full_prefix = l == prefix.len();
+            let l = common_prefix(&self.prefix, next_prefix);
+            let full_prefix = l == self.prefix.len();
             if ! (full_prefix
                   // Truncation is okay if the rest of the prefix
                   // contains only whitespace.
-                  || prefix[l..].iter().all(|c| c.is_ascii_whitespace()))
+                  || self.prefix[l..].iter().all(|c| c.is_ascii_whitespace()))
             {
                 return Err(
                     Error::new(ErrorKind::InvalidInput,
@@ -983,8 +994,7 @@ impl<'a> IoReader<'a> {
         self.source.consume(n);
 
         self.initialized = true;
-        self.prefix_len = prefix.len();
-        self.prefix_remaining = prefix.len();
+        self.prefix_remaining = self.prefix.len();
         Ok(())
     }
 }
@@ -994,221 +1004,8 @@ fn common_prefix<A: AsRef<[u8]>, B: AsRef<[u8]>>(a: A, b: B) -> usize {
     a.as_ref().iter().zip(b.as_ref().iter()).take_while(|(a, b)| a == b).count()
 }
 
-// Remove whitespace, etc. from the base64 data.
-//
-// This function returns the filtered base64 data (i.e., stripped of
-// all skipable data like whitespace), and the amount of unfiltered
-// data that corresponds to.  Thus, if we have the following 7 bytes:
-//
-//     ab  cde
-//     0123456
-//
-// This function returns ("abcd", 6), because the 'd' is the last
-// character in the last complete base64 chunk, and it is at offset 5.
-//
-// If 'd' is followed by whitespace, it is undefined whether that
-// whitespace is included in the count.
-//
-// This function only returns full chunks of base64 data.  As a
-// consequence, if base64_data_max is less than 4, then this will not
-// return any data.
-//
-// This function will stop after it sees base64 padding, and if it
-// sees invalid base64 data.
-fn base64_filter(mut bytes: Cow<[u8]>, base64_data_max: usize,
-                 mut prefix_remaining: usize, prefix_len: usize)
-    -> (Cow<[u8]>, usize, usize)
-{
-    let mut leading_whitespace = 0;
-
-    // Round down to the nearest chunk size.
-    let base64_data_max = base64_data_max / 4 * 4;
-
-    // Number of bytes of base64 data.  Since we update `bytes` in
-    // place, the base64 data is `&bytes[..base64_len]`.
-    let mut base64_len = 0;
-
-    // Offset of the next byte of unfiltered data to process.
-    let mut unfiltered_offset = 0;
-
-    // Offset of the last byte of the last ***complete*** base64 chunk
-    // in the unfiltered data.
-    let mut unfiltered_complete_len = 0;
-
-    // Number of bytes of padding that we've seen so far.
-    let mut padding = 0;
-
-    while unfiltered_offset < bytes.len()
-        && base64_len < base64_data_max
-        // A valid base64 chunk never starts with padding.
-        && ! (padding > 0 && base64_len % 4 == 0)
-    {
-        // If we have some prefix to skip, skip it.
-        if prefix_remaining > 0 {
-            prefix_remaining -= 1;
-            if unfiltered_offset == 0 {
-                match bytes {
-                    Cow::Borrowed(s) => {
-                        // We're at the beginning.  Avoid moving
-                        // data by cutting off the start of the
-                        // slice.
-                        bytes = Cow::Borrowed(&s[1..]);
-                        leading_whitespace += 1;
-                        continue;
-                    }
-                    Cow::Owned(_) => (),
-                }
-            }
-            unfiltered_offset += 1;
-            continue;
-        }
-        match bytes[unfiltered_offset] {
-            // White space.
-            c if c.is_ascii_whitespace() => {
-                if c == b'\n' {
-                    prefix_remaining = prefix_len;
-                }
-                if unfiltered_offset == 0 {
-                    match bytes {
-                        Cow::Borrowed(s) => {
-                            // We're at the beginning.  Avoid moving
-                            // data by cutting off the start of the
-                            // slice.
-                            bytes = Cow::Borrowed(&s[1..]);
-                            leading_whitespace += 1;
-                            continue;
-                        }
-                        Cow::Owned(_) => (),
-                    }
-                }
-            }
-
-            // Padding.
-            b'=' => {
-                if padding == 2 {
-                    // There can never be more than two bytes of
-                    // padding.
-                    break;
-                }
-                if base64_len % 4 == 0 {
-                    // Padding can never occur at the start of a
-                    // base64 chunk.
-                    break;
-                }
-
-                if unfiltered_offset != base64_len {
-                    bytes.to_mut()[base64_len] = b'=';
-                }
-                base64_len += 1;
-                if base64_len % 4 == 0 {
-                    unfiltered_complete_len = unfiltered_offset + 1;
-                }
-                padding += 1;
-            }
-
-            // The only thing that can occur after padding is
-            // whitespace or padding.  Those cases were covered above.
-            _ if padding > 0 => break,
-
-            // Base64 data!
-            b if is_base64_char(&b) => {
-                if unfiltered_offset != base64_len {
-                    bytes.to_mut()[base64_len] = b;
-                }
-                base64_len += 1;
-                if base64_len % 4 == 0 {
-                    unfiltered_complete_len = unfiltered_offset + 1;
-                }
-            }
-
-            // Not base64 data.
-            _ => break,
-        }
-
-        unfiltered_offset += 1;
-    }
-
-    let base64_len = base64_len - (base64_len % 4);
-    unfiltered_complete_len += leading_whitespace;
-    match bytes {
-        Cow::Borrowed(s) =>
-            (Cow::Borrowed(&s[..base64_len]), unfiltered_complete_len,
-             prefix_remaining),
-        Cow::Owned(mut v) => {
-            vec_truncate(&mut v, base64_len);
-            (Cow::Owned(v), unfiltered_complete_len, prefix_remaining)
-        }
-    }
-}
-
-/// Checks whether the given bytes contain armored OpenPGP data.
-fn is_armored_pgp_blob(bytes: &[u8]) -> bool {
-    // Get up to 32 bytes of base64 data.  That's 24 bytes of data
-    // (ignoring padding), which is more than enough to get the first
-    // packet's header.
-    let (bytes, _, _) = base64_filter(Cow::Borrowed(bytes), 32, 0, 0);
-
-    match base64::decode_config(&bytes, base64::STANDARD) {
-        Ok(d) => {
-            // Don't consider an empty message to be valid.
-            if d.len() == 0 {
-                false
-            } else {
-                let mut br = buffered_reader::Memory::new(&d);
-                if let Ok(header) = Header::parse(&mut br) {
-                    header.ctb().tag().valid_start_of_message()
-                        && header.valid(false).is_ok()
-                } else {
-                    false
-                }
-            }
-        },
-        Err(_err) => false,
-    }
-}
-
-/// Checks whether the given byte is in the base64 character set.
-fn is_base64_char(b: &u8) -> bool {
-    b.is_ascii_alphanumeric() || *b == '+' as u8 || *b == '/' as u8
-}
-
-/// Returns the number of bytes of base64 data are needed to encode
-/// `s` bytes of raw data.
-fn base64_size(s: usize) -> usize {
-    (s + 3 - 1) / 3 * 4
-}
-
-#[test]
-fn base64_size_test() {
-    assert_eq!(base64_size(0), 0);
-    assert_eq!(base64_size(1), 4);
-    assert_eq!(base64_size(2), 4);
-    assert_eq!(base64_size(3), 4);
-    assert_eq!(base64_size(4), 8);
-    assert_eq!(base64_size(5), 8);
-    assert_eq!(base64_size(6), 8);
-    assert_eq!(base64_size(7), 12);
-}
-
-impl<'a> Read for IoReader<'a> {
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        if ! self.initialized {
-            self.initialize()?;
-        }
-
-        if buf.len() == 0 {
-            // Short-circuit here.  Otherwise, we copy 0 bytes into
-            // the buffer, which means we decoded 0 bytes, and we
-            // wrongfully assume that we reached the end of the
-            // armored block.
-            return Ok(0);
-        }
-
-        if self.finalized {
-            assert_eq!(self.buffer.len(), 0);
-            return Ok(0);
-        }
-
+impl<'a> IoReader<'a> {
+    fn read_armored_data(&mut self, buf: &mut [u8]) -> Result<usize> {
         let (consumed, decoded) = if self.buffer.len() > 0 {
             // We have something buffered, use that.
 
@@ -1271,7 +1068,7 @@ impl<'a> Read for IoReader<'a> {
                                 // buffer partial chunks.
                                 cmp::max(THRESHOLD, buf.len() / 3 * 4),
                                 self.prefix_remaining,
-                                self.prefix_len);
+                                self.prefix.len());
 
             // We shouldn't have any partial chunks.
             assert_eq!(base64data.len() % 4, 0);
@@ -1356,7 +1153,7 @@ impl<'a> Read for IoReader<'a> {
             self.source.consume(consumed);
 
             // Skip any expected prefix
-            self.source.data_consume_hard(self.prefix_len)?;
+            self.source.data_consume_hard(self.prefix.len())?;
             // Look for a footer.
             let consumed = {
                 // Skip whitespace.
@@ -1396,6 +1193,29 @@ impl<'a> Read for IoReader<'a> {
         }
 
         Ok(decoded)
+    }
+}
+
+impl<'a> Read for IoReader<'a> {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        if ! self.initialized {
+            self.initialize()?;
+        }
+
+        if buf.len() == 0 {
+            // Short-circuit here.  Otherwise, we copy 0 bytes into
+            // the buffer, which means we decoded 0 bytes, and we
+            // wrongfully assume that we reached the end of the
+            // armored block.
+            return Ok(0);
+        }
+
+        if self.finalized {
+            assert_eq!(self.buffer.len(), 0);
+            return Ok(0);
+        }
+
+        self.read_armored_data(buf)
     }
 }
 
