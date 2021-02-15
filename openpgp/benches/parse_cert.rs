@@ -72,14 +72,6 @@ fn read_cert(bytes: &[u8]) {
     Cert::from_bytes(bytes).unwrap();
 }
 
-macro_rules! bench_parse_cert {
-    ( $filename: expr, $group: expr ) => {
-        let bytes = include_bytes!(concat!("../tests/data/keys/", $filename));
-        $group.throughput(Throughput::Bytes(bytes.len().try_into().unwrap()));
-        $group.bench_function($filename, |b| b.iter(|| read_cert(bytes)));
-    };
-}
-
 fn bench_parse_cert_generated(
     group: &mut BenchmarkGroup<'_, criterion::measurement::WallTime>,
     name: &str,
@@ -100,7 +92,9 @@ fn bench_parse_certs(c: &mut Criterion) {
     group.finish();
 
     let mut group = c.benchmark_group("parse typical cert");
-    bench_parse_cert!("neal.pgp", group);
+    let bytes = include_bytes!("../tests/data/keys/neal.pgp");
+    group.throughput(Throughput::Bytes(bytes.len().try_into().unwrap()));
+    group.bench_function("neal.pgp", |b| b.iter(|| read_cert(bytes)));
     group.finish();
 }
 
