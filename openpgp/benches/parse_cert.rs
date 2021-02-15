@@ -2,11 +2,12 @@ use criterion::{
     criterion_group, BenchmarkGroup, BenchmarkId, Criterion, Throughput,
 };
 
-use sequoia_openpgp::cert::{Cert, CertBuilder, CipherSuite};
+use sequoia_openpgp::cert::{Cert, CertBuilder};
+use sequoia_openpgp::packet::prelude::*;
 use sequoia_openpgp::packet::{Signature, UserID};
 use sequoia_openpgp::parse::Parse;
 use sequoia_openpgp::serialize::SerializeInto;
-use sequoia_openpgp::types::{KeyFlags, SignatureType};
+use sequoia_openpgp::types::{Curve, KeyFlags, SignatureType};
 use sequoia_openpgp::Result;
 
 use std::convert::TryInto;
@@ -16,18 +17,10 @@ fn generate_certifications<'a>(
     cert: &'a Cert,
     count: usize,
 ) -> Result<impl Iterator<Item = Signature> + 'a> {
-    // Generate a Cert, and create a keypair from the primary key.
-    let (alice, _) = CertBuilder::new()
-        .set_primary_key_flags(KeyFlags::empty().set_certification())
-        .add_userid("alice@example.org")
-        .set_cipher_suite(CipherSuite::Cv25519)
-        .generate()?;
-    let mut keypair = alice
-        .primary_key()
-        .key()
-        .clone()
-        .parts_into_secret()?
-        .into_keypair()?;
+
+    let k: Key<key::SecretParts, key::PrimaryRole> =
+        Key4::generate_ecc(true, Curve::Ed25519)?.into();
+    let mut keypair = k.into_keypair()?;
 
     let iter = (0..count).map(move |_| {
         userid
@@ -44,8 +37,8 @@ fn generate_certifications<'a>(
 }
 
 fn generate_flooded_cert(
-    cert_count: usize,
-    sigs_per_cert: usize,
+    key_count: usize,
+    sigs_per_key: usize,
 ) -> Result<Vec<u8>> {
     // Generate a Cert for to be flooded
     let (mut floodme, _) = CertBuilder::new()
@@ -53,44 +46,53 @@ fn generate_flooded_cert(
         .add_userid("flood.me@example.org")
         .generate()?;
 
-    let userid = floodme.clone();
-    let userid = userid.userids().nth(0).unwrap();
+    let floodme_cloned = floodme.clone();
+    let userid = floodme_cloned.userids().nth(0).unwrap();
 
-    let certs = (0..cert_count)
-        .map(|_| {
-            generate_certifications(&userid, &floodme, sigs_per_cert).unwrap()
-        })
-        .flatten()
-        .collect::<Vec<Signature>>();
+    let certifications = (0..key_count).flat_map(|_| {
+        generate_certifications(&userid, &floodme_cloned, sigs_per_key)
+            .unwrap()
+    });
 
-    floodme = floodme.insert_packets(certs)?;
+    floodme = floodme.insert_packets(certifications)?;
     floodme.export_to_vec()
 }
 
+/// Parse the cert, unwrap to notice errors
 fn read_cert(bytes: &[u8]) {
-    // Parse the cert, unwrap to notice errors
     Cert::from_bytes(bytes).unwrap();
 }
 
-fn bench_parse_cert_generated(
+/// Generate the cert and benchmark parsing.
+/// The generated cert is signed by multiple other keys, 1 signature per key.
+fn parse_cert_generated(
     group: &mut BenchmarkGroup<'_, criterion::measurement::WallTime>,
     name: &str,
     signature_count: usize,
 ) {
-    let bytes = generate_flooded_cert(signature_count/100, 100).unwrap();
+    let bytes = generate_flooded_cert(signature_count, 1).unwrap();
 
     group.throughput(Throughput::Bytes(bytes.len().try_into().unwrap()));
 
-    group.bench_with_input(BenchmarkId::new(name, signature_count), &bytes, |b, bytes| {
-        b.iter(|| read_cert(bytes))
-    });
+    group.bench_with_input(
+        BenchmarkId::new(name, signature_count),
+        &bytes,
+        |b, bytes| b.iter(|| read_cert(bytes)),
+    );
 }
 
-fn bench_parse_certs(c: &mut Criterion) {
+/// Benchmark parsing a generated cert with a given number of signatures
+fn bench_parse_certs_generated(c: &mut Criterion) {
     let mut group = c.benchmark_group("parse flooded cert");
-    bench_parse_cert_generated(&mut group, "flooded", 10000);
+    parse_cert_generated(&mut group, "flooded", 100);
+    parse_cert_generated(&mut group, "flooded", 316);
+    parse_cert_generated(&mut group, "flooded", 1000);
+    parse_cert_generated(&mut group, "flooded", 3162);
     group.finish();
+}
 
+/// Benchmark parsing a typical cert
+fn bench_parse_certs(c: &mut Criterion) {
     let mut group = c.benchmark_group("parse typical cert");
     let bytes = include_bytes!("../tests/data/keys/neal.pgp");
     group.throughput(Throughput::Bytes(bytes.len().try_into().unwrap()));
@@ -98,4 +100,4 @@ fn bench_parse_certs(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_parse_certs);
+criterion_group!(benches, bench_parse_certs, bench_parse_certs_generated);
