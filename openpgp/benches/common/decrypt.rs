@@ -55,10 +55,7 @@ impl DecryptionHelper for PasswordHelper {
     }
 }
 
-// This is marked as dead_code. Seems that using a function only from within
-// a benchmark loop hides it from the compiler.
-#[allow(dead_code)]
-// Decrypts the given message using the given password.
+/// Decrypts the given message using the given password.
 pub fn decrypt_with_password(
     sink: &mut dyn Write,
     ciphertext: &[u8],
@@ -179,10 +176,7 @@ impl DecryptionHelper for CertHelper<'_> {
     }
 }
 
-// This is marked as dead_code. Seems that using a function only from within
-// a benchmark loop hides it from the compiler.
-#[allow(dead_code)]
-// Decrypts the given message using the given password.
+/// Decrypts the given message using the given password.
 pub fn decrypt_with_cert(
     sink: &mut dyn Write,
     ciphertext: &[u8],
@@ -205,10 +199,7 @@ pub fn decrypt_with_cert(
     Ok(())
 }
 
-// This is marked as dead_code. Seems that using a function only from within
-// a benchmark loop hides it from the compiler.
-#[allow(dead_code)]
-// Decrypts the given message using the given password.
+/// Decrypts the given message using the given password.
 pub fn decrypt_and_verify(
     sink: &mut dyn Write,
     ciphertext: &[u8],
@@ -232,10 +223,7 @@ pub fn decrypt_and_verify(
     Ok(())
 }
 
-// This is marked as dead_code. Seems that using a function only from within
-// a benchmark loop hides it from the compiler.
-#[allow(dead_code)]
-// Verifies the given message using the given sender's cert.
+/// Verifies the given message using the given sender's cert.
 pub fn verify(
     sink: &mut dyn Write,
     ciphertext: &[u8],
