@@ -9,7 +9,6 @@ use crate::{
 use crate::types::{
     ReasonForRevocation,
 };
-use crate::crypto::hash::Hash;
 use crate::crypto::Signer;
 use crate::packet::{
     Key,
@@ -227,12 +226,9 @@ impl CertRevocationBuilder {
         -> Result<Signature>
         where H: Into<Option<HashAlgorithm>>
     {
-        let hash_algo = hash_algo.into().unwrap_or(HashAlgorithm::SHA512);
-        let mut hash = hash_algo.context()?;
-
-        cert.primary_key().hash(&mut hash);
-
-        self.builder.sign_hash(signer, hash)
+        self.builder
+            .set_hash_algo(hash_algo.into().unwrap_or(HashAlgorithm::SHA512))
+            .sign_direct_key(signer, cert.primary_key().key())
     }
 }
 
@@ -458,11 +454,9 @@ impl SubkeyRevocationBuilder {
         where H: Into<Option<HashAlgorithm>>,
               P: key::KeyParts,
     {
-        let hash_algo = hash_algo.into().unwrap_or(HashAlgorithm::SHA512);
+        self.builder = self.builder
+            .set_hash_algo(hash_algo.into().unwrap_or(HashAlgorithm::SHA512));
 
-        if let Some(algo) = hash_algo.into() {
-            self.builder = self.builder.set_hash_algo(algo);
-        }
         key.bind(signer, cert, self.builder)
     }
 }
@@ -696,11 +690,9 @@ impl UserIDRevocationBuilder {
         -> Result<Signature>
         where H: Into<Option<HashAlgorithm>>
     {
-        let hash_algo = hash_algo.into().unwrap_or(HashAlgorithm::SHA512);
+        self.builder = self.builder
+            .set_hash_algo(hash_algo.into().unwrap_or(HashAlgorithm::SHA512));
 
-        if let Some(algo) = hash_algo.into() {
-            self.builder = self.builder.set_hash_algo(algo);
-        }
         userid.bind(signer, cert, self.builder)
     }
 }
@@ -948,11 +940,9 @@ impl UserAttributeRevocationBuilder {
         -> Result<Signature>
         where H: Into<Option<HashAlgorithm>>
     {
-        let hash_algo = hash_algo.into().unwrap_or(HashAlgorithm::SHA512);
+        self.builder = self.builder
+            .set_hash_algo(hash_algo.into().unwrap_or(HashAlgorithm::SHA512));
 
-        if let Some(algo) = hash_algo.into() {
-            self.builder = self.builder.set_hash_algo(algo);
-        }
         ua.bind(signer, cert, self.builder)
     }
 }
