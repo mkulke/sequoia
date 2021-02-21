@@ -45,6 +45,7 @@
 //!     key          Manages keys
 //!     keyring      Manages collections of keys or certs
 //!     certify      Certifies a User ID for a Certificate
+//!     wot          Web of Trust-related functionality
 //!     autocrypt    Communicates certificates using Autocrypt
 //!     keyserver    Interacts with keyservers
 //!     wkd          Interacts with Web Key Directories
@@ -853,6 +854,70 @@
 //!
 //!     <USERID>
 //!             Certifies USERID for CERTIFICATE.
+//!
+//!
+//! EXAMPLES:
+//!
+//! # Juliet certifies that Romeo controls romeo.pgp and romeo@example.org
+//! $ sq certify juliet.pgp romeo.pgp '<romeo@example.org>'
+//! ```
+//!
+//! ## Subcommand wot
+//!
+//! ```text
+//! Web of Trust-related functionality
+//!
+//! USAGE:
+//!     sq wot <SUBCOMMAND>
+//!
+//! FLAGS:
+//!     -h, --help
+//!             Prints help information
+//!
+//!
+//! SUBCOMMANDS:
+//!     authenticate    Authenticates a binding
+//!     help            Prints this message or the help of the given
+//!                     subcommand(s)
+//! ```
+//!
+//! ### Subcommand wot authenticate
+//!
+//! ```text
+//!
+//! Uses the Web of Trust for authentication.
+//!
+//! USAGE:
+//!     sq wot authenticate [OPTIONS] <CERTIFICATE> <USERID>
+//!
+//! FLAGS:
+//!     -h, --help
+//!             Prints help information
+//!
+//!     -V, --version
+//!             Prints version information
+//!
+//!
+//! OPTIONS:
+//!         --certring <CERTRING>...
+//!             Reads certificates from the certring.
+//!
+//!         --trust-amount <TRUST-AMOUNT>
+//!             The amount of trust to consider the binding authenticated.
+//!
+//!     -r, --trust-root <TRUST-ROOT>...
+//!             Sets a trust root
+//!
+//!         --until-exhaustion <UNTIL-EXHAUSTION>
+//!             Finds as many paths as possible to the binding.
+//!
+//!
+//! ARGS:
+//!     <CERTIFICATE>
+//!             The certificate to certify (fingerprint or Key ID).
+//!
+//!     <USERID>
+//!             The user id to certify.
 //!
 //!
 //! EXAMPLES:

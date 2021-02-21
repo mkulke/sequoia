@@ -1062,6 +1062,60 @@ $ sq certify juliet.pgp romeo.pgp '<romeo@example.org>'
                          .help("Certifies USERID for CERTIFICATE."))
         )
 
+        .subcommand(SubCommand::with_name("wot")
+                    .display_order(330)
+                    .about("Web of Trust-related functionality")
+                    .setting(AppSettings::SubcommandRequiredElseHelp)
+                    .subcommand(
+                        SubCommand::with_name("authenticate")
+                            .about("Authenticates a binding")
+                            .long_about(
+                                "Attempts to authenticate a User ID for \
+                                 a particular certificate.")
+                            .long_about(
+                                "
+Uses the Web of Trust for authentication.
+")
+                            .after_help(
+"EXAMPLES:
+
+# Juliet certifies that Romeo controls romeo.pgp and romeo@example.org
+$ sq certify juliet.pgp romeo.pgp '<romeo@example.org>'
+")
+                            .group(ArgGroup::with_name("amount-group")
+                                  .args(&["trust-amount", "until-exhaustion"]))
+                            .arg(Arg::with_name("trust-amount")
+                                 .long("trust-amount").value_name("TRUST-AMOUNT")
+                                 .help("The amount of trust to consider the binding authenticated."))
+                            .arg(Arg::with_name("until-exhaustion")
+                                 .long("until-exhaustion").value_name("UNTIL-EXHAUSTION")
+                                 .help("Finds as many paths as possible to the binding."))
+
+                            .arg(Arg::with_name("trust-root")
+                                 .short("r").long("trust-root").value_name("TRUST-ROOT")
+                                 .multiple(true).number_of_values(1)
+                                 .help("Sets a trust root")
+                            )
+                            .arg(Arg::with_name("certring")
+                                 .long("certring").value_name("CERTRING")
+                                 .multiple(true).number_of_values(1)
+                                 .help("Reads certificates from the certring.")
+                            )
+
+                            .arg(Arg::with_name("certificate")
+                                 .value_name("CERTIFICATE")
+                                 .required(true)
+                                 .index(1)
+                                 .help("The certificate to certify \
+                                        (fingerprint or Key ID)."))
+                            .arg(Arg::with_name("userid")
+                                 .value_name("USERID")
+                                 .required(true)
+                                 .index(2)
+                                 .help("The user id to certify."))
+                    )
+        )
+
         .subcommand(SubCommand::with_name("packet")
                     .display_order(610)
                     .about("Low-level packet manipulation")

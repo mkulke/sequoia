@@ -587,6 +587,13 @@ fn main() -> Result<()> {
 
         ("keyring", Some(m)) => commands::keyring::dispatch(m, force)?,
 
+        ("wot", Some(m)) => match m.subcommand() {
+            ("authenticate",  Some(m)) => {
+                commands::wot::authenticate(m, force)?;
+            },
+            _ => unreachable!(),
+        },
+
         ("packet", Some(m)) => match m.subcommand() {
             ("dump",  Some(m)) => {
                 let mut input = open_or_stdin(m.value_of("input"))?;

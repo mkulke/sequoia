@@ -161,6 +161,7 @@ mod keyhandle;
 pub use keyhandle::KeyHandle;
 pub mod regex;
 pub mod policy;
+pub mod wot;
 
 pub(crate) mod seal;
 pub(crate) mod utils;

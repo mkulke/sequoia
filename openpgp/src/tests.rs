@@ -88,6 +88,11 @@ pub fn message(name: &str) -> &'static [u8] {
     file(&format!("messages/{}", name))
 }
 
+/// Returns the content of the given file below `openpgp/tests/data/wot`.
+pub fn wot(name: &str) -> &'static [u8] {
+    file(&format!("wot/{}", name))
+}
+
 /// Returns the cypherpunks manifesto.
 pub fn manifesto() -> &'static [u8] {
     message("a-cypherpunks-manifesto.txt")
