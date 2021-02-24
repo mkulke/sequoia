@@ -368,7 +368,7 @@ fn inspect_signatures(output: &mut dyn io::Write,
         }
     }
     if ! sigs.is_empty() {
-        writeln!(output, "                 \
+        writeln!(output, "           Note: \
                           Signatures have NOT been verified!")?;
     }
 
@@ -380,9 +380,9 @@ fn inspect_certifications<'a, A>(output: &mut dyn io::Write,
                           print_certifications: bool) -> Result<()> where
         A: std::iter::Iterator<Item=&'a openpgp::packet::Signature> {
     if print_certifications {
-        let mut verified_cerifications = false;
+        let mut emit_warning = false;
         for sig in certs {
-            verified_cerifications = true;
+            emit_warning = true;
             let mut fps: Vec<_> = sig.issuer_fingerprints().collect();
             fps.sort();
             fps.dedup();
@@ -399,8 +399,8 @@ fn inspect_certifications<'a, A>(output: &mut dyn io::Write,
                 }
             }
         }
-        if !verified_cerifications {
-            writeln!(output, "                 \
+        if emit_warning {
+            writeln!(output, "             Note: \
                               Certifications have NOT been verified!")?;
         }
     } else {
