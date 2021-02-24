@@ -127,7 +127,7 @@ use crate::{
         PKESK,
         SKESK,
     },
-    KeyID,
+    KeyHandle,
     Packet,
     Result,
     packet,
@@ -1212,7 +1212,7 @@ impl<'a> VerifierBuilder<'a> {
                 policy,
                 self.message,
                 NoDecryptionHelper { v: helper, },
-                t, Mode::Verify, self.buffer_size, self.mapping)?,
+                t, Mode::Verify, self.buffer_size, self.mapping, true)?,
         })
     }
 }
@@ -1568,7 +1568,7 @@ impl<'a> DetachedVerifierBuilder<'a> {
                 policy,
                 self.signatures,
                 NoDecryptionHelper { v: helper, },
-                t, Mode::VerifyDetached, 0, self.mapping)?,
+                t, Mode::VerifyDetached, 0, self.mapping, false)?,
         })
     }
 }
@@ -1708,7 +1708,13 @@ enum Mode {
 /// # Ok(()) }
 pub struct Decryptor<'a, H: VerificationHelper + DecryptionHelper> {
     helper: H,
+
+    /// The issuers collected from OPS and Signature packets.
+    issuers: Vec<KeyHandle>,
+
+    /// The certificates used for signature verification.
     certs: Vec<Cert>,
+
     oppr: Option<PacketParserResult<'a>>,
     identity: Option<Fingerprint>,
     structure: IMessageStructure,
@@ -2007,7 +2013,7 @@ impl<'a> DecryptorBuilder<'a> {
             policy,
             self.message,
             helper,
-            t, Mode::Decrypt, self.buffer_size, self.mapping)
+            t, Mode::Decrypt, self.buffer_size, self.mapping, false)
     }
 }
 
@@ -2285,7 +2291,9 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
         helper: H, time: T,
         mode: Mode,
         buffer_size: usize,
-        mapping: bool)
+        mapping: bool,
+        csf_transformation: bool,
+    )
         -> Result<Decryptor<'a, H>>
         where T: Into<Option<time::SystemTime>>
     {
@@ -2299,10 +2307,13 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
         let time = time.unwrap_or_else(time::SystemTime::now);
 
         let mut ppr = PacketParserBuilder::from_buffered_reader(bio)?
-            .map(mapping).build()?;
+            .map(mapping)
+            .csf_transformation(csf_transformation)
+            .build()?;
 
         let mut v = Decryptor {
             helper,
+            issuers: Vec::new(),
             certs: Vec::new(),
             oppr: None,
             identity: None,
@@ -2316,10 +2327,8 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
             policy,
         };
 
-        let mut issuers = Vec::new();
         let mut pkesks: Vec<packet::PKESK> = Vec::new();
         let mut skesks: Vec<packet::SKESK> = Vec::new();
-        let mut saw_content = false;
 
         while let PacketParserResult::Some(mut pp) = ppr {
             v.policy.packet(&pp.packet)?;
@@ -2351,8 +2360,6 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                 Packet::CompressedData(ref p) =>
                     v.structure.new_compression_layer(p.algo()),
                 Packet::SEIP(_) | Packet::AED(_) if v.mode == Mode::Decrypt => {
-                    saw_content = true;
-
                     // Get the symmetric algorithm from the decryption
                     // proxy function.  This is necessary because we
                     // cannot get the algorithm from the SEIP packet.
@@ -2396,12 +2403,10 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                 },
                 Packet::OnePassSig(ref ops) => {
                     v.structure.push_ops(ops);
-                    issuers.push(ops.issuer().clone().into());
+                    v.push_issuer(ops.issuer().clone());
                 },
                 Packet::Literal(_) => {
                     v.structure.insert_missing_signature_group();
-                    // Query keys.
-                    v.certs = v.helper.get_certs(&issuers)?;
                     v.oppr = Some(PacketParserResult::Some(pp));
                     v.finish_maybe()?;
 
@@ -2418,27 +2423,14 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                 Packet::PKESK(pkesk) => pkesks.push(pkesk),
                 Packet::SKESK(skesk) => skesks.push(skesk),
                 Packet::Signature(sig) => {
-                    if ! saw_content {
-                        // The following structure is allowed:
-                        //
-                        //   SIG LITERAL
-                        //
-                        // In this case, we get the issuer from the
-                        // signature itself.
-                        let mut sig_issuers = sig.get_issuers();
-                        if sig_issuers.is_empty() {
-                            // No issuer information.  Push a wildcard
-                            // KeyID to indicate this to the
-                            // VerificationHelper::check.  This is the
-                            // detached-signature equivalent of a
-                            // signed message with a wildcard signer
-                            // KeyID on the OPS packet and no issuer
-                            // information on the signature.
-                            issuers.push(KeyID::wildcard().into());
-                        } else {
-                            issuers.append(&mut sig_issuers);
-                        }
-                    }
+                    // The following structure is allowed:
+                    //
+                    //   SIG LITERAL
+                    //
+                    // In this case, we get the issuer from the
+                    // signature itself.
+                    sig.get_issuers().into_iter()
+                        .for_each(|i| v.push_issuer(i));
                     v.structure.push_bare_signature(sig);
                 }
                 _ => (),
@@ -2447,7 +2439,6 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
         }
 
         if v.mode == Mode::VerifyDetached {
-            v.certs = v.helper.get_certs(&issuers)?;
             return Ok(v);
         }
 
@@ -2506,11 +2497,48 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
     fn push_sig(&mut self, p: Packet) -> Result<()> {
         match p {
             Packet::Signature(sig) => {
+                sig.get_issuers().into_iter().for_each(|i| self.push_issuer(i));
                 self.structure.push_signature(sig);
             },
             _ => (),
         }
         Ok(())
+    }
+
+    /// Records the issuer for the later certificate lookup.
+    fn push_issuer<I: Into<KeyHandle>>(&mut self, issuer: I) {
+        let issuer = issuer.into();
+        match issuer {
+            KeyHandle::KeyID(id) if id.is_wildcard() => {
+                // Ignore, they are not useful for lookups.
+                return;
+            },
+
+            KeyHandle::KeyID(_) => {
+                for known in self.issuers.iter() {
+                    if known.aliases(&issuer) {
+                        return;
+                    }
+                }
+
+                // Unknown, record.
+                self.issuers.push(issuer);
+            },
+
+            KeyHandle::Fingerprint(_) => {
+                for known in self.issuers.iter_mut() {
+                    if known.aliases(&issuer) {
+                        // Replace.  We may upgrade a KeyID to a
+                        // Fingerprint.
+                        *known = issuer;
+                        return;
+                    }
+                }
+
+                // Unknown, record.
+                self.issuers.push(issuer);
+            },
+        }
     }
 
     // If the amount of remaining data does not exceed the reserve,
@@ -2569,6 +2597,9 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
     fn verify_signatures(&mut self) -> Result<()> {
         tracer!(TRACE, "Decryptor::verify_signatures", 0);
         t!("called");
+
+        self.certs = self.helper.get_certs(&self.issuers)?;
+        t!("VerificationHelper::get_certs produced {} certs", self.certs.len());
 
         let mut results = MessageStructure::new();
         for layer in self.structure.layers.iter_mut() {
@@ -2930,6 +2961,7 @@ mod test {
 
         let keys = [
             "neal.pgp",
+            "testy-new.pgp",
             "emmelie-dorothea-dina-samantha-awina-ed25519.pgp"
         ].iter()
          .map(|f| Cert::from_bytes(crate::tests::key(f)).unwrap())
@@ -2937,23 +2969,43 @@ mod test {
         let tests = &[
             // Signed messages.
             ("messages/signed-1.gpg",
-             crate::tests::manifesto(),
+             crate::tests::manifesto().to_vec(),
              true,
              Some(crate::frozen_time()),
              VHelper::new(1, 0, 0, 0, keys.clone())),
             ("messages/signed-1-sha256-testy.gpg",
-             crate::tests::manifesto(),
+             crate::tests::manifesto().to_vec(),
              true,
              Some(crate::frozen_time()),
              VHelper::new(0, 1, 0, 0, keys.clone())),
             ("messages/signed-1-notarized-by-ed25519.pgp",
-             crate::tests::manifesto(),
+             crate::tests::manifesto().to_vec(),
              true,
              Some(crate::frozen_time()),
              VHelper::new(2, 0, 0, 0, keys.clone())),
+            // Signed messages using the Cleartext Signature Framework.
+            ("messages/a-cypherpunks-manifesto.txt.cleartext.sig",
+             {
+                 // The transformation process trims trailing whitespace,
+                 // and the manifesto has a trailing whitespace right at
+                 // the end.
+                 let mut manifesto = crate::tests::manifesto().to_vec();
+                 let ws_at = manifesto.len() - 2;
+                 let ws = manifesto.remove(ws_at);
+                 assert_eq!(ws, b' ');
+                 manifesto
+             },
+             false,
+             None,
+             VHelper::new(1, 0, 0, 0, keys.clone())),
+            ("messages/a-problematic-poem.txt.cleartext.sig",
+             crate::tests::message("a-problematic-poem.txt").to_vec(),
+             false,
+             None,
+             VHelper::new(1, 0, 0, 0, keys.clone())),
             // A key as example of an invalid message.
             ("keys/neal.pgp",
-             crate::tests::manifesto(),
+             crate::tests::manifesto().to_vec(),
              true,
              Some(crate::frozen_time()),
              VHelper::new(0, 0, 0, 1, keys.clone())),
