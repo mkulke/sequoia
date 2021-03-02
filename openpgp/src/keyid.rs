@@ -29,7 +29,7 @@ use crate::Result;
 /// In previous versions of OpenPGP, the Key ID used to be called
 /// "long Key ID", as there even was a "short Key ID". At only 4 bytes
 /// length, short Key IDs vulnerable to preimage attacks. That is, an
-/// attacker can create a key with any given short key ID in short
+/// attacker can create a key with any given short Key ID in short
 /// amount of time.
 ///
 /// See also [`Fingerprint`] and [`KeyHandle`].
@@ -69,7 +69,7 @@ assert_send_and_sync!(KeyID);
 
 impl fmt::Display for KeyID {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.convert_to_string(true))
+        write!(f, "{:X}", self)
     }
 }
 
@@ -305,6 +305,31 @@ impl KeyID {
         format!("{:X}", self)
     }
 
+    /// Converts this `KeyID` to its hexadecimal representation with
+    /// spaces.
+    ///
+    /// This representation is always uppercase and with spaces
+    /// grouping the hexadecimal digits into groups of four.  It is
+    /// suitable for manual comparison of Key IDs.
+    ///
+    /// Note: The spaces will hinder other kind of use cases.  For
+    /// example, it is harder to select the whole Key ID for copying,
+    /// and it has to be quoted when used as a command line argument.
+    /// Only use this form for displaying a Key ID with the intent of
+    /// manual comparisons.
+    ///
+    /// ```rust
+    /// # fn main() -> sequoia_openpgp::Result<()> {
+    /// # use sequoia_openpgp as openpgp;
+    /// let keyid: openpgp::KeyID = "fb3751f1587daef1".parse()?;
+    ///
+    /// assert_eq!("FB37 51F1 587D AEF1", keyid.to_spaced_hex());
+    /// # Ok(()) }
+    /// ```
+    pub fn to_spaced_hex(&self) -> String {
+        self.convert_to_string(true)
+    }
+
     /// Parses the hexadecimal representation of an OpenPGP `KeyID`.
     ///
     /// This function is the reverse of `to_hex`. It also accepts
@@ -332,11 +357,11 @@ impl KeyID {
             &KeyID::Invalid(ref fp) => &fp[..],
         };
 
-        // We currently only handle V4 key IDs, which look like:
+        // We currently only handle V4 Key IDs, which look like:
         //
         //   AACB 3243 6300 52D9
         //
-        // Since we have no idea how to format an invalid key ID, just
+        // Since we have no idea how to format an invalid Key ID, just
         // format it like a V4 fingerprint and hope for the best.
 
         let mut output = Vec::with_capacity(
