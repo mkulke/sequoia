@@ -391,11 +391,6 @@ impl Config<'_> {
 fn main() -> Result<()> {
     let policy = &mut P::new();
 
-    // XXX: Compat with sequoia-openpgp 1.0.0:
-    use openpgp::packet::signature::subpacket::SubpacketTag;
-    policy.accept_critical_subpacket(SubpacketTag::TrustSignature);
-    policy.accept_critical_subpacket(SubpacketTag::RegularExpression);
-
     let matches = sq_cli::build().get_matches();
 
     let known_notations: Vec<&str> = matches.values_of("known-notation")
@@ -766,4 +761,10 @@ fn test_parse_iso8601() {
     // parse_iso8601("201703", z).unwrap(); // ditto
     parse_iso8601("2017031", z).unwrap();
     // parse_iso8601("2017", z).unwrap(); // ditto
+}
+
+/// Prints the error and causes, if any.
+pub fn print_error_chain(err: &anyhow::Error) {
+    eprintln!("           {}", err);
+    err.chain().skip(1).for_each(|cause| eprintln!("  because: {}", cause));
 }
