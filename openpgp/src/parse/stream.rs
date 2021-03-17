@@ -2338,7 +2338,9 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
             // signatures here, which on their own are not a valid
             // message.
             if v.mode == Mode::VerifyDetached {
-                if pp.packet.tag() != packet::Tag::Signature {
+                if pp.packet.tag() != packet::Tag::Signature
+                    && pp.packet.tag() != packet::Tag::Marker
+                {
                     return Err(Error::MalformedMessage(
                         format!("Expected signature, got {}", pp.packet.tag()))
                                .into());
@@ -2867,7 +2869,7 @@ mod test {
         unknown: usize,
         bad: usize,
         error: usize,
-        keys: Vec<Cert>,
+        certs: Vec<Cert>,
         error_out: bool,
     }
 
@@ -2890,20 +2892,22 @@ mod test {
                 unknown: 0,
                 bad: 0,
                 error: 0,
-                keys: Vec::default(),
+                certs: Vec::default(),
                 error_out: true,
             }
         }
     }
 
     impl VHelper {
-        fn new(good: usize, unknown: usize, bad: usize, error: usize, keys: Vec<Cert>) -> Self {
+        fn new(good: usize, unknown: usize, bad: usize, error: usize,
+               certs: Vec<Cert>)
+               -> Self {
             VHelper {
                 good,
                 unknown,
                 bad,
                 error,
-                keys,
+                certs,
                 error_out: true,
             }
         }
@@ -2911,7 +2915,7 @@ mod test {
 
     impl VerificationHelper for VHelper {
         fn get_certs(&mut self, _ids: &[crate::KeyHandle]) -> Result<Vec<Cert>> {
-            Ok(self.keys.clone())
+            Ok(self.certs.clone())
         }
 
         fn check(&mut self, structure: MessageStructure) -> Result<()> {
@@ -2959,7 +2963,7 @@ mod test {
     fn verifier() -> Result<()> {
         let p = P::new();
 
-        let keys = [
+        let certs = [
             "neal.pgp",
             "testy-new.pgp",
             "emmelie-dorothea-dina-samantha-awina-ed25519.pgp"
@@ -2968,23 +2972,38 @@ mod test {
          .collect::<Vec<_>>();
         let tests = &[
             // Signed messages.
-            ("messages/signed-1.gpg",
+            (crate::tests::message("signed-1.gpg").to_vec(),
              crate::tests::manifesto().to_vec(),
              true,
              Some(crate::frozen_time()),
-             VHelper::new(1, 0, 0, 0, keys.clone())),
-            ("messages/signed-1-sha256-testy.gpg",
+             VHelper::new(1, 0, 0, 0, certs.clone())),
+            // The same, but with a marker packet.
+            ({
+                let pp = crate::PacketPile::from_bytes(
+                    crate::tests::message("signed-1.gpg"))?;
+                let mut buf = Vec::new();
+                Packet::Marker(Default::default()).serialize(&mut buf)?;
+                pp.serialize(&mut buf)?;
+                buf
+            },
              crate::tests::manifesto().to_vec(),
              true,
              Some(crate::frozen_time()),
-             VHelper::new(0, 1, 0, 0, keys.clone())),
-            ("messages/signed-1-notarized-by-ed25519.pgp",
+             VHelper::new(1, 0, 0, 0, certs.clone())),
+            (crate::tests::message("signed-1-sha256-testy.gpg").to_vec(),
              crate::tests::manifesto().to_vec(),
              true,
              Some(crate::frozen_time()),
-             VHelper::new(2, 0, 0, 0, keys.clone())),
+             VHelper::new(0, 1, 0, 0, certs.clone())),
+            (crate::tests::message("signed-1-notarized-by-ed25519.pgp")
+             .to_vec(),
+             crate::tests::manifesto().to_vec(),
+             true,
+             Some(crate::frozen_time()),
+             VHelper::new(2, 0, 0, 0, certs.clone())),
             // Signed messages using the Cleartext Signature Framework.
-            ("messages/a-cypherpunks-manifesto.txt.cleartext.sig",
+            (crate::tests::message("a-cypherpunks-manifesto.txt.cleartext.sig")
+             .to_vec(),
              {
                  // The transformation process trims trailing whitespace,
                  // and the manifesto has a trailing whitespace right at
@@ -2997,27 +3016,30 @@ mod test {
              },
              false,
              None,
-             VHelper::new(1, 0, 0, 0, keys.clone())),
-            ("messages/a-problematic-poem.txt.cleartext.sig",
+             VHelper::new(1, 0, 0, 0, certs.clone())),
+            (crate::tests::message("a-problematic-poem.txt.cleartext.sig")
+             .to_vec(),
              crate::tests::message("a-problematic-poem.txt").to_vec(),
              false,
              None,
-             VHelper::new(1, 0, 0, 0, keys.clone())),
+             VHelper::new(1, 0, 0, 0, certs.clone())),
             // A key as example of an invalid message.
-            ("keys/neal.pgp",
+            (crate::tests::key("neal.pgp").to_vec(),
              crate::tests::manifesto().to_vec(),
              true,
              Some(crate::frozen_time()),
-             VHelper::new(0, 0, 0, 1, keys.clone())),
+             VHelper::new(0, 0, 0, 1, certs.clone())),
         ];
 
-        for (f, reference, test_decryptor, time, r) in tests {
-            eprintln!("{}...", f);
+        for (i, (signed, reference, test_decryptor, time, r))
+            in tests.iter().enumerate()
+        {
+            eprintln!("{}...", i);
 
             // Test Verifier.
-            let h = VHelper::new(0, 0, 0, 0, keys.clone());
+            let h = VHelper::new(0, 0, 0, 0, certs.clone());
             let mut v =
-                match VerifierBuilder::from_bytes(crate::tests::file(f))?
+                match VerifierBuilder::from_bytes(&signed)?
                     .with_policy(&p, *time, h) {
                     Ok(v) => v,
                     Err(e) => if r.error > 0 || r.unknown > 0 {
@@ -3025,7 +3047,7 @@ mod test {
                         // something.
                         continue;
                     } else {
-                        panic!("{}: {}", f, e);
+                        panic!("{}: {}", i, e);
                     },
                 };
             assert!(v.message_processed());
@@ -3047,8 +3069,8 @@ mod test {
             }
 
             // Test Decryptor.
-            let h = VHelper::new(0, 0, 0, 0, keys.clone());
-            let mut v = match DecryptorBuilder::from_bytes(crate::tests::file(f))?
+            let h = VHelper::new(0, 0, 0, 0, certs.clone());
+            let mut v = match DecryptorBuilder::from_bytes(&signed)?
                 .with_policy(&p, *time, h) {
                     Ok(v) => v,
                     Err(e) => if r.error > 0 || r.unknown > 0 {
@@ -3056,7 +3078,7 @@ mod test {
                         // something.
                         continue;
                     } else {
-                        panic!("{}: {}", f, e);
+                        panic!("{}: {}", i, e);
                     },
                 };
             assert!(v.message_processed());
@@ -3093,14 +3115,14 @@ mod test {
             eprintln!("{}...", msg);
             let p = P::new();
 
-            let keys = [
+            let certs = [
                 "neal.pgp",
             ]
                 .iter()
                 .map(|f| Cert::from_bytes(crate::tests::key(f)).unwrap())
                 .collect::<Vec<_>>();
 
-            let mut h = VHelper::new(0, 0, 0, 0, keys.clone());
+            let mut h = VHelper::new(0, 0, 0, 0, certs.clone());
             h.error_out = false;
             let mut v = VerifierBuilder::from_bytes(buf)?
                 .with_policy(&p, crate::frozen_time(), h)?;
@@ -3213,7 +3235,7 @@ mod test {
     }
 
     #[test]
-    fn detached_verifier() {
+    fn detached_verifier() -> Result<()> {
         lazy_static::lazy_static! {
             static ref ZEROS: Vec<u8> = vec![0; 100 * 1024 * 1024];
         }
@@ -3221,38 +3243,53 @@ mod test {
         let p = P::new();
 
         struct Test<'a> {
-            sig: &'a [u8],
+            sig: Vec<u8>,
             content: &'a [u8],
             reference: time::SystemTime,
         };
         let tests = [
             Test {
                 sig: crate::tests::message(
-                    "a-cypherpunks-manifesto.txt.ed25519.sig"),
+                    "a-cypherpunks-manifesto.txt.ed25519.sig").to_vec(),
+                content: crate::tests::manifesto(),
+                reference: crate::frozen_time(),
+            },
+            // The same, but with a marker packet.
+            Test {
+                sig: {
+                    let sig = crate::PacketPile::from_bytes(
+                        crate::tests::message(
+                            "a-cypherpunks-manifesto.txt.ed25519.sig"))?;
+                    let mut buf = Vec::new();
+                    Packet::Marker(Default::default()).serialize(&mut buf)?;
+                    sig.serialize(&mut buf)?;
+                    buf
+                },
                 content: crate::tests::manifesto(),
                 reference: crate::frozen_time(),
             },
             Test {
                 sig: crate::tests::message(
-                    "emmelie-dorothea-dina-samantha-awina-detached-signature-of-100MB-of-zeros.sig"),
+                    "emmelie-dorothea-dina-samantha-awina-detached-signature-of-100MB-of-zeros.sig")
+                    .to_vec(),
                 content: &ZEROS[..],
                 reference:
                 crate::types::Timestamp::try_from(1572602018).unwrap().into(),
             },
         ];
 
-        let keys = [
+        let certs = [
             "emmelie-dorothea-dina-samantha-awina-ed25519.pgp"
         ].iter()
             .map(|f| Cert::from_bytes(crate::tests::key(f)).unwrap())
             .collect::<Vec<_>>();
 
         for test in tests.iter() {
-            let sig = test.sig;
+            let sig = &test.sig;
             let content = test.content;
             let reference = test.reference;
 
-            let h = VHelper::new(0, 0, 0, 0, keys.clone());
+            let h = VHelper::new(0, 0, 0, 0, certs.clone());
             let mut v = DetachedVerifierBuilder::from_bytes(sig).unwrap()
                 .with_policy(&p, reference, h).unwrap();
             v.verify_bytes(content).unwrap();
@@ -3261,6 +3298,7 @@ mod test {
             assert_eq!(h.good, 1);
             assert_eq!(h.bad, 0);
         }
+        Ok(())
     }
 
     #[test]
