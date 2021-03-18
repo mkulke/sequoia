@@ -296,6 +296,14 @@ pkgs.mkShell {
 $ sudo port install cargo rust capnproto nettle pkgconfig coreutils
 ```
 
+### macOS (Big Sur), using Homebrew
+
+```shell
+$ xcode-select --install   #Xcode command-line tools are required for clang, gcc, & make
+$ brew install rustup-init capnp nettle coreutils
+$ rustup-init
+```
+
 ### Windows
 
 Please make sure to preserve line-endings when cloning the Sequoia
