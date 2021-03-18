@@ -49,6 +49,21 @@ bullseye:
     RUSTFLAGS: -D warnings -A unused-parens
   after_script: []
 
+minimal_versions:
+  tags:
+    - linux
+  stage: test
+  image: registry.gitlab.com/sequoia-pgp/build-docker-image/minimal-versions:latest
+  needs: ["rust-stable"]
+  script:
+    - cargo minimize --workspace
+    - cargo test
+  variables:
+    CARGO_TARGET_DIR: /target
+    CARGO_HOME: /cargo
+    RUSTFLAGS: -D warnings -A unused-parens
+  after_script: []
+
 all_commits:
   # Test each commit up to main, to facilitate bisecting.
   stage: test
