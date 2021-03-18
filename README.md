@@ -298,8 +298,10 @@ $ sudo port install cargo rust capnproto nettle pkgconfig coreutils
 
 ### macOS (Big Sur), using Homebrew
 
+Xcode command-line tools are required for clang, gcc, & make
+
 ```shell
-$ xcode-select --install   #Xcode command-line tools are required for clang, gcc, & make
+$ xcode-select --install
 $ brew install rustup-init capnp nettle coreutils
 $ rustup
 ```
