@@ -507,6 +507,7 @@ impl CertValidator {
 pub struct CertParser<'a> {
     source: Option<Box<dyn Iterator<Item=Result<Packet>> + 'a + Send + Sync>>,
     packets: Vec<Packet>,
+    queued_error: Option<anyhow::Error>,
     saw_error: bool,
     filter: Vec<Box<dyn Send + Sync + Fn(&Cert, bool) -> bool + 'a>>,
 }
@@ -517,6 +518,7 @@ impl<'a> Default for CertParser<'a> {
         CertParser {
             source: None,
             packets: vec![],
+            queued_error: None,
             saw_error: false,
             filter: vec![],
         }
@@ -951,6 +953,9 @@ impl<'a> Iterator for CertParser<'a> {
                 None => {
                     t!("EOF.");
 
+                    if let Some(err) = self.queued_error.take() {
+                        return Some(Err(err));
+                    }
                     if self.packets.len() == 0 {
                         return None;
                     }
@@ -990,7 +995,24 @@ impl<'a> Iterator for CertParser<'a> {
                         Some(Err(err)) => {
                             t!("Error getting packet: {}", err);
                             self.saw_error = true;
-                            return Some(Err(err));
+
+                            if self.packets.len() > 0 {
+                                // Returned any queued certificate first.
+                                match self.cert(None) {
+                                    Ok(Some(cert)) => {
+                                        self.queued_error = Some(err);
+                                        return Some(Ok(cert));
+                                    }
+                                    Ok(None) => {
+                                        return Some(Err(err));
+                                    }
+                                    Err(err) => {
+                                        return Some(Err(err));
+                                    }
+                                }
+                            } else {
+                                return Some(Err(err));
+                            }
                         }
                         None if self.packets.len() == 0 => {
                             t!("Packet iterator was empty");
