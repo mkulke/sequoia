@@ -669,15 +669,20 @@ mod tests {
     }
 
     // #668
-    // Ensure that, on 32-bit platforms, Timestamps between i32::MAX + 1 and u32::MAX are
-    // clamped down to i32::MAX, and values below are not altered.
-    #[cfg(any(target_arch = "x86", target_arch = "arm", target_arch = "mips"))]
+    // Ensure that, on systems with a 32-bit time_t, Timestamps between
+    // i32::MAX + 1 and u32::MAX are clamped down to i32::MAX, and values
+    // below are not altered.
     #[test]
     fn system_time_32_bit() -> Result<()> {
+        if std::mem::size_of::<SystemTime>() != 32 {
+            return Ok(())
+        }
+
         let t1 = Timestamp::from(u32::MAX);
-        let t2 = Timestamp::from(i32::MAX as u32 + 1);
         assert_eq!(SystemTime::from(t1),
                    UNIX_EPOCH + SystemDuration::new(i32::MAX as u64, 0));
+
+        let t2 = Timestamp::from(i32::MAX as u32 + 1);
         assert_eq!(SystemTime::from(t2),
                    UNIX_EPOCH + SystemDuration::new(i32::MAX as u64, 0));
 
