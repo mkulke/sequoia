@@ -290,10 +290,18 @@ pkgs.mkShell {
 </details>
 
 
-### macOS (Mojave), using MacPorts
+### MacOS
+
+#### Using MacPorts
 
 ```shell
 $ sudo port install cargo rust capnproto nettle pkgconfig coreutils
+```
+
+#### Using Homebrew
+
+```shell
+$ brew install rust capnp nettle pkg-config coreutils
 ```
 
 ### Windows
