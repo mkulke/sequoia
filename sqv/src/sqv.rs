@@ -3,7 +3,10 @@
 /// See https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=872271 for
 /// the motivation.
 
+use std::io::Read;
 use std::process::exit;
+use std::fs::File;
+use std::ffi::OsStr;
 
 use chrono::{DateTime, offset::Utc};
 use clap;
@@ -283,7 +286,12 @@ fn main() -> Result<()> {
 
     let mut v =
         DetachedVerifierBuilder::from_file(sig_file)?.with_policy(p, None, h)?;
-    v.verify_file(file)?;
+    let reader: Box<dyn Read + Send + Sync> = if file == OsStr::new("-") {
+        Box::new(std::io::stdin())
+    } else {
+        Box::new(File::open(&file).context("Failed to open input file")?)
+    };
+    v.verify_reader(reader)?;
 
     let h = v.into_helper();
 
