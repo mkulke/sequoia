@@ -701,7 +701,7 @@ pub trait Preferences<'a>: seal::Sealed {
 /// #     Ok(())
 /// # }
 /// ```
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Cert {
     primary: PrimaryKeyBundle<key::PublicParts>,
 
@@ -716,6 +716,81 @@ pub struct Cert {
     bad: Vec<packet::Signature>,
 }
 assert_send_and_sync!(Cert);
+
+impl PartialEq for Cert {
+    fn eq(&self, other: &Self) -> bool {
+        // Quick compare.
+        if self.fingerprint() != other.fingerprint() {
+            return false;
+        }
+
+        // Quickly compare components.
+        let mut a_keys = self.keys().map(|k| {
+            (k.fingerprint(),
+             k.self_signatures.len(),
+             k.certifications.len(),
+             k.self_revocations.len(),
+             k.other_revocations.len())
+        });
+        let mut b_keys = other.keys().map(|k| {
+            (k.fingerprint(),
+             k.self_signatures.len(),
+             k.certifications.len(),
+             k.self_revocations.len(),
+             k.other_revocations.len())
+        });
+
+        loop {
+            let a = a_keys.next();
+            let b = b_keys.next();
+
+            if a != b {
+                return false;
+            }
+            if a.is_none() && b.is_none() {
+                break;
+            }
+        }
+
+        let mut a_uids = self.userids().map(|u| {
+            (u.userid(),
+             u.self_signatures.len(),
+             u.certifications.len(),
+             u.self_revocations.len(),
+             u.other_revocations.len())
+        });
+        let mut b_uids = other.userids().map(|u| {
+            (u.userid(),
+             u.self_signatures.len(),
+             u.certifications.len(),
+             u.self_revocations.len(),
+             u.other_revocations.len())
+        });
+
+        loop {
+            let a = a_uids.next();
+            let b = b_uids.next();
+
+            if a != b {
+                return false;
+            }
+            if a.is_none() && b.is_none() {
+                break;
+            }
+        }
+
+        // There's a chance that there equal.  Try the expensive way.
+        use crate::serialize::Serialize;
+
+        let mut a = Vec::with_capacity(4096);
+        let mut b = Vec::with_capacity(4096);
+
+        self.serialize(&mut a).expect("test code");
+        other.serialize(&mut b).expect("test code");
+
+        a == b
+    }
+}
 
 impl std::str::FromStr for Cert {
     type Err = anyhow::Error;
