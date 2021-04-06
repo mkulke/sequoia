@@ -3129,7 +3129,7 @@ mod test {
             key: &'a str,
             data: &'a str,
             good: usize,
-        };
+        }
 
         let tests = [
             Test {

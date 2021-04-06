@@ -2029,7 +2029,7 @@ fn one_pass_sig_test () {
     struct Test<'a> {
         filename: &'a str,
         digest_prefix: Vec<[u8; 2]>,
-    };
+    }
 
     let tests = [
             Test {
@@ -2694,7 +2694,7 @@ fn skesk_parser_test() {
         cipher_algo: SymmetricAlgorithm,
         password: Password,
         key_hex: &'a str,
-    };
+    }
 
     let tests = [
         Test {
@@ -6072,7 +6072,7 @@ mod test {
             message.finalize()?;
         }
 
-        struct Helper {};
+        struct Helper {}
         impl VerificationHelper for Helper {
             fn get_certs(&mut self, _ids: &[KeyHandle]) -> Result<Vec<Cert>> {
                 Ok(vec![Cert::from_bytes(crate::tests::key("testy-new.pgp"))?])
