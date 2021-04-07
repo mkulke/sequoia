@@ -500,7 +500,7 @@ fn main() -> Result<()> {
                 while let Some(name) = n.next() {
                     let value = n.next().unwrap();
 
-                    let (critical, name) = if name.len() > 0
+                    let (critical, name) = if !name.is_empty()
                         && Some('!') == name.chars().next()
                     {
                         (true, &name[1..])
