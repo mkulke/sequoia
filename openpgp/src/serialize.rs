@@ -2729,6 +2729,37 @@ enum PacketRef<'a> {
     AED(&'a packet::AED),
 }
 
+// Allow transparent access of common fields.
+impl Deref for PacketRef<'_> {
+    type Target = crate::packet::Common;
+
+    fn deref(&self) -> &Self::Target {
+        // XXX: If you change this function, also change
+        // Packet::deref.
+        match self {
+            PacketRef::Unknown(p) => &p.common,
+            PacketRef::Signature(p) => &p.common,
+            PacketRef::OnePassSig(p) => &p.common,
+            PacketRef::PublicKey(p) => &p.common,
+            PacketRef::PublicSubkey(p) => &p.common,
+            PacketRef::SecretKey(p) => &p.common,
+            PacketRef::SecretSubkey(p) => &p.common,
+            PacketRef::Marker(p) => &p.common,
+            PacketRef::Trust(p) => &p.common,
+            PacketRef::UserID(p) => &p.common,
+            PacketRef::UserAttribute(p) => &p.common,
+            PacketRef::Literal(p) => &p.common,
+            PacketRef::CompressedData(p) => &p.common,
+            PacketRef::PKESK(p) => &p.common,
+            PacketRef::SKESK(SKESK::V4(p)) => &p.common,
+            PacketRef::SKESK(SKESK::V5(p)) => &p.skesk4.common,
+            PacketRef::SEIP(p) => &p.common,
+            PacketRef::MDC(p) => &p.common,
+            PacketRef::AED(p) => &p.common,
+        }
+    }
+}
+
 impl<'a> PacketRef<'a> {
     /// Returns the `PacketRef's` corresponding OpenPGP tag.
     ///
@@ -2755,6 +2786,19 @@ impl<'a> PacketRef<'a> {
             PacketRef::SEIP(_) => Tag::SEIP,
             PacketRef::MDC(_) => Tag::MDC,
             PacketRef::AED(_) => Tag::AED,
+        }
+    }
+
+    fn container_ref(&self) -> Option<&Container> {
+        // XXX: If you change this function, also change
+        // Packet::container_ref.
+        match self {
+            PacketRef::CompressedData(p) => Some(p.deref()),
+            PacketRef::SEIP(p) => Some(p.deref()),
+            PacketRef::AED(p) => Some(p.deref()),
+            PacketRef::Literal(p) => Some(p.container_ref()),
+            PacketRef::Unknown(p) => Some(p.container_ref()),
+            _ => None,
         }
     }
 }

@@ -410,6 +410,8 @@ macro_rules! impl_body_forwards {
 impl Packet {
     pub(crate) // for packet_pile.rs
     fn container_ref(&self) -> Option<&Container> {
+        // XXX: If you change this function, also change
+        // PacketRef::container_ref.
         use std::ops::Deref;
         match self {
             Packet::CompressedData(p) => Some(p.deref()),

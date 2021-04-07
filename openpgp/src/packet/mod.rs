@@ -377,6 +377,8 @@ impl Deref for Packet {
     type Target = Common;
 
     fn deref(&self) -> &Self::Target {
+        // XXX: If you change this function, also change
+        // PacketRef::deref.
         match self {
             &Packet::Unknown(ref packet) => &packet.common,
             &Packet::Signature(ref packet) => &packet.common,
