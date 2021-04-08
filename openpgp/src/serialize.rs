@@ -137,6 +137,7 @@
 use std::io::{self, Write};
 use std::cmp;
 use std::convert::{TryFrom, TryInto};
+use std::ops::Deref;
 
 use super::*;
 
@@ -527,8 +528,12 @@ fn generic_serialize_into(o: &dyn Marshal, serialized_len: usize,
                     false
                 };
             return if short_write {
-                assert!(buf_len < serialized_len,
-                        "o.serialized_len() underestimated the required space");
+                if buf_len >= serialized_len {
+                    let mut b = Vec::new();
+                    let need_len = o.serialize(&mut b).map(|_| b.len());
+                    panic!("o.serialized_len() = {} underestimated required \
+                            space, need {:?}", serialized_len, need_len);
+                }
                 Err(Error::InvalidArgument(
                     format!("Invalid buffer size, expected {}, got {}",
                             serialized_len, buf_len)).into())
@@ -561,8 +566,12 @@ fn generic_export_into(o: &dyn Marshal, serialized_len: usize,
                     false
                 };
             return if short_write {
-                assert!(buf_len < serialized_len,
-                        "o.serialized_len() underestimated the required space");
+                if buf_len >= serialized_len {
+                    let mut b = Vec::new();
+                    let need_len = o.serialize(&mut b).map(|_| b.len());
+                    panic!("o.serialized_len() = {} underestimated required \
+                            space, need {:?}", serialized_len, need_len);
+                }
                 Err(Error::InvalidArgument(
                     format!("Invalid buffer size, expected {}, got {}",
                             serialized_len, buf_len)).into())
@@ -1696,20 +1705,12 @@ impl MarshalInto for Signature4 {
     }
 
     fn export_into(&self, buf: &mut [u8]) -> Result<usize> {
-        if ! self.exportable_certification().unwrap_or(true) {
-            return Err(Error::InvalidOperation(
-                "Cannot export non-exportable certification".into()).into());
-        }
-
+        self.exportable()?;
         self.serialize_into(buf)
     }
 
     fn export_to_vec(&self) -> Result<Vec<u8>> {
-        if ! self.exportable_certification().unwrap_or(true) {
-            return Err(Error::InvalidOperation(
-                "Cannot export non-exportable certification".into()).into());
-        }
-
+        self.exportable()?;
         self.to_vec()
     }
 }
@@ -2440,7 +2441,7 @@ impl NetLength for SEIP {
 
 impl MarshalInto for SEIP {
     fn serialized_len(&self) -> usize {
-        self.gross_len()
+        self.net_len()
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
@@ -2545,7 +2546,7 @@ impl NetLength for AED1 {
 
 impl MarshalInto for AED1 {
     fn serialized_len(&self) -> usize {
-        self.gross_len()
+        self.net_len()
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
@@ -2620,10 +2621,10 @@ impl Marshal for Packet {
             &Packet::Unknown(ref p) => p.export(o),
             &Packet::Signature(ref p) => p.export(o),
             &Packet::OnePassSig(ref p) => p.export(o),
-            &Packet::PublicKey(ref p) => p.serialize(o),
-            &Packet::PublicSubkey(ref p) => p.serialize(o),
-            &Packet::SecretKey(ref p) => p.serialize(o),
-            &Packet::SecretSubkey(ref p) => p.serialize(o),
+            &Packet::PublicKey(ref p) => p.export(o),
+            &Packet::PublicSubkey(ref p) => p.export(o),
+            &Packet::SecretKey(ref p) => p.export(o),
+            &Packet::SecretSubkey(ref p) => p.export(o),
             &Packet::Marker(ref p) => p.export(o),
             &Packet::Trust(ref p) => p.export(o),
             &Packet::UserID(ref p) => p.export(o),
@@ -2667,28 +2668,7 @@ impl NetLength for Packet {
 impl SerializeInto for Packet {}
 impl MarshalInto for Packet {
     fn serialized_len(&self) -> usize {
-        (match self {
-            &Packet::Unknown(ref p) => p.serialized_len(),
-            &Packet::Signature(ref p) => p.serialized_len(),
-            &Packet::OnePassSig(ref p) => p.serialized_len(),
-            &Packet::PublicKey(ref p) => p.serialized_len(),
-            &Packet::PublicSubkey(ref p) => p.serialized_len(),
-            &Packet::SecretKey(ref p) => p.serialized_len(),
-            &Packet::SecretSubkey(ref p) => p.serialized_len(),
-            &Packet::Marker(ref p) => p.serialized_len(),
-            &Packet::Trust(ref p) => p.serialized_len(),
-            &Packet::UserID(ref p) => p.serialized_len(),
-            &Packet::UserAttribute(ref p) => p.serialized_len(),
-            &Packet::Literal(ref p) => p.serialized_len(),
-            &Packet::CompressedData(ref p) => p.serialized_len(),
-            &Packet::PKESK(ref p) => p.serialized_len(),
-            &Packet::SKESK(ref p) => p.serialized_len(),
-            &Packet::SEIP(ref p) => p.serialized_len(),
-            &Packet::MDC(ref p) => p.serialized_len(),
-            &Packet::AED(ref p) => p.serialized_len(),
-        })
-            + 1 // CTB.
-            + BodyLength::Full(self.net_len() as u32).serialized_len()
+        self.gross_len()
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
@@ -2846,10 +2826,10 @@ impl<'a> Marshal for PacketRef<'a> {
             PacketRef::Unknown(p) => p.export(o),
             PacketRef::Signature(p) => p.export(o),
             PacketRef::OnePassSig(p) => p.export(o),
-            PacketRef::PublicKey(p) => p.serialize(o),
-            PacketRef::PublicSubkey(p) => p.serialize(o),
-            PacketRef::SecretKey(p) => p.serialize(o),
-            PacketRef::SecretSubkey(p) => p.serialize(o),
+            PacketRef::PublicKey(p) => p.export(o),
+            PacketRef::PublicSubkey(p) => p.export(o),
+            PacketRef::SecretKey(p) => p.export(o),
+            PacketRef::SecretSubkey(p) => p.export(o),
             PacketRef::Marker(p) => p.export(o),
             PacketRef::Trust(p) => p.export(o),
             PacketRef::UserID(p) => p.export(o),
@@ -2893,28 +2873,7 @@ impl<'a> NetLength for PacketRef<'a> {
 impl<'a> SerializeInto for PacketRef<'a> {}
 impl<'a> MarshalInto for PacketRef<'a> {
     fn serialized_len(&self) -> usize {
-        (match self {
-            PacketRef::Unknown(p) => p.serialized_len(),
-            PacketRef::Signature(p) => p.serialized_len(),
-            PacketRef::OnePassSig(p) => p.serialized_len(),
-            PacketRef::PublicKey(p) => p.serialized_len(),
-            PacketRef::PublicSubkey(p) => p.serialized_len(),
-            PacketRef::SecretKey(p) => p.serialized_len(),
-            PacketRef::SecretSubkey(p) => p.serialized_len(),
-            PacketRef::Marker(p) => p.serialized_len(),
-            PacketRef::Trust(p) => p.serialized_len(),
-            PacketRef::UserID(p) => p.serialized_len(),
-            PacketRef::UserAttribute(p) => p.serialized_len(),
-            PacketRef::Literal(p) => p.serialized_len(),
-            PacketRef::CompressedData(p) => p.serialized_len(),
-            PacketRef::PKESK(p) => p.serialized_len(),
-            PacketRef::SKESK(p) => p.serialized_len(),
-            PacketRef::SEIP(p) => p.serialized_len(),
-            PacketRef::MDC(p) => p.serialized_len(),
-            PacketRef::AED(p) => p.serialized_len(),
-        })
-            + 1 // CTB.
-            + BodyLength::Full(self.net_len() as u32).serialized_len()
+        self.gross_len()
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
@@ -2970,7 +2929,6 @@ impl seal::Sealed for Message {}
 impl Marshal for Message {
     /// Writes a serialized version of the specified `Message` to `o`.
     fn serialize(&self, o: &mut dyn std::io::Write) -> Result<()> {
-        use std::ops::Deref;
         (self.deref() as &dyn Marshal).serialize(o)
     }
 }
@@ -2978,17 +2936,14 @@ impl Marshal for Message {
 impl SerializeInto for Message {}
 impl MarshalInto for Message {
     fn serialized_len(&self) -> usize {
-        use std::ops::Deref;
         (self.deref() as &dyn MarshalInto).serialized_len()
     }
 
     fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
-        use std::ops::Deref;
         (self.deref() as &dyn MarshalInto).serialize_into(buf)
     }
 
     fn export_into(&self, buf: &mut [u8]) -> Result<usize> {
-        use std::ops::Deref;
         (self.deref() as &dyn MarshalInto).export_into(buf)
     }
 }
@@ -3518,5 +3473,22 @@ mod test {
                 &mut vec![0; (&pp as &dyn MarshalInto).serialized_len()])
             .unwrap_err();
         (&pp as &dyn MarshalInto).export_to_vec().unwrap_err();
+    }
+
+    quickcheck! {
+        /// Checks that SerializeInto::serialized_len computes the
+        /// exact size (except for CompressedData packets where we may
+        /// overestimate the size).
+        fn packet_serialized_len(p: Packet) -> bool {
+            let p_as_vec = SerializeInto::to_vec(&p).unwrap();
+            if let Packet::CompressedData(_) = p {
+                // serialized length may be an over-estimate
+                assert!(SerializeInto::serialized_len(&p) >= p_as_vec.len());
+            } else {
+                // serialized length should be exact
+                assert_eq!(SerializeInto::serialized_len(&p), p_as_vec.len());
+            }
+            true
+        }
     }
 }
