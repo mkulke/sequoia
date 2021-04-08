@@ -520,6 +520,11 @@ impl Arbitrary for Packet {
 }
 
 /// Fields used by multiple packet types.
+///
+/// Parsed packets retain their header.  This allows perfect
+/// reproduction of the serialized form.  If a packet is constructed
+/// using Sequoia, or the parsed header is cleared, a packet header is
+/// generated.
 #[derive(Debug, Clone)]
 pub struct Common {
     // In the future, this structure will hold the parsed CTB, packet
@@ -532,9 +537,7 @@ pub struct Common {
     // derive PartialEq, Eq, PartialOrd, Ord, and Hash for most
     // packets.
 
-    /// XXX: Prevents trivial matching on this structure.  Remove once
-    /// this structure actually gains some fields.
-    dummy: std::marker::PhantomData<()>,
+    header: Vec<u8>,
 }
 assert_send_and_sync!(Common);
 
@@ -549,7 +552,7 @@ impl Arbitrary for Common {
 impl Default for Common {
     fn default() -> Common {
         Common {
-            dummy: Default::default(),
+            header: Vec::with_capacity(0),
         }
     }
 }
@@ -581,6 +584,21 @@ impl std::hash::Hash for Common {
     }
 }
 
+impl Common {
+    /// Returns a reference to the parsed packet header, if any.
+    pub fn parsed_header(&self) -> Option<&[u8]> {
+        if self.header.is_empty() {
+            None
+        } else {
+            Some(&self.header)
+        }
+    }
+
+    /// Returns a mutable reference to the parsed packet header.
+    pub fn parsed_header_mut(&mut self) -> &mut Vec<u8> {
+        &mut self.header
+    }
+}
 
 /// An iterator over the *contents* of a packet in depth-first order.
 ///

@@ -481,7 +481,7 @@ impl<'a, T: 'a + BufferedReader<Cookie>> PacketHeaderParser<T> {
     // Only call this function if the packet's header has been
     // completely and correctly parsed.  If a failure occurs while
     // parsing the header, use `fail()` instead.
-    fn ok(mut self, packet: Packet) -> Result<PacketParser<'a>> {
+    fn ok(mut self, mut packet: Packet) -> Result<PacketParser<'a>> {
         let total_out = self.reader.total_out();
 
         let mut reader = if self.state.settings.map {
@@ -518,6 +518,9 @@ impl<'a, T: 'a + BufferedReader<Cookie>> PacketHeaderParser<T> {
             // We know the data has been read, so this cannot fail.
             reader.data_consume_hard(total_out).unwrap();
         }
+
+        // Stash the parsed header.
+        std::mem::swap(packet.parsed_header_mut(), &mut self.header_bytes);
 
         Ok(PacketParser {
             header: self.header,

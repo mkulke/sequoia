@@ -2554,6 +2554,81 @@ impl MarshalInto for AED1 {
     }
 }
 
+impl Packet {
+    /// XXX We cannot do that if we have children, chunking...
+    fn may_reuse_parsed_header(&self, net_len: usize) -> bool {
+        may_reuse_parsed_header(net_len, self.parsed_header(),
+                                self.container_ref())
+    }
+}
+
+impl PacketRef<'_> {
+    /// XXX We cannot do that if we have children, chunking...
+    fn may_reuse_parsed_header(&self, net_len: usize) -> bool {
+        may_reuse_parsed_header(net_len, self.parsed_header(),
+                                self.container_ref())
+    }
+}
+
+/// XXX We cannot do that if we have children, chunking...
+fn may_reuse_parsed_header(net_len: usize,
+                           parsed_header: Option<&[u8]>,
+                           container: Option<&Container>) -> bool {
+    tracer!(TRACE, "may_reuse_parsed_header", 0);
+
+    let header_bytes = if let Some(h) = parsed_header {
+        h
+    } else {
+        t!("No parsed header");
+        return false;
+    };
+
+    use crate::parse::Parse;
+    let header = match Header::from_bytes(header_bytes) {
+        Ok(h) => h,
+        Err(e) => {
+            t!("Header failed to parse: {}", e);
+            return false;
+        },
+    };
+
+    use packet::header::BodyLength::*;
+    let expected_net_len = match header.length() {
+        Full(l) => *l as usize,
+        Partial(_) => {
+            // XXX: we could implement that if we wanted
+            t!("Partial body encoding, but we won't emit that");
+            return false;
+        },
+        Indeterminate => {
+            // Doing this safely requires more context, because we
+            // can only emit a packet of indeterminate length if
+            // we know that it is the last packet in the current
+            // container.
+            t!("Indeterminate length, we won't emit that");
+            return false;
+        },
+    };
+
+    if let Some(c) = container {
+        match c.body() {
+            crate::packet::Body::Unprocessed(_) => (),
+            _ => {
+                t!("Packet body has been processed");
+                return false;
+            },
+        }
+    }
+
+    if net_len != expected_net_len {
+        t!("Packet size has changed");
+        return false;
+    }
+
+    t!("All checked out, reusing header");
+    true
+}
+
 impl Serialize for Packet {}
 impl seal::Sealed for Packet {}
 impl Marshal for Packet {
@@ -2562,20 +2637,46 @@ impl Marshal for Packet {
     /// This function works recursively: if the packet contains any
     /// packets, they are also serialized.
     fn serialize(&self, o: &mut dyn std::io::Write) -> Result<()> {
-        CTB::new(self.tag()).serialize(o)?;
-
         // Special-case the compressed data packet, because we need
         // the accurate length, and CompressedData::net_len()
         // overestimates the size.
         if let Packet::CompressedData(ref p) = self {
-            let mut body = Vec::new();
-            p.serialize(&mut body)?;
-            BodyLength::Full(body.len() as u32).serialize(o)?;
-            o.write_all(&body)?;
-            return Ok(());
+            match p.body() {
+                crate::packet::Body::Unprocessed(_) => {
+                    // Unprocessed body will be written out as is,
+                    // therefore the NetLength implementation is
+                    // accurate.
+                },
+                _ => {
+                    // The packet body has been processed, therefore
+                    // we need to re-compress the body.  In this case,
+                    // we cannot predict the size of the resulting
+                    // packet, therefore we need to buffer the
+                    // compressed data first.
+
+                    // First, compress the body.
+                    let mut body = Vec::new();
+                    p.serialize(&mut body)?;
+
+                    // Then, write the packet to `o`.
+                    CTB::new(self.tag()).serialize(o)?;
+                    BodyLength::Full(body.len() as u32).serialize(o)?;
+                    o.write_all(&body)?;
+                    return Ok(());
+                },
+            }
         }
 
-        BodyLength::Full(self.net_len() as u32).serialize(o)?;
+        // Avoid computing the length twice.
+        let net_len = self.net_len();
+
+        if self.may_reuse_parsed_header(net_len) {
+            o.write_all(&self.parsed_header().expect("checked above"))?;
+        } else {
+            CTB::new(self.tag()).serialize(o)?;
+            BodyLength::Full(net_len as u32).serialize(o)?;
+        }
+
         match self {
             &Packet::Unknown(ref p) => p.serialize(o),
             &Packet::Signature(ref p) => p.serialize(o),
@@ -2589,7 +2690,7 @@ impl Marshal for Packet {
             &Packet::UserID(ref p) => p.serialize(o),
             &Packet::UserAttribute(ref p) => p.serialize(o),
             &Packet::Literal(ref p) => p.serialize(o),
-            &Packet::CompressedData(_) => unreachable!("handled above"),
+            &Packet::CompressedData(ref p) => p.serialize(o),
             &Packet::PKESK(ref p) => p.serialize(o),
             &Packet::SKESK(ref p) => p.serialize(o),
             &Packet::SEIP(ref p) => p.serialize(o),
@@ -2603,20 +2704,46 @@ impl Marshal for Packet {
     /// This function works recursively: if the packet contains any
     /// packets, they are also serialized.
     fn export(&self, o: &mut dyn std::io::Write) -> Result<()> {
-        CTB::new(self.tag()).serialize(o)?;
-
         // Special-case the compressed data packet, because we need
         // the accurate length, and CompressedData::net_len()
         // overestimates the size.
         if let Packet::CompressedData(ref p) = self {
-            let mut body = Vec::new();
-            p.export(&mut body)?;
-            BodyLength::Full(body.len() as u32).export(o)?;
-            o.write_all(&body)?;
-            return Ok(());
+            match p.body() {
+                crate::packet::Body::Unprocessed(_) => {
+                    // Unprocessed body will be written out as is,
+                    // therefore the NetLength implementation is
+                    // accurate.
+                },
+                _ => {
+                    // The packet body has been processed, therefore
+                    // we need to re-compress the body.  In this case,
+                    // we cannot predict the size of the resulting
+                    // packet, therefore we need to buffer the
+                    // compressed data first.
+
+                    // First, compress the body.
+                    let mut body = Vec::new();
+                    p.export(&mut body)?;
+
+                    // Then, write the packet to `o`.
+                    CTB::new(self.tag()).serialize(o)?;
+                    BodyLength::Full(body.len() as u32).serialize(o)?;
+                    o.write_all(&body)?;
+                    return Ok(());
+                },
+            }
         }
 
-        BodyLength::Full(self.net_len() as u32).export(o)?;
+        // Avoid computing the length twice.
+        let net_len = self.net_len();
+
+        if self.may_reuse_parsed_header(net_len) {
+            o.write_all(&self.parsed_header().expect("checked above"))?;
+        } else {
+            CTB::new(self.tag()).serialize(o)?;
+            BodyLength::Full(net_len as u32).serialize(o)?;
+        }
+
         match self {
             &Packet::Unknown(ref p) => p.export(o),
             &Packet::Signature(ref p) => p.export(o),
@@ -2630,7 +2757,7 @@ impl Marshal for Packet {
             &Packet::UserID(ref p) => p.export(o),
             &Packet::UserAttribute(ref p) => p.export(o),
             &Packet::Literal(ref p) => p.export(o),
-            &Packet::CompressedData(_) => unreachable!("handled above"),
+            &Packet::CompressedData(ref p) => p.export(o),
             &Packet::PKESK(ref p) => p.export(o),
             &Packet::SKESK(ref p) => p.export(o),
             &Packet::SEIP(ref p) => p.export(o),
@@ -2811,20 +2938,46 @@ impl<'a> Marshal for PacketRef<'a> {
     /// This function works recursively: if the packet contains any
     /// packets, they are also serialized.
     fn serialize(&self, o: &mut dyn std::io::Write) -> Result<()> {
-        CTB::new(self.tag()).serialize(o)?;
-
         // Special-case the compressed data packet, because we need
         // the accurate length, and CompressedData::net_len()
         // overestimates the size.
-        if let PacketRef::CompressedData(ref p) = self {
-            let mut body = Vec::new();
-            p.serialize(&mut body)?;
-            BodyLength::Full(body.len() as u32).serialize(o)?;
-            o.write_all(&body)?;
-            return Ok(());
+        if let PacketRef::CompressedData(p) = self {
+            match p.body() {
+                crate::packet::Body::Unprocessed(_) => {
+                    // Unprocessed body will be written out as is,
+                    // therefore the NetLength implementation is
+                    // accurate.
+                },
+                _ => {
+                    // The packet body has been processed, therefore
+                    // we need to re-compress the body.  In this case,
+                    // we cannot predict the size of the resulting
+                    // packet, therefore we need to buffer the
+                    // compressed data first.
+
+                    // First, compress the body.
+                    let mut body = Vec::new();
+                    p.serialize(&mut body)?;
+
+                    // Then, write the packet to `o`.
+                    CTB::new(self.tag()).serialize(o)?;
+                    BodyLength::Full(body.len() as u32).serialize(o)?;
+                    o.write_all(&body)?;
+                    return Ok(());
+                },
+            }
         }
 
-        BodyLength::Full(self.net_len() as u32).serialize(o)?;
+        // Avoid computing the length twice.
+        let net_len = self.net_len();
+
+        if self.may_reuse_parsed_header(net_len) {
+            o.write_all(&self.parsed_header().expect("checked above"))?;
+        } else {
+            CTB::new(self.tag()).serialize(o)?;
+            BodyLength::Full(net_len as u32).serialize(o)?;
+        }
+
         match self {
             PacketRef::Unknown(p) => p.serialize(o),
             PacketRef::Signature(p) => p.serialize(o),
@@ -2838,7 +2991,7 @@ impl<'a> Marshal for PacketRef<'a> {
             PacketRef::UserID(p) => p.serialize(o),
             PacketRef::UserAttribute(p) => p.serialize(o),
             PacketRef::Literal(p) => p.serialize(o),
-            PacketRef::CompressedData(_) => unreachable!("handled above"),
+            PacketRef::CompressedData(p) => p.serialize(o),
             PacketRef::PKESK(p) => p.serialize(o),
             PacketRef::SKESK(p) => p.serialize(o),
             PacketRef::SEIP(p) => p.serialize(o),
@@ -2852,20 +3005,46 @@ impl<'a> Marshal for PacketRef<'a> {
     /// This function works recursively: if the packet contains any
     /// packets, they are also serialized.
     fn export(&self, o: &mut dyn std::io::Write) -> Result<()> {
-        CTB::new(self.tag()).serialize(o)?;
-
         // Special-case the compressed data packet, because we need
         // the accurate length, and CompressedData::net_len()
         // overestimates the size.
-        if let PacketRef::CompressedData(ref p) = self {
-            let mut body = Vec::new();
-            p.export(&mut body)?;
-            BodyLength::Full(body.len() as u32).export(o)?;
-            o.write_all(&body)?;
-            return Ok(());
+        if let PacketRef::CompressedData(p) = self {
+            match p.body() {
+                crate::packet::Body::Unprocessed(_) => {
+                    // Unprocessed body will be written out as is,
+                    // therefore the NetLength implementation is
+                    // accurate.
+                },
+                _ => {
+                    // The packet body has been processed, therefore
+                    // we need to re-compress the body.  In this case,
+                    // we cannot predict the size of the resulting
+                    // packet, therefore we need to buffer the
+                    // compressed data first.
+
+                    // First, compress the body.
+                    let mut body = Vec::new();
+                    p.export(&mut body)?;
+
+                    // Then, write the packet to `o`.
+                    CTB::new(self.tag()).serialize(o)?;
+                    BodyLength::Full(body.len() as u32).serialize(o)?;
+                    o.write_all(&body)?;
+                    return Ok(());
+                },
+            }
         }
 
-        BodyLength::Full(self.net_len() as u32).export(o)?;
+        // Avoid computing the length twice.
+        let net_len = self.net_len();
+
+        if self.may_reuse_parsed_header(net_len) {
+            o.write_all(&self.parsed_header().expect("checked above"))?;
+        } else {
+            CTB::new(self.tag()).serialize(o)?;
+            BodyLength::Full(net_len as u32).serialize(o)?;
+        }
+
         match self {
             PacketRef::Unknown(p) => p.export(o),
             PacketRef::Signature(p) => p.export(o),
@@ -2879,7 +3058,7 @@ impl<'a> Marshal for PacketRef<'a> {
             PacketRef::UserID(p) => p.export(o),
             PacketRef::UserAttribute(p) => p.export(o),
             PacketRef::Literal(p) => p.export(o),
-            PacketRef::CompressedData(_) => unreachable!("handled above"),
+            PacketRef::CompressedData(p) => p.export(o),
             PacketRef::PKESK(p) => p.export(o),
             PacketRef::SKESK(p) => p.export(o),
             PacketRef::SEIP(p) => p.export(o),
