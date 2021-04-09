@@ -9,12 +9,9 @@ use std::collections::HashMap;
 use std::io::Write;
 
 use lazy_static::lazy_static;
-use syn;
+
 use syn::parse_quote;
 use syn::spanned::Spanned;
-use proc_macro;
-use proc_macro2;
-use sha2;
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
@@ -43,7 +40,7 @@ pub fn cdecl(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Extract all information from the parsed function that we need
     // to compose the new function.
-    let summary = fun.attrs.iter().next();
+    let summary = fun.attrs.get(0);
     let attrs = fun.attrs.iter().skip(1)
         .fold(TokenStream2::new(),
               |mut acc, attr| {
@@ -70,7 +67,7 @@ pub fn cdecl(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut cdecl = TokenStream2::new();
     doc(" # C Declaration", &mut cdecl);
     doc(" ```c", &mut cdecl);
-    for line in rust2c::rust2c(&fun).split("\n") {
+    for line in rust2c::rust2c(&fun).split('\n') {
         doc(&format!(" {}", line), &mut cdecl);
     }
     doc(" ```", &mut cdecl);
@@ -215,11 +212,11 @@ pub fn ffi_wrapper_type(args: TokenStream, input: TokenStream) -> TokenStream {
                     "name" => name = Some(value),
                     "prefix" => prefix = Some(value),
                     "derive" => {
-                        for ident in value.split(",").map(|d| d.trim()
+                        for ident in value.split(',').map(|d| d.trim()
                                                           .to_string()) {
                             let (ident, arg) =
                                 if let Some(i) = ident.find('(') {
-                                    if ! ident.ends_with(")") {
+                                    if ! ident.ends_with(')') {
                                         return syn::Error::new(
                                             mnv.path.span(),
                                             format!("missing closing \
@@ -258,8 +255,8 @@ pub fn ffi_wrapper_type(args: TokenStream, input: TokenStream) -> TokenStream {
     }
 
     let wrapper = st.ident.clone();
-    let name = name.unwrap_or(ident2c(&st.ident));
-    let prefix = prefix.unwrap_or("".into());
+    let name = name.unwrap_or_else(|| ident2c(&st.ident));
+    let prefix = prefix.unwrap_or_else(|| "".into());
 
     // Parse the type of the wrapped object.
     let argument_span = st.fields.span();
@@ -393,7 +390,7 @@ fn derive_conversion_functions(mut st: syn::ItemStruct,
     let generics = &st.generics;
 
     let ref_lifetime = if generics.lifetimes().count() > 0 {
-        generics.lifetimes().nth(0).unwrap().clone()
+        generics.lifetimes().next().unwrap().clone()
     } else {
         syn::parse_quote!('static)
     };
@@ -428,7 +425,7 @@ fn derive_conversion_functions(mut st: syn::ItemStruct,
                 return
                     syn::Error::new(argument_span,
                                     "expected a single field")
-                    .to_compile_error().into();
+                    .to_compile_error();
             }
             fields.unnamed.pop();
             fields.unnamed.push(
@@ -463,7 +460,7 @@ fn derive_conversion_functions(mut st: syn::ItemStruct,
             syn::Error::new(argument_span,
                             format!("expected tuple struct, try: {}(...)",
                             wrapper))
-            .to_compile_error().into(),
+            .to_compile_error(),
     };
 
     quote! {

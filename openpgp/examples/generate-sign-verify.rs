@@ -10,7 +10,7 @@ use crate::openpgp::parse::{Parse, stream::*};
 use crate::openpgp::policy::Policy;
 use crate::openpgp::policy::StandardPolicy as P;
 
-const MESSAGE: &'static str = "дружба";
+const MESSAGE: &str = "дружба";
 
 fn main() -> openpgp::Result<()> {
     let p = &P::new();
@@ -51,7 +51,7 @@ fn sign(p: &dyn Policy, sink: &mut (dyn Write + Send + Sync),
     let keypair = tsk
         .keys().unencrypted_secret()
         .with_policy(p, None).supported().alive().revoked(false).for_signing()
-        .nth(0).unwrap().key().clone().into_keypair()?;
+        .next().unwrap().key().clone().into_keypair()?;
 
     // Start streaming an OpenPGP message.
     let message = Message::new(sink);

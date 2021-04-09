@@ -123,7 +123,7 @@ impl Cookie {
             }
         }
 
-        if data.len() == 0 {
+        if data.is_empty() {
             return;
         }
 
@@ -178,7 +178,7 @@ impl Cookie {
             data = &data[1..];
         }
 
-        if data.len() == 0 {
+        if data.is_empty() {
             return;
         }
 
@@ -237,13 +237,12 @@ impl Cookie {
             t!("Stashing newline: {:?}", &data[l..]);
             self.hash_stash = Some(data[l..].to_vec());
         }
-        return;
     }
 }
 
 impl<T: BufferedReader<Cookie>> io::Read for HashedReader<T> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        return buffered_reader_generic_read_impl(self, buf);
+        buffered_reader_generic_read_impl(self, buf)
     }
 }
 
@@ -422,7 +421,7 @@ mod test {
             let mut reader
                 = HashedReader::new(reader, HashesFor::MDC,
                                     test.expected.keys().cloned()
-                                    .map(|algo| HashingMode::Binary(algo))
+                                    .map(HashingMode::Binary)
                                     .collect());
 
             assert_eq!(reader.steal_eof().unwrap(), test.data);
@@ -485,7 +484,7 @@ mod test {
             hash_buffered_reader(
                 reader,
                 &expected.keys().cloned()
-                    .map(|algo| HashingMode::Binary(algo)).
+                    .map(HashingMode::Binary).
                     collect::<Vec<_>>())
             .unwrap();
 

@@ -260,7 +260,7 @@ impl CertBuilder<'_> {
     {
         CertBuilder {
             creation_time: None,
-            ciphersuite: ciphersuite.into().unwrap_or(Default::default()),
+            ciphersuite: ciphersuite.into().unwrap_or_default(),
             primary: KeyBlueprint {
                 flags: KeyFlags::empty()
                     .set_certification(),
@@ -997,7 +997,7 @@ impl CertBuilder<'_> {
         }));
         packets.push(sig.clone().into());
 
-        let sig = signature::SignatureBuilder::from(sig.clone())
+        let sig = signature::SignatureBuilder::from(sig)
             .set_signature_creation_time(creation_time)?;
 
         // Remove subpackets that needn't be copied into the binding
@@ -1006,7 +1006,7 @@ impl CertBuilder<'_> {
 
         let mut cert = Cert::try_from(packets)?;
 
-        let have_userids = self.userids.len() > 0;
+        let have_userids = !self.userids.is_empty();
 
         // Sign UserIDs.
         for (i, uid) in self.userids.into_iter().enumerate() {
@@ -1119,7 +1119,7 @@ impl CertBuilder<'_> {
             .expect("key generated above has a secret");
         let sig = sig.sign_direct_key(&mut signer, key.parts_as_public())?;
 
-        Ok((key, sig.into()))
+        Ok((key, sig))
     }
 }
 
@@ -1311,15 +1311,13 @@ mod tests {
         assert!(! sig.key_alive(key, now + 610 * s).is_ok());
 
         let ka = cert.keys().with_policy(p, now).alive().revoked(false)
-            .for_signing()
-            .nth(0).unwrap();
+            .for_signing().next().unwrap();
         assert!(ka.alive().is_ok());
         assert!(ka.clone().with_policy(p, now + 290 * s).unwrap().alive().is_ok());
         assert!(! ka.clone().with_policy(p, now + 310 * s).unwrap().alive().is_ok());
 
         let ka = cert.keys().with_policy(p, now).alive().revoked(false)
-            .for_authentication()
-            .nth(0).unwrap();
+            .for_authentication().next().unwrap();
         assert!(ka.alive().is_ok());
         assert!(ka.clone().with_policy(p, now + 590 * s).unwrap().alive().is_ok());
         assert!(! ka.clone().with_policy(p, now + 610 * s).unwrap().alive().is_ok());

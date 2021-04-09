@@ -4,7 +4,6 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, Write};
 use std::time::SystemTime;
-use rpassword;
 
 use sequoia_openpgp as openpgp;
 use crate::openpgp::{
@@ -347,7 +346,7 @@ impl<'a> VerificationHelper for VHelper<'a> {
             }).collect();
 
         // Explicitly provided keys are trusted.
-        self.trusted = seen.clone();
+        self.trusted = seen;
 
         Ok(certs)
     }

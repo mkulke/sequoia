@@ -2378,7 +2378,7 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
             } else {
                 if let Err(err) = pp.possible_message() {
                     t!("Malformed message: {}", err);
-                    return Err(err.context("Malformed OpenPGP message").into());
+                    return Err(err.context("Malformed OpenPGP message"));
                 }
             }
 
@@ -2519,7 +2519,7 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                 // Attach digest to the signature.
                 let mut digest = vec![0; hash.digest_size()];
                 let _ = hash.digest(&mut digest);
-                sig.set_computed_digest(Some(digest.into()));
+                sig.set_computed_digest(Some(digest));
             }
         }
 
@@ -2545,7 +2545,6 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
         match issuer {
             KeyHandle::KeyID(id) if id.is_wildcard() => {
                 // Ignore, they are not useful for lookups.
-                return;
             },
 
             KeyHandle::KeyID(_) => {
@@ -2645,7 +2644,7 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
 
                     if let Err(err) = possible_message {
                         return Err(err.context(
-                            "Malformed OpenPGP message").into());
+                            "Malformed OpenPGP message"));
                     }
 
                     self.push_sig(p)?;
@@ -2679,7 +2678,7 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                 IMessageLayer::SignatureGroup { sigs, .. } => {
                     results.new_signature_group();
                     'sigs: for sig in sigs.iter_mut() {
-                        let sigid = sig.digest_prefix().clone();
+                        let sigid = *sig.digest_prefix();
 
                         let sig_time = if let Some(t) = sig.signature_creation_time() {
                             t
@@ -2869,7 +2868,7 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
 
     /// Like `io::Read::read()`, but returns our `Result`.
     fn read_helper(&mut self, buf: &mut [u8]) -> Result<usize> {
-        if buf.len() == 0 {
+        if buf.is_empty() {
             return Ok(0);
         }
 
@@ -3258,7 +3257,7 @@ mod test {
                                 sig, ..
                             }) = &results[0] {
                                 assert_eq!(
-                                    &sig.issuer_fingerprints().nth(0).unwrap()
+                                    &sig.issuer_fingerprints().next().unwrap()
                                         .to_hex(),
                                     match i {
                                         0 => "8E8C33FA4626337976D97978069C0C348DD82C19",
@@ -3401,7 +3400,7 @@ mod test {
         // sign 3MiB message
         let mut buf = vec![];
         {
-            let key = cert.keys().with_policy(p, None).for_signing().nth(0).unwrap().key();
+            let key = cert.keys().with_policy(p, None).for_signing().next().unwrap().key();
             let keypair =
                 key.clone().parts_into_secret().unwrap()
                 .into_keypair().unwrap();
@@ -3457,7 +3456,7 @@ mod test {
 
         // Check that we only got a truncated message.
         assert!(v.message_processed());
-        assert!(message.len() > 0);
+        assert!(!message.is_empty());
         assert!(message.len() <= 1 * 1024 * 1024);
         assert!(message.iter().all(|&b| b == 42));
         assert!(v.helper_ref().good == 1);
@@ -3508,7 +3507,7 @@ mod test {
 
         // Check that we only got a truncated message.
         assert!(v.message_processed());
-        assert!(message.len() > 0);
+        assert!(!message.is_empty());
         assert!(message.len() <= 1 * 1024 * 1024);
         assert!(message.iter().all(|&b| b == 42));
         assert!(v.helper_ref().good == 1);

@@ -243,7 +243,6 @@ use std::fmt;
 
 use lalrpop_util::ParseError;
 use regex_syntax::hir::{self, Hir};
-use regex;
 
 use crate::Error;
 use crate::Result;
@@ -308,7 +307,7 @@ fn generate_class(caret: bool, chars: impl Iterator<Item=char>) -> Hir
         // Pad it out so what we can use windows to get three
         // characters at a time, and be sure to process all
         // characters.
-        .map(|c| Some(c))
+        .map(Some)
         .chain(std::iter::once(None))
         .chain(std::iter::once(None))
         .collect();
@@ -400,7 +399,6 @@ impl Regex {
     ///   [`Regex::disable_sanitizations`]: #method.disable_sanitizations
     pub fn new(re: &str) -> Result<Self>
     {
-        let re = re.as_ref();
         let lexer = Lexer::new(re);
         let hir = match grammar::RegexParser::new().parse(re, lexer) {
             Ok(hir) => hir,
@@ -852,7 +850,7 @@ impl RegexSet {
                 Error::InvalidArgument(
                     format!(
                         "Expected a certification signature, found a {}",
-                        t).into())
+                        t))
                     .into()),
         }
 
@@ -924,11 +922,7 @@ impl RegexSet {
     /// # Ok(()) }
     /// ```
     pub fn matches_everything(&self) -> bool {
-        if let RegexSet_::Everything = self.re_set {
-            true
-        } else {
-            false
-        }
+        matches!(self.re_set, RegexSet_::Everything)
     }
 
     /// Controls whether strings with control characters are allowed.

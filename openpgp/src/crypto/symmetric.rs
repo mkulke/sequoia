@@ -107,7 +107,7 @@ impl<R: io::Read> io::Read for Decryptor<R> {
         let mut pos = 0;
 
         // 1. Copy any buffered data.
-        if self.buffer.len() > 0 {
+        if !self.buffer.is_empty() {
             let to_copy = cmp::min(self.buffer.len(), plaintext.len());
             &plaintext[..to_copy].copy_from_slice(&self.buffer[..to_copy]);
             crate::vec_drain_prefix(&mut self.buffer, to_copy);
@@ -230,48 +230,48 @@ impl<R: BufferedReader<C>, C: fmt::Debug + Send + Sync> fmt::Debug for BufferedR
 impl<R: BufferedReader<C>, C: fmt::Debug + Send + Sync> BufferedReader<C>
         for BufferedReaderDecryptor<R, C> {
     fn buffer(&self) -> &[u8] {
-        return self.reader.buffer();
+        self.reader.buffer()
     }
 
     fn data(&mut self, amount: usize) -> io::Result<&[u8]> {
-        return self.reader.data(amount);
+        self.reader.data(amount)
     }
 
     fn data_hard(&mut self, amount: usize) -> io::Result<&[u8]> {
-        return self.reader.data_hard(amount);
+        self.reader.data_hard(amount)
     }
 
     fn data_eof(&mut self) -> io::Result<&[u8]> {
-        return self.reader.data_eof();
+        self.reader.data_eof()
     }
 
     fn consume(&mut self, amount: usize) -> &[u8] {
-        return self.reader.consume(amount);
+        self.reader.consume(amount)
     }
 
     fn data_consume(&mut self, amount: usize)
                     -> io::Result<&[u8]> {
-        return self.reader.data_consume(amount);
+        self.reader.data_consume(amount)
     }
 
     fn data_consume_hard(&mut self, amount: usize) -> io::Result<&[u8]> {
-        return self.reader.data_consume_hard(amount);
+        self.reader.data_consume_hard(amount)
     }
 
     fn read_be_u16(&mut self) -> io::Result<u16> {
-        return self.reader.read_be_u16();
+        self.reader.read_be_u16()
     }
 
     fn read_be_u32(&mut self) -> io::Result<u32> {
-        return self.reader.read_be_u32();
+        self.reader.read_be_u32()
     }
 
     fn steal(&mut self, amount: usize) -> io::Result<Vec<u8>> {
-        return self.reader.steal(amount);
+        self.reader.steal(amount)
     }
 
     fn steal_eof(&mut self) -> io::Result<Vec<u8>> {
-        return self.reader.steal_eof();
+        self.reader.steal_eof()
     }
 
     fn get_mut(&mut self) -> Option<&mut dyn BufferedReader<C>> {
@@ -334,7 +334,7 @@ impl<W: io::Write> Encryptor<W> {
     /// Finish encryption and write last partial block.
     pub fn finish(&mut self) -> Result<W> {
         if let Some(mut inner) = self.inner.take() {
-            if self.buffer.len() > 0 {
+            if !self.buffer.is_empty() {
                 unsafe { self.scratch.set_len(self.buffer.len()) }
                 self.cipher.encrypt(&mut self.scratch, &self.buffer)?;
                 crate::vec_truncate(&mut self.buffer, 0);
@@ -369,7 +369,7 @@ impl<W: io::Write> io::Write for Encryptor<W> {
         let amount = buf.len();
 
         // First, fill the buffer if there is something in it.
-        if self.buffer.len() > 0 {
+        if !self.buffer.is_empty() {
             let n = cmp::min(buf.len(), self.block_size - self.buffer.len());
             self.buffer.extend_from_slice(&buf[..n]);
             assert!(self.buffer.len() <= self.block_size);

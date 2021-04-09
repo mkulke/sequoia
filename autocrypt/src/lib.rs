@@ -13,8 +13,6 @@
 #![doc(html_logo_url = "https://docs.sequoia-pgp.org/logo.svg")]
 #![warn(missing_docs)]
 
-use base64;
-
 use std::convert::TryFrom;
 use std::io;
 use std::io::prelude::*;
@@ -239,7 +237,7 @@ impl AutocryptHeaders {
             // Return any error.
             let mut line = line?;
 
-            if line == "" {
+            if line.is_empty() {
                 // End of headers.
                 break;
             }
@@ -252,7 +250,7 @@ impl AutocryptHeaders {
             //
             // See https://tools.ietf.org/html/rfc5322#section-2.2.3
             while let Some(Ok(nl)) = next_line {
-                if nl.len() > 0 && (&nl[0..1] == " " || &nl[0..1] == "\t") {
+                if !nl.is_empty() && (&nl[0..1] == " " || &nl[0..1] == "\t") {
                     line.push_str(&nl[..]);
                     next_line = lines.next();
                 } else {
@@ -274,7 +272,7 @@ impl AutocryptHeaders {
             }
         }
 
-        return Ok(headers)
+        Ok(headers)
     }
 
     /// Decode header that has the same format as the Autocrypt header.
@@ -315,7 +313,7 @@ impl AutocryptHeaders {
                 }
             }
 
-            let critical = key.len() >= 1 && &key[0..1] == "_";
+            let critical = !key.is_empty() && &key[0..1] == "_";
             header.attributes.push(Attribute {
                 critical,
                 key: if critical {
@@ -468,10 +466,10 @@ impl AutocryptSetupMessage {
         let mut p : Vec<u8> = Vec::new();
         for i in 0..36 {
             if i > 0 && i % 4 == 0 {
-                p.push('-' as u8);
+                p.push(b'-');
             }
 
-            p.push(('0' as u8) + ((p_as_u128 as u8) % 10));
+            p.push(b'0' + ((p_as_u128 as u8) % 10));
             p_as_u128 = p_as_u128 / 10;
         }
 
@@ -571,7 +569,7 @@ impl AutocryptSetupMessage {
                     if k == "Passphrase-Format" { Some(v) } else { None }
                 })
                 .collect::<Vec<&String>>();
-            let format = if format.len() > 0 {
+            let format = if !format.is_empty() {
                 // If there are multiple headers, then just silently take
                 // the first one.
                 Some(format[0].clone())
@@ -584,7 +582,7 @@ impl AutocryptSetupMessage {
                     if k == "Passphrase-Begin" { Some(v) } else { None }
                 })
                 .collect::<Vec<&String>>();
-            let begin = if begin.len() > 0 {
+            let begin = if !begin.is_empty() {
                 // If there are multiple headers, then just silently take
                 // the first one.
                 Some(begin[0].clone())
@@ -619,8 +617,7 @@ impl AutocryptSetupMessage {
             Packet::SKESK(skesk) => skesk,
             p => return Err(
                 Error::MalformedMessage(
-                    format!("Expected a SKESK packet, found a {}", p.tag())
-                        .into())
+                    format!("Expected a SKESK packet, found a {}", p.tag()))
                 .into()),
         };
 
@@ -636,8 +633,7 @@ impl AutocryptSetupMessage {
                     ref p => return Err(
                         Error::MalformedMessage(
                             format!("Expected a SEIP packet, found a {}",
-                                    p.tag())
-                                .into())
+                                    p.tag()))
                         .into()),
                 }
 
@@ -733,7 +729,7 @@ impl<'a> AutocryptSetupMessageParser<'a> {
                 p => return Err(Error::MalformedMessage(
                     format!("SEIP container contains a {}, \
                              expected a Literal Data packet",
-                            p.tag()).into()).into()),
+                            p.tag())).into()),
             }
 
             // The inner message consists of an ASCII-armored encoded
@@ -756,7 +752,7 @@ impl<'a> AutocryptSetupMessageParser<'a> {
                         })
                         .collect::<Vec<&String>>();
 
-                    if prefer_encrypt.len() > 0 {
+                    if !prefer_encrypt.is_empty() {
                         // If there are multiple headers, then just
                         // silently take the first one.
                         Some(prefer_encrypt[0].clone())
@@ -787,8 +783,7 @@ impl<'a> AutocryptSetupMessageParser<'a> {
                 ref p => return
                     Err(Error::MalformedMessage(
                         format!("Expected an MDC packet, got a {}",
-                                p.tag())
-                            .into())
+                                p.tag()))
                         .into()),
             }
 
@@ -802,8 +797,7 @@ impl<'a> AutocryptSetupMessageParser<'a> {
                 // has the right sequence of packets, but we haven't
                 // carefully checked the nesting.  We do that now.
                 if let Err(err) = pp.is_message() {
-                    return Err(err.context(
-                        "Invalid OpenPGP Message").into());
+                    return Err(err.context("Invalid OpenPGP Message"));
                 }
             }
             PacketParserResult::Some(pp) =>

@@ -5,7 +5,6 @@
 //!
 //!   [Section 7.1 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-7.1
 
-use std;
 use std::fmt;
 use std::io;
 
@@ -81,7 +80,7 @@ impl<'a, C: 'a> DashEscapeFilter<'a, C> {
         }
 
         let new_buffer = last_line.map(|l| l.to_vec())
-            .unwrap_or_else(|| Vec::new());
+            .unwrap_or_else(Vec::new);
         crate::vec_truncate(&mut self.buffer, 0);
         self.buffer = new_buffer;
 

@@ -222,7 +222,7 @@ impl ConventionallyParsedUserID {
 
         // The regex is anchored at the start and at the end so we
         // have either 0 or 1 matches.
-        if let Some(cap) = USER_ID_PARSER.captures_iter(&userid).nth(0) {
+        if let Some(cap) = USER_ID_PARSER.captures_iter(&userid).next() {
             let to_range = |m: regex::Match| (m.start(), m.end());
 
             // We need to figure out which branch matched.  Match on a
@@ -292,8 +292,8 @@ impl ConventionallyParsedUserID {
                 panic!("Unexpected result");
             }
         } else {
-            return Err(Error::InvalidArgument(
-                "Failed to parse UserID".into()).into());
+            Err(Error::InvalidArgument(
+                "Failed to parse UserID".into()).into())
         }
     }
 }
@@ -595,14 +595,13 @@ impl UserID {
                 Err(err) =>
                     return Err(err.context(format!(
                         "Validating name ({:?})",
-                        name)).into()),
+                        name))),
                 Ok(p) => {
                     if !(p.name().is_some()
                          && p.comment().is_none()
                          && p.email().is_none()) {
                         return Err(Error::InvalidArgument(
-                            format!("Invalid name ({:?})", name)
-                                .into()).into());
+                            format!("Invalid name ({:?})", name)).into());
                     }
                 }
             }
@@ -617,24 +616,23 @@ impl UserID {
                 Err(err) =>
                     return Err(err.context(format!(
                         "Validating comment ({:?})",
-                        comment)).into()),
+                        comment))),
                 Ok(p) => {
                     if !(p.name().is_none()
                          && p.comment().is_some()
                          && p.email().is_none()) {
                     return Err(Error::InvalidArgument(
-                        format!("Invalid comment ({:?})", comment)
-                            .into()).into());
+                        format!("Invalid comment ({:?})", comment)).into());
                     }
                 }
             }
 
-            if value.len() > 0 {
-                value.push_str(" ");
+            if !value.is_empty() {
+                value.push(' ');
             }
-            value.push_str("(");
+            value.push('(');
             value.push_str(comment);
-            value.push_str(")");
+            value.push(')');
         }
 
         if check_address {
@@ -644,26 +642,26 @@ impl UserID {
                 Err(err) =>
                     return Err(err.context(format!(
                         "Validating address ({:?})",
-                        address)).into()),
+                        address))),
                 Ok(p) => {
                     if !(p.name().is_none()
                          && p.comment().is_none()
                          && p.email().is_some()) {
                         return Err(Error::InvalidArgument(
-                            format!("Invalid address address ({:?})", address)
-                                .into()).into());
+                            format!("Invalid address address ({:?})", address))
+                                .into());
                     }
                 }
             }
         }
 
-        let something = value.len() > 0;
+        let something = !value.is_empty();
         if something {
             value.push_str(" <");
         }
         value.push_str(address);
         if something {
-            value.push_str(">");
+            value.push('>');
         }
 
         if check_address {
@@ -673,14 +671,13 @@ impl UserID {
                 Err(err) =>
                     return Err(err.context(format!(
                         "Validating User ID ({:?})",
-                        value)).into()),
+                        value))),
                 Ok(p) => {
                     if !(p.name().is_none() == name.is_none()
                          && p.comment().is_none() == comment.is_none()
                          && p.email().is_some()) {
                         return Err(Error::InvalidArgument(
-                            format!("Invalid User ID ({:?})", value)
-                                .into()).into());
+                            format!("Invalid User ID ({:?})", value)).into());
                     }
                 }
             }
@@ -857,7 +854,6 @@ impl UserID {
                 Ok(puid) => puid,
                 Err(err) => {
                     // Return the error from the NameAddrOrOther parser.
-                    let err : anyhow::Error = err.into();
                     return Err(err).context(format!(
                         "Failed to parse User ID: {:?}", s))?;
                 }
@@ -1381,11 +1377,11 @@ mod tests {
 
         // Long strings.
         assert_eq!(
-            UserID::from(String::from_utf8(vec!['a' as u8; 90]).unwrap())
+            UserID::from(String::from_utf8(vec![b'a'; 90]).unwrap())
                 .hash_algo_security(),
             HashAlgoSecurity::SecondPreImageResistance);
         assert_eq!(
-            UserID::from(String::from_utf8(vec!['a' as u8; 100]).unwrap())
+            UserID::from(String::from_utf8(vec![b'a'; 100]).unwrap())
                 .hash_algo_security(),
             HashAlgoSecurity::CollisionResistance);
     }

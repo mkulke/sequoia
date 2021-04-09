@@ -51,7 +51,6 @@
 #![doc(html_logo_url = "https://docs.sequoia-pgp.org/logo.svg")]
 #![warn(missing_docs)]
 
-use capnp;
 #[macro_use]
 extern crate capnp_rpc;
 
@@ -110,11 +109,11 @@ pub fn descriptor(c: &Context) -> ipc::Descriptor {
 }
 
 /// Keys used for communications.
-pub const REALM_CONTACTS: &'static str =
+pub const REALM_CONTACTS: &str =
     "org.sequoia-pgp.contacts";
 
 /// Keys used for signing software updates.
-pub const REALM_SOFTWARE_UPDATES: &'static str =
+pub const REALM_SOFTWARE_UPDATES: &str =
     "org.sequoia-pgp.software-updates";
 
 /// The common key pool.
@@ -697,7 +696,7 @@ impl Binding {
         make_request_map!(
             self.core.borrow_mut(),
             request,
-            |data| Cert::from_bytes(data).map_err(|e| e.into()))
+            |data| Cert::from_bytes(data))
     }
 
     /// Forces a keyrotation to the given Cert.
@@ -754,7 +753,7 @@ impl Binding {
         make_request_map!(
             self.core.borrow_mut(),
             request,
-            |data| Cert::from_bytes(data).map_err(|e| e.into()))
+            |data| Cert::from_bytes(data))
     }
 
     /// Deletes this binding.
@@ -846,7 +845,7 @@ impl Key {
     pub fn cert(&self) -> Result<Cert> {
         make_request_map!(self.core.borrow_mut(),
                           self.key.cert_request(),
-                          |cert| Cert::from_bytes(cert).map_err(|e| e.into()))
+                          |cert| Cert::from_bytes(cert))
     }
 
     /// Returns stats for this key.
@@ -905,7 +904,7 @@ impl Key {
         make_request_map!(
             self.core.borrow_mut(),
             request,
-            |data| Cert::from_bytes(data).map_err(|e| e.into()))
+            |data| Cert::from_bytes(data))
     }
 
     /// Lists all log entries related to this key.
@@ -1139,7 +1138,7 @@ impl Iterator for LogIter {
                              r.get_error().ok()
                          } else {
                              None
-                         }).ok_or(Error::StoreError.into()))
+                         }).ok_or_else(|| Error::StoreError.into()))
         };
         doit().ok()
     }

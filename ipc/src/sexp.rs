@@ -64,7 +64,7 @@ impl Sexp {
         };
 
         let value = self.get(b"value")?.ok_or_else(not_a_session_key)?
-            .into_iter().nth(0).ok_or_else(not_a_session_key)?;
+            .into_iter().next().ok_or_else(not_a_session_key)?;
 
         match value {
             Sexp::String(ref s) => match recipient.mpis() {
@@ -97,11 +97,11 @@ impl Sexp {
                     }
 
                     // Skip non-zero bytes.
-                    while s.len() > 0 && s[0] > 0 {
+                    while !s.is_empty() && s[0] > 0 {
                         s = &s[1..];
                     }
 
-                    if s.len() == 0 {
+                    if s.is_empty() {
                         return Err(Error::MalformedMPI(
                             "Invalid DEK encoding, no zero found".into())
                                    .into());
@@ -153,7 +153,7 @@ impl Sexp {
         };
 
         let sig = self.get(b"sig-val")?.ok_or_else(not_a_signature)?
-            .into_iter().nth(0).ok_or_else(not_a_signature)?;
+            .into_iter().next().ok_or_else(not_a_signature)?;
 
         if let Some(param) = sig.get(b"eddsa")? {
             let r = param.iter().find_map(|p| {

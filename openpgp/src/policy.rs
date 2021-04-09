@@ -765,7 +765,7 @@ fn system_time_cutoff_to_timestamp(t: SystemTime) -> Option<Timestamp> {
         // An error can only occur if the SystemTime is less than the
         // reference time (SystemTime::UNIX_EPOCH).  Map that to
         // SystemTime::UNIX_EPOCH, as above.
-        .unwrap_or(Duration::new(0, 0));
+        .unwrap_or_else(|_| Duration::new(0, 0));
     let t = t.as_secs();
     if t > u32::MAX as u64 {
         // Map to None, as above.
@@ -778,7 +778,7 @@ fn system_time_cutoff_to_timestamp(t: SystemTime) -> Option<Timestamp> {
 impl<'a> StandardPolicy<'a> {
     /// Instantiates a new `StandardPolicy` with the default parameters.
     pub const fn new() -> Self {
-        const EMPTY_LIST: &'static [&'static str] = &[];
+        const EMPTY_LIST: &[&str] = &[];
         Self {
             time: None,
             collision_resistant_hash_algos:
@@ -1292,12 +1292,9 @@ impl<'a> Policy for StandardPolicy<'a> {
     fn signature(&self, sig: &Signature, sec: HashAlgoSecurity) -> Result<()> {
         let time = self.time.unwrap_or_else(Timestamp::now);
 
-        let rev = match sig.typ() {
-            SignatureType::KeyRevocation
+        let rev = matches!(sig.typ(), SignatureType::KeyRevocation
                 | SignatureType::SubkeyRevocation
-                | SignatureType::CertificationRevocation => true,
-            _ => false,
-        };
+                | SignatureType::CertificationRevocation);
 
         // Note: collision resistance requires 2nd pre-image resistance.
         if sec == HashAlgoSecurity::CollisionResistance {
@@ -1767,7 +1764,7 @@ mod test {
         // Revoke it.
         let mut keypair = cert.primary_key().key().clone()
             .parts_into_secret()?.into_keypair()?;
-        let ca = cert.userids().nth(0).unwrap();
+        let ca = cert.userids().next().unwrap();
 
         // Generate the revocation for the first and only UserID.
         let revocation =
@@ -1824,7 +1821,7 @@ mod test {
 
 
         // Generate the revocation for the first subkey.
-        let subkey = cert.keys().subkeys().nth(0).unwrap();
+        let subkey = cert.keys().subkeys().next().unwrap();
         let revocation =
             SubkeyRevocationBuilder::new()
                 .set_reason_for_revocation(
@@ -2610,7 +2607,7 @@ mod test {
                 let mut pair = Cert::from_bytes(
                     crate::tests::key("testy-private.pgp"))?
                     .keys().with_policy(p, None)
-                    .for_transport_encryption().secret().nth(0).unwrap()
+                    .for_transport_encryption().secret().next().unwrap()
                     .key().clone().into_keypair()?;
                 pkesks[0].decrypt(&mut pair, algo)
                     .map(|(algo, session_key)| decrypt(algo, &session_key));

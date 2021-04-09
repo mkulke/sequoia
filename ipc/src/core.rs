@@ -21,8 +21,6 @@
 #![doc(html_logo_url = "https://docs.sequoia-pgp.org/logo.svg")]
 #![warn(missing_docs)]
 
-use dirs;
-use tempfile;
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -186,7 +184,7 @@ impl Config {
         } else {
             if home_not_set {
                 c.home =
-                    dirs::home_dir().ok_or(
+                    dirs::home_dir().ok_or_else(||
                         anyhow::anyhow!("Failed to get users home directory"))?
                 .join(".sequoia");
             }

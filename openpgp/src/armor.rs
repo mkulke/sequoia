@@ -28,7 +28,6 @@
 //! # Ok(()) }
 //! ```
 
-use base64;
 use buffered_reader::BufferedReader;
 use std::convert::TryFrom;
 use std::fmt;
@@ -134,7 +133,7 @@ impl TryFrom<Label> for Kind {
             Label::Signature => Ok(Kind::Signature),
             Label::File => Ok(Kind::File),
             Label::CleartextSignature => Err(crate::Error::InvalidOperation(
-                "armor::Kind cannot express cleartext signatures".into()).into()),
+                "armor::Kind cannot express cleartext signatures".into())),
         }
     }
 }
@@ -370,7 +369,7 @@ impl<W: Write> Writer<W> {
         self.finalize_headers()?;
 
         // Write any stashed bytes and pad.
-        if self.stash.len() > 0 {
+        if !self.stash.is_empty() {
             self.sink.write_all(base64::encode_config(
                 &self.stash, base64::STANDARD).as_bytes())?;
             self.column += 4;
@@ -430,9 +429,9 @@ impl<W: Write> Write for Writer<W> {
         // and encode it.  If writing out the stash fails below, we
         // might end up with a stash of size 3.
         assert!(self.stash.len() <= 3);
-        if self.stash.len() > 0 {
+        if !self.stash.is_empty() {
             while self.stash.len() < 3 {
-                if input.len() == 0 {
+                if input.is_empty() {
                     /* We exhausted the input.  Return now, any
                      * stashed bytes are encoded when finalizing the
                      * writer.  */
@@ -470,7 +469,7 @@ impl<W: Write> Write for Writer<W> {
         let encoded = base64::encode_config(input, base64::STANDARD_NO_PAD);
         written += input.len();
         let mut enc = encoded.as_bytes();
-        while enc.len() > 0 {
+        while !enc.is_empty() {
             let n = cmp::min(LINE_LENGTH - self.column, enc.len());
             self.sink
                 .write_all(&enc[..n])?;
@@ -721,7 +720,7 @@ impl<'a> Reader<'a> {
     )
         -> Self
     {
-        let mode = mode.unwrap_or(Default::default());
+        let mode = mode.unwrap_or_default();
 
         Reader {
             // The embedded generic reader's fields.
@@ -884,14 +883,12 @@ impl<'a> Reader<'a> {
             lines += 1;
 
             // Ignore leading whitespace, etc.
-            while match self.source.data_hard(1)?[0] {
+            while matches!(self.source.data_hard(1)?[0],
                 // Skip some whitespace (previously .is_ascii_whitespace())
-                b' ' | b'\t' | b'\r' | b'\n' => true,
+                b' ' | b'\t' | b'\r' | b'\n' |
                 // Also skip common quote characters
-                b'>' | b'|' | b']' | b'}' => true,
-                // Do not skip anything else
-                _ => false,
-            } {
+                b'>' | b'|' | b']' | b'}' )
+            {
                 let c = self.source.data(1)?[0];
                 if c == b'\n' {
                     // We found a newline while walking whitespace, reset prefix
@@ -1005,7 +1002,7 @@ impl<'a> Reader<'a> {
         // allowed.  But, instead of failing, we try to recover, by
         // stopping at the first non-whitespace character.
         let n = {
-            let line = self.source.read_to('\n' as u8)?;
+            let line = self.source.read_to(b'\n')?;
             line.iter().position(|&c| {
                 !c.is_ascii_whitespace()
             }).unwrap_or(line.len())
@@ -1048,7 +1045,7 @@ impl<'a> Reader<'a> {
             self.source.consume(n);
 
             // Buffer the next line.
-            let line = self.source.read_to('\n' as u8)?;
+            let line = self.source.read_to(b'\n')?;
             n = line.len();
             lines += 1;
 
@@ -1077,7 +1074,7 @@ impl<'a> Reader<'a> {
             let line = if line.ends_with(&"\r\n"[..]) {
                 // \r\n.
                 &line[..line.len() - 2]
-            } else if line.ends_with("\n") {
+            } else if line.ends_with('\n') {
                 // \n.
                 &line[..line.len() - 1]
             } else {
@@ -1088,7 +1085,7 @@ impl<'a> Reader<'a> {
             /* Process headers.  */
             let key_value = line.splitn(2, ": ").collect::<Vec<&str>>();
             if key_value.len() == 1 {
-                if line.trim_start().len() == 0 {
+                if line.trim_start().is_empty() {
                     // Empty line.
                     break;
                 } else if lines == 1 {
@@ -1145,7 +1142,7 @@ fn common_prefix<A: AsRef<[u8]>, B: AsRef<[u8]>>(a: A, b: B) -> usize {
 
 impl<'a> Reader<'a> {
     fn read_armored_data(&mut self, buf: &mut [u8]) -> Result<usize> {
-        let (consumed, decoded) = if self.decode_buffer.len() > 0 {
+        let (consumed, decoded) = if !self.decode_buffer.is_empty() {
             // We have something buffered, use that.
 
             let amount = cmp::min(buf.len(), self.decode_buffer.len());
@@ -1252,7 +1249,7 @@ impl<'a> Reader<'a> {
             /* Look for CRC.  The CRC is optional.  */
             let consumed = {
                 // Skip whitespace.
-                while self.source.data(1)?.len() > 0
+                while !self.source.data(1)?.is_empty()
                     && self.source.buffer()[0].is_ascii_whitespace()
                 {
                     self.source.consume(1);
@@ -1266,7 +1263,7 @@ impl<'a> Reader<'a> {
                 };
 
                 if data.len() == 5
-                    && data[0] == '=' as u8
+                    && data[0] == b'='
                     && data[1..5].iter().all(is_base64_char)
                 {
                     /* Found.  */
@@ -1296,7 +1293,7 @@ impl<'a> Reader<'a> {
             // Look for a footer.
             let consumed = {
                 // Skip whitespace.
-                while self.source.data(1)?.len() > 0
+                while !self.source.data(1)?.is_empty()
                     && self.source.buffer()[0].is_ascii_whitespace()
                 {
                     self.source.consume(1);
@@ -1386,7 +1383,7 @@ impl<'a> Reader<'a> {
                     loop {
                         let prefixed_line = self.source.read_to(b'\n')?;
 
-                        if prefixed_line.len() == 0 {
+                        if prefixed_line.is_empty() {
                             // Truncated?
                             break;
                         }
@@ -1504,7 +1501,7 @@ impl<'a> Reader<'a> {
             self.initialize()?;
         }
 
-        if buf.len() == 0 {
+        if buf.is_empty() {
             // Short-circuit here.  Otherwise, we copy 0 bytes into
             // the buffer, which means we decoded 0 bytes, and we
             // wrongfully assume that we reached the end of the
@@ -1652,11 +1649,11 @@ impl BufferedReader<Cookie> for Reader<'_> {
     }
 
     fn data(&mut self, amount: usize) -> Result<&[u8]> {
-        return self.data_helper(amount, false, false);
+        self.data_helper(amount, false, false)
     }
 
     fn data_hard(&mut self, amount: usize) -> Result<&[u8]> {
-        return self.data_helper(amount, true, false);
+        self.data_helper(amount, true, false)
     }
 
     fn consume(&mut self, amount: usize) -> &[u8] {
@@ -1678,16 +1675,16 @@ impl BufferedReader<Cookie> for Reader<'_> {
             return &self.buffer.as_ref().unwrap()[self.cursor - amount..];
         } else {
             assert_eq!(amount, 0);
-            return &b""[..];
+            &b""[..]
         }
     }
 
     fn data_consume(&mut self, amount: usize) -> Result<&[u8]> {
-        return self.data_helper(amount, false, true);
+        self.data_helper(amount, false, true)
     }
 
     fn data_consume_hard(&mut self, amount: usize) -> Result<&[u8]> {
-        return self.data_helper(amount, true, true);
+        self.data_helper(amount, true, true)
     }
 
     fn get_mut(&mut self) -> Option<&mut dyn BufferedReader<Cookie>> {

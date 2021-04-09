@@ -1,7 +1,7 @@
 use std::convert::TryFrom;
 use std::io::{self, Read};
 
-use clap;
+
 
 use sequoia_openpgp as openpgp;
 use crate::openpgp::{KeyHandle, Packet, Result};
@@ -142,7 +142,7 @@ fn inspect_cert(policy: &dyn Policy,
     writeln!(output)?;
     writeln!(output, "    Fingerprint: {}", cert.fingerprint())?;
     inspect_revocation(output, "", cert.revocation_status(policy, None))?;
-    inspect_key(policy, output, "", cert.keys().nth(0).unwrap(),
+    inspect_key(policy, output, "", cert.keys().next().unwrap(),
                 print_certifications)?;
     writeln!(output)?;
 
@@ -334,7 +334,7 @@ fn inspect_key_flags(flags: openpgp::types::KeyFlags) -> Option<String> {
         capabilities.push("split key")
     }
 
-    if capabilities.len() > 0 {
+    if !capabilities.is_empty() {
         Some(capabilities.join(", "))
     } else {
         None

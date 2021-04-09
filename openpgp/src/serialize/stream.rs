@@ -1255,7 +1255,7 @@ impl<'a> Signer<'a> {
     /// ```
     pub fn build(mut self) -> Result<Message<'a>>
     {
-        assert!(self.signers.len() > 0, "The constructor adds a signer.");
+        assert!(!self.signers.is_empty(), "The constructor adds a signer.");
         assert!(self.inner.is_some(), "The constructor adds an inner writer.");
 
         match self.mode {
@@ -1364,7 +1364,7 @@ impl<'a> Write for Signer<'a> {
         // Shortcut empty writes.  This is important for the code
         // below that delays hashing newlines when creating cleartext
         // signed messages.
-        if buf.len() == 0 {
+        if buf.is_empty() {
             return Ok(0);
         }
 
@@ -1669,14 +1669,10 @@ impl<'a> LiteralWriter<'a> {
         // Signer, and if so, we pop it off the stack and
         // store it in 'self.signature_writer'.
         let signer_above =
-            if let &Cookie {
+            matches!(self.inner.cookie_ref(), &Cookie {
                 private: Private::Signer{..},
                 ..
-            } = self.inner.cookie_ref() {
-                true
-            } else {
-                false
-            };
+            });
 
         if signer_above {
             let stack = self.inner.pop()?;
@@ -2773,7 +2769,7 @@ impl<'a> Encryptor<'a> {
             aed.serialize_headers(&mut inner)?;
 
             writer::AEADEncryptor::new(
-                inner.into(),
+                inner,
                 Cookie::new(level),
                 aed.symmetric_algo(),
                 aed.aead(),
@@ -2790,7 +2786,7 @@ impl<'a> Encryptor<'a> {
 
             // Install encryptor.
             self.inner = Some(writer::Encryptor::new(
-                inner.into(),
+                inner,
                 Cookie::new(level),
                 self.sym_algo,
                 &sk,
@@ -3117,7 +3113,7 @@ mod test {
         let mut good = 0;
         while let PacketParserResult::Some(mut pp) = ppr {
             if let Packet::Signature(sig) = &mut pp.packet {
-                let key = keys.get(&sig.issuer_fingerprints().nth(0).unwrap())
+                let key = keys.get(&sig.issuer_fingerprints().next().unwrap())
                     .unwrap();
                 sig.verify(key).unwrap();
                 good += 1;
@@ -3414,7 +3410,7 @@ mod test {
             .generate().unwrap();
 
         // What we're going to sign with.
-        let ka = cert.keys().with_policy(p, None).for_signing().nth(0).unwrap();
+        let ka = cert.keys().with_policy(p, None).for_signing().next().unwrap();
 
         // A timestamp later than the key's creation.
         let timestamp = ka.key().creation_time()
@@ -3483,8 +3479,7 @@ mod test {
             eprintln!("{:?}", String::from_utf8(data.to_vec())?);
             let signing_keypair = cert.keys().secret()
                 .with_policy(p, None).supported()
-                .alive().revoked(false).for_signing()
-                .nth(0).unwrap()
+                .alive().revoked(false).for_signing().next().unwrap()
                 .key().clone().into_keypair()?;
             let mut signature = vec![];
             {

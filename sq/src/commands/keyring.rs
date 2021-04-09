@@ -143,7 +143,7 @@ pub fn dispatch(config: Config, m: &clap::ArgMatches) -> Result<()> {
                 config.create_or_stdout_pgp(m.value_of("output"),
                                             m.is_present("binary"),
                                             armor::Kind::PublicKey)?;
-            filter(m.values_of("input"), &mut output, |c| Some(c), false)?;
+            filter(m.values_of("input"), &mut output, Some, false)?;
             output.finalize()
         },
         ("merge",  Some(m)) => {
@@ -171,7 +171,7 @@ pub fn dispatch(config: Config, m: &clap::ArgMatches) -> Result<()> {
                         p.file_name().map(|f| String::from(f.to_string_lossy()))
                     })
                     // ... or we use a generic prefix...
-                        .unwrap_or(String::from("output"))
+                        .unwrap_or_else(|| String::from("output"))
                     // ... finally, add a hyphen to the derived prefix.
                         + "-");
             split(&mut input, &prefix, m.is_present("binary"))
@@ -254,7 +254,7 @@ fn list(config: Config,
 
         // As a last resort, pick the first user id.
         if primary_uid.is_none() {
-            if let Some(primary) = cert.userids().nth(0) {
+            if let Some(primary) = cert.userids().next() {
                 println!(" {}", String::from_utf8_lossy(primary.value()));
                 primary_uid = Some(primary.value().to_vec());
             }
@@ -296,7 +296,7 @@ fn split(input: &mut (dyn io::Read + Sync + Send), prefix: &str, binary: bool)
 
         // Try to be more helpful by including the first userid in the
         // filename.
-        let mut sink = if let Some(f) = cert.userids().nth(0)
+        let mut sink = if let Some(f) = cert.userids().next()
             .and_then(|uid| uid.email().unwrap_or(None))
             .and_then(to_filename_fragment)
         {
@@ -389,7 +389,7 @@ fn to_filename_fragment<S: AsRef<str>>(s: S) -> Option<String> {
         _ => None,
     }).for_each(|c| r.push(c));
 
-    if r.len() > 0 {
+    if !r.is_empty() {
         Some(r)
     } else {
         None

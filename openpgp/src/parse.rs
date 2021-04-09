@@ -176,7 +176,7 @@
 //!   [`SEIP`]: ../packet/enum.SEIP.html
 //!   [`MDC`]: ../packet/struct.MDC.html
 //!   [`AED`]: ../packet/enum.AED.html
-use std;
+
 use std::io;
 use std::io::prelude::*;
 use std::convert::TryFrom;
@@ -441,7 +441,7 @@ impl<'a, T: 'a + BufferedReader<Cookie>> PacketHeaderParser<T> {
            path: Vec<usize>, header: Header,
            header_bytes: Vec<u8>) -> Self
     {
-        assert!(path.len() > 0);
+        assert!(!path.is_empty());
 
         let mut cookie = Cookie::default();
         cookie.level = inner.cookie_ref().level;
@@ -490,7 +490,7 @@ impl<'a, T: 'a + BufferedReader<Cookie>> PacketHeaderParser<T> {
             //
             // XXX avoid the extra copy.
             let body = self.reader.steal_eof()?;
-            if body.len() > 0 {
+            if !body.is_empty() {
                 self.field("body", body.len());
             }
 
@@ -878,13 +878,13 @@ impl Cookie {
 
     /// Returns a reference to the topmost signature group.
     pub(crate) fn sig_group(&self) -> &SignatureGroup {
-        assert!(self.sig_groups.len() > 0);
+        assert!(!self.sig_groups.is_empty());
         &self.sig_groups[self.sig_groups.len() - 1]
     }
 
     /// Returns a mutable reference to the topmost signature group.
     pub(crate) fn sig_group_mut(&mut self) -> &mut SignatureGroup {
-        assert!(self.sig_groups.len() > 0);
+        assert!(!self.sig_groups.is_empty());
         let len = self.sig_groups.len();
         &mut self.sig_groups[len - 1]
     }
@@ -898,7 +898,7 @@ impl Cookie {
 
     /// Tests whether the topmost signature group is no longer used.
     fn sig_group_unused(&self) -> bool {
-        assert!(self.sig_groups.len() > 0);
+        assert!(!self.sig_groups.is_empty());
         self.sig_groups[self.sig_groups.len() - 1].ops_count == 0
     }
 
@@ -1128,7 +1128,7 @@ impl Header {
             CTB::Old(ref ctb) =>
                 BodyLength::parse_old_format(bio, ctb.length_type())?,
         };
-        return Ok(Header::new(ctb, length));
+        Ok(Header::new(ctb, length))
     }
 }
 
@@ -1352,7 +1352,7 @@ impl Signature4 {
         let typ = typ.into();
         let need_hash = HashingMode::for_signature(hash_algo, typ);
         let mut pp = php.ok(Packet::Signature(Signature4::new(
-            typ, pk_algo.into(), hash_algo,
+            typ, pk_algo, hash_algo,
             hashed_area,
             unhashed_area,
             [digest_prefix1, digest_prefix2],
@@ -1455,8 +1455,7 @@ impl Signature4 {
             return Err(
                 Error::MalformedPacket(
                     format!("Unexpected body length encoding: {:?}",
-                            header.length())
-                        .into()).into());
+                            header.length())).into());
         }
 
         // Make sure we have a minimum header.
@@ -1574,7 +1573,7 @@ impl Subpacket {
                 },
             SubpacketTag::RegularExpression => {
                 let mut v = php.parse_bytes("regular expr", len)?;
-                if v.len() == 0 || v[v.len() - 1] != 0 {
+                if v.is_empty() || v[v.len() - 1] != 0 {
                     return Err(Error::MalformedPacket(
                         "Regular expression not 0-terminated".into())
                                .into());
@@ -2256,14 +2255,13 @@ impl Key4<key::UnspecifiedParts, key::UnspecifiedRole>
             if len < 6 {
                 // Much too short.
                 return Err(Error::MalformedPacket(
-                    format!("Packet too short ({} bytes)", len).into()).into());
+                    format!("Packet too short ({} bytes)", len)).into());
             }
         } else {
             return Err(
                 Error::MalformedPacket(
                     format!("Unexpected body length encoding: {:?}",
-                            header.length())
-                        .into()).into());
+                            header.length())).into());
         }
 
         // Make sure we have a minimum header.
@@ -2373,7 +2371,7 @@ impl Marker {
         } else {
             return Err(Error::MalformedPacket(
                 format!("Unexpected body length encoding: {:?}",
-                        header.length()).into()).into());
+                        header.length())).into());
         }
 
         // Check the body.
@@ -2639,7 +2637,7 @@ impl SKESK {
                 // parameters if the S2K method is not supported, and
                 // we don't know the size of the ESK.
                 let mut esk = php_try!(php.reader.steal_eof()
-                                       .map_err(|e| anyhow::Error::from(e)));
+                                       .map_err(anyhow::Error::from));
                 let aead_iv = if s2k_supported && esk.len() >= iv_size {
                     // We know the S2K method, so the parameters have
                     // been parsed into the S2K object.  So, `esk`
@@ -2771,7 +2769,7 @@ impl MDC {
                 {
                     let state = bio.cookie_mut();
                     if state.hashes_for == HashesFor::MDC {
-                        if state.sig_group().hashes.len() > 0 {
+                        if !state.sig_group().hashes.is_empty() {
                             let h = state.sig_group_mut().hashes
                                 .iter_mut().find_map(
                                     |mode|
@@ -3589,7 +3587,7 @@ impl<'a> PacketParserEOF<'a> {
     /// # Ok(()) }
     /// ```
     pub fn last_recursion_depth(&self) -> Option<isize> {
-        if self.last_path.len() == 0 {
+        if self.last_path.is_empty() {
             None
         } else {
             Some(self.last_path.len() as isize - 1)
@@ -3628,11 +3626,7 @@ assert_send_and_sync!(PacketParserResult<'_>);
 impl<'a> PacketParserResult<'a> {
     /// Returns `true` if the result is `EOF`.
     pub fn is_eof(&self) -> bool {
-        if let PacketParserResult::EOF(_) = self {
-            true
-        } else {
-            false
-        }
+        matches!(self, PacketParserResult::EOF(_))
     }
 
     /// Returns `true` if the result is `Some`.
@@ -3651,7 +3645,7 @@ impl<'a> PacketParserResult<'a> {
     ///   [`PacketParserEOF`]: struct.PacketParserEOF.html
     pub fn expect(self, msg: &str) -> PacketParser<'a> {
         if let PacketParserResult::Some(pp) = self {
-            return pp;
+            pp
         } else {
             panic!("{}", msg);
         }
@@ -3978,7 +3972,7 @@ impl <'a> PacketParser<'a> {
     /// # Ok(()) }
     /// ```
     pub fn last_recursion_depth(&self) -> Option<isize> {
-        if self.last_path.len() == 0 {
+        if self.last_path.is_empty() {
             assert_eq!(&self.path[..], &[ 0 ]);
             None
         } else {
@@ -4166,7 +4160,7 @@ impl <'a> PacketParser<'a> {
              path: Vec<usize>)
         -> Result<ParserResult<'a>>
     {
-        assert!(path.len() > 0);
+        assert!(!path.is_empty());
 
         let indent = path.len() as isize - 1;
         tracer!(TRACE, "PacketParser::parse", indent);
@@ -4176,7 +4170,7 @@ impl <'a> PacketParser<'a> {
 
         // When header encounters an EOF, it returns an error.  But,
         // we want to return None.  Try a one byte read.
-        if bio.data(1)?.len() == 0 {
+        if bio.data(1)?.is_empty() {
             t!("No packet at {:?} (EOF).", path);
             return Ok(ParserResult::EOF((bio, state, path)));
         }
@@ -4224,7 +4218,7 @@ impl <'a> PacketParser<'a> {
                 }
                 Err(err) => {
                     if orig_error.is_none() {
-                        orig_error = Some(err.into());
+                        orig_error = Some(err);
                     }
 
                     if state.first_packet || skip > 32 * 1024 {
@@ -4698,7 +4692,7 @@ impl <'a> PacketParser<'a> {
 
         fn set_or_extend(rest: Vec<u8>, c: &mut Container, processed: bool)
                          -> Result<&[u8]> {
-            if rest.len() > 0 {
+            if !rest.is_empty() {
                 let current = match c.body() {
                     Body::Unprocessed(bytes) => &bytes[..],
                     Body::Processed(bytes) => &bytes[..],
@@ -4707,7 +4701,7 @@ impl <'a> PacketParser<'a> {
                         "cannot append unread bytes to parsed packets"
                             .into()).into()),
                 };
-                let rest = if current.len() > 0 {
+                let rest = if !current.is_empty() {
                     let mut new =
                         Vec::with_capacity(current.len() + rest.len());
                     new.extend_from_slice(current);
@@ -4745,7 +4739,7 @@ impl <'a> PacketParser<'a> {
             Packet::AED(p) =>
                 set_or_extend(rest, p.deref_mut(), ! self.encrypted),
             p => {
-                if rest.len() > 0 {
+                if !rest.is_empty() {
                     Err(Error::MalformedPacket(
                         format!("Unexpected body data for {:?}: {}",
                                 p, crate::fmt::hex::encode_pretty(rest)))
@@ -4800,7 +4794,7 @@ impl <'a> PacketParser<'a> {
                self.packet.tag(), recursion_depth,
                self.data_eof().unwrap_or(&[]).len());
 
-            self.buffer_unread_content()?.len() > 0
+            !self.buffer_unread_content()?.is_empty()
         } else {
             t!("({:?} at depth {}): dropping {} bytes of unread content",
                self.packet.tag(), recursion_depth,
@@ -4836,7 +4830,7 @@ impl <'a> PacketParser<'a> {
 
     /// Hashes content that has been streamed.
     fn hash_read_content(&mut self, b: &[u8]) {
-        if b.len() > 0 {
+        if !b.is_empty() {
             assert!(self.body_hash.is_some());
             self.body_hash.as_mut().map(|h| h.update(b));
             self.content_was_read = true;
@@ -5508,7 +5502,7 @@ mod test {
 
             ppr = pp.recurse().unwrap().1;
         }
-        return ppr;
+        ppr
     }
 
     #[test]
@@ -6058,8 +6052,7 @@ mod test {
         let cert: Cert =
             Cert::from_bytes(crate::tests::key("testy-new-private.pgp"))?;
         let signing_keypair = cert.keys().secret()
-            .with_policy(p, None).alive().revoked(false).for_signing()
-            .nth(0).unwrap()
+            .with_policy(p, None).alive().revoked(false).for_signing().next().unwrap()
             .key().clone().into_keypair()?;
         let mut signature = vec![];
         {

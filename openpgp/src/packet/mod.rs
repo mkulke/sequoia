@@ -646,13 +646,13 @@ impl<'a> Iterator for Iter<'a> {
         // Get the next child and the iterator for its children.
         self.child = self.children.next();
         if let Some(child) = self.child {
-            self.grandchildren = child.descendants().map(|d| Box::new(d));
+            self.grandchildren = child.descendants().map(Box::new);
         }
 
         // First return the child itself.  Subsequent calls will
         // return its grandchildren.
         self.depth = 0;
-        return self.child;
+        self.child
     }
 }
 
@@ -1516,28 +1516,28 @@ impl<P: key::KeyParts, R: key::KeyRole> Key<P, R> {
 impl From<Key<key::PublicParts, key::PrimaryRole>> for Packet {
     /// Convert the `Key` struct to a `Packet`.
     fn from(k: Key<key::PublicParts, key::PrimaryRole>) -> Self {
-        Packet::PublicKey(k.into())
+        Packet::PublicKey(k)
     }
 }
 
 impl From<Key<key::PublicParts, key::SubordinateRole>> for Packet {
     /// Convert the `Key` struct to a `Packet`.
     fn from(k: Key<key::PublicParts, key::SubordinateRole>) -> Self {
-        Packet::PublicSubkey(k.into())
+        Packet::PublicSubkey(k)
     }
 }
 
 impl From<Key<key::SecretParts, key::PrimaryRole>> for Packet {
     /// Convert the `Key` struct to a `Packet`.
     fn from(k: Key<key::SecretParts, key::PrimaryRole>) -> Self {
-        Packet::SecretKey(k.into())
+        Packet::SecretKey(k)
     }
 }
 
 impl From<Key<key::SecretParts, key::SubordinateRole>> for Packet {
     /// Convert the `Key` struct to a `Packet`.
     fn from(k: Key<key::SecretParts, key::SubordinateRole>) -> Self {
-        Packet::SecretSubkey(k.into())
+        Packet::SecretSubkey(k)
     }
 }
 

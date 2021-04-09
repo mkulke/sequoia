@@ -296,7 +296,7 @@ fn create_key() {
     };
 
     // Create primary key.
-    let mut key: Key<_, PrimaryRole> = make_key().into();
+    let mut key: Key<_, PrimaryRole> = make_key();
     key.set_creation_time(t1).unwrap();
     let mut signer = key.clone().into_keypair().unwrap();
 
@@ -382,7 +382,7 @@ fn create_key() {
             .set_signature_creation_time(t2).unwrap();
 
         if let Some(r) = reason {
-            b = b.set_reason_for_revocation(r.clone(), r.to_string().as_bytes())
+            b = b.set_reason_for_revocation(*r, r.to_string().as_bytes())
                 .unwrap();
         }
 
@@ -409,7 +409,7 @@ fn create_key() {
             .set_signature_creation_time(t2).unwrap();
 
         if let Some(r) = reason {
-            b = b.set_reason_for_revocation(r.clone(), r.to_string().as_bytes())
+            b = b.set_reason_for_revocation(*r, r.to_string().as_bytes())
                 .unwrap();
         }
 

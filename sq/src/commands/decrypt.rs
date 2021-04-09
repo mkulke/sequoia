@@ -1,7 +1,6 @@
 use anyhow::Context as _;
 use std::collections::HashMap;
 use std::io;
-use rpassword;
 
 use sequoia_openpgp as openpgp;
 use crate::openpgp::types::SymmetricAlgorithm;
@@ -62,7 +61,7 @@ impl<'a> Helper<'a> {
                 .secret()
             {
                 let id: KeyID = ka.key().fingerprint().into();
-                keys.insert(id.clone(), ka.key().clone().into());
+                keys.insert(id.clone(), ka.key().clone());
                 identities.insert(id.clone(), tsk.fingerprint());
                 hints.insert(id, hint.clone());
             }
@@ -296,7 +295,7 @@ pub fn decrypt(config: Config,
         dumper.flush(&mut io::stderr())?;
     }
     helper.vhelper.print_status();
-    return Ok(());
+    Ok(())
 }
 
 pub fn decrypt_unwrap(config: Config,

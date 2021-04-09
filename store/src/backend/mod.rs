@@ -8,7 +8,6 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use capnp::capability::Promise;
-use capnp;
 use capnp_rpc::rpc_twoparty_capnp::Side;
 use capnp_rpc::{self, RpcSystem, twoparty};
 use rand::distributions::{Distribution, Uniform};
@@ -915,7 +914,7 @@ impl KeyServer {
 
             let next = Self::need_update(&c, network_policy)
                 .map(|c| refresh_interval() / c)
-                .unwrap_or(min_sleep_time());
+                .unwrap_or_else(|_| min_sleep_time());
 
             if let Err(e) = cert.map(|t| key.merge(t)) {
                 key.error("Update unsuccessful",
@@ -939,7 +938,7 @@ impl KeyServer {
         loop {
             let duration = Self::update(&c, net::Policy::Encrypted).await;
 
-            let duration = duration.unwrap_or(min_sleep_time());
+            let duration = duration.unwrap_or_else(|_| min_sleep_time());
             tokio::time::delay_for(random_duration(duration)).await;
         }
     }
@@ -990,7 +989,7 @@ impl node::key::Server for KeyServer {
             self.c.query_row(
                 "SELECT key FROM keys WHERE id = ?1",
                 &[&self.id],
-                |row| Ok(row.get(0).unwrap_or(vec![]))));
+                |row| Ok(row.get(0).unwrap_or_default())));
         pry!(pry!(results.get().get_result()).set_ok(key.as_slice()));
         Promise::ok(())
     }
@@ -1327,7 +1326,7 @@ impl From<io::Error> for node::Error {
 /* Database schemata and migrations.  */
 
 /* Version 1.  */
-const DB_SCHEMA_1: &'static str = "
+const DB_SCHEMA_1: &str = "
 CREATE TABLE version (
     id INTEGER PRIMARY KEY,
     version INTEGER);

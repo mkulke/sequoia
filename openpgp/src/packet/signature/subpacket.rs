@@ -5458,11 +5458,9 @@ impl signature::SignatureBuilder {
               F: Into<Option<NotationDataFlags>>,
     {
         self.hashed_area.packets.retain(|s| {
-            match s.value {
-                SubpacketValue::NotationData(ref v)
-                    if v.name == name.as_ref() => false,
-                _ => true,
-            }
+            ! matches!(
+                s.value,
+                SubpacketValue::NotationData(ref v) if v.name == name.as_ref())
         });
         self.add_notation(name.as_ref(), value.as_ref(),
                           flags.into().unwrap_or_else(NotationDataFlags::empty),
@@ -7008,7 +7006,7 @@ fn accessors() {
     sig = sig.set_revocation_key(vec![ rk.clone() ]).unwrap();
     let sig_ =
         sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
-    assert_eq!(sig_.revocation_keys().nth(0).unwrap(), &rk);
+    assert_eq!(sig_.revocation_keys().next().unwrap(), &rk);
 
     sig = sig.set_issuer(fp.clone().into()).unwrap();
     let sig_ =
@@ -7089,15 +7087,15 @@ fn accessors() {
     sig = sig.set_signature_target(pk_algo, hash_algo, &digest).unwrap();
     let sig_ =
         sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
-    assert_eq!(sig_.signature_target(), Some((pk_algo.into(),
-                                             hash_algo.into(),
+    assert_eq!(sig_.signature_target(), Some((pk_algo,
+                                             hash_algo,
                                              &digest[..])));
 
     let embedded_sig = sig_.clone();
     sig = sig.set_embedded_signature(embedded_sig.clone()).unwrap();
     let sig_ =
         sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
-    assert_eq!(sig_.embedded_signatures().nth(0), Some(&embedded_sig));
+    assert_eq!(sig_.embedded_signatures().next(), Some(&embedded_sig));
 
     sig = sig.set_issuer_fingerprint(fp.clone()).unwrap();
     let sig_ =
@@ -7183,7 +7181,7 @@ fn subpacket_test_1 () {
 
             assert!(got2 && got16 && got33);
 
-            let hex = format!("{:X}", sig.issuer_fingerprints().nth(0).unwrap());
+            let hex = format!("{:X}", sig.issuer_fingerprints().next().unwrap());
             assert!(
                 hex == "7FAF6ED7238143557BDF7ED26863C9AD5B4D22D3"
                 || hex == "C03FA6411B03AE12576461187223B56678E02528");
@@ -7233,7 +7231,7 @@ fn subpacket_test_2() {
     // Test #1
     if let (Some(&Packet::PublicKey(ref key)),
             Some(&Packet::Signature(ref sig)))
-        = (pile.children().nth(0), pile.children().nth(2))
+        = (pile.children().next(), pile.children().nth(2))
     {
         //  tag: 2, SignatureCreationTime(1515791508) }
         //  tag: 9, KeyExpirationTime(63072000) }
@@ -7493,7 +7491,7 @@ fn subpacket_test_2() {
         let fp = "361A96BDE1A65B6D6C25AE9FF004B9A45C586126".parse().unwrap();
         let rk = RevocationKey::new(PublicKeyAlgorithm::RSAEncryptSign,
                                     fp, false);
-        assert_eq!(sig.revocation_keys().nth(0).unwrap(), &rk);
+        assert_eq!(sig.revocation_keys().next().unwrap(), &rk);
         assert_eq!(sig.subpacket(SubpacketTag::RevocationKey),
                    Some(&Subpacket {
                        length: 23.into(),

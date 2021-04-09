@@ -1,8 +1,6 @@
-use syn;
 use quote::ToTokens;
-use proc_macro2;
 
-const PREFIX: &'static str = "pgp_";
+const PREFIX: &str = "pgp_";
 
 /// Derives the C type from the Rust type.
 ///

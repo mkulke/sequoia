@@ -1141,8 +1141,8 @@ impl<'a, C> ValidComponentAmalgamation<'a, C>
                 // Fallback to a lexographical comparison.  Prefer
                 // the "smaller" one.
                 match a.0.component().cmp(&b.0.component()) {
-                    Ordering::Less => return Ordering::Greater,
-                    Ordering::Greater => return Ordering::Less,
+                    Ordering::Less => Ordering::Greater,
+                    Ordering::Greater => Ordering::Less,
                     Ordering::Equal =>
                         panic!("non-canonicalized Cert (duplicate components)"),
                 }
@@ -1150,7 +1150,7 @@ impl<'a, C> ValidComponentAmalgamation<'a, C>
             .ok_or_else(|| {
                 error.map(|e| e.context(format!(
                     "No binding signature at time {}", crate::fmt::time(&t))))
-                    .unwrap_or(Error::NoBindingSignature(t).into())
+                    .unwrap_or_else(|| Error::NoBindingSignature(t).into())
             })
             .and_then(|c| ComponentAmalgamation::new(cert, (c.0).0)
                       .with_policy_relaxed(policy, t, valid_cert))
@@ -1303,7 +1303,7 @@ mod test {
             .generate()
             .unwrap();
 
-        let userid : UserIDAmalgamation = cert.userids().nth(0).unwrap();
+        let userid : UserIDAmalgamation = cert.userids().next().unwrap();
         assert_eq!(userid.userid(), userid.clone().userid());
 
         let userid : ValidUserIDAmalgamation
