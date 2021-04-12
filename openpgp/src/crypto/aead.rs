@@ -76,7 +76,7 @@ impl AEADAlgorithm {
             EAX => Ok(16),
             // According to RFC4880bis, Section 5.16.2.
             OCB => Ok(16),
-            _ => Err(Error::UnsupportedAEADAlgorithm(self.clone()).into()),
+            _ => Err(Error::UnsupportedAEADAlgorithm(*self).into()),
         }
     }
 
@@ -90,7 +90,7 @@ impl AEADAlgorithm {
             // least 15 octets long".  GnuPG hardcodes 15 in
             // openpgp_aead_algo_info.
             OCB => Ok(15),
-            _ => Err(Error::UnsupportedAEADAlgorithm(self.clone()).into()),
+            _ => Err(Error::UnsupportedAEADAlgorithm(*self).into()),
         }
     }
 }
@@ -227,7 +227,7 @@ impl<'a> Decryptor<'a> {
         let mut digest = vec![0u8; self.digest_size];
 
         // 1. Copy any buffered data.
-        if self.buffer.len() > 0 {
+        if !self.buffer.is_empty() {
             let to_copy = cmp::min(self.buffer.len(), plaintext.len());
             &plaintext[..to_copy].copy_from_slice(&self.buffer[..to_copy]);
             crate::vec_drain_prefix(&mut self.buffer, to_copy);
@@ -292,7 +292,7 @@ impl<'a> Decryptor<'a> {
             let check_final_tag;
             let chunk = match result {
                 Ok(chunk) => {
-                    if chunk.len() == 0 {
+                    if chunk.is_empty() {
                         // Exhausted source.
                         return Ok(pos);
                     }
@@ -311,7 +311,7 @@ impl<'a> Decryptor<'a> {
 
             assert!(chunk.len() <= chunk_digest_size);
 
-            if chunk.len() == 0 {
+            if chunk.is_empty() {
                 // There is nothing to decrypt: all that is left is
                 // the final tag.
             } else if chunk.len() <= self.digest_size {
@@ -455,48 +455,48 @@ impl<'a> fmt::Debug for BufferedReaderDecryptor<'a> {
 
 impl<'a> BufferedReader<Cookie> for BufferedReaderDecryptor<'a> {
     fn buffer(&self) -> &[u8] {
-        return self.reader.buffer();
+        self.reader.buffer()
     }
 
     fn data(&mut self, amount: usize) -> io::Result<&[u8]> {
-        return self.reader.data(amount);
+        self.reader.data(amount)
     }
 
     fn data_hard(&mut self, amount: usize) -> io::Result<&[u8]> {
-        return self.reader.data_hard(amount);
+        self.reader.data_hard(amount)
     }
 
     fn data_eof(&mut self) -> io::Result<&[u8]> {
-        return self.reader.data_eof();
+        self.reader.data_eof()
     }
 
     fn consume(&mut self, amount: usize) -> &[u8] {
-        return self.reader.consume(amount);
+        self.reader.consume(amount)
     }
 
     fn data_consume(&mut self, amount: usize)
                     -> io::Result<&[u8]> {
-        return self.reader.data_consume(amount);
+        self.reader.data_consume(amount)
     }
 
     fn data_consume_hard(&mut self, amount: usize) -> io::Result<&[u8]> {
-        return self.reader.data_consume_hard(amount);
+        self.reader.data_consume_hard(amount)
     }
 
     fn read_be_u16(&mut self) -> io::Result<u16> {
-        return self.reader.read_be_u16();
+        self.reader.read_be_u16()
     }
 
     fn read_be_u32(&mut self) -> io::Result<u32> {
-        return self.reader.read_be_u32();
+        self.reader.read_be_u32()
     }
 
     fn steal(&mut self, amount: usize) -> io::Result<Vec<u8>> {
-        return self.reader.steal(amount);
+        self.reader.steal(amount)
     }
 
     fn steal_eof(&mut self) -> io::Result<Vec<u8>> {
-        return self.reader.steal_eof();
+        self.reader.steal_eof()
     }
 
     fn get_mut(&mut self) -> Option<&mut dyn BufferedReader<Cookie>> {
@@ -639,7 +639,7 @@ impl<W: io::Write> Encryptor<W> {
         let amount = buf.len();
 
         // First, fill the buffer if there is something in it.
-        if self.buffer.len() > 0 {
+        if !self.buffer.is_empty() {
             let n = cmp::min(buf.len(), self.chunk_size - self.buffer.len());
             self.buffer.extend_from_slice(&buf[..n]);
             assert!(self.buffer.len() <= self.chunk_size);
@@ -696,7 +696,7 @@ impl<W: io::Write> Encryptor<W> {
     /// Finish encryption and write last partial chunk.
     pub fn finish(&mut self) -> Result<W> {
         if let Some(mut inner) = self.inner.take() {
-            if self.buffer.len() > 0 {
+            if !self.buffer.is_empty() {
                 let mut aead = self.make_aead(CipherOp::Encrypt)?;
                 self.hash_associated_data(&mut aead, false);
 

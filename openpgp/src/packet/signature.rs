@@ -49,13 +49,13 @@
 //! packet is created as a side effect of parsing a signed message
 //! using the [`PacketParser`].
 //!
-//! The [`SigntaureBuilder`] can be used to create a binding
+//! The [`SignatureBuilder`] can be used to create a binding
 //! signature, a certification, etc.  The motivation for having a
 //! separate data structure for creating signatures is that it
 //! decreases the chance that a half-constructed signature is
 //! accidentally exported.  When modifying an existing signature, you
 //! can use, for instance, `SignatureBuilder::from` to convert a
-//! `Signtaure` into a `SigntaureBuilder`:
+//! `Signature` into a `SignatureBuilder`:
 //!
 //! ```
 //! use sequoia_openpgp as openpgp;
@@ -107,7 +107,7 @@
 //! [`Signature4`]: struct.Signature4.html
 //! [streaming `Signer`]: ../../serialize/stream/struct.Signer.html
 //! [`PacketParser`]: ../../parse/index.html
-//! [`SigntaureBuilder`]: struct.SignatureBuilder.html
+//! [`SignatureBuilder`]: struct.SignatureBuilder.html
 //! [hints]: https://tools.ietf.org/html/rfc4880#section-5.13
 //! [`Signature::normalize`]: ../enum.Signature.html#method.normalize
 //! [`SubpacketArea`]: subpacket/struct.SubpacketArea.html
@@ -1564,7 +1564,7 @@ impl SignatureBuilder {
         if ! self.overrode_creation_time {
             self =
                 // See if we want to backdate the signature.
-                if let Some(oct) = self.original_creation_time.clone() {
+                if let Some(oct) = self.original_creation_time {
                     let t =
                         (oct + time::Duration::new(1, 0)).max(
                             time::SystemTime::now() -
@@ -2229,10 +2229,7 @@ impl crate::packet::Signature {
         // Filters subpackets that usually are in the unhashed area.
         fn prefer(p: &Subpacket) -> bool {
             use SubpacketTag::*;
-            match p.tag() {
-                Issuer | EmbeddedSignature | IssuerFingerprint => true,
-                _ => false,
-            }
+            matches!(p.tag(), Issuer | EmbeddedSignature | IssuerFingerprint)
         }
 
         // Collect subpackets keeping track of the size.
@@ -2787,6 +2784,70 @@ impl Signature {
         self.verify_digest(signer, &hash.into_digest()?[..])
     }
 
+    /// Verifies an attested key signature on a user id.
+    ///
+    /// `self` is the attested key signature, `signer` is the key that
+    /// allegedly made the signature, `pk` is the primary key, and
+    /// `userid` is the user id.
+    ///
+    /// Note: Due to limited context, this only verifies the
+    /// cryptographic signature, checks the signature's type, and
+    /// checks that the key predates the signature.  Further
+    /// constraints on the signature, like creation and expiration
+    /// time, or signature revocations must be checked by the caller.
+    ///
+    /// Likewise, this function does not check whether `signer` can
+    /// made valid signatures; it is up to the caller to make sure the
+    /// key is not revoked, not expired, has a valid self-signature,
+    /// has a subkey binding signature (if appropriate), has the
+    /// signing capability, etc.
+    pub(crate) fn verify_userid_attestation<P, Q, R>(
+        &mut self,
+        signer: &Key<P, R>,
+        pk: &Key<Q, key::PrimaryRole>,
+        userid: &UserID)
+        -> Result<()>
+        where P: key::KeyParts,
+              Q: key::KeyParts,
+              R: key::KeyRole,
+    {
+        use crate::types::SignatureType__AttestedKey;
+        use crate::packet::signature::subpacket
+            ::SubpacketTag__AttestedCertifications;
+
+        if self.typ() != SignatureType__AttestedKey {
+            return Err(Error::UnsupportedSignatureType(self.typ()).into());
+        }
+
+        let mut hash = self.hash_algo().context()?;
+
+        if self.hashed_area()
+            .subpackets(SubpacketTag__AttestedCertifications).count() != 1
+            || self.unhashed_area()
+            .subpackets(SubpacketTag__AttestedCertifications).count() != 0
+        {
+            return Err(Error::BadSignature(
+                "Wrong number of attested certification subpackets".into())
+                       .into());
+        }
+
+        if let SubpacketValue::Unknown { body, .. } =
+            self.subpacket(SubpacketTag__AttestedCertifications).unwrap()
+            .value()
+        {
+            if body.len() % hash.digest_size() != 0 {
+                return Err(Error::BadSignature(
+                    "Wrong number of bytes in certification subpacket".into())
+                           .into());
+            }
+        } else {
+            unreachable!("Selected attested certifications, got wrong value");
+        }
+
+        self.hash_userid_binding(&mut hash, pk, userid);
+        self.verify_digest(signer, &hash.into_digest()?[..])
+    }
+
     /// Verifies the user attribute binding.
     ///
     /// `self` is the user attribute binding signature, `signer` is
@@ -2861,6 +2922,70 @@ impl Signature {
         }
 
         let mut hash = self.hash_algo().context()?;
+        self.hash_user_attribute_binding(&mut hash, pk, ua);
+        self.verify_digest(signer, &hash.into_digest()?[..])
+    }
+
+    /// Verifies an attested key signature on a user attribute.
+    ///
+    /// `self` is the attested key signature, `signer` is the key that
+    /// allegedly made the signature, `pk` is the primary key, and
+    /// `ua` is the user attribute.
+    ///
+    /// Note: Due to limited context, this only verifies the
+    /// cryptographic signature, checks the signature's type, and
+    /// checks that the key predates the signature.  Further
+    /// constraints on the signature, like creation and expiration
+    /// time, or signature revocations must be checked by the caller.
+    ///
+    /// Likewise, this function does not check whether `signer` can
+    /// made valid signatures; it is up to the caller to make sure the
+    /// key is not revoked, not expired, has a valid self-signature,
+    /// has a subkey binding signature (if appropriate), has the
+    /// signing capability, etc.
+    pub(crate) fn verify_user_attribute_attestation<P, Q, R>(
+        &mut self,
+        signer: &Key<P, R>,
+        pk: &Key<Q, key::PrimaryRole>,
+        ua: &UserAttribute)
+        -> Result<()>
+        where P: key::KeyParts,
+              Q: key::KeyParts,
+              R: key::KeyRole,
+    {
+        use crate::types::SignatureType__AttestedKey;
+        use crate::packet::signature::subpacket
+            ::SubpacketTag__AttestedCertifications;
+
+        if self.typ() != SignatureType__AttestedKey {
+            return Err(Error::UnsupportedSignatureType(self.typ()).into());
+        }
+
+        let mut hash = self.hash_algo().context()?;
+
+        if self.hashed_area()
+            .subpackets(SubpacketTag__AttestedCertifications).count() != 1
+            || self.unhashed_area()
+            .subpackets(SubpacketTag__AttestedCertifications).count() != 0
+        {
+            return Err(Error::BadSignature(
+                "Wrong number of attested certification subpackets".into())
+                       .into());
+        }
+
+        if let SubpacketValue::Unknown { body, .. } =
+            self.subpacket(SubpacketTag__AttestedCertifications).unwrap()
+            .value()
+        {
+            if body.len() % hash.digest_size() != 0 {
+                return Err(Error::BadSignature(
+                    "Wrong number of bytes in certification subpacket".into())
+                           .into());
+            }
+        } else {
+            unreachable!("Selected attested certifications, got wrong value");
+        }
+
         self.hash_user_attribute_binding(&mut hash, pk, ua);
         self.verify_digest(signer, &hash.into_digest()?[..])
     }
@@ -3234,13 +3359,13 @@ mod test {
             crate::tests::key("test1-certification-key.pgp")).unwrap();
         let cert_key1 = test1.keys().with_policy(p, None)
             .for_certification()
-            .nth(0)
+            .next()
             .map(|ka| ka.key())
             .unwrap();
         let test2 = Cert::from_bytes(
             crate::tests::key("test2-signed-by-test1.pgp")).unwrap();
-        let uid = test2.userids().with_policy(p, None).nth(0).unwrap();
-        let mut cert = uid.certifications().nth(0).unwrap().clone();
+        let uid = test2.userids().with_policy(p, None).next().unwrap();
+        let mut cert = uid.certifications().next().unwrap().clone();
 
         cert.verify_userid_binding(cert_key1,
                                    test2.primary_key().key(),
@@ -3282,12 +3407,12 @@ mod test {
         let embedded_sig = SignatureBuilder::new(SignatureType::PrimaryKeyBinding)
             .sign_hash(&mut pair, hash.clone()).unwrap();
         builder.unhashed_area_mut().add(Subpacket::new(
-            SubpacketValue::EmbeddedSignature(embedded_sig.into()), false)
-                                        .unwrap()).unwrap();
+            SubpacketValue::EmbeddedSignature(embedded_sig), false).unwrap())
+            .unwrap();
         let sig = builder.sign_hash(&mut pair,
                                     hash.clone()).unwrap().normalize();
         assert_eq!(sig.unhashed_area().iter().count(), 3);
-        assert_eq!(*sig.unhashed_area().iter().nth(0).unwrap(),
+        assert_eq!(*sig.unhashed_area().iter().next().unwrap(),
                    Subpacket::new(SubpacketValue::Issuer(keyid.clone()),
                                   false).unwrap());
         assert_eq!(sig.unhashed_area().iter().nth(1).unwrap().tag(),
@@ -3379,17 +3504,17 @@ mod test {
         let mut primary_signer = alice.primary_key().key().clone()
             .parts_into_secret()?.into_keypair()?;
         assert_eq!(alice.userids().len(), 1);
-        assert_eq!(alice.userids().nth(0).unwrap().self_signatures().count(), 1);
+        assert_eq!(alice.userids().next().unwrap().self_signatures().count(), 1);
         let creation_time =
-            alice.userids().nth(0).unwrap().self_signatures().nth(0).unwrap()
+            alice.userids().next().unwrap().self_signatures().next().unwrap()
                 .signature_creation_time().unwrap();
 
         for i in 0..2 * SIG_BACKDATE_BY {
-            assert_eq!(alice.userids().nth(0).unwrap().self_signatures().count(),
+            assert_eq!(alice.userids().next().unwrap().self_signatures().count(),
                        1 + i as usize);
 
             // Get the binding signature so that we can modify it.
-            let sig = alice.with_policy(p, None)?.userids().nth(0).unwrap()
+            let sig = alice.with_policy(p, None)?.userids().next().unwrap()
                 .binding_signature().clone();
             assert_eq!(sig.signature_creation_time().unwrap(),
                        creation_time + std::time::Duration::new(i, 0));
@@ -3402,7 +3527,7 @@ mod test {
                               false)?
                 .sign_userid_binding(&mut primary_signer,
                                      alice.primary_key().component(),
-                                     &alice.userids().nth(0).unwrap()) {
+                                     &alice.userids().next().unwrap()) {
                     Ok(v) => v,
                     Err(e) => if i < SIG_BACKDATE_BY {
                         return Err(e); // Not cool.
@@ -3417,7 +3542,7 @@ mod test {
             // Merge it and check that the new binding signature is
             // the current one.
             alice = alice.insert_packets(new_sig.clone())?;
-            let sig = alice.with_policy(p, None)?.userids().nth(0).unwrap()
+            let sig = alice.with_policy(p, None)?.userids().next().unwrap()
                 .binding_signature();
             assert_eq!(sig, &new_sig);
         }
@@ -3473,12 +3598,12 @@ mod test {
         let cert = Cert::try_from(pp)?;
         assert_eq!(cert.bad_signatures().count(), 1);
         assert_eq!(cert.keys().subkeys().count(), 1);
-        let subkey = cert.keys().subkeys().nth(0).unwrap();
+        let subkey = cert.keys().subkeys().next().unwrap();
         assert_eq!(subkey.self_signatures().count(), 1);
 
         // All the authentic information in the self signature has
         // been authenticated by the verification process.
-        let sig = &subkey.self_signatures().nth(0).unwrap();
+        let sig = &subkey.self_signatures().next().unwrap();
         assert!(sig.hashed_area().iter().all(|p| p.authenticated()));
         // All but our fake issuer information.
         assert!(sig.unhashed_area().iter().all(|p| {
@@ -3494,12 +3619,12 @@ mod test {
             }
         }));
         // Check the subpackets in the embedded signature.
-        let sig = sig.embedded_signatures().nth(0).unwrap();
+        let sig = sig.embedded_signatures().next().unwrap();
         assert!(sig.hashed_area().iter().all(|p| p.authenticated()));
         assert!(sig.unhashed_area().iter().all(|p| p.authenticated()));
 
         // No information in the bad signature has been authenticated.
-        let sig = cert.bad_signatures().nth(0).unwrap();
+        let sig = cert.bad_signatures().next().unwrap();
         assert!(sig.hashed_area().iter().all(|p| ! p.authenticated()));
         assert!(sig.unhashed_area().iter().all(|p| ! p.authenticated()));
         Ok(())

@@ -1,7 +1,7 @@
 use std::convert::TryFrom;
 use std::io::{self, Read};
 
-use clap;
+
 
 use sequoia_openpgp as openpgp;
 use crate::openpgp::{KeyHandle, Packet, Result};
@@ -18,7 +18,6 @@ use super::dump::Convert;
 
 pub fn inspect(m: &clap::ArgMatches, policy: &dyn Policy, output: &mut dyn io::Write)
                -> Result<()> {
-    let print_keygrips = m.is_present("keygrips");
     let print_certifications = m.is_present("certifications");
 
     let input = m.value_of("input");
@@ -49,7 +48,7 @@ pub fn inspect(m: &clap::ArgMatches, policy: &dyn Policy, output: &mut dyn io::W
                     let pp = openpgp::PacketPile::from(
                         ::std::mem::replace(&mut packets, Vec::new()));
                     let cert = openpgp::Cert::try_from(pp)?;
-                    inspect_cert(policy, output, &cert, print_keygrips,
+                    inspect_cert(policy, output, &cert,
                                  print_certifications)?;
                 }
             },
@@ -109,7 +108,7 @@ pub fn inspect(m: &clap::ArgMatches, policy: &dyn Policy, output: &mut dyn io::W
             let pp = openpgp::PacketPile::from(packets);
             let cert = openpgp::Cert::try_from(pp)?;
             inspect_cert(policy, output, &cert,
-                         print_keygrips, print_certifications)?;
+                         print_certifications)?;
         } else if packets.is_empty() && ! sigs.is_empty() {
             writeln!(output, "Detached signature{}.",
                      if sigs.len() > 1 { "s" } else { "" })?;
@@ -134,7 +133,7 @@ pub fn inspect(m: &clap::ArgMatches, policy: &dyn Policy, output: &mut dyn io::W
 
 fn inspect_cert(policy: &dyn Policy,
                 output: &mut dyn io::Write, cert: &openpgp::Cert,
-                print_keygrips: bool, print_certifications: bool) -> Result<()> {
+                print_certifications: bool) -> Result<()> {
     if cert.is_tsk() {
         writeln!(output, "Transferable Secret Key.")?;
     } else {
@@ -143,15 +142,15 @@ fn inspect_cert(policy: &dyn Policy,
     writeln!(output)?;
     writeln!(output, "    Fingerprint: {}", cert.fingerprint())?;
     inspect_revocation(output, "", cert.revocation_status(policy, None))?;
-    inspect_key(policy, output, "", cert.keys().nth(0).unwrap(),
-                print_keygrips, print_certifications)?;
+    inspect_key(policy, output, "", cert.keys().next().unwrap(),
+                print_certifications)?;
     writeln!(output)?;
 
     for vka in cert.keys().subkeys().with_policy(policy, None) {
         writeln!(output, "         Subkey: {}", vka.key().fingerprint())?;
         inspect_revocation(output, "", vka.revocation_status())?;
         inspect_key(policy, output, "", vka.into_key_amalgamation().into(),
-                    print_keygrips, print_certifications)?;
+                    print_certifications)?;
         writeln!(output)?;
     }
 
@@ -226,7 +225,6 @@ fn inspect_key(policy: &dyn Policy,
                output: &mut dyn io::Write,
                indent: &str,
                ka: ErasedKeyAmalgamation<PublicParts>,
-               print_keygrips: bool,
                print_certifications: bool)
         -> Result<()>
 {
@@ -245,11 +243,6 @@ fn inspect_key(policy: &dyn Policy,
         },
     };
 
-    if print_keygrips {
-        use sequoia_ipc::Keygrip;
-        writeln!(output, "{}        Keygrip: {}", indent,
-                 Keygrip::of(key.mpis())?)?;
-    }
     writeln!(output, "{}Public-key algo: {}", indent, key.pk_algo())?;
     if let Some(bits) = key.mpis().bits() {
         writeln!(output, "{}Public-key size: {} bits", indent, bits)?;
@@ -341,7 +334,7 @@ fn inspect_key_flags(flags: openpgp::types::KeyFlags) -> Option<String> {
         capabilities.push("split key")
     }
 
-    if capabilities.len() > 0 {
+    if !capabilities.is_empty() {
         Some(capabilities.join(", "))
     } else {
         None
@@ -375,7 +368,7 @@ fn inspect_signatures(output: &mut dyn io::Write,
         }
     }
     if ! sigs.is_empty() {
-        writeln!(output, "                 \
+        writeln!(output, "           Note: \
                           Signatures have NOT been verified!")?;
     }
 
@@ -387,9 +380,9 @@ fn inspect_certifications<'a, A>(output: &mut dyn io::Write,
                           print_certifications: bool) -> Result<()> where
         A: std::iter::Iterator<Item=&'a openpgp::packet::Signature> {
     if print_certifications {
-        let mut verified_cerifications = false;
+        let mut emit_warning = false;
         for sig in certs {
-            verified_cerifications = true;
+            emit_warning = true;
             let mut fps: Vec<_> = sig.issuer_fingerprints().collect();
             fps.sort();
             fps.dedup();
@@ -406,8 +399,8 @@ fn inspect_certifications<'a, A>(output: &mut dyn io::Write,
                 }
             }
         }
-        if !verified_cerifications {
-            writeln!(output, "                 \
+        if emit_warning {
+            writeln!(output, "             Note: \
                               Certifications have NOT been verified!")?;
         }
     } else {

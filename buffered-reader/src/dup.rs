@@ -12,13 +12,13 @@ use super::*;
 /// at the underlying `BufferedReader`.
 #[derive(Debug)]
 pub struct Dup<T: BufferedReader<C>, C: fmt::Debug + Sync + Send> {
-    reader: T,
-
     // The number of bytes that have been consumed.
     cursor: usize,
 
     // The user settable cookie.
     cookie: C,
+
+    reader: T,
 }
 
 assert_send_and_sync!(Dup<T, C>
@@ -57,7 +57,7 @@ impl<T: BufferedReader<C>, C: fmt::Debug + Sync + Send> Dup<T, C> {
 
     /// Returns the number of bytes that this reader has consumed.
     pub fn total_out(&self) -> usize {
-        return self.cursor;
+        self.cursor
     }
 
     /// Resets the cursor to the beginning of the stream.
@@ -73,7 +73,7 @@ impl<T: BufferedReader<C>, C: fmt::Debug + Sync + Send> io::Read for Dup<T, C> {
         let data = &data[self.cursor..];
 
         let amount = cmp::min(buf.len(), data.len());
-        buf.copy_from_slice(&data[..amount]);
+        buf[..amount].copy_from_slice(&data[..amount]);
 
         self.cursor += amount;
 
@@ -194,7 +194,7 @@ mod test {
 
         for i in 0..input.len() {
             let data = reader.data(DEFAULT_BUF_SIZE + 1).unwrap().to_vec();
-            assert!(data.len() > 0);
+            assert!(!data.is_empty());
             assert_eq!(data, reader.buffer());
             // And, we may as well check to make sure we read the
             // right data.

@@ -1,14 +1,18 @@
 [package]
 name = "sequoia-sq"
 description = "Command-line frontends for Sequoia"
-version = "0.21.0"
+version = "0.25.0"
 authors = [
+    "Azul <azul@sequoia-pgp.org>",
+    "Igor Matuszewski <igor@sequoia-pgp.org>",
     "Justus Winter <justus@sequoia-pgp.org>",
     "Kai Michaelis <kai@sequoia-pgp.org>",
     "Neal H. Walfield <neal@sequoia-pgp.org>",
+    "Nora Widdecke <nora@sequoia-pgp.org>",
+    "Wiktor Kwapisiewicz <wiktor@sequoia-pgp.org>",
 ]
 build = "build.rs"
-documentation = "https://docs.sequoia-pgp.org/0.21.0/sq"
+documentation = "https://docs.rs/sequoia-sq"
 homepage = "https://sequoia-pgp.org/"
 repository = "https://gitlab.com/sequoia-pgp/sequoia"
 readme = "../README.md"
@@ -22,25 +26,22 @@ gitlab = { repository = "sequoia-pgp/sequoia" }
 maintenance = { status = "actively-developed" }
 
 [dependencies]
-buffered-reader = { path = "../buffered-reader", version = "0.21", default-features = false }
-sequoia-openpgp = { path = "../openpgp", version = "0.21", default-features = false }
-sequoia-autocrypt = { path = "../autocrypt", version = "0.21", default-features = false }
-sequoia-core = { path = "../core", version = "0.21", default-features = false }
-sequoia-ipc = { path = "../ipc", version = "0.21", default-features = false }
-sequoia-net = { path = "../net", version = "0.21", default-features = false }
-sequoia-store = { path = "../store", version = "0.21", default-features = false }
+buffered-reader = { path = "../buffered-reader", version = "1.0.0", default-features = false }
+sequoia-openpgp = { path = "../openpgp", version = "1.1", default-features = false }
+sequoia-autocrypt = { path = "../autocrypt", version = "0.23", default-features = false, optional = true }
+sequoia-net = { path = "../net", version = "0.23", default-features = false, optional = true }
 anyhow = "1.0.18"
 chrono = "0.4.10"
-clap = "2.33"
+clap = { version = "2.33", features = ["wrap_help"] }
 itertools = "0.9"
-prettytable-rs = "0.8.0"
 tempfile = "3.1"
-crossterm = "0.13"
-tokio = { version = "0.2.19", features = ["rt-core", "io-util", "io-driver"] }
+term_size = "0.3"
+tokio = { version = "0.2.19", features = ["rt-core", "io-util", "io-driver"], optional = true }
 rpassword = "5.0"
 
 [build-dependencies]
 clap = "2.33"
+sequoia-openpgp = { path = "../openpgp", version = "1.0.0", default-features = false }
 
 [dev-dependencies]
 assert_cli = "0.6"
@@ -53,10 +54,13 @@ path = "src/sq-usage.rs"
 default = [
     "buffered-reader/compression",
     "sequoia-openpgp/default",
-    "sequoia-store/background-services"
+    "net",
+    "autocrypt",
 ]
 crypto-nettle = ["sequoia-openpgp/crypto-nettle"]
 crypto-cng = ["sequoia-openpgp/crypto-cng"]
 compression = ["buffered-reader/compression", "sequoia-openpgp/compression"]
 compression-deflate = ["buffered-reader/compression-deflate", "sequoia-openpgp/compression-deflate"]
 compression-bzip2 = ["buffered-reader/compression-bzip2", "sequoia-openpgp/compression-bzip2"]
+net = ["sequoia-net", "tokio"]
+autocrypt = ["sequoia-autocrypt"]

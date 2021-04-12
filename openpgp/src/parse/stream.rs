@@ -127,7 +127,7 @@ use crate::{
         PKESK,
         SKESK,
     },
-    KeyID,
+    KeyHandle,
     Packet,
     Result,
     packet,
@@ -606,13 +606,37 @@ impl IMessageStructure {
         });
     }
 
-    fn new_encryption_layer(&mut self, sym_algo: SymmetricAlgorithm,
+    fn new_encryption_layer(&mut self,
+                            depth: isize,
+                            expect_mdc: bool,
+                            sym_algo: SymmetricAlgorithm,
                             aead_algo: Option<AEADAlgorithm>) {
         self.insert_missing_signature_group();
         self.layers.push(IMessageLayer::Encryption {
+            depth,
+            expect_mdc,
             sym_algo: sym_algo,
             aead_algo: aead_algo,
         });
+    }
+
+    /// Returns whether or not we expect an MDC packet in an
+    /// encryption container at this recursion depth.
+    ///
+    /// Handling MDC packets has to be done carefully, otherwise, we
+    /// may create a decryption oracle.
+    fn expect_mdc_at(&self, at: isize) -> bool {
+        for l in &self.layers {
+            match l {
+                IMessageLayer::Encryption {
+                    depth,
+                    expect_mdc,
+                    ..
+                } if *depth == at && *expect_mdc => return true,
+                _ => (),
+            }
+        }
+        false
     }
 
     /// Makes sure that we insert a signature group even if the
@@ -687,6 +711,12 @@ enum IMessageLayer {
         algo: CompressionAlgorithm,
     },
     Encryption {
+        /// Recursion depth of this container.
+        depth: isize,
+        /// Do we expect an MDC packet?
+        ///
+        /// I.e. is this a SEIP container?
+        expect_mdc: bool,
         sym_algo: SymmetricAlgorithm,
         aead_algo: Option<AEADAlgorithm>,
     },
@@ -1212,7 +1242,7 @@ impl<'a> VerifierBuilder<'a> {
                 policy,
                 self.message,
                 NoDecryptionHelper { v: helper, },
-                t, Mode::Verify, self.buffer_size, self.mapping)?,
+                t, Mode::Verify, self.buffer_size, self.mapping, true)?,
         })
     }
 }
@@ -1481,20 +1511,18 @@ impl<'a> DetachedVerifierBuilder<'a> {
     /// #   }
     /// }
     ///
-    /// let message =
+    /// let signature =
     ///     // ...
-    /// # &b"-----BEGIN PGP MESSAGE-----
+    /// #  b"-----BEGIN PGP SIGNATURE-----
     /// #
-    /// #    xA0DAAoW+zdR8Vh9rvEByxJiAAAAAABIZWxsbyBXb3JsZCHCdQQAFgoABgWCXrLl
-    /// #    AQAhCRD7N1HxWH2u8RYhBDnRAKtn1b2MBAECBfs3UfFYfa7xRUsBAJaxkU/RCstf
-    /// #    UD7TM30IorO1Mb9cDa/hPRxyzipulT55AQDN1m9LMqi9yJDjHNHwYYVwxDcg+pLY
-    /// #    YmAFv/UfO0vYBw==
-    /// #    =+l94
-    /// #    -----END PGP MESSAGE-----
-    /// #    "[..];
+    /// #    wnUEABYKACcFglt+z/EWoQSOjDP6RiYzeXbZeXgGnAw0jdgsGQmQBpwMNI3YLBkA
+    /// #    AHmUAP9mpj2wV0/ekDuzxZrPQ0bnobFVaxZGg7YzdlksSOERrwEA6v6czXQjKcv2
+    /// #    KOwGTamb+ajTLQ3YRG9lh+ZYIXynvwE=
+    /// #    =IJ29
+    /// #    -----END PGP SIGNATURE-----";
     ///
     /// let h = Helper {};
-    /// let mut v = DetachedVerifierBuilder::from_bytes(message)?
+    /// let mut v = DetachedVerifierBuilder::from_bytes(&signature[..])?
     ///     .mapping(true)
     ///     .with_policy(p, None, h)?;
     /// # let _ = v;
@@ -1541,20 +1569,18 @@ impl<'a> DetachedVerifierBuilder<'a> {
     /// #   }
     /// }
     ///
-    /// let message =
+    /// let signature =
     ///     // ...
-    /// # &b"-----BEGIN PGP MESSAGE-----
+    /// #  b"-----BEGIN PGP SIGNATURE-----
     /// #
-    /// #    xA0DAAoW+zdR8Vh9rvEByxJiAAAAAABIZWxsbyBXb3JsZCHCdQQAFgoABgWCXrLl
-    /// #    AQAhCRD7N1HxWH2u8RYhBDnRAKtn1b2MBAECBfs3UfFYfa7xRUsBAJaxkU/RCstf
-    /// #    UD7TM30IorO1Mb9cDa/hPRxyzipulT55AQDN1m9LMqi9yJDjHNHwYYVwxDcg+pLY
-    /// #    YmAFv/UfO0vYBw==
-    /// #    =+l94
-    /// #    -----END PGP MESSAGE-----
-    /// #    "[..];
+    /// #    wnUEABYKACcFglt+z/EWoQSOjDP6RiYzeXbZeXgGnAw0jdgsGQmQBpwMNI3YLBkA
+    /// #    AHmUAP9mpj2wV0/ekDuzxZrPQ0bnobFVaxZGg7YzdlksSOERrwEA6v6czXQjKcv2
+    /// #    KOwGTamb+ajTLQ3YRG9lh+ZYIXynvwE=
+    /// #    =IJ29
+    /// #    -----END PGP SIGNATURE-----";
     ///
     /// let h = Helper {};
-    /// let mut v = DetachedVerifierBuilder::from_bytes(message)?
+    /// let mut v = DetachedVerifierBuilder::from_bytes(&signature[..])?
     ///     // Customize the `DetachedVerifier` here.
     ///     .with_policy(p, None, h)?;
     /// # let _ = v;
@@ -1572,7 +1598,7 @@ impl<'a> DetachedVerifierBuilder<'a> {
                 policy,
                 self.signatures,
                 NoDecryptionHelper { v: helper, },
-                t, Mode::VerifyDetached, 0, self.mapping)?,
+                t, Mode::VerifyDetached, 0, self.mapping, false)?,
         })
     }
 }
@@ -1712,7 +1738,13 @@ enum Mode {
 /// # Ok(()) }
 pub struct Decryptor<'a, H: VerificationHelper + DecryptionHelper> {
     helper: H,
+
+    /// The issuers collected from OPS and Signature packets.
+    issuers: Vec<KeyHandle>,
+
+    /// The certificates used for signature verification.
     certs: Vec<Cert>,
+
     oppr: Option<PacketParserResult<'a>>,
     identity: Option<Fingerprint>,
     structure: IMessageStructure,
@@ -2011,7 +2043,7 @@ impl<'a> DecryptorBuilder<'a> {
             policy,
             self.message,
             helper,
-            t, Mode::Decrypt, self.buffer_size, self.mapping)
+            t, Mode::Decrypt, self.buffer_size, self.mapping, false)
     }
 }
 
@@ -2289,7 +2321,9 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
         helper: H, time: T,
         mode: Mode,
         buffer_size: usize,
-        mapping: bool)
+        mapping: bool,
+        csf_transformation: bool,
+    )
         -> Result<Decryptor<'a, H>>
         where T: Into<Option<time::SystemTime>>
     {
@@ -2303,10 +2337,13 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
         let time = time.unwrap_or_else(time::SystemTime::now);
 
         let mut ppr = PacketParserBuilder::from_buffered_reader(bio)?
-            .map(mapping).build()?;
+            .map(mapping)
+            .csf_transformation(csf_transformation)
+            .build()?;
 
         let mut v = Decryptor {
             helper,
+            issuers: Vec::new(),
             certs: Vec::new(),
             oppr: None,
             identity: None,
@@ -2320,10 +2357,8 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
             policy,
         };
 
-        let mut issuers = Vec::new();
         let mut pkesks: Vec<packet::PKESK> = Vec::new();
         let mut skesks: Vec<packet::SKESK> = Vec::new();
-        let mut saw_content = false;
 
         while let PacketParserResult::Some(mut pp) = ppr {
             v.policy.packet(&pp.packet)?;
@@ -2332,10 +2367,18 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
             // When verifying detached signatures, we parse only the
             // signatures here, which on their own are not a valid
             // message.
-            if v.mode != Mode::VerifyDetached {
+            if v.mode == Mode::VerifyDetached {
+                if pp.packet.tag() != packet::Tag::Signature
+                    && pp.packet.tag() != packet::Tag::Marker
+                {
+                    return Err(Error::MalformedMessage(
+                        format!("Expected signature, got {}", pp.packet.tag()))
+                               .into());
+                }
+            } else {
                 if let Err(err) = pp.possible_message() {
                     t!("Malformed message: {}", err);
-                    return Err(err.context("Malformed OpenPGP message").into());
+                    return Err(err.context("Malformed OpenPGP message"));
                 }
             }
 
@@ -2349,8 +2392,6 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                 Packet::CompressedData(ref p) =>
                     v.structure.new_compression_layer(p.algo()),
                 Packet::SEIP(_) | Packet::AED(_) if v.mode == Mode::Decrypt => {
-                    saw_content = true;
-
                     // Get the symmetric algorithm from the decryption
                     // proxy function.  This is necessary because we
                     // cannot get the algorithm from the SEIP packet.
@@ -2385,6 +2426,8 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                     }
 
                     v.structure.new_encryption_layer(
+                        pp.recursion_depth(),
+                        pp.packet.tag() == packet::Tag::SEIP,
                         sym_algo,
                         if let Packet::AED(ref p) = pp.packet {
                             Some(p.aead())
@@ -2394,12 +2437,10 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                 },
                 Packet::OnePassSig(ref ops) => {
                     v.structure.push_ops(ops);
-                    issuers.push(ops.issuer().clone().into());
+                    v.push_issuer(ops.issuer().clone());
                 },
                 Packet::Literal(_) => {
                     v.structure.insert_missing_signature_group();
-                    // Query keys.
-                    v.certs = v.helper.get_certs(&issuers)?;
                     v.oppr = Some(PacketParserResult::Some(pp));
                     v.finish_maybe()?;
 
@@ -2416,27 +2457,14 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                 Packet::PKESK(pkesk) => pkesks.push(pkesk),
                 Packet::SKESK(skesk) => skesks.push(skesk),
                 Packet::Signature(sig) => {
-                    if ! saw_content {
-                        // The following structure is allowed:
-                        //
-                        //   SIG LITERAL
-                        //
-                        // In this case, we get the issuer from the
-                        // signature itself.
-                        let mut sig_issuers = sig.get_issuers();
-                        if sig_issuers.is_empty() {
-                            // No issuer information.  Push a wildcard
-                            // KeyID to indicate this to the
-                            // VerificationHelper::check.  This is the
-                            // detached-signature equivalent of a
-                            // signed message with a wildcard signer
-                            // KeyID on the OPS packet and no issuer
-                            // information on the signature.
-                            issuers.push(KeyID::wildcard().into());
-                        } else {
-                            issuers.append(&mut sig_issuers);
-                        }
-                    }
+                    // The following structure is allowed:
+                    //
+                    //   SIG LITERAL
+                    //
+                    // In this case, we get the issuer from the
+                    // signature itself.
+                    sig.get_issuers().into_iter()
+                        .for_each(|i| v.push_issuer(i));
                     v.structure.push_bare_signature(sig);
                 }
                 _ => (),
@@ -2444,8 +2472,7 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
             ppr = ppr_tmp;
         }
 
-        if v.mode == Mode::VerifyDetached {
-            v.certs = v.helper.get_certs(&issuers)?;
+        if v.mode == Mode::VerifyDetached && !v.structure.layers.is_empty() {
             return Ok(v);
         }
 
@@ -2492,7 +2519,7 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                 // Attach digest to the signature.
                 let mut digest = vec![0; hash.digest_size()];
                 let _ = hash.digest(&mut digest);
-                sig.set_computed_digest(Some(digest.into()));
+                sig.set_computed_digest(Some(digest));
             }
         }
 
@@ -2504,11 +2531,47 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
     fn push_sig(&mut self, p: Packet) -> Result<()> {
         match p {
             Packet::Signature(sig) => {
+                sig.get_issuers().into_iter().for_each(|i| self.push_issuer(i));
                 self.structure.push_signature(sig);
             },
             _ => (),
         }
         Ok(())
+    }
+
+    /// Records the issuer for the later certificate lookup.
+    fn push_issuer<I: Into<KeyHandle>>(&mut self, issuer: I) {
+        let issuer = issuer.into();
+        match issuer {
+            KeyHandle::KeyID(id) if id.is_wildcard() => {
+                // Ignore, they are not useful for lookups.
+            },
+
+            KeyHandle::KeyID(_) => {
+                for known in self.issuers.iter() {
+                    if known.aliases(&issuer) {
+                        return;
+                    }
+                }
+
+                // Unknown, record.
+                self.issuers.push(issuer);
+            },
+
+            KeyHandle::Fingerprint(_) => {
+                for known in self.issuers.iter_mut() {
+                    if known.aliases(&issuer) {
+                        // Replace.  We may upgrade a KeyID to a
+                        // Fingerprint.
+                        *known = issuer;
+                        return;
+                    }
+                }
+
+                // Unknown, record.
+                self.issuers.push(issuer);
+            },
+        }
     }
 
     // If the amount of remaining data does not exceed the reserve,
@@ -2536,21 +2599,55 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                         self.helper.inspect(&pp)?;
                     }
 
-                    if let Err(err) = pp.possible_message() {
-                        return Err(err.context(
-                            "Malformed OpenPGP message").into());
-                    }
+                    let possible_message = pp.possible_message();
 
-                    match pp.packet {
-                        Packet::MDC(ref mdc) => if ! mdc.valid() {
+                    // If we are ascending, and the packet was the
+                    // last packet in a SEIP container, we need to be
+                    // extra careful with reporting errors to avoid
+                    // creating a decryption oracle.
+
+                    let last_recursion_depth = pp.recursion_depth();
+                    let (p, ppr_tmp) = match pp.recurse() {
+                        Ok(v) => v,
+                        Err(e) => {
+                            // Assuming we just tried to ascend,
+                            // should there have been a MDC packet?
+                            // If so, this may be an attack.
+                            if self.structure.expect_mdc_at(
+                                last_recursion_depth - 1)
+                            {
+                                return Err(Error::ManipulatedMessage.into());
+                            } else {
+                                return Err(e);
+                            }
+                        },
+                    };
+                    ppr = ppr_tmp;
+                    let recursion_depth = ppr.as_ref()
+                        .map(|pp| pp.recursion_depth()).unwrap_or(0);
+
+                    // Did we just ascend?
+                    if recursion_depth + 1 == last_recursion_depth
+                        && self.structure.expect_mdc_at(recursion_depth)
+                    {
+                        match &p {
+                            Packet::MDC(mdc) if mdc.valid() =>
+                                (), // Good.
+                            _ =>    // Bad.
+                                return Err(Error::ManipulatedMessage.into()),
+                        }
+
+                        if possible_message.is_err() {
                             return Err(Error::ManipulatedMessage.into());
                         }
-                        _ => (),
                     }
 
-                    let (p, ppr_tmp) = pp.recurse()?;
+                    if let Err(err) = possible_message {
+                        return Err(err.context(
+                            "Malformed OpenPGP message"));
+                    }
+
                     self.push_sig(p)?;
-                    ppr = ppr_tmp;
                 }
 
                 self.verify_signatures()
@@ -2568,17 +2665,20 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
         tracer!(TRACE, "Decryptor::verify_signatures", 0);
         t!("called");
 
+        self.certs = self.helper.get_certs(&self.issuers)?;
+        t!("VerificationHelper::get_certs produced {} certs", self.certs.len());
+
         let mut results = MessageStructure::new();
         for layer in self.structure.layers.iter_mut() {
             match layer {
                 IMessageLayer::Compression { algo } =>
                     results.new_compression_layer(*algo),
-                IMessageLayer::Encryption { sym_algo, aead_algo } =>
+                IMessageLayer::Encryption { sym_algo, aead_algo, .. } =>
                     results.new_encryption_layer(*sym_algo, *aead_algo),
                 IMessageLayer::SignatureGroup { sigs, .. } => {
                     results.new_signature_group();
                     'sigs: for sig in sigs.iter_mut() {
-                        let sigid = sig.digest_prefix().clone();
+                        let sigid = *sig.digest_prefix();
 
                         let sig_time = if let Some(t) = sig.signature_creation_time() {
                             t
@@ -2768,7 +2868,7 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
 
     /// Like `io::Read::read()`, but returns our `Result`.
     fn read_helper(&mut self, buf: &mut [u8]) -> Result<usize> {
-        if buf.len() == 0 {
+        if buf.is_empty() {
             return Ok(0);
         }
 
@@ -2834,7 +2934,7 @@ mod test {
         unknown: usize,
         bad: usize,
         error: usize,
-        keys: Vec<Cert>,
+        certs: Vec<Cert>,
         error_out: bool,
     }
 
@@ -2857,20 +2957,22 @@ mod test {
                 unknown: 0,
                 bad: 0,
                 error: 0,
-                keys: Vec::default(),
+                certs: Vec::default(),
                 error_out: true,
             }
         }
     }
 
     impl VHelper {
-        fn new(good: usize, unknown: usize, bad: usize, error: usize, keys: Vec<Cert>) -> Self {
+        fn new(good: usize, unknown: usize, bad: usize, error: usize,
+               certs: Vec<Cert>)
+               -> Self {
             VHelper {
                 good,
                 unknown,
                 bad,
                 error,
-                keys,
+                certs,
                 error_out: true,
             }
         }
@@ -2878,7 +2980,7 @@ mod test {
 
     impl VerificationHelper for VHelper {
         fn get_certs(&mut self, _ids: &[crate::KeyHandle]) -> Result<Vec<Cert>> {
-            Ok(self.keys.clone())
+            Ok(self.certs.clone())
         }
 
         fn check(&mut self, structure: MessageStructure) -> Result<()> {
@@ -2926,36 +3028,91 @@ mod test {
     fn verifier() -> Result<()> {
         let p = P::new();
 
-        let keys = [
+        let certs = [
             "neal.pgp",
+            "testy-new.pgp",
             "emmelie-dorothea-dina-samantha-awina-ed25519.pgp"
         ].iter()
          .map(|f| Cert::from_bytes(crate::tests::key(f)).unwrap())
          .collect::<Vec<_>>();
         let tests = &[
-            ("messages/signed-1.gpg",                      VHelper::new(1, 0, 0, 0, keys.clone())),
-            ("messages/signed-1-sha256-testy.gpg",         VHelper::new(0, 1, 0, 0, keys.clone())),
-            ("messages/signed-1-notarized-by-ed25519.pgp", VHelper::new(2, 0, 0, 0, keys.clone())),
-            ("keys/neal.pgp",                              VHelper::new(0, 0, 0, 1, keys.clone())),
+            // Signed messages.
+            (crate::tests::message("signed-1.gpg").to_vec(),
+             crate::tests::manifesto().to_vec(),
+             true,
+             Some(crate::frozen_time()),
+             VHelper::new(1, 0, 0, 0, certs.clone())),
+            // The same, but with a marker packet.
+            ({
+                let pp = crate::PacketPile::from_bytes(
+                    crate::tests::message("signed-1.gpg"))?;
+                let mut buf = Vec::new();
+                Packet::Marker(Default::default()).serialize(&mut buf)?;
+                pp.serialize(&mut buf)?;
+                buf
+            },
+             crate::tests::manifesto().to_vec(),
+             true,
+             Some(crate::frozen_time()),
+             VHelper::new(1, 0, 0, 0, certs.clone())),
+            (crate::tests::message("signed-1-sha256-testy.gpg").to_vec(),
+             crate::tests::manifesto().to_vec(),
+             true,
+             Some(crate::frozen_time()),
+             VHelper::new(0, 1, 0, 0, certs.clone())),
+            (crate::tests::message("signed-1-notarized-by-ed25519.pgp")
+             .to_vec(),
+             crate::tests::manifesto().to_vec(),
+             true,
+             Some(crate::frozen_time()),
+             VHelper::new(2, 0, 0, 0, certs.clone())),
+            // Signed messages using the Cleartext Signature Framework.
+            (crate::tests::message("a-cypherpunks-manifesto.txt.cleartext.sig")
+             .to_vec(),
+             {
+                 // The transformation process trims trailing whitespace,
+                 // and the manifesto has a trailing whitespace right at
+                 // the end.
+                 let mut manifesto = crate::tests::manifesto().to_vec();
+                 let ws_at = manifesto.len() - 2;
+                 let ws = manifesto.remove(ws_at);
+                 assert_eq!(ws, b' ');
+                 manifesto
+             },
+             false,
+             None,
+             VHelper::new(1, 0, 0, 0, certs.clone())),
+            (crate::tests::message("a-problematic-poem.txt.cleartext.sig")
+             .to_vec(),
+             crate::tests::message("a-problematic-poem.txt").to_vec(),
+             false,
+             None,
+             VHelper::new(1, 0, 0, 0, certs.clone())),
+            // A key as example of an invalid message.
+            (crate::tests::key("neal.pgp").to_vec(),
+             crate::tests::manifesto().to_vec(),
+             true,
+             Some(crate::frozen_time()),
+             VHelper::new(0, 0, 0, 1, certs.clone())),
         ];
 
-        let reference = crate::tests::manifesto();
-
-        for (f, r) in tests {
-            eprintln!("{}...", f);
+        for (i, (signed, reference, test_decryptor, time, r))
+            in tests.iter().enumerate()
+        {
+            eprintln!("{}...", i);
 
             // Test Verifier.
-            let h = VHelper::new(0, 0, 0, 0, keys.clone());
+            let h = VHelper::new(0, 0, 0, 0, certs.clone());
             let mut v =
-                match VerifierBuilder::from_bytes(crate::tests::file(f))?
-                    .with_policy(&p, crate::frozen_time(), h) {
+                match VerifierBuilder::from_bytes(&signed)?
+                    .with_policy(&p, *time, h) {
                     Ok(v) => v,
                     Err(e) => if r.error > 0 || r.unknown > 0 {
                         // Expected error.  No point in trying to read
                         // something.
                         continue;
                     } else {
-                        panic!("{}: {}", f, e);
+                        panic!("{}: {}", i, e);
                     },
                 };
             assert!(v.message_processed());
@@ -2970,19 +3127,23 @@ mod test {
             let mut content = Vec::new();
             v.read_to_end(&mut content).unwrap();
             assert_eq!(reference.len(), content.len());
-            assert_eq!(reference, &content[..]);
+            assert_eq!(&reference[..], &content[..]);
+
+            if ! test_decryptor {
+                continue;
+            }
 
             // Test Decryptor.
-            let h = VHelper::new(0, 0, 0, 0, keys.clone());
-            let mut v = match DecryptorBuilder::from_bytes(crate::tests::file(f))?
-                .with_policy(&p, crate::frozen_time(), h) {
+            let h = VHelper::new(0, 0, 0, 0, certs.clone());
+            let mut v = match DecryptorBuilder::from_bytes(&signed)?
+                .with_policy(&p, *time, h) {
                     Ok(v) => v,
                     Err(e) => if r.error > 0 || r.unknown > 0 {
                         // Expected error.  No point in trying to read
                         // something.
                         continue;
                     } else {
-                        panic!("{}: {}", f, e);
+                        panic!("{}: {}", i, e);
                     },
                 };
             assert!(v.message_processed());
@@ -2997,7 +3158,7 @@ mod test {
             let mut content = Vec::new();
             v.read_to_end(&mut content).unwrap();
             assert_eq!(reference.len(), content.len());
-            assert_eq!(reference, &content[..]);
+            assert_eq!(&reference[..], &content[..]);
         }
         Ok(())
     }
@@ -3019,14 +3180,14 @@ mod test {
             eprintln!("{}...", msg);
             let p = P::new();
 
-            let keys = [
+            let certs = [
                 "neal.pgp",
             ]
                 .iter()
                 .map(|f| Cert::from_bytes(crate::tests::key(f)).unwrap())
                 .collect::<Vec<_>>();
 
-            let mut h = VHelper::new(0, 0, 0, 0, keys.clone());
+            let mut h = VHelper::new(0, 0, 0, 0, certs.clone());
             h.error_out = false;
             let mut v = VerifierBuilder::from_bytes(buf)?
                 .with_policy(&p, crate::frozen_time(), h)?;
@@ -3096,11 +3257,11 @@ mod test {
                                 sig, ..
                             }) = &results[0] {
                                 assert_eq!(
-                                    &sig.issuer_fingerprints().nth(0).unwrap()
-                                        .to_string(),
+                                    &sig.issuer_fingerprints().next().unwrap()
+                                        .to_hex(),
                                     match i {
-                                        0 => "8E8C 33FA 4626 3379 76D9  7978 069C 0C34 8DD8 2C19",
-                                        1 => "C03F A641 1B03 AE12 5764  6118 7223 B566 78E0 2528",
+                                        0 => "8E8C33FA4626337976D97978069C0C348DD82C19",
+                                        1 => "C03FA6411B03AE12576461187223B56678E02528",
                                         _ => unreachable!(),
                                     }
                                 );
@@ -3139,7 +3300,7 @@ mod test {
     }
 
     #[test]
-    fn detached_verifier() {
+    fn detached_verifier() -> Result<()> {
         lazy_static::lazy_static! {
             static ref ZEROS: Vec<u8> = vec![0; 100 * 1024 * 1024];
         }
@@ -3147,38 +3308,53 @@ mod test {
         let p = P::new();
 
         struct Test<'a> {
-            sig: &'a [u8],
+            sig: Vec<u8>,
             content: &'a [u8],
             reference: time::SystemTime,
         };
         let tests = [
             Test {
                 sig: crate::tests::message(
-                    "a-cypherpunks-manifesto.txt.ed25519.sig"),
+                    "a-cypherpunks-manifesto.txt.ed25519.sig").to_vec(),
+                content: crate::tests::manifesto(),
+                reference: crate::frozen_time(),
+            },
+            // The same, but with a marker packet.
+            Test {
+                sig: {
+                    let sig = crate::PacketPile::from_bytes(
+                        crate::tests::message(
+                            "a-cypherpunks-manifesto.txt.ed25519.sig"))?;
+                    let mut buf = Vec::new();
+                    Packet::Marker(Default::default()).serialize(&mut buf)?;
+                    sig.serialize(&mut buf)?;
+                    buf
+                },
                 content: crate::tests::manifesto(),
                 reference: crate::frozen_time(),
             },
             Test {
                 sig: crate::tests::message(
-                    "emmelie-dorothea-dina-samantha-awina-detached-signature-of-100MB-of-zeros.sig"),
+                    "emmelie-dorothea-dina-samantha-awina-detached-signature-of-100MB-of-zeros.sig")
+                    .to_vec(),
                 content: &ZEROS[..],
                 reference:
                 crate::types::Timestamp::try_from(1572602018).unwrap().into(),
             },
         ];
 
-        let keys = [
+        let certs = [
             "emmelie-dorothea-dina-samantha-awina-ed25519.pgp"
         ].iter()
             .map(|f| Cert::from_bytes(crate::tests::key(f)).unwrap())
             .collect::<Vec<_>>();
 
         for test in tests.iter() {
-            let sig = test.sig;
+            let sig = &test.sig;
             let content = test.content;
             let reference = test.reference;
 
-            let h = VHelper::new(0, 0, 0, 0, keys.clone());
+            let h = VHelper::new(0, 0, 0, 0, certs.clone());
             let mut v = DetachedVerifierBuilder::from_bytes(sig).unwrap()
                 .with_policy(&p, reference, h).unwrap();
             v.verify_bytes(content).unwrap();
@@ -3187,6 +3363,26 @@ mod test {
             assert_eq!(h.good, 1);
             assert_eq!(h.bad, 0);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn test_streaming_verifier_bug_issue_682() -> Result<()> {
+        let p = P::new();
+        let sig = crate::tests::message("signature-with-broken-mpis.sig");
+
+        let h = VHelper::new(0, 0, 0, 0, vec![]);
+        let result = DetachedVerifierBuilder::from_bytes(sig)?
+        .with_policy(&p, None, h);
+
+        if let Err(e) = result {
+            let error = e.downcast::<crate::Error>()?;
+            assert!(matches!(error, Error::MalformedMessage(..)));
+        } else {
+            unreachable!("Should error out as the signature is broken.");
+        }
+
+        Ok(())
     }
 
     #[test]
@@ -3204,7 +3400,7 @@ mod test {
         // sign 3MiB message
         let mut buf = vec![];
         {
-            let key = cert.keys().with_policy(p, None).for_signing().nth(0).unwrap().key();
+            let key = cert.keys().with_policy(p, None).for_signing().next().unwrap().key();
             let keypair =
                 key.clone().parts_into_secret().unwrap()
                 .into_keypair().unwrap();
@@ -3260,7 +3456,7 @@ mod test {
 
         // Check that we only got a truncated message.
         assert!(v.message_processed());
-        assert!(message.len() > 0);
+        assert!(!message.is_empty());
         assert!(message.len() <= 1 * 1024 * 1024);
         assert!(message.iter().all(|&b| b == 42));
         assert!(v.helper_ref().good == 1);
@@ -3311,13 +3507,97 @@ mod test {
 
         // Check that we only got a truncated message.
         assert!(v.message_processed());
-        assert!(message.len() > 0);
+        assert!(!message.is_empty());
         assert!(message.len() <= 1 * 1024 * 1024);
         assert!(message.iter().all(|&b| b == 42));
         assert!(v.helper_ref().good == 1);
         assert!(v.helper_ref().bad == 1);
         assert!(v.helper_ref().unknown == 0);
         assert!(v.helper_ref().error == 0);
+        Ok(())
+    }
+
+    /// Checks that tampering with the MDC yields a uniform error
+    /// response.
+    #[test]
+    fn issue_693() -> Result<()> {
+        struct H();
+        impl VerificationHelper for H {
+            fn get_certs(&mut self, _ids: &[crate::KeyHandle])
+                         -> Result<Vec<Cert>> {
+                Ok(Vec::new())
+            }
+
+            fn check(&mut self, _: MessageStructure)
+                     -> Result<()> {
+                Ok(())
+            }
+        }
+        impl DecryptionHelper for H {
+            fn decrypt<D>(&mut self, _: &[PKESK], s: &[SKESK],
+                          _: Option<SymmetricAlgorithm>, mut decrypt: D)
+                          -> Result<Option<Fingerprint>>
+            where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool
+            {
+                let (algo, sk) = s[0].decrypt(&"123".into()).unwrap();
+                let r = decrypt(algo, &sk);
+                assert!(r);
+                Ok(None)
+            }
+        }
+
+        fn check(m: &str) -> Result<()> {
+            let doit = || -> Result<()> {
+                let p = &P::new();
+                let mut decryptor = DecryptorBuilder::from_bytes(m.as_bytes())?
+                    .with_policy(p, None, H())?;
+                let mut b = Vec::new();
+                decryptor.read_to_end(&mut b)?;
+                Ok(())
+            };
+
+            let e = doit().unwrap_err();
+            match e.downcast::<io::Error>() {
+                Ok(e) =>
+                    assert_eq!(e.into_inner().unwrap().downcast().unwrap(),
+                               Box::new(Error::ManipulatedMessage)),
+                Err(e) =>
+                    assert_eq!(e.downcast::<Error>().unwrap(),
+                               Error::ManipulatedMessage),
+            };
+            Ok(())
+        }
+
+        // Bad hash.
+        check("-----BEGIN PGP MESSAGE-----
+
+wx4EBwMI7dKRUiOYGCUAWmzhiYGS8Pn/16QkyTous6vSOgFMcilte26C7kej
+rKhvjj6uYNT+mt+L2Yg/FHFvpgVF3KfP0fb+9jZwgt4qpDkTMY7AWPTK6wXX
+Jo8=
+=LS8u
+-----END PGP MESSAGE-----
+")?;
+
+        // Bad header.
+        check("-----BEGIN PGP MESSAGE-----
+
+wx4EBwMI7sPTdlgQwd8AogIcbF/hLVrYbvVbgj4EC6/SOgGNaCyffrR4Fuwl
+Ft2w56/hB/gTaGEhCgDGXg8NiFGIURqF3eIwxxdKWghUutYmsGwqOZmdJ49a
+9gE=
+=DzKF
+-----END PGP MESSAGE-----
+")?;
+
+        // Bad header matching other packet type.
+        check("-----BEGIN PGP MESSAGE-----
+
+wx4EBwMIhpEGBh3v0oMAYgGcj+4CG1mcWQwmyGIDRdvSOgFSHlL2GZ1ZKeXS
+29kScqGg2U8N6ZF9vmj/9Sn7CFtO5PGXn2owQVsopeUSTofV3BNUBpxaBDCO
+EK8=
+=TgeJ
+-----END PGP MESSAGE-----
+")?;
+
         Ok(())
     }
 }

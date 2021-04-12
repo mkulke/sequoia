@@ -7,7 +7,7 @@ use quickcheck::{Arbitrary, Gen};
 ///
 /// A `Fingerprint` uniquely identifies a public key.
 ///
-/// Currently, sequoia supports *version 4* fingerprints and Key IDs
+/// Currently, Sequoia supports *version 4* fingerprints and Key IDs
 /// only.  *Version 3* fingerprints and Key IDs were deprecated by
 /// [RFC 4880] in 2007.
 ///
@@ -57,7 +57,7 @@ assert_send_and_sync!(Fingerprint);
 
 impl fmt::Display for Fingerprint {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.convert_to_string(true))
+        write!(f, "{:X}", self)
     }
 }
 
@@ -171,6 +171,38 @@ impl Fingerprint {
         format!("{:X}", self)
     }
 
+    /// Converts this fingerprint to its hexadecimal representation
+    /// with spaces.
+    ///
+    /// This representation is always uppercase and with spaces
+    /// grouping the hexadecimal digits into groups of four with a
+    /// double space in the middle.  It is only suitable for manual
+    /// comparison of fingerprints.
+    ///
+    /// Note: The spaces will hinder other kind of use cases.  For
+    /// example, it is harder to select the whole fingerprint for
+    /// copying, and it has to be quoted when used as a command line
+    /// argument.  Only use this form for displaying a fingerprint
+    /// with the intent of manual comparisons.
+    ///
+    /// See also [`Fingerprint::to_icao`].
+    ///
+    ///   [`Fingerprint::to_icao`]: #method.to_icao
+    ///
+    /// ```rust
+    /// # fn main() -> sequoia_openpgp::Result<()> {
+    /// # use sequoia_openpgp as openpgp;
+    /// let fp: openpgp::Fingerprint =
+    ///     "0123 4567 89AB CDEF 0123 4567 89AB CDEF 0123 4567".parse()?;
+    ///
+    /// assert_eq!("0123 4567 89AB CDEF 0123  4567 89AB CDEF 0123 4567",
+    ///            fp.to_spaced_hex());
+    /// # Ok(()) }
+    /// ```
+    pub fn to_spaced_hex(&self) -> String {
+        self.convert_to_string(true)
+    }
+
     /// Parses the hexadecimal representation of an OpenPGP
     /// fingerprint.
     ///
@@ -224,26 +256,26 @@ impl Fingerprint {
 
         for (i, b) in raw.iter().enumerate() {
             if pretty && i > 0 && i % 2 == 0 {
-                output.push(' ' as u8);
+                output.push(b' ');
             }
 
             if pretty && i > 0 && i % 10 == 0 {
-                output.push(' ' as u8);
+                output.push(b' ');
             }
 
             let top = b >> 4;
             let bottom = b & 0xFu8;
 
             if top < 10u8 {
-                output.push('0' as u8 + top)
+                output.push(b'0' + top)
             } else {
-                output.push('A' as u8 + (top - 10u8))
+                output.push(b'A' + (top - 10u8))
             }
 
             if bottom < 10u8 {
-                output.push('0' as u8 + bottom)
+                output.push(b'0' + bottom)
             } else {
-                output.push('A' as u8 + (bottom - 10u8))
+                output.push(b'A' + (bottom - 10u8))
             }
         }
 
@@ -302,7 +334,7 @@ impl Fingerprint {
             };
 
             if !ret.is_empty() {
-                ret.push_str(" ");
+                ret.push(' ');
             }
             ret.push_str(word);
         }

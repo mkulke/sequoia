@@ -326,6 +326,11 @@ pub enum SubpacketTag {
 }
 assert_send_and_sync!(SubpacketTag);
 
+/// The proposed Attested Certifications subpacket.
+#[allow(non_upper_case_globals)]
+pub(crate) const SubpacketTag__AttestedCertifications: SubpacketTag =
+    SubpacketTag::Unknown(37);
+
 impl fmt::Display for SubpacketTag {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{:?}", self)
@@ -1073,13 +1078,63 @@ impl SubpacketArea {
 /// 5.2.3.16 of RFC 4880] for details.
 ///
 ///   [Section 5.2.3.16 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5.2.3.16
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NotationData {
     flags: NotationDataFlags,
     name: String,
     value: Vec<u8>,
 }
 assert_send_and_sync!(NotationData);
+
+impl fmt::Display for NotationData {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.name)?;
+
+        let flags = format!("{:?}", self.flags);
+        if ! flags.is_empty() {
+            write!(f, " ({})", flags)?;
+        }
+
+        if self.flags.human_readable() {
+            write!(f, ": {}", String::from_utf8_lossy(&self.value))?;
+        } else {
+            let hex = crate::fmt::hex::encode(&self.value);
+            write!(f, ": {}", hex)?;
+        }
+
+        Ok(())
+    }
+}
+
+impl fmt::Debug for NotationData {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let mut dbg = f.debug_struct("NotationData");
+        dbg.field("name", &self.name);
+
+        let flags = format!("{:?}", self.flags);
+        if ! flags.is_empty() {
+            dbg.field("flags", &flags);
+        }
+
+        if self.flags.human_readable() {
+            match std::str::from_utf8(&self.value) {
+                Ok(s) => {
+                    dbg.field("value", &s);
+                },
+                Err(e) => {
+                    let s = format!("({}): {}", e,
+                                    crate::fmt::hex::encode(&self.value));
+                    dbg.field("value", &s);
+                },
+            }
+        } else {
+            let hex = crate::fmt::hex::encode(&self.value);
+            dbg.field("value", &hex);
+        }
+
+        dbg.finish()
+    }
+}
 
 #[cfg(test)]
 impl Arbitrary for NotationData {
@@ -5403,11 +5458,9 @@ impl signature::SignatureBuilder {
               F: Into<Option<NotationDataFlags>>,
     {
         self.hashed_area.packets.retain(|s| {
-            match s.value {
-                SubpacketValue::NotationData(ref v)
-                    if v.name == name.as_ref() => false,
-                _ => true,
-            }
+            ! matches!(
+                s.value,
+                SubpacketValue::NotationData(ref v) if v.name == name.as_ref())
         });
         self.add_notation(name.as_ref(), value.as_ref(),
                           flags.into().unwrap_or_else(NotationDataFlags::empty),
@@ -6114,7 +6167,7 @@ impl signature::SignatureBuilder {
     {
         self.hashed_area.replace(Subpacket::new(
             SubpacketValue::SignersUserID(uid.as_ref().to_vec()),
-            true)?)?;
+            false)?)?;
 
         Ok(self)
     }
@@ -6953,7 +7006,7 @@ fn accessors() {
     sig = sig.set_revocation_key(vec![ rk.clone() ]).unwrap();
     let sig_ =
         sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
-    assert_eq!(sig_.revocation_keys().nth(0).unwrap(), &rk);
+    assert_eq!(sig_.revocation_keys().next().unwrap(), &rk);
 
     sig = sig.set_issuer(fp.clone().into()).unwrap();
     let sig_ =
@@ -7034,15 +7087,15 @@ fn accessors() {
     sig = sig.set_signature_target(pk_algo, hash_algo, &digest).unwrap();
     let sig_ =
         sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
-    assert_eq!(sig_.signature_target(), Some((pk_algo.into(),
-                                             hash_algo.into(),
+    assert_eq!(sig_.signature_target(), Some((pk_algo,
+                                             hash_algo,
                                              &digest[..])));
 
     let embedded_sig = sig_.clone();
     sig = sig.set_embedded_signature(embedded_sig.clone()).unwrap();
     let sig_ =
         sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
-    assert_eq!(sig_.embedded_signatures().nth(0), Some(&embedded_sig));
+    assert_eq!(sig_.embedded_signatures().next(), Some(&embedded_sig));
 
     sig = sig.set_issuer_fingerprint(fp.clone()).unwrap();
     let sig_ =
@@ -7128,13 +7181,7 @@ fn subpacket_test_1 () {
 
             assert!(got2 && got16 && got33);
 
-            let fp = sig.issuer_fingerprints().nth(0).unwrap().to_string();
-            // eprintln!("Issuer: {}", fp);
-            assert!(
-                fp == "7FAF 6ED7 2381 4355 7BDF  7ED2 6863 C9AD 5B4D 22D3"
-                || fp == "C03F A641 1B03 AE12 5764  6118 7223 B566 78E0 2528");
-
-            let hex = format!("{:X}", sig.issuer_fingerprints().nth(0).unwrap());
+            let hex = format!("{:X}", sig.issuer_fingerprints().next().unwrap());
             assert!(
                 hex == "7FAF6ED7238143557BDF7ED26863C9AD5B4D22D3"
                 || hex == "C03FA6411B03AE12576461187223B56678E02528");
@@ -7184,7 +7231,7 @@ fn subpacket_test_2() {
     // Test #1
     if let (Some(&Packet::PublicKey(ref key)),
             Some(&Packet::Signature(ref sig)))
-        = (pile.children().nth(0), pile.children().nth(2))
+        = (pile.children().next(), pile.children().nth(2))
     {
         //  tag: 2, SignatureCreationTime(1515791508) }
         //  tag: 9, KeyExpirationTime(63072000) }
@@ -7444,7 +7491,7 @@ fn subpacket_test_2() {
         let fp = "361A96BDE1A65B6D6C25AE9FF004B9A45C586126".parse().unwrap();
         let rk = RevocationKey::new(PublicKeyAlgorithm::RSAEncryptSign,
                                     fp, false);
-        assert_eq!(sig.revocation_keys().nth(0).unwrap(), &rk);
+        assert_eq!(sig.revocation_keys().next().unwrap(), &rk);
         assert_eq!(sig.subpacket(SubpacketTag::RevocationKey),
                    Some(&Subpacket {
                        length: 23.into(),

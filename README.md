@@ -199,23 +199,25 @@ PYTHON=disable`.
 
 ## Requirements
 
-To build Sequoia, you need at least Rust 1.46 and a few libraries,
+To build Sequoia, you need at least Rust 1.48 and a few libraries,
 notably the Nettle cryptographic library version 3.4.1 or up.  Please
 see below for OS-specific commands to install the needed libraries:
 
 ### Debian
 
 ```shell
-$ sudo apt install git rustc cargo clang libclang1-9 make pkg-config nettle-dev libssl-dev capnproto libsqlite3-dev
+$ sudo apt install git rustc cargo clang libclang-dev make pkg-config nettle-dev libssl-dev capnproto libsqlite3-dev
 ```
 
 Notes:
 
-  - You need at least rustc version 1.46.  The version in Debian 10
-    (Buster) is too old.  The version from Debian 11 (Bullseye) works
-    fine.
+  - You need at least `rustc` version 1.48.  The version in Debian 10
+    (Buster) is too old, but you can use [rustup].  The version from
+    Debian 11 (Bullseye) works fine.
   - You need at least Nettle 3.4.1.  Both the versions in Debian 10 (Buster)
     and Debian 11 (Bullseye) are fine.
+
+[rustup]: https://rustup.rs/
 
 ### Arch Linux
 
@@ -229,10 +231,81 @@ $ sudo pacman -S git cargo clang make pkg-config nettle openssl capnproto sqlite
 $ sudo dnf install git rustc cargo clang make pkg-config nettle-devel openssl-devel capnproto sqlite-devel
 ```
 
-### macOS (Mojave), using MacPorts
+### NixOS
+
+Development environment for use with `nix-shell` or `direnv`:
+<details>
+  <summary>
+    `shell.nix`
+  </summary>
+
+```nix
+let
+  oxalica_overlay = import (builtins.fetchTarball
+    "https://github.com/oxalica/rust-overlay/archive/master.tar.gz");
+  nixpkgs = import <nixpkgs> { overlays = [ oxalica_overlay ]; };
+  rust_channel = nixpkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain;
+in with nixpkgs;
+pkgs.mkShell {
+  buildInputs = [
+    nettle
+    openssl
+    sqlite
+
+    # for the python bindings
+    (python3.withPackages
+      (python-packages: with python-packages; [ setuptools pip ]))
+  ];
+
+  nativeBuildInputs = [
+    (rust_channel.override{
+        extensions = [ "rust-src" "rust-std" ];
+    })
+
+    llvmPackages.clang
+    pkgconfig
+    capnproto
+
+    # for the python bindings
+    (python3.withPackages
+      (python-packages: with python-packages; [ setuptools pip ]))
+
+    # tools
+    codespell
+  ];
+
+  RUST_BACKTRACE = 1;
+
+  # NixOS enables "fortify" by default, but that is incompatible with
+  # gcc -O0 in `make -Cffi examples`.
+  hardeningDisable = [ "fortify" ];
+
+  # compilation of -sys packages requires manually setting LIBCLANG_PATH
+  LIBCLANG_PATH = "${pkgs.llvmPackages.libclang}/lib";
+}
+```
+
+</details>
+
+
+### macOS
+
+#### MacPorts
 
 ```shell
 $ sudo port install cargo rust capnproto nettle pkgconfig coreutils
+```
+
+#### Brew
+
+```shell
+$ brew install rust capnp nettle
+```
+
+If building the transitive dependency `nettle-sys` reports missing `libclang.dylib` file make sure that `DYLD_LIBRARY_PATH` is set correctly:
+
+```shell
+export DYLD_LIBRARY_PATH=/Library/Developer/CommandLineTools/usr/lib/
 ```
 
 ### Windows
@@ -279,30 +352,30 @@ The FFI crate contains Python bindings.  To disable building, testing,
 and installing the Python bindings, use `make PYTHON=disable`.
 
 To build the Python bindings, you will need the Python headers,
-setuptools, cffi, and pytest for Python3.
+setuptools, pip, cffi, and pytest for Python3.
 
 #### Debian
 
 ```shell
-$ sudo apt install python3-dev python3-setuptools python3-cffi python3-pytest
+$ sudo apt install python3-dev python3-setuptools python3-cffi python3-pytest python3-pip
 ```
 
 #### Fedora
 
 ```shell
-$ sudo dnf install python3-devel python3-setuptools python3-cffi python3-pytest
+$ sudo dnf install python3-devel python3-setuptools python3-cffi python3-pytest python3-pip
 ```
 
 #### macOS (Mojave), using MacPorts
 
 ```shell
-$ sudo port install py37-setuptools
+$ sudo port install py-setuptools py-cffi py-pytest py-pip
 ```
 
 #### BSD
 
 ```shell
-# pkg install capnproto coreutils gmake lang/rust llvm nettle pkgconf py37-setuptools python3 sqlite
+# pkg install capnproto coreutils gmake lang/rust llvm nettle pkgconf py37-setuptools py37-pip python3 sqlite
 ```
 
 Getting help

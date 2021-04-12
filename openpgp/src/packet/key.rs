@@ -315,6 +315,10 @@ pub trait KeyParts: fmt::Debug + seal::Sealed {
         ka: &'a ComponentAmalgamation<'a, Key<UnspecifiedParts, R>>)
         -> Result<&'a ComponentAmalgamation<'a, Key<Self, R>>>
         where Self: Sized;
+
+    /// Indicates that secret key material should be considered when
+    /// comparing or hashing this key.
+    fn significant_secrets() -> bool;
 }
 
 /// A marker trait that captures a `Key`'s role.
@@ -477,6 +481,10 @@ impl KeyParts for PublicParts {
         -> Result<&'a ComponentAmalgamation<'a, Key<Self, R>>> {
         Ok(ka.into())
     }
+
+    fn significant_secrets() -> bool {
+        false
+    }
 }
 
 /// A marker that indicates that a `Key` should be treated like a
@@ -529,6 +537,10 @@ impl KeyParts for SecretParts {
         ka: &'a ComponentAmalgamation<'a, Key<UnspecifiedParts, R>>)
         -> Result<&'a ComponentAmalgamation<'a, Key<Self, R>>> {
         ka.try_into()
+    }
+
+    fn significant_secrets() -> bool {
+        true
     }
 }
 
@@ -583,13 +595,17 @@ impl KeyParts for UnspecifiedParts {
     fn convert_key_amalgamation<'a, R: KeyRole>(
         ka: ComponentAmalgamation<'a, Key<UnspecifiedParts, R>>)
         -> Result<ComponentAmalgamation<'a, Key<UnspecifiedParts, R>>> {
-        Ok(ka.into())
+        Ok(ka)
     }
 
     fn convert_key_amalgamation_ref<'a, R: KeyRole>(
         ka: &'a ComponentAmalgamation<'a, Key<UnspecifiedParts, R>>)
         -> Result<&'a ComponentAmalgamation<'a, Key<Self, R>>> {
-        Ok(ka.into())
+        Ok(ka)
+    }
+
+    fn significant_secrets() -> bool {
+        true
     }
 }
 
@@ -790,7 +806,7 @@ impl<P: KeyParts, R: KeyRole> PartialEq for Key4<P, R> {
         self.creation_time == other.creation_time
             && self.pk_algo == other.pk_algo
             && self.mpis == other.mpis
-            && self.secret == other.secret
+            && (! P::significant_secrets() || self.secret == other.secret)
     }
 }
 
@@ -801,7 +817,9 @@ impl<P: KeyParts, R: KeyRole> std::hash::Hash for Key4<P, R> {
         std::hash::Hash::hash(&self.creation_time, state);
         std::hash::Hash::hash(&self.pk_algo, state);
         std::hash::Hash::hash(&self.mpis, state);
-        std::hash::Hash::hash(&self.secret, state);
+        if P::significant_secrets() {
+            std::hash::Hash::hash(&self.secret, state);
+        }
     }
 }
 
@@ -1082,10 +1100,7 @@ impl<P, R> Key4<P, R>
     /// This returns false if the `Key` doesn't contain any secret key
     /// material.
     pub fn has_unencrypted_secret(&self) -> bool {
-        match self.secret {
-            Some(SecretKeyMaterial::Unencrypted { .. }) => true,
-            _ => false,
-        }
+        matches!(self.secret, Some(SecretKeyMaterial::Unencrypted { .. }))
     }
 
     /// Returns `Key`'s secret key material, if any.
@@ -1349,7 +1364,7 @@ impl SecretKeyMaterial {
         match self {
             SecretKeyMaterial::Unencrypted(ref u) => {
                 *self = SecretKeyMaterial::Encrypted(
-                    u.encrypt(password)?.into());
+                    u.encrypt(password)?);
                 Ok(())
             }
             SecretKeyMaterial::Encrypted(_) =>
@@ -1743,6 +1758,35 @@ mod tests {
     }
 
     #[test]
+    fn key_encrypt_decrypt() -> Result<()> {
+        let mut g = quickcheck::StdThreadGen::new(256);
+        let p: Password = Vec::<u8>::arbitrary(&mut g).into();
+
+        let check = |key: Key4<SecretParts, UnspecifiedRole>| -> Result<()> {
+            let key: Key<_, _> = key.into();
+            let encrypted = key.clone().encrypt_secret(&p)?;
+            let decrypted = encrypted.decrypt_secret(&p)?;
+            assert_eq!(key, decrypted);
+            Ok(())
+        };
+
+        use crate::types::Curve::*;
+        for curve in vec![NistP256, NistP384, NistP521, Ed25519] {
+            let key: Key4<_, key::UnspecifiedRole>
+                = Key4::generate_ecc(true, curve.clone())?;
+            check(key)?;
+        }
+
+        for bits in vec![2048, 3072] {
+            let key: Key4<_, key::UnspecifiedRole>
+                = Key4::generate_rsa(bits)?;
+            check(key)?;
+        }
+
+        Ok(())
+    }
+
+    #[test]
     fn eq() {
         use crate::types::Curve::*;
 
@@ -2035,14 +2079,14 @@ mod tests {
         let mut pki = 0;
         let mut ski = 0;
 
-        let pks = [ "8F17 7771 18A3 3DDA 9BA4  8E62 AACB 3243 6300 52D9" ];
-        let sks = [ "C03F A641 1B03 AE12 5764  6118 7223 B566 78E0 2528",
-                    "50E6 D924 308D BF22 3CFB  510A C2B8 1905 6C65 2598",
-                    "2DC5 0AB5 5BE2 F3B0 4C2D  2CF8 A350 6AFB 820A BD08"];
+        let pks = [ "8F17777118A33DDA9BA48E62AACB3243630052D9" ];
+        let sks = [ "C03FA6411B03AE12576461187223B56678E02528",
+                    "50E6D924308DBF223CFB510AC2B819056C652598",
+                    "2DC50AB55BE2F3B04C2D2CF8A3506AFB820ABD08"];
 
         for p in pile.descendants() {
             if let &Packet::PublicKey(ref p) = p {
-                let fp = p.fingerprint().to_string();
+                let fp = p.fingerprint().to_hex();
                 // eprintln!("PK: {:?}", fp);
 
                 assert!(pki < pks.len());
@@ -2051,7 +2095,7 @@ mod tests {
             }
 
             if let &Packet::PublicSubkey(ref p) = p {
-                let fp = p.fingerprint().to_string();
+                let fp = p.fingerprint().to_hex();
                 // eprintln!("SK: {:?}", fp);
 
                 assert!(ski < sks.len());

@@ -1,15 +1,15 @@
 use std::fs::{self, File};
 use std::io;
 
-use assert_cli;
 use assert_cli::Assert;
-use tempfile;
 use tempfile::TempDir;
 
 use sequoia_openpgp as openpgp;
 use crate::openpgp::{Packet, PacketPile, Cert};
 use crate::openpgp::crypto::KeyPair;
 use crate::openpgp::packet::key::SecretKeyMaterial;
+use crate::openpgp::packet::signature::subpacket::NotationData;
+use crate::openpgp::packet::signature::subpacket::NotationDataFlags;
 use crate::openpgp::types::{CompressionAlgorithm, SignatureType};
 use crate::openpgp::parse::Parse;
 use crate::openpgp::serialize::stream::{Message, Signer, Compressor, LiteralWriter};
@@ -26,10 +26,8 @@ fn sq_sign() {
     // Sign message.
     Assert::cargo_binary("sq")
         .with_args(
-            &["--home",
-              &tmp_dir.path().to_string_lossy(),
-              "sign",
-              "--secret-key-file",
+            &["sign",
+              "--signer-key",
               &artifact("keys/dennis-simon-anton-private.pgp"),
               "--output",
               &sig.to_string_lossy(),
@@ -63,10 +61,87 @@ fn sq_sign() {
     // Verify signed message.
     Assert::cargo_binary("sq")
         .with_args(
-            &["--home",
-              &tmp_dir.path().to_string_lossy(),
+            &["verify",
+              "--signer-cert",
+              &artifact("keys/dennis-simon-anton.pgp"),
+              &sig.to_string_lossy()])
+        .unwrap();
+}
+
+#[test]
+fn sq_sign_with_notations() {
+    let tmp_dir = TempDir::new().unwrap();
+    let sig = tmp_dir.path().join("sig0");
+
+    // Sign message.
+    Assert::cargo_binary("sq")
+        .with_args(
+            &["sign",
+              "--signer-key",
+              &artifact("keys/dennis-simon-anton-private.pgp"),
+              "--output",
+              &sig.to_string_lossy(),
+              "--notation", "foo", "bar",
+              "--notation", "!foo", "xyzzy",
+              "--notation", "hello@example.org", "1234567890",
+              &artifact("messages/a-cypherpunks-manifesto.txt")])
+        .unwrap();
+
+    // Check that the content is sane.
+    let packets: Vec<Packet> =
+        PacketPile::from_file(&sig).unwrap().into_children().collect();
+    assert_eq!(packets.len(), 3);
+    if let Packet::OnePassSig(ref ops) = packets[0] {
+        assert!(ops.last());
+        assert_eq!(ops.typ(), SignatureType::Binary);
+    } else {
+        panic!("expected one pass signature");
+    }
+    if let Packet::Literal(_) = packets[1] {
+        // Do nothing.
+    } else {
+        panic!("expected literal");
+    }
+    if let Packet::Signature(ref sig) = packets[2] {
+        assert_eq!(sig.typ(), SignatureType::Binary);
+
+        eprintln!("{:?}", sig);
+
+        let hr = NotationDataFlags::empty().set_human_readable();
+        let notations = &mut [
+            (NotationData::new("foo", "bar", hr.clone()), false),
+            (NotationData::new("foo", "xyzzy", hr.clone()), false),
+            (NotationData::new("hello@example.org", "1234567890", hr), false)
+        ];
+
+        for n in sig.notation_data() {
+            if n.name() == "salt@notations.sequoia-pgp.org" {
+                continue;
+            }
+
+            for (m, found) in notations.iter_mut() {
+                if n == m {
+                    assert!(!*found);
+                    *found = true;
+                }
+            }
+        }
+        for (n, found) in notations.iter() {
+            assert!(found, "Missing: {:?}", n);
+        }
+    } else {
+        panic!("expected signature");
+    }
+
+    let content = fs::read(&sig).unwrap();
+    assert!(&content[..].starts_with(b"-----BEGIN PGP MESSAGE-----\n\n"));
+
+    // Verify signed message.
+    Assert::cargo_binary("sq")
+        .with_args(
+            &["--known-notation", "foo",
               "verify",
-              "--sender-cert-file",
+              "--signer-cert",
               &artifact("keys/dennis-simon-anton.pgp"),
               &sig.to_string_lossy()])
         .unwrap();
@@ -80,10 +155,8 @@ fn sq_sign_append() {
     // Sign message.
     Assert::cargo_binary("sq")
         .with_args(
-            &["--home",
-              &tmp_dir.path().to_string_lossy(),
-              "sign",
-              "--secret-key-file",
+            &["sign",
+              "--signer-key",
               &artifact("keys/dennis-simon-anton-private.pgp"),
               "--output",
               &sig0.to_string_lossy(),
@@ -117,10 +190,8 @@ fn sq_sign_append() {
     // Verify signed message.
     Assert::cargo_binary("sq")
         .with_args(
-            &["--home",
-              &tmp_dir.path().to_string_lossy(),
-              "verify",
-              "--sender-cert-file",
+            &["verify",
+              "--signer-cert",
               &artifact("keys/dennis-simon-anton.pgp"),
               &sig0.to_string_lossy()])
         .unwrap();
@@ -129,11 +200,9 @@ fn sq_sign_append() {
     let sig1 = tmp_dir.path().join("sig1");
     Assert::cargo_binary("sq")
         .with_args(
-            &["--home",
-              &tmp_dir.path().to_string_lossy(),
-              "sign",
+            &["sign",
               "--append",
-              "--secret-key-file",
+              "--signer-key",
               &artifact("keys/erika-corinna-daniela-simone-antonia-nistp256-private.pgp"),
               "--output",
               &sig1.to_string_lossy(),
@@ -180,19 +249,15 @@ fn sq_sign_append() {
     // Verify both signatures of the signed message.
     Assert::cargo_binary("sq")
         .with_args(
-            &["--home",
-              &tmp_dir.path().to_string_lossy(),
-              "verify",
-              "--sender-cert-file",
+            &["verify",
+              "--signer-cert",
               &artifact("keys/dennis-simon-anton.pgp"),
               &sig1.to_string_lossy()])
         .unwrap();
     Assert::cargo_binary("sq")
         .with_args(
-            &["--home",
-              &tmp_dir.path().to_string_lossy(),
-              "verify",
-              "--sender-cert-file",
+            &["verify",
+              "--signer-cert",
               &artifact("keys/erika-corinna-daniela-simone-antonia-nistp256.pgp"),
               &sig1.to_string_lossy()])
         .unwrap();
@@ -211,7 +276,7 @@ fn sq_sign_append_on_compress_then_sign() {
     // message by foot.
     let tsk = Cert::from_file(&artifact("keys/dennis-simon-anton-private.pgp"))
         .unwrap();
-    let key = tsk.keys().with_policy(p, None).for_signing().nth(0).unwrap().key();
+    let key = tsk.keys().with_policy(p, None).for_signing().next().unwrap().key();
     let sec = match key.optional_secret() {
         Some(SecretKeyMaterial::Unencrypted(ref u)) => u.clone(),
         _ => unreachable!(),
@@ -255,10 +320,8 @@ fn sq_sign_append_on_compress_then_sign() {
     // Verify signed message.
     Assert::cargo_binary("sq")
         .with_args(
-            &["--home",
-              &tmp_dir.path().to_string_lossy(),
-              "verify",
-              "--sender-cert-file",
+            &["verify",
+              "--signer-cert",
               &artifact("keys/dennis-simon-anton.pgp"),
               &sig0.to_string_lossy()])
         .unwrap();
@@ -267,11 +330,9 @@ fn sq_sign_append_on_compress_then_sign() {
     let sig1 = tmp_dir.path().join("sig1");
     Assert::cargo_binary("sq")
         .with_args(
-            &["--home",
-              &tmp_dir.path().to_string_lossy(),
-              "sign",
+            &["sign",
               "--append",
-              "--secret-key-file",
+              "--signer-key",
               &artifact("keys/erika-corinna-daniela-simone-antonia-nistp256-private.pgp"),
               "--output",
               &sig1.to_string_lossy(),
@@ -322,19 +383,15 @@ fn sq_sign_append_on_compress_then_sign() {
     // Verify both signatures of the signed message.
     Assert::cargo_binary("sq")
         .with_args(
-            &["--home",
-              &tmp_dir.path().to_string_lossy(),
-              "verify",
-              "--sender-cert-file",
+            &["verify",
+              "--signer-cert",
               &artifact("keys/dennis-simon-anton.pgp"),
               &sig0.to_string_lossy()])
         .unwrap();
     Assert::cargo_binary("sq")
         .with_args(
-            &["--home",
-              &tmp_dir.path().to_string_lossy(),
-              "verify",
-              "--sender-cert-file",
+            &["verify",
+              "--signer-cert",
               &artifact("keys/erika-corinna-daniela-simone-antonia-nistp256.pgp"),
               &sig0.to_string_lossy()])
         .unwrap();
@@ -348,11 +405,9 @@ fn sq_sign_detached() {
     // Sign detached.
     Assert::cargo_binary("sq")
         .with_args(
-            &["--home",
-              &tmp_dir.path().to_string_lossy(),
-              "sign",
+            &["sign",
               "--detached",
-              "--secret-key-file",
+              "--signer-key",
               &artifact("keys/dennis-simon-anton-private.pgp"),
               "--output",
               &sig.to_string_lossy(),
@@ -375,10 +430,8 @@ fn sq_sign_detached() {
     // Verify detached.
     Assert::cargo_binary("sq")
         .with_args(
-            &["--home",
-              &tmp_dir.path().to_string_lossy(),
-              "verify",
-              "--sender-cert-file",
+            &["verify",
+              "--signer-cert",
               &artifact("keys/dennis-simon-anton.pgp"),
               "--detached",
               &sig.to_string_lossy(),
@@ -394,11 +447,9 @@ fn sq_sign_detached_append() {
     // Sign detached.
     Assert::cargo_binary("sq")
         .with_args(
-            &["--home",
-              &tmp_dir.path().to_string_lossy(),
-              "sign",
+            &["sign",
               "--detached",
-              "--secret-key-file",
+              "--signer-key",
               &artifact("keys/dennis-simon-anton-private.pgp"),
               "--output",
               &sig.to_string_lossy(),
@@ -421,10 +472,8 @@ fn sq_sign_detached_append() {
     // Verify detached.
     Assert::cargo_binary("sq")
         .with_args(
-            &["--home",
-              &tmp_dir.path().to_string_lossy(),
-              "verify",
-              "--sender-cert-file",
+            &["verify",
+              "--signer-cert",
               &artifact("keys/dennis-simon-anton.pgp"),
               "--detached",
               &sig.to_string_lossy(),
@@ -434,11 +483,9 @@ fn sq_sign_detached_append() {
     // Check that we don't blindly overwrite signatures.
     Assert::cargo_binary("sq")
         .with_args(
-            &["--home",
-              &tmp_dir.path().to_string_lossy(),
-              "sign",
+            &["sign",
               "--detached",
-              "--secret-key-file",
+              "--signer-key",
               &artifact("keys/erika-corinna-daniela-simone-antonia-nistp256-private.pgp"),
               "--output",
               &sig.to_string_lossy(),
@@ -449,12 +496,10 @@ fn sq_sign_detached_append() {
     // Now add a second signature with --append.
     Assert::cargo_binary("sq")
         .with_args(
-            &["--home",
-              &tmp_dir.path().to_string_lossy(),
-              "sign",
+            &["sign",
               "--detached",
               "--append",
-              "--secret-key-file",
+              "--signer-key",
               &artifact("keys/erika-corinna-daniela-simone-antonia-nistp256-private.pgp"),
               "--output",
               &sig.to_string_lossy(),
@@ -482,10 +527,8 @@ fn sq_sign_detached_append() {
     // Verify both detached signatures.
     Assert::cargo_binary("sq")
         .with_args(
-            &["--home",
-              &tmp_dir.path().to_string_lossy(),
-              "verify",
-              "--sender-cert-file",
+            &["verify",
+              "--signer-cert",
               &artifact("keys/dennis-simon-anton.pgp"),
               "--detached",
               &sig.to_string_lossy(),
@@ -493,10 +536,8 @@ fn sq_sign_detached_append() {
         .unwrap();
     Assert::cargo_binary("sq")
         .with_args(
-            &["--home",
-              &tmp_dir.path().to_string_lossy(),
-              "verify",
-              "--sender-cert-file",
+            &["verify",
+              "--signer-cert",
               &artifact("keys/erika-corinna-daniela-simone-antonia-nistp256.pgp"),
               "--detached",
               &sig.to_string_lossy(),
@@ -507,12 +548,10 @@ fn sq_sign_detached_append() {
     // goes wrong.
     Assert::cargo_binary("sq")
         .with_args(
-            &["--home",
-              &tmp_dir.path().to_string_lossy(),
-              "sign",
+            &["sign",
               "--detached",
               "--append",
-              "--secret-key-file",
+              "--signer-key",
               // Not a private key => signing will fail.
               &artifact("keys/erika-corinna-daniela-simone-antonia-nistp521.pgp"),
               "--output",
@@ -547,11 +586,9 @@ fn sq_sign_append_a_notarization() {
     // Now add a third signature with --append to a notarized message.
     Assert::cargo_binary("sq")
         .with_args(
-            &["--home",
-              &tmp_dir.path().to_string_lossy(),
-              "sign",
+            &["sign",
               "--append",
-              "--secret-key-file",
+              "--signer-key",
               &artifact("keys/erika-corinna-daniela-simone-antonia-nistp256-private.pgp"),
               "--output",
               &sig0.to_string_lossy(),
@@ -610,28 +647,22 @@ fn sq_sign_append_a_notarization() {
     // Verify both notarizations and the signature.
     Assert::cargo_binary("sq")
         .with_args(
-            &["--home",
-              &tmp_dir.path().to_string_lossy(),
-              "verify",
-              "--sender-cert-file",
+            &["verify",
+              "--signer-cert",
               &artifact("keys/neal.pgp"),
               &sig0.to_string_lossy()])
         .unwrap();
     Assert::cargo_binary("sq")
         .with_args(
-            &["--home",
-              &tmp_dir.path().to_string_lossy(),
-              "verify",
-              "--sender-cert-file",
+            &["verify",
+              "--signer-cert",
               &artifact("keys/emmelie-dorothea-dina-samantha-awina-ed25519.pgp"),
               &sig0.to_string_lossy()])
         .unwrap();
     Assert::cargo_binary("sq")
         .with_args(
-            &["--home",
-              &tmp_dir.path().to_string_lossy(),
-              "verify",
-              "--sender-cert-file",
+            &["verify",
+              "--signer-cert",
               &artifact("keys/erika-corinna-daniela-simone-antonia-nistp256.pgp"),
               &sig0.to_string_lossy()])
         .unwrap();
@@ -645,11 +676,9 @@ fn sq_sign_notarize() {
     // Now add a third signature with --append to a notarized message.
     Assert::cargo_binary("sq")
         .with_args(
-            &["--home",
-              &tmp_dir.path().to_string_lossy(),
-              "sign",
+            &["sign",
               "--notarize",
-              "--secret-key-file",
+              "--signer-key",
               &artifact("keys/erika-corinna-daniela-simone-antonia-nistp256-private.pgp"),
               "--output",
               &sig0.to_string_lossy(),
@@ -696,19 +725,15 @@ fn sq_sign_notarize() {
     // Verify both notarizations and the signature.
     Assert::cargo_binary("sq")
         .with_args(
-            &["--home",
-              &tmp_dir.path().to_string_lossy(),
-              "verify",
-              "--sender-cert-file",
+            &["verify",
+              "--signer-cert",
               &artifact("keys/neal.pgp"),
               &sig0.to_string_lossy()])
         .unwrap();
     Assert::cargo_binary("sq")
         .with_args(
-            &["--home",
-              &tmp_dir.path().to_string_lossy(),
-              "verify",
-              "--sender-cert-file",
+            &["verify",
+              "--signer-cert",
               &artifact("keys/erika-corinna-daniela-simone-antonia-nistp256.pgp"),
               &sig0.to_string_lossy()])
         .unwrap();
@@ -722,11 +747,9 @@ fn sq_sign_notarize_a_notarization() {
     // Now add a third signature with --append to a notarized message.
     Assert::cargo_binary("sq")
         .with_args(
-            &["--home",
-              &tmp_dir.path().to_string_lossy(),
-              "sign",
+            &["sign",
               "--notarize",
-              "--secret-key-file",
+              "--signer-key",
               &artifact("keys/erika-corinna-daniela-simone-antonia-nistp256-private.pgp"),
               "--output",
               &sig0.to_string_lossy(),
@@ -785,28 +808,22 @@ fn sq_sign_notarize_a_notarization() {
     // Verify both notarizations and the signature.
     Assert::cargo_binary("sq")
         .with_args(
-            &["--home",
-              &tmp_dir.path().to_string_lossy(),
-              "verify",
-              "--sender-cert-file",
+            &["verify",
+              "--signer-cert",
               &artifact("keys/neal.pgp"),
               &sig0.to_string_lossy()])
         .unwrap();
     Assert::cargo_binary("sq")
         .with_args(
-            &["--home",
-              &tmp_dir.path().to_string_lossy(),
-              "verify",
-              "--sender-cert-file",
+            &["verify",
+              "--signer-cert",
               &artifact("keys/emmelie-dorothea-dina-samantha-awina-ed25519.pgp"),
               &sig0.to_string_lossy()])
         .unwrap();
     Assert::cargo_binary("sq")
         .with_args(
-            &["--home",
-              &tmp_dir.path().to_string_lossy(),
-              "verify",
-              "--sender-cert-file",
+            &["verify",
+              "--signer-cert",
               &artifact("keys/erika-corinna-daniela-simone-antonia-nistp256.pgp"),
               &sig0.to_string_lossy()])
         .unwrap();

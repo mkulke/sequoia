@@ -51,11 +51,7 @@ impl KeyringValidity {
     /// Note: a `KeyringValidator` will only return this after
     /// `KeyringValidator::finish` has been called.
     pub fn is_keyring(&self) -> bool {
-        if let KeyringValidity::Keyring = self {
-            true
-        } else {
-            false
-        }
+        matches!(self, KeyringValidity::Keyring)
     }
 
     /// Returns whether the packet sequence is a valid Keyring prefix.
@@ -63,21 +59,13 @@ impl KeyringValidity {
     /// Note: a `KeyringValidator` will only return this before
     /// `KeyringValidator::finish` has been called.
     pub fn is_keyring_prefix(&self) -> bool {
-        if let KeyringValidity::KeyringPrefix = self {
-            true
-        } else {
-            false
-        }
+        matches!(self, KeyringValidity::KeyringPrefix)
     }
 
     /// Returns whether the packet sequence is definitely not a valid
     /// keyring.
     pub fn is_err(&self) -> bool {
-        if let KeyringValidity::Error(_) = self {
-            true
-        } else {
-            false
-        }
+        matches!(self, KeyringValidity::Error(_))
     }
 }
 
@@ -174,7 +162,7 @@ impl KeyringValidator {
                 self.error = Some(CertParserError::OpenPGP(
                     Error::MalformedMessage(
                         format!("Invalid Cert: {:?} packet (at {}) not expected",
-                                tag, self.n_packets).into())));
+                                tag, self.n_packets))));
                 self.tokens.clear();
                 return;
             }
@@ -257,11 +245,7 @@ impl CertValidity {
     /// Note: a `CertValidator` will only return this after
     /// `CertValidator::finish` has been called.
     pub fn is_cert(&self) -> bool {
-        if let CertValidity::Cert = self {
-            true
-        } else {
-            false
-        }
+        matches!(self, CertValidity::Cert)
     }
 
     /// Returns whether the packet sequence is a valid Cert prefix.
@@ -269,21 +253,13 @@ impl CertValidity {
     /// Note: a `CertValidator` will only return this before
     /// `CertValidator::finish` has been called.
     pub fn is_cert_prefix(&self) -> bool {
-        if let CertValidity::CertPrefix = self {
-            true
-        } else {
-            false
-        }
+        matches!(self, CertValidity::CertPrefix)
     }
 
     /// Returns whether the packet sequence is definitely not a valid
     /// Cert.
     pub fn is_err(&self) -> bool {
-        if let CertValidity::Error(_) = self {
-            true
-        } else {
-            false
-        }
+        matches!(self, CertValidity::Error(_))
     }
 }
 
@@ -776,7 +752,7 @@ impl<'a> CertParser<'a> {
             return Ok(None);
         }
 
-        if self.packets.len() > 0 {
+        if !self.packets.is_empty() {
             if self.packets.len() == 1 {
                 if let Err(err) = Cert::valid_start(&self.packets[0]) {
                     t!("{}", err);
@@ -921,15 +897,15 @@ pub(crate) fn split_sigs<C>(primary: &KeyHandle, primary_keyid: &KeyHandle,
             || typ == CertificationRevocation
         {
             if is_selfsig {
-                self_revs.push(sig.into());
+                self_revs.push(sig);
             } else {
-                other_revs.push(sig.into());
+                other_revs.push(sig);
             }
         } else {
             if is_selfsig {
-                self_signatures.push(sig.into());
+                self_signatures.push(sig);
             } else {
-                certifications.push(sig.into());
+                certifications.push(sig);
             }
         }
     }
@@ -951,7 +927,7 @@ impl<'a> Iterator for CertParser<'a> {
                 None => {
                     t!("EOF.");
 
-                    if self.packets.len() == 0 {
+                    if self.packets.is_empty() {
                         return None;
                     }
                     match self.cert(None) {
@@ -963,8 +939,27 @@ impl<'a> Iterator for CertParser<'a> {
                 Some(mut iter) => {
                     let r = match iter.next() {
                         Some(Ok(packet)) => {
-                            t!("Got packet #{} ({})",
-                               self.packets.len(), packet.tag());
+                            t!("Got packet #{} ({}{})",
+                               self.packets.len(), packet.tag(),
+                               match &packet {
+                                   Packet::PublicKey(k) =>
+                                       Some(k.fingerprint().to_hex()),
+                                   Packet::SecretKey(k) =>
+                                       Some(k.fingerprint().to_hex()),
+                                   Packet::PublicSubkey(k) =>
+                                       Some(k.fingerprint().to_hex()),
+                                   Packet::SecretSubkey(k) =>
+                                       Some(k.fingerprint().to_hex()),
+                                   Packet::UserID(u) =>
+                                       Some(String::from_utf8_lossy(u.value())
+                                                .into()),
+                                   Packet::Signature(s) =>
+                                       Some(format!("{}", s.typ())),
+                                   _ => None,
+                               }
+                               .map(|s| format!(", {}", s))
+                               .unwrap_or_else(|| "".into())
+                            );
                             self.source = Some(iter);
                             self.parse(packet)
                         }
@@ -973,7 +968,7 @@ impl<'a> Iterator for CertParser<'a> {
                             self.saw_error = true;
                             return Some(Err(err));
                         }
-                        None if self.packets.len() == 0 => {
+                        None if self.packets.is_empty() => {
                             t!("Packet iterator was empty");
                             Ok(None)
                         }
@@ -1155,7 +1150,7 @@ mod test {
         testy_with_marker.extend_from_slice(crate::tests::key("testy.pgp"));
         CertParser::from(
             PacketParser::from_bytes(&testy_with_marker).unwrap())
-            .nth(0).unwrap().unwrap();
+            .next().unwrap().unwrap();
     }
 
     #[test]
@@ -1187,8 +1182,8 @@ mod test {
         let userid : Packet = cert.clone()
             .into_iter()
             .filter(|p| p.tag() == Tag::UserID)
-            .nth(0).unwrap()
-            .into();
+            .next()
+            .unwrap();
 
         // An unknown packet.
         let tag = Tag::Private(61);

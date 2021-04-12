@@ -11,7 +11,7 @@ CARGO_TARGET_DIR	?= $(shell pwd)/target
 # We currently only support absolute paths.
 CARGO_TARGET_DIR	:= $(abspath $(CARGO_TARGET_DIR))
 # The packages to build, test and document, e.g., "-p sequoia-openpgp"
-CARGO_PACKAGES	?= --all
+CARGO_PACKAGES	?= --workspace
 # Additional arguments to pass to cargo test, e.g., "--doc".
 CARGO_TEST_ARGS	?=
 # Version as stated in the top-level Cargo.toml.
@@ -73,8 +73,8 @@ test check:
 	then \
 		echo 'WARNING: Not running other tests, because $$CARGO_PACKAGES specifies a package.'; \
 	else \
-		$(MAKE) -Copenpgp-ffi test; \
-		$(MAKE) -Cffi test; \
+		$(MAKE) -Copenpgp-ffi test && \
+		$(MAKE) -Cffi test && \
 		$(MAKE) examples; \
 	fi
 
@@ -101,15 +101,15 @@ build-release:
 	$(MAKE) -Cffi build-release
 	$(MAKE) -Csq build-release
 	$(MAKE) -Csqv build-release
-	$(MAKE) -Csop build-release
 
+# "install" needs "build-release" as it builds the project
+# with optimizations enabled.
 .PHONY: install
 install: build-release
 	$(MAKE) -Copenpgp-ffi install
 	$(MAKE) -Cffi install
 	$(MAKE) -Csq install
 	$(MAKE) -Csqv install
-	$(MAKE) -Csop install
 
 # Infrastructure for creating source distributions.
 .PHONY: dist
@@ -154,23 +154,8 @@ clean:
 	$(MAKE) -Copenpgp-ffi clean
 	$(MAKE) -Cffi clean
 
-.PHONY: sanity-check-versions
-sanity-check-versions:
-	set -e ; V=$(VERSION) ; VV=$(shell echo $(VERSION) | cut -d. -f1-2) ;\
-        bad() { echo "bad $$*." ; exit 1 ; } ;\
-	for TOML in */Cargo.toml ; do \
-	  echo -n "$$TOML " ;\
-	  grep '^version *=' $$TOML | grep -q $$V || bad version ;\
-	  grep '^documentation *=' $$TOML \
-	    | egrep -q "($${V})|(https://docs.rs/)" || bad documentation ;\
-	  grep '{ *path *= *"' $$TOML | while read L ; do \
-	    echo $$L | grep -q $$VV || bad intra-workspace dependency ;\
-	  done ;\
-	  echo good. ;\
-	done
-
 .PHONY: codespell
 codespell:
 	$(CODESPELL) $(CODESPELL_FLAGS) \
-	  -L "ede,iff,mut,nd,te,uint,KeyServer,keyserver,Keyserver,keyservers,Keyservers,keypair,keypairs,KeyPair,fpr,dedup" \
+	  -L "crate,ede,iff,mut,nd,te,uint,KeyServer,keyserver,Keyserver,keyservers,Keyservers,keypair,keypairs,KeyPair,fpr,dedup" \
 	  -S "*.bin,*.gpg,*.pgp,./.git,data,highlight.js,*/target,Makefile"

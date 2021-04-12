@@ -176,7 +176,7 @@
 //!   [`SEIP`]: ../packet/enum.SEIP.html
 //!   [`MDC`]: ../packet/struct.MDC.html
 //!   [`AED`]: ../packet/enum.AED.html
-use std;
+
 use std::io;
 use std::io::prelude::*;
 use std::convert::TryFrom;
@@ -441,7 +441,7 @@ impl<'a, T: 'a + BufferedReader<Cookie>> PacketHeaderParser<T> {
            path: Vec<usize>, header: Header,
            header_bytes: Vec<u8>) -> Self
     {
-        assert!(path.len() > 0);
+        assert!(!path.is_empty());
 
         let mut cookie = Cookie::default();
         cookie.level = inner.cookie_ref().level;
@@ -490,7 +490,7 @@ impl<'a, T: 'a + BufferedReader<Cookie>> PacketHeaderParser<T> {
             //
             // XXX avoid the extra copy.
             let body = self.reader.steal_eof()?;
-            if body.len() > 0 {
+            if !body.is_empty() {
                 self.field("body", body.len());
             }
 
@@ -554,23 +554,26 @@ impl<'a, T: 'a + BufferedReader<Cookie>> PacketHeaderParser<T> {
     }
 
     fn parse_u8(&mut self, name: &'static str) -> Result<u8> {
+        let r = self.reader.data_consume_hard(1)?[0];
         self.field(name, 1);
-        Ok(self.reader.data_consume_hard(1)?[0])
+        Ok(r)
     }
 
     fn parse_be_u16(&mut self, name: &'static str) -> Result<u16> {
+        let r = self.reader.read_be_u16()?;
         self.field(name, 2);
-        Ok(self.reader.read_be_u16()?)
+        Ok(r)
     }
 
     fn parse_be_u32(&mut self, name: &'static str) -> Result<u32> {
+        let r = self.reader.read_be_u32()?;
         self.field(name, 4);
-        Ok(self.reader.read_be_u32()?)
+        Ok(r)
     }
 
     fn parse_bool(&mut self, name: &'static str) -> Result<bool> {
-        self.field(name, 1);
         let v = self.reader.data_consume_hard(1)?[0];
+        self.field(name, 1);
         match v {
             0 => Ok(false),
             1 => Ok(true),
@@ -581,8 +584,9 @@ impl<'a, T: 'a + BufferedReader<Cookie>> PacketHeaderParser<T> {
 
     fn parse_bytes(&mut self, name: &'static str, amount: usize)
                    -> Result<Vec<u8>> {
+        let r = self.reader.steal(amount)?;
         self.field(name, amount);
-        Ok(self.reader.steal(amount)?)
+        Ok(r)
     }
 
     fn parse_bytes_eof(&mut self, name: &'static str) -> Result<Vec<u8>> {
@@ -603,6 +607,7 @@ pub(crate) enum HashesFor {
     Nothing,
     MDC,
     Signature,
+    CleartextSignature,
 }
 
 /// Controls whether or not a hashed reader hashes data.
@@ -708,6 +713,11 @@ pub struct Cookie {
     /// When set, buffered_reader_stack_pop will return early when it
     /// encounters a fake EOF at the level it is popping to.
     fake_eof: bool,
+
+    /// Indicates that this is the top-level armor reader that is
+    /// doing a transformation of a message using the cleartext
+    /// signature framework into a signed message.
+    csf_transformation: bool,
 }
 assert_send_and_sync!(Cookie);
 
@@ -846,6 +856,7 @@ impl Default for Cookie {
             sig_groups_max_len: 1,
             hash_stash: None,
             fake_eof: false,
+            csf_transformation: false,
         }
     }
 }
@@ -861,18 +872,19 @@ impl Cookie {
             sig_groups_max_len: 1,
             hash_stash: None,
             fake_eof: false,
+            csf_transformation: false,
         }
     }
 
     /// Returns a reference to the topmost signature group.
     pub(crate) fn sig_group(&self) -> &SignatureGroup {
-        assert!(self.sig_groups.len() > 0);
+        assert!(!self.sig_groups.is_empty());
         &self.sig_groups[self.sig_groups.len() - 1]
     }
 
     /// Returns a mutable reference to the topmost signature group.
     pub(crate) fn sig_group_mut(&mut self) -> &mut SignatureGroup {
-        assert!(self.sig_groups.len() > 0);
+        assert!(!self.sig_groups.is_empty());
         let len = self.sig_groups.len();
         &mut self.sig_groups[len - 1]
     }
@@ -886,7 +898,7 @@ impl Cookie {
 
     /// Tests whether the topmost signature group is no longer used.
     fn sig_group_unused(&self) -> bool {
-        assert!(self.sig_groups.len() > 0);
+        assert!(!self.sig_groups.is_empty());
         self.sig_groups[self.sig_groups.len() - 1].ops_count == 0
     }
 
@@ -926,7 +938,9 @@ impl Cookie {
                         break;
                     }
                     if br_level == level
-                        && cookie.hashes_for == HashesFor::Signature {
+                        && (cookie.hashes_for == HashesFor::Signature
+                            || cookie.hashes_for == HashesFor::CleartextSignature)
+                    {
                         cookie.hashing = how;
                     }
                 } else {
@@ -935,6 +949,34 @@ impl Cookie {
             }
             reader = r.get_mut();
         }
+    }
+
+    /// Signals that we are processing a message using the Cleartext
+    /// Signature Framework.
+    ///
+    /// This is used by the armor reader to signal that it has
+    /// encountered such a message and is transforming it into an
+    /// inline signed message.
+    pub(crate) fn set_processing_csf_message(&mut self) {
+        tracer!(TRACE, "set_processing_csf_message", self.level.unwrap_or(0));
+        t!("Enabling CSF Transformation mode");
+        self.csf_transformation = true;
+    }
+
+    /// Checks if we are processing a signed message using the
+    /// Cleartext Signature Framework.
+    fn processing_csf_message(reader: &dyn BufferedReader<Cookie>)
+                              -> bool {
+        let mut reader: Option<&dyn BufferedReader<Cookie>>
+            = Some(reader);
+        while let Some(r) = reader {
+            if r.cookie_ref().level == Some(ARMOR_READER_LEVEL) {
+                return r.cookie_ref().csf_transformation;
+            } else {
+                reader = r.get_ref();
+            }
+        }
+        false
     }
 }
 
@@ -947,7 +989,6 @@ fn buffered_reader_stack_pop<'a>(
     t!("(reader level: {:?}, pop through: {})",
        reader.cookie_ref().level, depth);
 
-    let mut last_level = None;
     while let Some(level) = reader.cookie_ref().level {
         assert!(level <= depth // Peel off exactly one level.
                 || depth < 0); // Except for the topmost filters.
@@ -958,28 +999,15 @@ fn buffered_reader_stack_pop<'a>(
             t!("top reader at level {:?} (fake eof: {}), pop through: {}",
                reader.cookie_ref().level, fake_eof, depth);
 
-            let (dropping_content, dropped_content)
-                = if Some(level) != last_level {
-                    // Only drop the content of the top BufferedReader at
-                    // a given level.
-                    (true, reader.drop_eof()?)
-                } else {
-                    assert_eq!(reader.buffer().len(), 0);
-                    (false, false)
-                };
-
-            t!("popping level {:?} reader, {}dropping content ({}), \
-                reader: {:?}",
+            t!("popping level {:?} reader, reader: {:?}",
                reader.cookie_ref().level,
-               if dropping_content { "" } else { "not " },
-               if dropped_content { "something dropped" }
-               else { "nothing to drop" },
                reader);
 
             if reader.eof() && ! reader.consummated() {
                 return Err(Error::MalformedPacket("Truncated packet".into())
                            .into());
             }
+            reader.drop_eof()?;
             reader = reader.into_inner().unwrap();
 
             if level == depth && fake_eof {
@@ -992,8 +1020,6 @@ fn buffered_reader_stack_pop<'a>(
         } else {
             break;
         }
-
-        last_level = Some(level);
     }
 
     Ok((false, reader))
@@ -1102,7 +1128,7 @@ impl Header {
             CTB::Old(ref ctb) =>
                 BodyLength::parse_old_format(bio, ctb.length_type())?,
         };
-        return Ok(Header::new(ctb, length));
+        Ok(Header::new(ctb, length))
     }
 }
 
@@ -1326,7 +1352,7 @@ impl Signature4 {
         let typ = typ.into();
         let need_hash = HashingMode::for_signature(hash_algo, typ);
         let mut pp = php.ok(Packet::Signature(Signature4::new(
-            typ, pk_algo.into(), hash_algo,
+            typ, pk_algo, hash_algo,
             hashed_area,
             unhashed_area,
             [digest_prefix1, digest_prefix2],
@@ -1355,7 +1381,21 @@ impl Signature4 {
                         }
 
                     if cookie.hashes_for == HashesFor::Signature {
+                        // When verifying cleartext signed messages,
+                        // we may have more signatures than
+                        // one-pass-signature packets, but are
+                        // guaranteed to only have one signature
+                        // group.
+                        //
+                        // Only decrement the count when hashing for
+                        // signatures, not when hashing for cleartext
+                        // signatures.
                         cookie.sig_group_mut().ops_count -= 1;
+                    }
+
+                    if cookie.hashes_for == HashesFor::Signature
+                        || cookie.hashes_for == HashesFor::CleartextSignature
+                    {
                         if let Some(hash) =
                             cookie.sig_group().hashes.iter().find_map(
                                 |mode|
@@ -1415,8 +1455,7 @@ impl Signature4 {
             return Err(
                 Error::MalformedPacket(
                     format!("Unexpected body length encoding: {:?}",
-                            header.length())
-                        .into()).into());
+                            header.length())).into());
         }
 
         // Make sure we have a minimum header.
@@ -1534,7 +1573,7 @@ impl Subpacket {
                 },
             SubpacketTag::RegularExpression => {
                 let mut v = php.parse_bytes("regular expr", len)?;
-                if v.len() == 0 || v[v.len() - 1] != 0 {
+                if v.is_empty() || v[v.len() - 1] != 0 {
                     return Err(Error::MalformedPacket(
                         "Regular expression not 0-terminated".into())
                                .into());
@@ -1830,6 +1869,13 @@ impl OnePassSig3 {
 
         let recursion_depth = php.recursion_depth();
 
+        // Check if we are processing a cleartext signed message.
+        let want_hashes_for = if Cookie::processing_csf_message(&php.reader) {
+            HashesFor::CleartextSignature
+        } else {
+            HashesFor::Signature
+        };
+
         // Walk up the reader chain to see if there is already a
         // hashed reader on level recursion_depth - 1.
         let done = {
@@ -1844,7 +1890,7 @@ impl OnePassSig3 {
                             break;
                         }
                         if br_level == recursion_depth - 1
-                            && cookie.hashes_for == HashesFor::Signature {
+                            && cookie.hashes_for == want_hashes_for {
                                 // We found a suitable hashed reader.
                                 if cookie.saw_last {
                                     cookie.sig_group_push();
@@ -1917,7 +1963,7 @@ impl OnePassSig3 {
         assert!(! fake_eof);
 
         let mut reader = HashedReader::new(
-            reader, HashesFor::Signature, algos);
+            reader, want_hashes_for, algos);
         reader.cookie_mut().level = Some(recursion_depth - 1);
         // Account for this OPS packet.
         reader.cookie_mut().sig_group_mut().ops_count += 1;
@@ -2209,14 +2255,13 @@ impl Key4<key::UnspecifiedParts, key::UnspecifiedRole>
             if len < 6 {
                 // Much too short.
                 return Err(Error::MalformedPacket(
-                    format!("Packet too short ({} bytes)", len).into()).into());
+                    format!("Packet too short ({} bytes)", len)).into());
             }
         } else {
             return Err(
                 Error::MalformedPacket(
                     format!("Unexpected body length encoding: {:?}",
-                            header.length())
-                        .into()).into());
+                            header.length())).into());
         }
 
         // Make sure we have a minimum header.
@@ -2326,7 +2371,7 @@ impl Marker {
         } else {
             return Err(Error::MalformedPacket(
                 format!("Unexpected body length encoding: {:?}",
-                        header.length()).into()).into());
+                        header.length())).into());
         }
 
         // Check the body.
@@ -2592,7 +2637,7 @@ impl SKESK {
                 // parameters if the S2K method is not supported, and
                 // we don't know the size of the ESK.
                 let mut esk = php_try!(php.reader.steal_eof()
-                                       .map_err(|e| anyhow::Error::from(e)));
+                                       .map_err(anyhow::Error::from));
                 let aead_iv = if s2k_supported && esk.len() >= iv_size {
                     // We know the S2K method, so the parameters have
                     // been parsed into the S2K object.  So, `esk`
@@ -2724,7 +2769,7 @@ impl MDC {
                 {
                     let state = bio.cookie_mut();
                     if state.hashes_for == HashesFor::MDC {
-                        if state.sig_group().hashes.len() > 0 {
+                        if !state.sig_group().hashes.is_empty() {
                             let h = state.sig_group_mut().hashes
                                 .iter_mut().find_map(
                                     |mode|
@@ -3542,7 +3587,7 @@ impl<'a> PacketParserEOF<'a> {
     /// # Ok(()) }
     /// ```
     pub fn last_recursion_depth(&self) -> Option<isize> {
-        if self.last_path.len() == 0 {
+        if self.last_path.is_empty() {
             None
         } else {
             Some(self.last_path.len() as isize - 1)
@@ -3581,11 +3626,7 @@ assert_send_and_sync!(PacketParserResult<'_>);
 impl<'a> PacketParserResult<'a> {
     /// Returns `true` if the result is `EOF`.
     pub fn is_eof(&self) -> bool {
-        if let PacketParserResult::EOF(_) = self {
-            true
-        } else {
-            false
-        }
+        matches!(self, PacketParserResult::EOF(_))
     }
 
     /// Returns `true` if the result is `Some`.
@@ -3604,7 +3645,7 @@ impl<'a> PacketParserResult<'a> {
     ///   [`PacketParserEOF`]: struct.PacketParserEOF.html
     pub fn expect(self, msg: &str) -> PacketParser<'a> {
         if let PacketParserResult::Some(pp) = self {
-            return pp;
+            pp
         } else {
             panic!("{}", msg);
         }
@@ -3931,7 +3972,7 @@ impl <'a> PacketParser<'a> {
     /// # Ok(()) }
     /// ```
     pub fn last_recursion_depth(&self) -> Option<isize> {
-        if self.last_path.len() == 0 {
+        if self.last_path.is_empty() {
             assert_eq!(&self.path[..], &[ 0 ]);
             None
         } else {
@@ -4119,7 +4160,7 @@ impl <'a> PacketParser<'a> {
              path: Vec<usize>)
         -> Result<ParserResult<'a>>
     {
-        assert!(path.len() > 0);
+        assert!(!path.is_empty());
 
         let indent = path.len() as isize - 1;
         tracer!(TRACE, "PacketParser::parse", indent);
@@ -4129,7 +4170,7 @@ impl <'a> PacketParser<'a> {
 
         // When header encounters an EOF, it returns an error.  But,
         // we want to return None.  Try a one byte read.
-        if bio.data(1)?.len() == 0 {
+        if bio.data(1)?.is_empty() {
             t!("No packet at {:?} (EOF).", path);
             return Ok(ParserResult::EOF((bio, state, path)));
         }
@@ -4177,7 +4218,7 @@ impl <'a> PacketParser<'a> {
                 }
                 Err(err) => {
                     if orig_error.is_none() {
-                        orig_error = Some(err.into());
+                        orig_error = Some(err);
                     }
 
                     if state.first_packet || skip > 32 * 1024 {
@@ -4216,8 +4257,20 @@ impl <'a> PacketParser<'a> {
             Cookie::hashing(
                 &mut bio, Hashing::Disabled, recursion_depth - 1);
         } else if tag == Tag::OnePassSig || tag == Tag::Signature {
-            Cookie::hashing(
-                &mut bio, Hashing::Notarized, recursion_depth - 1);
+            if Cookie::processing_csf_message(&bio) {
+                // When processing a CSF message, the hashing reader
+                // is not peeled off, because the number of signature
+                // packets cannot be known from the number of OPS
+                // packets.  Instead, we simply disable hashing.
+                //
+                // XXX: It would be nice to peel off the hashing
+                // reader and drop this workaround.
+                Cookie::hashing(
+                    &mut bio, Hashing::Disabled, recursion_depth - 1);
+            } else {
+                Cookie::hashing(
+                    &mut bio, Hashing::Notarized, recursion_depth - 1);
+            }
         }
 
         // Save header for the map or nested signatures.
@@ -4639,7 +4692,7 @@ impl <'a> PacketParser<'a> {
 
         fn set_or_extend(rest: Vec<u8>, c: &mut Container, processed: bool)
                          -> Result<&[u8]> {
-            if rest.len() > 0 {
+            if !rest.is_empty() {
                 let current = match c.body() {
                     Body::Unprocessed(bytes) => &bytes[..],
                     Body::Processed(bytes) => &bytes[..],
@@ -4648,7 +4701,7 @@ impl <'a> PacketParser<'a> {
                         "cannot append unread bytes to parsed packets"
                             .into()).into()),
                 };
-                let rest = if current.len() > 0 {
+                let rest = if !current.is_empty() {
                     let mut new =
                         Vec::with_capacity(current.len() + rest.len());
                     new.extend_from_slice(current);
@@ -4686,7 +4739,7 @@ impl <'a> PacketParser<'a> {
             Packet::AED(p) =>
                 set_or_extend(rest, p.deref_mut(), ! self.encrypted),
             p => {
-                if rest.len() > 0 {
+                if !rest.is_empty() {
                     Err(Error::MalformedPacket(
                         format!("Unexpected body data for {:?}: {}",
                                 p, crate::fmt::hex::encode_pretty(rest)))
@@ -4741,7 +4794,7 @@ impl <'a> PacketParser<'a> {
                self.packet.tag(), recursion_depth,
                self.data_eof().unwrap_or(&[]).len());
 
-            self.buffer_unread_content()?.len() > 0
+            !self.buffer_unread_content()?.is_empty()
         } else {
             t!("({:?} at depth {}): dropping {} bytes of unread content",
                self.packet.tag(), recursion_depth,
@@ -4777,7 +4830,7 @@ impl <'a> PacketParser<'a> {
 
     /// Hashes content that has been streamed.
     fn hash_read_content(&mut self, b: &[u8]) {
-        if b.len() > 0 {
+        if !b.is_empty() {
             assert!(self.body_hash.is_some());
             self.body_hash.as_mut().map(|h| h.update(b));
             self.content_was_read = true;
@@ -5449,7 +5502,7 @@ mod test {
 
             ppr = pp.recurse().unwrap().1;
         }
-        return ppr;
+        ppr
     }
 
     #[test]
@@ -5999,8 +6052,7 @@ mod test {
         let cert: Cert =
             Cert::from_bytes(crate::tests::key("testy-new-private.pgp"))?;
         let signing_keypair = cert.keys().secret()
-            .with_policy(p, None).alive().revoked(false).for_signing()
-            .nth(0).unwrap()
+            .with_policy(p, None).alive().revoked(false).for_signing().next().unwrap()
             .key().clone().into_keypair()?;
         let mut signature = vec![];
         {

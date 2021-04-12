@@ -2,4 +2,4 @@
 **/*.rs.bk
 *~
 .gdb_history
-.dir-locals.el
+.dir-locals-2.el

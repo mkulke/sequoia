@@ -36,6 +36,10 @@
 //! Windows support is currently not implemented, but should be
 //! straight forward.
 
+#![doc(html_favicon_url = "https://docs.sequoia-pgp.org/favicon.png")]
+#![doc(html_logo_url = "https://docs.sequoia-pgp.org/logo.svg")]
+#![warn(missing_docs)]
+
 use std::fs;
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream, TcpListener};
@@ -60,7 +64,6 @@ use std::process::{Command, Stdio};
 use std::thread;
 
 use sequoia_openpgp as openpgp;
-use sequoia_core as core;
 
 #[macro_use] mod trace;
 pub mod assuan;
@@ -68,6 +71,7 @@ pub mod gnupg;
 mod keygrip;
 pub use self::keygrip::Keygrip;
 pub mod sexp;
+pub mod core;
 
 #[cfg(test)]
 mod tests;

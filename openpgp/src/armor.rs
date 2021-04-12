@@ -28,9 +28,10 @@
 //! # Ok(()) }
 //! ```
 
-use base64;
 use buffered_reader::BufferedReader;
+use std::convert::TryFrom;
 use std::fmt;
+use std::io;
 use std::io::{Cursor, Read, Write};
 use std::io::{Result, Error, ErrorKind};
 use std::path::Path;
@@ -41,11 +42,14 @@ use std::borrow::Cow;
 #[cfg(test)]
 use quickcheck::{Arbitrary, Gen};
 
-use crate::vec_truncate;
 use crate::packet::prelude::*;
 use crate::packet::header::{BodyLength, CTBNew, CTBOld};
 use crate::parse::Cookie;
 use crate::serialize::MarshalInto;
+use crate::vec_truncate;
+
+mod base64_utils;
+use base64_utils::*;
 
 /// The encoded output stream must be represented in lines of no more
 /// than 76 characters each (see (see [RFC 4880, section
@@ -90,7 +94,51 @@ impl Arbitrary for Kind {
     }
 }
 
-impl Kind {
+/// Specifies the kind of data as indicated by the label.
+///
+/// This is a non-public variant of `Kind` that is currently only used
+/// for detecting the kind on consumption.
+///
+/// See also https://gitlab.com/sequoia-pgp/sequoia/-/issues/672
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Label {
+    /// A generic OpenPGP message.  (Since its structure hasn't been
+    /// validated, in this crate's terminology, this is just a
+    /// `PacketPile`.)
+    Message,
+    /// A certificate.
+    PublicKey,
+    /// A transferable secret key.
+    SecretKey,
+    /// A detached signature.
+    Signature,
+    /// A message using the Cleartext Signature Framework.
+    ///
+    /// See [Section 7 of RFC 4880].
+    ///
+    ///   [Section 7 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-7
+    CleartextSignature,
+    /// A generic file.  This is a GnuPG extension.
+    File,
+}
+assert_send_and_sync!(Label);
+
+impl TryFrom<Label> for Kind {
+    type Error = crate::Error;
+    fn try_from(l: Label) -> std::result::Result<Self, Self::Error> {
+        match l {
+            Label::Message => Ok(Kind::Message),
+            Label::PublicKey => Ok(Kind::PublicKey),
+            Label::SecretKey => Ok(Kind::SecretKey),
+            Label::Signature => Ok(Kind::Signature),
+            Label::File => Ok(Kind::File),
+            Label::CleartextSignature => Err(crate::Error::InvalidOperation(
+                "armor::Kind cannot express cleartext signatures".into())),
+        }
+    }
+}
+
+impl Label {
     /// Detects the header returning the kind and length of the
     /// header.
     fn detect_header(blurb: &[u8]) -> Option<(Self, usize)> {
@@ -104,15 +152,17 @@ impl Kind {
 
         // Detect kind.
         let kind = if rest.starts_with(b"MESSAGE") {
-            Kind::Message
+            Label::Message
         } else if rest.starts_with(b"PUBLIC KEY BLOCK") {
-            Kind::PublicKey
+            Label::PublicKey
         } else if rest.starts_with(b"PRIVATE KEY BLOCK") {
-            Kind::SecretKey
+            Label::SecretKey
         } else if rest.starts_with(b"SIGNATURE") {
-            Kind::Signature
+            Label::Signature
+        } else if rest.starts_with(b"SIGNED MESSAGE") {
+            Label::CleartextSignature
         } else if rest.starts_with(b"ARMORED FILE") {
-            Kind::File
+            Label::File
         } else {
             return None;
         };
@@ -124,6 +174,20 @@ impl Kind {
               + trailing_dashes.len()))
     }
 
+    fn blurb(&self) -> &str {
+        match self {
+            Label::Message => "MESSAGE",
+            Label::PublicKey => "PUBLIC KEY BLOCK",
+            Label::SecretKey => "PRIVATE KEY BLOCK",
+            Label::Signature => "SIGNATURE",
+            Label::CleartextSignature => "SIGNED MESSAGE",
+            Label::File => "ARMORED FILE",
+        }
+    }
+
+}
+
+impl Kind {
     /// Detects the footer returning length of the footer.
     fn detect_footer(&self, blurb: &[u8]) -> Option<usize> {
         let (leading_dashes, rest) = dash_prefix(blurb);
@@ -305,7 +369,7 @@ impl<W: Write> Writer<W> {
         self.finalize_headers()?;
 
         // Write any stashed bytes and pad.
-        if self.stash.len() > 0 {
+        if !self.stash.is_empty() {
             self.sink.write_all(base64::encode_config(
                 &self.stash, base64::STANDARD).as_bytes())?;
             self.column += 4;
@@ -365,9 +429,9 @@ impl<W: Write> Write for Writer<W> {
         // and encode it.  If writing out the stash fails below, we
         // might end up with a stash of size 3.
         assert!(self.stash.len() <= 3);
-        if self.stash.len() > 0 {
+        if !self.stash.is_empty() {
             while self.stash.len() < 3 {
-                if input.len() == 0 {
+                if input.is_empty() {
                     /* We exhausted the input.  Return now, any
                      * stashed bytes are encoded when finalizing the
                      * writer.  */
@@ -405,7 +469,7 @@ impl<W: Write> Write for Writer<W> {
         let encoded = base64::encode_config(input, base64::STANDARD_NO_PAD);
         written += input.len();
         let mut enc = encoded.as_bytes();
-        while enc.len() > 0 {
+        while !enc.is_empty() {
             let n = cmp::min(LINE_LENGTH - self.column, enc.len());
             self.sink
                 .write_all(&enc[..n])?;
@@ -456,18 +520,51 @@ pub enum ReaderMode {
 assert_send_and_sync!(ReaderMode);
 
 /// A filter that strips ASCII Armor from a stream of data.
+#[derive(Debug)]
 pub struct Reader<'a> {
-    reader: buffered_reader::Generic<IoReader<'a>, Cookie>,
+    // The following fields are the state of an embedded
+    // buffered_reader::Generic.  We need to be able to access the
+    // cookie in Self::initialize, therefore using
+    // buffered_reader::Generic as we used to is no longer an option.
+    //
+    // XXX: Directly implement the BufferedReader protocol.  This may
+    // actually simplify the code and reduce the required buffering.
+
+    buffer: Option<Box<[u8]>>,
+    // The next byte to read in the buffer.
+    cursor: usize,
+    // The preferred chunk size.  This is just a hint.
+    preferred_chunk_size: usize,
+    // The wrapped reader.
+    source: Box<dyn BufferedReader<Cookie> + 'a>,
+    // Stashed error, if any.
+    error: Option<Error>,
+    // The user settable cookie.
+    cookie: Cookie,
+    // End fields of the embedded generic reader.
+
+    kind: Option<Kind>,
+    mode: ReaderMode,
+    decode_buffer: Vec<u8>,
+    crc: CRC,
+    expect_crc: Option<u32>,
+    initialized: bool,
+    headers: Vec<(String, String)>,
+    finalized: bool,
+    prefix: Vec<u8>,
+    prefix_remaining: usize,
+
+    /// Controls the transformation of messages using the Cleartext
+    /// Signature Framework into inline signed messages.
+    enable_csft: bool,
+
+    /// State for the CSF transformer.
+    csft: Option<CSFTransformer>,
 }
 assert_send_and_sync!(Reader<'_>);
 
-impl<'a> fmt::Debug for Reader<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("armor::Reader")
-            .field("reader", self.reader.reader_ref())
-            .finish()
-    }
-}
+// The default buffer size.
+const DEFAULT_BUF_SIZE: usize = 8 * 1024;
 
 impl<'a> fmt::Display for Reader<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -475,25 +572,24 @@ impl<'a> fmt::Display for Reader<'a> {
     }
 }
 
-#[derive(Debug)]
-struct IoReader<'a> {
-    source: Box<dyn BufferedReader<Cookie> + 'a>,
-    kind: Option<Kind>,
-    mode: ReaderMode,
-    buffer: Vec<u8>,
-    crc: CRC,
-    expect_crc: Option<u32>,
-    initialized: bool,
-    headers: Vec<(String, String)>,
-    finalized: bool,
-    prefix_len: usize,
-    prefix_remaining: usize,
-}
-assert_send_and_sync!(IoReader<'_>);
-
 impl Default for ReaderMode {
     fn default() -> Self {
         ReaderMode::Tolerant(None)
+    }
+}
+
+/// State for transforming a message using the Cleartext Signature
+/// Framework into an inline signed message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CSFTransformer {
+    OPS,
+    Literal,
+    Signatures,
+}
+
+impl Default for CSFTransformer {
+    fn default() -> Self {
+        CSFTransformer::OPS
     }
 }
 
@@ -613,26 +709,41 @@ impl<'a> Reader<'a> {
         -> Self
         where M: Into<Option<ReaderMode>>
     {
-        let mode = mode.into().unwrap_or(Default::default());
+        Self::from_buffered_reader_csft(inner, mode.into(), cookie, false)
+    }
 
-        let io_reader = IoReader {
+    pub(crate) fn from_buffered_reader_csft(
+        inner: Box<dyn BufferedReader<Cookie> + 'a>,
+        mode: Option<ReaderMode>,
+        cookie: Cookie,
+        enable_csft: bool,
+    )
+        -> Self
+    {
+        let mode = mode.unwrap_or_default();
+
+        Reader {
+            // The embedded generic reader's fields.
+            buffer: None,
+            cursor: 0,
+            preferred_chunk_size: DEFAULT_BUF_SIZE,
             source: inner,
+            error: None,
+            cookie,
+            // End of the embedded generic reader's fields.
+
             kind: None,
             mode,
-            buffer: Vec::<u8>::with_capacity(1024),
+            decode_buffer: Vec::<u8>::with_capacity(1024),
             crc: CRC::new(),
             expect_crc: None,
             headers: Vec::new(),
             initialized: false,
             finalized: false,
-            prefix_len: 0,
+            prefix: Vec::with_capacity(0),
             prefix_remaining: 0,
-        };
-
-        Reader {
-            reader: buffered_reader::Generic::with_cookie(io_reader,
-                                                          None,
-                                                          cookie),
+            enable_csft,
+            csft: None,
         }
     }
 
@@ -642,7 +753,7 @@ impl<'a> Reader<'a> {
     /// header has not been encountered yet (try reading some data
     /// first!), this function returns None.
     pub fn kind(&self) -> Option<Kind> {
-        self.reader.reader_ref().kind
+        self.kind
     }
 
     /// Returns the armored headers.
@@ -682,12 +793,12 @@ impl<'a> Reader<'a> {
     /// # }
     /// ```
     pub fn headers(&mut self) -> Result<&[(String, String)]> {
-        self.reader.reader_mut().initialize()?;
-        Ok(&self.reader.reader_ref().headers[..])
+        self.initialize()?;
+        Ok(&self.headers[..])
     }
 }
 
-impl<'a> IoReader<'a> {
+impl<'a> Reader<'a> {
     /// Consumes the header if not already done.
     fn initialize(&mut self) -> Result<()> {
         if self.initialized { return Ok(()) }
@@ -772,14 +883,12 @@ impl<'a> IoReader<'a> {
             lines += 1;
 
             // Ignore leading whitespace, etc.
-            while match self.source.data_hard(1)?[0] {
+            while matches!(self.source.data_hard(1)?[0],
                 // Skip some whitespace (previously .is_ascii_whitespace())
-                b' ' | b'\t' | b'\r' | b'\n' => true,
+                b' ' | b'\t' | b'\r' | b'\n' |
                 // Also skip common quote characters
-                b'>' | b'|' | b']' | b'}' => true,
-                // Do not skip anything else
-                _ => false,
-            } {
+                b'>' | b'|' | b']' | b'}' )
+            {
                 let c = self.source.data(1)?[0];
                 if c == b'\n' {
                     // We found a newline while walking whitespace, reset prefix
@@ -812,7 +921,36 @@ impl<'a> IoReader<'a> {
                 }
 
                 // Possible ASCII-armor header.
-                if let Some((kind, len)) = Kind::detect_header(&input) {
+                if let Some((label, len)) = Label::detect_header(&input) {
+                    if label == Label::CleartextSignature && ! self.enable_csft
+                    {
+                        // We found a message using the Cleartext
+                        // Signature Framework, but the CSF
+                        // transformation is not enabled.  Continue
+                        // searching until we find the bare signature.
+                        continue 'search;
+                    }
+
+                    if label == Label::CleartextSignature && self.enable_csft
+                    {
+                        // Initialize the transformer.
+                        self.csft = Some(CSFTransformer::default());
+
+                        // Signal to the parser stack that the CSF
+                        // transformation is happening.  This will be
+                        // used by the HashedReader (specifically, in
+                        // Cookie::processing_csf_message and
+                        // Cookie::hash_update) to select the correct
+                        // hashing method.
+                        self.cookie.set_processing_csf_message();
+
+                        // We'll be looking for the signature framing next.
+                        self.kind = Some(Kind::Signature);
+                        break 'search len;
+                    }
+                    let kind = Kind::try_from(label)
+                        .expect("cleartext signature handled above");
+
                     let mut expected_kind = None;
                     if let ReaderMode::Tolerant(Some(kind)) = self.mode {
                         expected_kind = Some(kind);
@@ -847,32 +985,39 @@ impl<'a> IoReader<'a> {
         if found_blob {
             // Skip the rest of the initialization.
             self.initialized = true;
-            self.prefix_len = prefix.len();
             self.prefix_remaining = prefix.len();
+            self.prefix = prefix;
             return Ok(());
         }
 
+        self.prefix = prefix;
+        self.read_headers()
+    }
+
+    /// Reads headers and finishes the initialization.
+    fn read_headers(&mut self) -> Result<()> {
         // We consumed the header above, but not any trailing
         // whitespace and the trailing new line.  We do that now.
         // Other data between the header and the new line are not
         // allowed.  But, instead of failing, we try to recover, by
         // stopping at the first non-whitespace character.
         let n = {
-            let line = self.source.read_to('\n' as u8)?;
+            let line = self.source.read_to(b'\n')?;
             line.iter().position(|&c| {
                 !c.is_ascii_whitespace()
             }).unwrap_or(line.len())
         };
         self.source.consume(n);
 
-        let next_prefix = &self.source.data_hard(prefix.len())?[..prefix.len()];
-        if prefix != next_prefix {
+        let next_prefix =
+            &self.source.data_hard(self.prefix.len())?[..self.prefix.len()];
+        if self.prefix != next_prefix {
             // If the next line doesn't start with the same prefix, we assume
             // it was garbage on the front and drop the prefix so long as it
             // was purely whitespace.  Any non-whitespace remains an error
             // while searching for the armor header if it's not repeated.
-            if prefix.iter().all(|b| (*b as char).is_ascii_whitespace()) {
-                crate::vec_truncate(&mut prefix, 0);
+            if self.prefix.iter().all(|b| (*b as char).is_ascii_whitespace()) {
+                crate::vec_truncate(&mut self.prefix, 0);
             } else {
                 // Nope, we have actually failed to read this properly
                 return Err(
@@ -895,12 +1040,12 @@ impl<'a> IoReader<'a> {
             // the control flow wraps around, we need to make sure
             // that we buffer the prefix in addition to the line.
             self.source.consume(
-                prefix_len.take().unwrap_or_else(|| prefix.len()));
+                prefix_len.take().unwrap_or_else(|| self.prefix.len()));
 
             self.source.consume(n);
 
             // Buffer the next line.
-            let line = self.source.read_to('\n' as u8)?;
+            let line = self.source.read_to(b'\n')?;
             n = line.len();
             lines += 1;
 
@@ -910,8 +1055,9 @@ impl<'a> IoReader<'a> {
                 // Buffer the next line and the prefix that is going
                 // to be consumed in the next iteration.
                 let next_prefix =
-                    &self.source.data_hard(n + prefix.len())?[n..n + prefix.len()];
-                if prefix != next_prefix {
+                    &self.source.data_hard(n + self.prefix.len())?
+                        [n..n + self.prefix.len()];
+                if self.prefix != next_prefix {
                     return Err(
                         Error::new(ErrorKind::InvalidInput,
                                    "Inconsistent quoting of armored data"));
@@ -928,7 +1074,7 @@ impl<'a> IoReader<'a> {
             let line = if line.ends_with(&"\r\n"[..]) {
                 // \r\n.
                 &line[..line.len() - 2]
-            } else if line.ends_with("\n") {
+            } else if line.ends_with('\n') {
                 // \n.
                 &line[..line.len() - 1]
             } else {
@@ -939,7 +1085,7 @@ impl<'a> IoReader<'a> {
             /* Process headers.  */
             let key_value = line.splitn(2, ": ").collect::<Vec<&str>>();
             if key_value.len() == 1 {
-                if line.trim_start().len() == 0 {
+                if line.trim_start().is_empty() {
                     // Empty line.
                     break;
                 } else if lines == 1 {
@@ -960,15 +1106,16 @@ impl<'a> IoReader<'a> {
             // Buffer the next line and the prefix that is going to be
             // consumed in the next iteration.
             let next_prefix =
-                &self.source.data_hard(n + prefix.len())?[n..n + prefix.len()];
+                &self.source.data_hard(n + self.prefix.len())?
+                    [n..n + self.prefix.len()];
 
             // Sometimes, we find a truncated prefix.
-            let l = common_prefix(&prefix, next_prefix);
-            let full_prefix = l == prefix.len();
+            let l = common_prefix(&self.prefix, next_prefix);
+            let full_prefix = l == self.prefix.len();
             if ! (full_prefix
                   // Truncation is okay if the rest of the prefix
                   // contains only whitespace.
-                  || prefix[l..].iter().all(|c| c.is_ascii_whitespace()))
+                  || self.prefix[l..].iter().all(|c| c.is_ascii_whitespace()))
             {
                 return Err(
                     Error::new(ErrorKind::InvalidInput,
@@ -983,8 +1130,7 @@ impl<'a> IoReader<'a> {
         self.source.consume(n);
 
         self.initialized = true;
-        self.prefix_len = prefix.len();
-        self.prefix_remaining = prefix.len();
+        self.prefix_remaining = self.prefix.len();
         Ok(())
     }
 }
@@ -994,227 +1140,14 @@ fn common_prefix<A: AsRef<[u8]>, B: AsRef<[u8]>>(a: A, b: B) -> usize {
     a.as_ref().iter().zip(b.as_ref().iter()).take_while(|(a, b)| a == b).count()
 }
 
-// Remove whitespace, etc. from the base64 data.
-//
-// This function returns the filtered base64 data (i.e., stripped of
-// all skipable data like whitespace), and the amount of unfiltered
-// data that corresponds to.  Thus, if we have the following 7 bytes:
-//
-//     ab  cde
-//     0123456
-//
-// This function returns ("abcd", 6), because the 'd' is the last
-// character in the last complete base64 chunk, and it is at offset 5.
-//
-// If 'd' is followed by whitespace, it is undefined whether that
-// whitespace is included in the count.
-//
-// This function only returns full chunks of base64 data.  As a
-// consequence, if base64_data_max is less than 4, then this will not
-// return any data.
-//
-// This function will stop after it sees base64 padding, and if it
-// sees invalid base64 data.
-fn base64_filter(mut bytes: Cow<[u8]>, base64_data_max: usize,
-                 mut prefix_remaining: usize, prefix_len: usize)
-    -> (Cow<[u8]>, usize, usize)
-{
-    let mut leading_whitespace = 0;
-
-    // Round down to the nearest chunk size.
-    let base64_data_max = base64_data_max / 4 * 4;
-
-    // Number of bytes of base64 data.  Since we update `bytes` in
-    // place, the base64 data is `&bytes[..base64_len]`.
-    let mut base64_len = 0;
-
-    // Offset of the next byte of unfiltered data to process.
-    let mut unfiltered_offset = 0;
-
-    // Offset of the last byte of the last ***complete*** base64 chunk
-    // in the unfiltered data.
-    let mut unfiltered_complete_len = 0;
-
-    // Number of bytes of padding that we've seen so far.
-    let mut padding = 0;
-
-    while unfiltered_offset < bytes.len()
-        && base64_len < base64_data_max
-        // A valid base64 chunk never starts with padding.
-        && ! (padding > 0 && base64_len % 4 == 0)
-    {
-        // If we have some prefix to skip, skip it.
-        if prefix_remaining > 0 {
-            prefix_remaining -= 1;
-            if unfiltered_offset == 0 {
-                match bytes {
-                    Cow::Borrowed(s) => {
-                        // We're at the beginning.  Avoid moving
-                        // data by cutting off the start of the
-                        // slice.
-                        bytes = Cow::Borrowed(&s[1..]);
-                        leading_whitespace += 1;
-                        continue;
-                    }
-                    Cow::Owned(_) => (),
-                }
-            }
-            unfiltered_offset += 1;
-            continue;
-        }
-        match bytes[unfiltered_offset] {
-            // White space.
-            c if c.is_ascii_whitespace() => {
-                if c == b'\n' {
-                    prefix_remaining = prefix_len;
-                }
-                if unfiltered_offset == 0 {
-                    match bytes {
-                        Cow::Borrowed(s) => {
-                            // We're at the beginning.  Avoid moving
-                            // data by cutting off the start of the
-                            // slice.
-                            bytes = Cow::Borrowed(&s[1..]);
-                            leading_whitespace += 1;
-                            continue;
-                        }
-                        Cow::Owned(_) => (),
-                    }
-                }
-            }
-
-            // Padding.
-            b'=' => {
-                if padding == 2 {
-                    // There can never be more than two bytes of
-                    // padding.
-                    break;
-                }
-                if base64_len % 4 == 0 {
-                    // Padding can never occur at the start of a
-                    // base64 chunk.
-                    break;
-                }
-
-                if unfiltered_offset != base64_len {
-                    bytes.to_mut()[base64_len] = b'=';
-                }
-                base64_len += 1;
-                if base64_len % 4 == 0 {
-                    unfiltered_complete_len = unfiltered_offset + 1;
-                }
-                padding += 1;
-            }
-
-            // The only thing that can occur after padding is
-            // whitespace or padding.  Those cases were covered above.
-            _ if padding > 0 => break,
-
-            // Base64 data!
-            b if is_base64_char(&b) => {
-                if unfiltered_offset != base64_len {
-                    bytes.to_mut()[base64_len] = b;
-                }
-                base64_len += 1;
-                if base64_len % 4 == 0 {
-                    unfiltered_complete_len = unfiltered_offset + 1;
-                }
-            }
-
-            // Not base64 data.
-            _ => break,
-        }
-
-        unfiltered_offset += 1;
-    }
-
-    let base64_len = base64_len - (base64_len % 4);
-    unfiltered_complete_len += leading_whitespace;
-    match bytes {
-        Cow::Borrowed(s) =>
-            (Cow::Borrowed(&s[..base64_len]), unfiltered_complete_len,
-             prefix_remaining),
-        Cow::Owned(mut v) => {
-            vec_truncate(&mut v, base64_len);
-            (Cow::Owned(v), unfiltered_complete_len, prefix_remaining)
-        }
-    }
-}
-
-/// Checks whether the given bytes contain armored OpenPGP data.
-fn is_armored_pgp_blob(bytes: &[u8]) -> bool {
-    // Get up to 32 bytes of base64 data.  That's 24 bytes of data
-    // (ignoring padding), which is more than enough to get the first
-    // packet's header.
-    let (bytes, _, _) = base64_filter(Cow::Borrowed(bytes), 32, 0, 0);
-
-    match base64::decode_config(&bytes, base64::STANDARD) {
-        Ok(d) => {
-            // Don't consider an empty message to be valid.
-            if d.len() == 0 {
-                false
-            } else {
-                let mut br = buffered_reader::Memory::new(&d);
-                if let Ok(header) = Header::parse(&mut br) {
-                    header.ctb().tag().valid_start_of_message()
-                        && header.valid(false).is_ok()
-                } else {
-                    false
-                }
-            }
-        },
-        Err(_err) => false,
-    }
-}
-
-/// Checks whether the given byte is in the base64 character set.
-fn is_base64_char(b: &u8) -> bool {
-    b.is_ascii_alphanumeric() || *b == '+' as u8 || *b == '/' as u8
-}
-
-/// Returns the number of bytes of base64 data are needed to encode
-/// `s` bytes of raw data.
-fn base64_size(s: usize) -> usize {
-    (s + 3 - 1) / 3 * 4
-}
-
-#[test]
-fn base64_size_test() {
-    assert_eq!(base64_size(0), 0);
-    assert_eq!(base64_size(1), 4);
-    assert_eq!(base64_size(2), 4);
-    assert_eq!(base64_size(3), 4);
-    assert_eq!(base64_size(4), 8);
-    assert_eq!(base64_size(5), 8);
-    assert_eq!(base64_size(6), 8);
-    assert_eq!(base64_size(7), 12);
-}
-
-impl<'a> Read for IoReader<'a> {
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        if ! self.initialized {
-            self.initialize()?;
-        }
-
-        if buf.len() == 0 {
-            // Short-circuit here.  Otherwise, we copy 0 bytes into
-            // the buffer, which means we decoded 0 bytes, and we
-            // wrongfully assume that we reached the end of the
-            // armored block.
-            return Ok(0);
-        }
-
-        if self.finalized {
-            assert_eq!(self.buffer.len(), 0);
-            return Ok(0);
-        }
-
-        let (consumed, decoded) = if self.buffer.len() > 0 {
+impl<'a> Reader<'a> {
+    fn read_armored_data(&mut self, buf: &mut [u8]) -> Result<usize> {
+        let (consumed, decoded) = if !self.decode_buffer.is_empty() {
             // We have something buffered, use that.
 
-            let amount = cmp::min(buf.len(), self.buffer.len());
-            buf[..amount].copy_from_slice(&self.buffer[..amount]);
-            crate::vec_drain_prefix(&mut self.buffer, amount);
+            let amount = cmp::min(buf.len(), self.decode_buffer.len());
+            buf[..amount].copy_from_slice(&self.decode_buffer[..amount]);
+            crate::vec_drain_prefix(&mut self.decode_buffer, amount);
 
             (0, amount)
         } else {
@@ -1271,7 +1204,7 @@ impl<'a> Read for IoReader<'a> {
                                 // buffer partial chunks.
                                 cmp::max(THRESHOLD, buf.len() / 3 * 4),
                                 self.prefix_remaining,
-                                self.prefix_len);
+                                self.prefix.len());
 
             // We shouldn't have any partial chunks.
             assert_eq!(base64data.len() % 4, 0);
@@ -1281,15 +1214,15 @@ impl<'a> Read for IoReader<'a> {
                 // (Note: the computed size *might* be a slight
                 // overestimate, because the last base64 chunk may
                 // include padding.)
-                self.buffer = base64::decode_config(
+                self.decode_buffer = base64::decode_config(
                     &base64data, base64::STANDARD)
                     .map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
 
-                self.crc.update(&self.buffer);
+                self.crc.update(&self.decode_buffer);
 
-                let copied = cmp::min(buf.len(), self.buffer.len());
-                buf[..copied].copy_from_slice(&self.buffer[..copied]);
-                crate::vec_drain_prefix(&mut self.buffer, copied);
+                let copied = cmp::min(buf.len(), self.decode_buffer.len());
+                buf[..copied].copy_from_slice(&self.decode_buffer[..copied]);
+                crate::vec_drain_prefix(&mut self.decode_buffer, copied);
 
                 copied
             } else {
@@ -1316,7 +1249,7 @@ impl<'a> Read for IoReader<'a> {
             /* Look for CRC.  The CRC is optional.  */
             let consumed = {
                 // Skip whitespace.
-                while self.source.data(1)?.len() > 0
+                while !self.source.data(1)?.is_empty()
                     && self.source.buffer()[0].is_ascii_whitespace()
                 {
                     self.source.consume(1);
@@ -1330,7 +1263,7 @@ impl<'a> Read for IoReader<'a> {
                 };
 
                 if data.len() == 5
-                    && data[0] == '=' as u8
+                    && data[0] == b'='
                     && data[1..5].iter().all(is_base64_char)
                 {
                     /* Found.  */
@@ -1356,11 +1289,11 @@ impl<'a> Read for IoReader<'a> {
             self.source.consume(consumed);
 
             // Skip any expected prefix
-            self.source.data_consume_hard(self.prefix_len)?;
+            self.source.data_consume_hard(self.prefix.len())?;
             // Look for a footer.
             let consumed = {
                 // Skip whitespace.
-                while self.source.data(1)?.len() > 0
+                while !self.source.data(1)?.is_empty()
                     && self.source.buffer()[0].is_ascii_whitespace()
                 {
                     self.source.consume(1);
@@ -1397,68 +1330,392 @@ impl<'a> Read for IoReader<'a> {
 
         Ok(decoded)
     }
-}
 
-impl<'a> Read for Reader<'a> {
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        self.reader.read(buf)
+    fn read_clearsigned_message(&mut self, buf: &mut [u8]) -> Result<usize> {
+        // XXX: We're not terribly concerned with performance at this
+        // point, there is room for improvement.
+
+        use std::collections::HashSet;
+        use crate::{
+            types::{DataFormat, HashAlgorithm, SignatureType},
+            serialize::Serialize,
+        };
+
+        assert!(self.csft.is_some());
+        if self.decode_buffer.is_empty() {
+            match self.csft.as_ref().expect("CSFT has been initialized") {
+                CSFTransformer::OPS => {
+                    // Determine the set of hash algorithms.
+                    let mut algos: HashSet<HashAlgorithm> = self.headers.iter()
+                        .filter(|(key, _value)| key == "Hash")
+                        .flat_map(|(_key, value)| {
+                            value.split(',')
+                                .filter_map(|hash| hash.parse().ok())
+                        }).collect();
+
+                    if algos.is_empty() {
+                        // The default is MD5.
+                        #[allow(deprecated)]
+                        algos.insert(HashAlgorithm::MD5);
+                    }
+
+                    // Now create an OPS packet for every algorithm.
+                    let count = algos.len();
+                    for (i, &algo) in algos.iter().enumerate() {
+                        let mut ops = OnePassSig3::new(SignatureType::Text);
+                        ops.set_hash_algo(algo);
+                        ops.set_last(i + 1 == count);
+                        Packet::from(ops).serialize(&mut self.decode_buffer)
+                            .expect("writing to vec does not fail");
+                    }
+
+                    // We will let the caller consume the buffer.
+                    // Once drained, we start decoding the message.
+                    self.csft = Some(CSFTransformer::Literal);
+                },
+
+                CSFTransformer::Literal => {
+                    // XXX: We should create a partial-body encoded
+                    // literal packet, but for now we construct the
+                    // whole packet in core.
+
+                    let mut text = Vec::new();
+                    loop {
+                        let prefixed_line = self.source.read_to(b'\n')?;
+
+                        if prefixed_line.is_empty() {
+                            // Truncated?
+                            break;
+                        }
+
+                        // Treat lines shorter than the prefix as
+                        // empty lines.
+                        let n = prefixed_line.len().min(self.prefix.len());
+                        let prefix = &prefixed_line[..n];
+                        let mut line = &prefixed_line[n..];
+
+                        // Check that we see the correct prefix.
+                        let l = common_prefix(&self.prefix, prefix);
+                        let full_prefix = l == self.prefix.len();
+                        if ! (full_prefix
+                              // Truncation is okay if the rest of the prefix
+                              // contains only whitespace.
+                              || self.prefix[l..].iter().all(
+                                  |c| c.is_ascii_whitespace()))
+                        {
+                            return Err(
+                                Error::new(ErrorKind::InvalidInput,
+                                           "Inconsistent quoting of \
+                                            armored data"));
+                        }
+
+                        let (dashes, rest) = dash_prefix(&line);
+                        if dashes.len() > 2 // XXX: heuristic...
+                            && rest.starts_with(b"BEGIN PGP SIGNATURE")
+                        {
+                            // We reached the end of the signed
+                            // message.  Consuming this line and break
+                            // the loop.
+                            let l = prefixed_line.len();
+                            self.source.consume(l);
+                            break;
+                        }
+
+                        // Undo the dash-escaping.
+                        if line.starts_with(b"- ") {
+                            line = &line[2..];
+                        }
+
+                        // Trim trailing whitespace according to
+                        // Section 7.1 of RFC4880, i.e. "spaces (0x20)
+                        // and tabs (0x09)".  We do this here, because
+                        // we transform the CSF message into an inline
+                        // signed message, which does not make a
+                        // distinction between the literal text and
+                        // the signed text (modulo the newline
+                        // normalization).
+
+                        // First, split off the line ending.
+                        let crlf_line_end = line.ends_with(b"\r\n");
+                        line = &line[..line.len()
+                                         - if crlf_line_end { 2 } else { 1 }];
+
+                        // Now, trim whitespace off the line.
+                        while Some(&b' ') == line.last()
+                            || Some(&b'\t') == line.last()
+                        {
+                            line = &line[..line.len() - 1];
+                        }
+
+                        text.extend_from_slice(line);
+                        if crlf_line_end {
+                            text.extend_from_slice(&b"\r\n"[..]);
+                        } else {
+                            text.extend_from_slice(&b"\n"[..]);
+                        }
+
+                        // Finally, consume this line.
+                        let l = prefixed_line.len();
+                        self.source.consume(l);
+                    }
+
+                    // Now, we have the whole text.
+                    let mut literal = Literal::new(DataFormat::Text);
+                    literal.set_body(text);
+                    Packet::from(literal).serialize(&mut self.decode_buffer)
+                        .expect("writing to vec does not fail");
+
+                    // We will let the caller consume the buffer.
+                    // Once drained, we start streaming the
+                    // signatures.
+                    self.csft = Some(CSFTransformer::Signatures);
+                },
+
+                CSFTransformer::Signatures => {
+                    // Drop transformer to revert to normal armor
+                    // reader.
+                    self.csft = None;
+
+                    // Consume any headers.
+                    self.read_headers()?;
+
+                    // Then start streaming the signatures.  We call
+                    // this function explicitly once, but next time
+                    // the caller reads, it will shortcut to that
+                    // function.
+                    return self.read_armored_data(buf);
+                },
+            }
+        }
+
+        let amount = cmp::min(buf.len(), self.decode_buffer.len());
+        buf[..amount].copy_from_slice(&self.decode_buffer[..amount]);
+        crate::vec_drain_prefix(&mut self.decode_buffer, amount);
+        Ok(amount)
+    }
+
+    /// The io::Read interface that the embedded generic reader uses
+    /// to implement the BufferedReader protocol.
+    fn do_read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        if ! self.initialized {
+            self.initialize()?;
+        }
+
+        if buf.is_empty() {
+            // Short-circuit here.  Otherwise, we copy 0 bytes into
+            // the buffer, which means we decoded 0 bytes, and we
+            // wrongfully assume that we reached the end of the
+            // armored block.
+            return Ok(0);
+        }
+
+        if self.finalized {
+            assert_eq!(self.decode_buffer.len(), 0);
+            return Ok(0);
+        }
+
+        if self.csft.is_some() {
+            self.read_clearsigned_message(buf)
+        } else {
+            self.read_armored_data(buf)
+        }
+    }
+
+    /// Return the buffer.  Ensure that it contains at least `amount`
+    /// bytes.
+    // XXX: This is a verbatim copy of
+    // buffered_reader::Generic::data_helper, the only modification is
+    // that it uses the above do_read function.
+    fn data_helper(&mut self, amount: usize, hard: bool, and_consume: bool)
+                   -> Result<&[u8]> {
+        // println!("Generic.data_helper(\
+        //           amount: {}, hard: {}, and_consume: {} (cursor: {}, buffer: {:?})",
+        //          amount, hard, and_consume,
+        //          self.cursor,
+        //          if let Some(ref buffer) = self.buffer { Some(buffer.len()) }
+        //          else { None });
+
+
+        // See if there is an error from the last invocation.
+        if let Some(e) = self.error.take() {
+            return Err(e);
+        }
+
+        if let Some(ref buffer) = self.buffer {
+            // We have a buffer.  Make sure `cursor` is sane.
+            assert!(self.cursor <= buffer.len());
+        } else {
+            // We don't have a buffer.  Make sure cursor is 0.
+            assert_eq!(self.cursor, 0);
+        }
+
+        let amount_buffered
+            = self.buffer.as_ref().map(|b| b.len() - self.cursor).unwrap_or(0);
+        if amount > amount_buffered {
+            // The caller wants more data than we have readily
+            // available.  Read some more.
+
+            let capacity : usize = cmp::max(cmp::max(
+                DEFAULT_BUF_SIZE,
+                2 * self.preferred_chunk_size), amount);
+
+            let mut buffer_new : Vec<u8> = vec![0u8; capacity];
+
+            let mut amount_read = 0;
+            while amount_buffered + amount_read < amount {
+                match self.do_read(&mut buffer_new
+                                   [amount_buffered + amount_read..]) {
+                    Ok(read) => {
+                        if read == 0 {
+                            break;
+                        } else {
+                            amount_read += read;
+                            continue;
+                        }
+                    },
+                    Err(ref err) if err.kind() == ErrorKind::Interrupted =>
+                        continue,
+                    Err(err) => {
+                        // Don't return yet, because we may have
+                        // actually read something.
+                        self.error = Some(err);
+                        break;
+                    },
+                }
+            }
+
+            if amount_read > 0 {
+                // We read something.
+                if let Some(ref buffer) = self.buffer {
+                    // We need to copy in the old data.
+                    buffer_new[0..amount_buffered]
+                        .copy_from_slice(
+                            &buffer[self.cursor..self.cursor + amount_buffered]);
+                }
+
+                vec_truncate(&mut buffer_new, amount_buffered + amount_read);
+                buffer_new.shrink_to_fit();
+
+                self.buffer = Some(buffer_new.into_boxed_slice());
+                self.cursor = 0;
+            }
+        }
+
+        let amount_buffered
+            = self.buffer.as_ref().map(|b| b.len() - self.cursor).unwrap_or(0);
+
+        if self.error.is_some() {
+            // An error occurred.  If we have enough data to fulfill
+            // the caller's request, then don't return the error.
+            if hard && amount > amount_buffered {
+                return Err(self.error.take().unwrap());
+            }
+            if !hard && amount_buffered == 0 {
+                return Err(self.error.take().unwrap());
+            }
+        }
+
+        if hard && amount_buffered < amount {
+            Err(Error::new(ErrorKind::UnexpectedEof, "EOF"))
+        } else if amount == 0 || amount_buffered == 0 {
+            Ok(&b""[..])
+        } else {
+            let buffer = self.buffer.as_ref().unwrap();
+            if and_consume {
+                let amount_consumed = cmp::min(amount_buffered, amount);
+                self.cursor += amount_consumed;
+                assert!(self.cursor <= buffer.len());
+                Ok(&buffer[self.cursor-amount_consumed..])
+            } else {
+                Ok(&buffer[self.cursor..])
+            }
+        }
     }
 }
 
-impl<'a> BufferedReader<Cookie> for Reader<'a> {
+impl io::Read for Reader<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        buffered_reader::buffered_reader_generic_read_impl(self, buf)
+    }
+}
+
+impl BufferedReader<Cookie> for Reader<'_> {
     fn buffer(&self) -> &[u8] {
-        self.reader.buffer()
+        if let Some(ref buffer) = self.buffer {
+            &buffer[self.cursor..]
+        } else {
+            &b""[..]
+        }
     }
 
     fn data(&mut self, amount: usize) -> Result<&[u8]> {
-        self.reader.data(amount)
+        self.data_helper(amount, false, false)
+    }
+
+    fn data_hard(&mut self, amount: usize) -> Result<&[u8]> {
+        self.data_helper(amount, true, false)
     }
 
     fn consume(&mut self, amount: usize) -> &[u8] {
-        self.reader.consume(amount)
+        // println!("Generic.consume({}) \
+        //           (cursor: {}, buffer: {:?})",
+        //          amount, self.cursor,
+        //          if let Some(ref buffer) = self.buffer { Some(buffer.len()) }
+        //          else { None });
+
+        // The caller can't consume more than is buffered!
+        if let Some(ref buffer) = self.buffer {
+            assert!(self.cursor <= buffer.len());
+            assert!(amount <= buffer.len() - self.cursor,
+                    "buffer contains just {} bytes, but you are trying to \
+                    consume {} bytes.  Did you forget to call data()?",
+                    buffer.len() - self.cursor, amount);
+
+            self.cursor += amount;
+            return &self.buffer.as_ref().unwrap()[self.cursor - amount..];
+        } else {
+            assert_eq!(amount, 0);
+            &b""[..]
+        }
     }
 
     fn data_consume(&mut self, amount: usize) -> Result<&[u8]> {
-        self.reader.data_consume(amount)
+        self.data_helper(amount, false, true)
     }
 
     fn data_consume_hard(&mut self, amount: usize) -> Result<&[u8]> {
-        self.reader.data_consume_hard(amount)
-    }
-
-    fn consummated(&mut self) -> bool {
-        self.reader.consummated()
+        self.data_helper(amount, true, true)
     }
 
     fn get_mut(&mut self) -> Option<&mut dyn BufferedReader<Cookie>> {
-        Some(&mut self.reader.reader_mut().source)
+        Some(&mut self.source)
     }
 
     fn get_ref(&self) -> Option<&dyn BufferedReader<Cookie>> {
-        Some(&self.reader.reader_ref().source)
+        Some(&self.source)
     }
 
     fn into_inner<'b>(self: Box<Self>)
                       -> Option<Box<dyn BufferedReader<Cookie> + 'b>>
         where Self: 'b {
-        Some(self.reader.into_reader().source)
+        Some(self.source)
     }
 
     fn cookie_set(&mut self, cookie: Cookie) -> Cookie {
-        self.reader.cookie_set(cookie)
+        std::mem::replace(&mut self.cookie, cookie)
     }
 
     fn cookie_ref(&self) -> &Cookie {
-        self.reader.cookie_ref()
+        &self.cookie
     }
 
     fn cookie_mut(&mut self) -> &mut Cookie {
-        self.reader.cookie_mut()
+        &mut self.cookie
     }
 }
 
 const CRC24_INIT: u32 = 0xB704CE;
-const CRC24_POLY: u32 = 0x1864CFB;
+const CRC24_POLY: u32 = 0x864CFB;
 
 #[derive(Debug)]
 struct CRC {
@@ -2046,5 +2303,87 @@ mod test {
         let mut reader = Reader::from_bytes(
             crate::tests::file("armor/test-3.no-dashes.asc"), None);
         reader.read_to_end(&mut buf).unwrap();
+    }
+
+    /// Tests the transformation of a cleartext signed message into a
+    /// signed message.
+    ///
+    /// This test is merely concerned with the transformation, not
+    /// with the signature verification.
+    #[test]
+    fn cleartext_signed_message() -> crate::Result<()> {
+        use crate::{
+            Packet,
+            parse::Parse,
+            types::HashAlgorithm,
+        };
+
+        fn f<R>(clearsig: &[u8], reference: R) -> crate::Result<()>
+        where R: AsRef<[u8]>
+        {
+            let mut reader = Reader::from_buffered_reader_csft(
+                Box::new(buffered_reader::Memory::with_cookie(
+                    clearsig, Default::default())),
+                None, Default::default(), true);
+
+            let mut buf = Vec::new();
+            reader.read_to_end(&mut buf)?;
+
+            let message = crate::Message::from_bytes(&buf)?;
+            assert_eq!(message.children().count(), 3);
+
+            // First, an one-pass-signature packet.
+            if let Some(Packet::OnePassSig(ops)) = message.path_ref(&[0]) {
+                assert_eq!(ops.hash_algo(), HashAlgorithm::SHA256);
+            } else {
+                panic!("expected an OPS packet");
+            }
+
+            // A literal packet.
+            assert_eq!(message.body().unwrap().body(), reference.as_ref());
+
+            // And, the signature.
+            if let Some(Packet::Signature(sig)) = message.path_ref(&[2]) {
+                assert_eq!(sig.hash_algo(), HashAlgorithm::SHA256);
+            } else {
+                panic!("expected an signature packet");
+            }
+
+            // If we parse it without enabling the CSF transformation,
+            // we should only find the signature.
+            let mut reader = Reader::from_buffered_reader_csft(
+                Box::new(buffered_reader::Memory::with_cookie(
+                    clearsig, Default::default())),
+                None, Default::default(), false);
+
+            let mut buf = Vec::new();
+            reader.read_to_end(&mut buf)?;
+
+            let pp = crate::PacketPile::from_bytes(&buf)?;
+            assert_eq!(pp.children().count(), 1);
+
+            // The signature.
+            if let Some(Packet::Signature(sig)) = pp.path_ref(&[0]) {
+                assert_eq!(sig.hash_algo(), HashAlgorithm::SHA256);
+            } else {
+                panic!("expected an signature packet");
+            }
+            Ok(())
+        }
+
+        f(crate::tests::message("a-problematic-poem.txt.cleartext.sig"),
+          crate::tests::message("a-problematic-poem.txt"))?;
+        f(crate::tests::message("a-cypherpunks-manifesto.txt.cleartext.sig"),
+          {
+              // The transformation process trims trailing whitespace,
+              // and the manifesto has a trailing whitespace right at
+              // the end.
+              let mut manifesto = crate::tests::manifesto().to_vec();
+              let ws_at = manifesto.len() - 2;
+              let ws = manifesto.remove(ws_at);
+              assert_eq!(ws, b' ');
+              manifesto
+          })?;
+        Ok(())
     }
 }

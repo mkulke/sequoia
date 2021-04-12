@@ -1,11 +1,8 @@
-use crossterm::terminal;
 use anyhow::Context as _;
 use std::collections::HashMap;
 use std::io;
-use rpassword;
 
 use sequoia_openpgp as openpgp;
-use sequoia_core::Context;
 use crate::openpgp::types::SymmetricAlgorithm;
 use crate::openpgp::fmt::hex;
 use crate::openpgp::crypto::{self, SessionKey};
@@ -20,10 +17,14 @@ use crate::openpgp::parse::{
 use crate::openpgp::parse::stream::{
     VerificationHelper, DecryptionHelper, DecryptorBuilder, MessageStructure,
 };
-use crate::openpgp::policy::Policy;
-use sequoia_store as store;
 
-use super::{dump::PacketDumper, VHelper};
+use crate::{
+    Config,
+    commands::{
+        dump::PacketDumper,
+        VHelper,
+    },
+};
 
 struct Helper<'a> {
     vhelper: VHelper<'a>,
@@ -36,8 +37,7 @@ struct Helper<'a> {
 }
 
 impl<'a> Helper<'a> {
-    fn new(ctx: &'a Context, policy: &'a dyn Policy,
-           mapping: &'a mut store::Mapping,
+    fn new(config: &Config<'a>,
            signatures: usize, certs: Vec<Cert>, secrets: Vec<Cert>,
            dump_session_key: bool, dump: bool)
            -> Self
@@ -46,7 +46,7 @@ impl<'a> Helper<'a> {
         let mut identities: HashMap<KeyID, Fingerprint> = HashMap::new();
         let mut hints: HashMap<KeyID, String> = HashMap::new();
         for tsk in secrets {
-            let hint = match tsk.with_policy(policy, None)
+            let hint = match tsk.with_policy(&config.policy, None)
                 .and_then(|valid_cert| valid_cert.primary_userid()).ok()
             {
                 Some(uid) => format!("{} ({})", uid.userid(),
@@ -56,25 +56,25 @@ impl<'a> Helper<'a> {
 
             for ka in tsk.keys()
             // XXX: Should use the message's creation time that we do not know.
-                .with_policy(policy, None)
+                .with_policy(&config.policy, None)
                 .for_transport_encryption().for_storage_encryption()
                 .secret()
             {
                 let id: KeyID = ka.key().fingerprint().into();
-                keys.insert(id.clone(), ka.key().clone().into());
+                keys.insert(id.clone(), ka.key().clone());
                 identities.insert(id.clone(), tsk.fingerprint());
                 hints.insert(id, hint.clone());
             }
         }
 
         Helper {
-            vhelper: VHelper::new(ctx, mapping, signatures, certs),
+            vhelper: VHelper::new(config, signatures, certs),
             secret_keys: keys,
             key_identities: identities,
             key_hints: hints,
             dump_session_key: dump_session_key,
             dumper: if dump {
-                let width = terminal::size().ok().map(|(cols, _)| cols as usize)
+                let width = term_size::dimensions_stdout().map(|(w, _)| w)
                     .unwrap_or(80);
                 Some(PacketDumper::new(width, false))
             } else {
@@ -274,18 +274,18 @@ impl<'a> DecryptionHelper for Helper<'a> {
     }
 }
 
-pub fn decrypt(ctx: &Context, policy: &dyn Policy, mapping: &mut store::Mapping,
+pub fn decrypt(config: Config,
                input: &mut (dyn io::Read + Sync + Send),
                output: &mut dyn io::Write,
                signatures: usize, certs: Vec<Cert>, secrets: Vec<Cert>,
                dump_session_key: bool,
                dump: bool, hex: bool)
                -> Result<()> {
-    let helper = Helper::new(ctx, policy, mapping, signatures, certs, secrets,
+    let helper = Helper::new(&config, signatures, certs, secrets,
                              dump_session_key, dump || hex);
     let mut decryptor = DecryptorBuilder::from_reader(input)?
         .mapping(hex)
-        .with_policy(policy, None, helper)
+        .with_policy(&config.policy, None, helper)
         .context("Decryption failed")?;
 
     io::copy(&mut decryptor, output).context("Decryption failed")?;
@@ -295,17 +295,16 @@ pub fn decrypt(ctx: &Context, policy: &dyn Policy, mapping: &mut store::Mapping,
         dumper.flush(&mut io::stderr())?;
     }
     helper.vhelper.print_status();
-    return Ok(());
+    Ok(())
 }
 
-pub fn decrypt_unwrap(ctx: &Context, policy: &dyn Policy,
-                      mapping: &mut store::Mapping,
+pub fn decrypt_unwrap(config: Config,
                       input: &mut (dyn io::Read + Sync + Send),
                       output: &mut dyn io::Write,
                       secrets: Vec<Cert>, dump_session_key: bool)
                       -> Result<()>
 {
-    let mut helper = Helper::new(ctx, policy, mapping, 0, Vec::new(), secrets,
+    let mut helper = Helper::new(&config, 0, Vec::new(), secrets,
                                  dump_session_key, false);
 
     let mut ppr = PacketParser::from_reader(input)?;

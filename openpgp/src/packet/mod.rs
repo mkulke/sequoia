@@ -216,6 +216,8 @@ pub mod aed;
 ///
 /// The different OpenPGP packets are detailed in [Section 5 of RFC 4880].
 ///
+///   [Section 5 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-5
+///
 /// The [`Unknown`] packet allows Sequoia to deal with packets that it
 /// doesn't understand.  It is basically a binary blob that includes
 /// the packet's [tag].  See the [module-level documentation] for
@@ -371,7 +373,7 @@ impl Packet {
 }
 
 // Allow transparent access of common fields.
-impl<'a> Deref for Packet {
+impl Deref for Packet {
     type Target = Common;
 
     fn deref(&self) -> &Self::Target {
@@ -399,7 +401,7 @@ impl<'a> Deref for Packet {
     }
 }
 
-impl<'a> DerefMut for Packet {
+impl DerefMut for Packet {
     fn deref_mut(&mut self) -> &mut Common {
         match self {
             &mut Packet::Unknown(ref mut packet) => &mut packet.common,
@@ -473,7 +475,7 @@ impl fmt::Debug for Packet {
 impl Arbitrary for Packet {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         use rand::Rng;
-        match g.gen_range(0, 14) {
+        match g.gen_range(0, 15) {
             0 => Signature::arbitrary(g).into(),
             1 => OnePassSig::arbitrary(g).into(),
             2 => Key::<key::PublicParts, key::UnspecifiedRole>::arbitrary(g)
@@ -492,6 +494,24 @@ impl Arbitrary for Packet {
             11 => CompressedData::arbitrary(g).into(),
             12 => PKESK::arbitrary(g).into(),
             13 => SKESK::arbitrary(g).into(),
+            14 => loop {
+                let mut u = Unknown::new(
+                    Tag::arbitrary(g), anyhow::anyhow!("Arbitrary::arbitrary"));
+                u.set_body(Arbitrary::arbitrary(g));
+                let u = Packet::Unknown(u);
+
+                // Check that we didn't accidentally make a valid
+                // packet.
+                use crate::parse::Parse;
+                use crate::serialize::SerializeInto;
+                if let Ok(Packet::Unknown(_)) = Packet::from_bytes(
+                    &u.to_vec().unwrap())
+                {
+                    break u;
+                }
+
+                // Try again!
+            },
             _ => unreachable!(),
         }
     }
@@ -626,13 +646,13 @@ impl<'a> Iterator for Iter<'a> {
         // Get the next child and the iterator for its children.
         self.child = self.children.next();
         if let Some(child) = self.child {
-            self.grandchildren = child.descendants().map(|d| Box::new(d));
+            self.grandchildren = child.descendants().map(Box::new);
         }
 
         // First return the child itself.  Subsequent calls will
         // return its grandchildren.
         self.depth = 0;
-        return self.child;
+        self.child
     }
 }
 
@@ -1379,10 +1399,12 @@ impl From<SKESK> for Packet {
 /// # A note on equality
 ///
 /// The implementation of `Eq` for `Key` compares the serialized form
-/// of `Key`s.  Notably this includes the secret key material, but
-/// excludes the `KeyParts` and `KeyRole` marker traits.
-/// To exclude the secret key material from the comparison, use
-/// [`Key::public_cmp`] or [`Key::public_eq`].
+/// of `Key`s.  Comparing or serializing values of `Key<PublicParts,
+/// _>` ignore secret key material, whereas the secret key material is
+/// considered and serialized for `Key<SecretParts, _>`, and for
+/// `Key<UnspecifiedParts, _>` if present.  To explicitly exclude the
+/// secret key material from the comparison, use [`Key::public_cmp`]
+/// or [`Key::public_eq`].
 ///
 /// When merging in secret key material from untrusted sources, you
 /// need to be very careful: secret key material is not
@@ -1404,26 +1426,35 @@ impl From<SKESK> for Packet {
 /// use sequoia_openpgp as openpgp;
 /// use openpgp::cert::prelude::*;
 /// use openpgp::packet::prelude::*;
+/// use openpgp::packet::key::*;
 ///
 /// # fn main() -> openpgp::Result<()> {
 /// // Generate a new certificate.  It has secret key material.
 /// let (cert, _) = CertBuilder::new()
 ///     .generate()?;
 ///
-/// let sk = cert.primary_key().key();
+/// let sk: &Key<PublicParts, _> = cert.primary_key().key();
 /// assert!(sk.has_secret());
 ///
 /// // Strip the secret key material.
 /// let cert = cert.clone().strip_secret_key_material();
-/// let pk = cert.primary_key().key();
+/// let pk: &Key<PublicParts, _> = cert.primary_key().key();
 /// assert!(! pk.has_secret());
 ///
-/// // Eq compares both the public and the secret bits, so it
-/// // considers pk and sk to be different.
+/// // Eq on Key<PublicParts, _> compares only the public bits, so it
+/// // considers pk and sk to be equal.
+/// assert_eq!(pk, sk);
+///
+/// // Convert to Key<UnspecifiedParts, _>.
+/// let sk: &Key<UnspecifiedParts, _> = sk.parts_as_unspecified();
+/// let pk: &Key<UnspecifiedParts, _> = pk.parts_as_unspecified();
+///
+/// // Eq on Key<UnspecifiedParts, _> compares both the public and the
+/// // secret bits, so it considers pk and sk to be different.
 /// assert_ne!(pk, sk);
 ///
-/// // Key::public_eq only compares the public bits, so it considers
-/// // them to be equal.
+/// // In any case, Key::public_eq only compares the public bits,
+/// // so it considers them to be equal.
 /// assert!(Key::public_eq(pk, sk));
 /// # Ok(())
 /// # }
@@ -1485,28 +1516,28 @@ impl<P: key::KeyParts, R: key::KeyRole> Key<P, R> {
 impl From<Key<key::PublicParts, key::PrimaryRole>> for Packet {
     /// Convert the `Key` struct to a `Packet`.
     fn from(k: Key<key::PublicParts, key::PrimaryRole>) -> Self {
-        Packet::PublicKey(k.into())
+        Packet::PublicKey(k)
     }
 }
 
 impl From<Key<key::PublicParts, key::SubordinateRole>> for Packet {
     /// Convert the `Key` struct to a `Packet`.
     fn from(k: Key<key::PublicParts, key::SubordinateRole>) -> Self {
-        Packet::PublicSubkey(k.into())
+        Packet::PublicSubkey(k)
     }
 }
 
 impl From<Key<key::SecretParts, key::PrimaryRole>> for Packet {
     /// Convert the `Key` struct to a `Packet`.
     fn from(k: Key<key::SecretParts, key::PrimaryRole>) -> Self {
-        Packet::SecretKey(k.into())
+        Packet::SecretKey(k)
     }
 }
 
 impl From<Key<key::SecretParts, key::SubordinateRole>> for Packet {
     /// Convert the `Key` struct to a `Packet`.
     fn from(k: Key<key::SecretParts, key::SubordinateRole>) -> Self {
-        Packet::SecretSubkey(k.into())
+        Packet::SecretSubkey(k)
     }
 }
 

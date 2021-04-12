@@ -4,10 +4,11 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, Write};
 use std::time::SystemTime;
-use rpassword;
 
 use sequoia_openpgp as openpgp;
-use sequoia_core::Context;
+use crate::openpgp::{
+    armor,
+};
 use crate::openpgp::types::{
     CompressionAlgorithm,
 };
@@ -26,18 +27,29 @@ use crate::openpgp::serialize::stream::{
     padding::Padder,
 };
 use crate::openpgp::policy::Policy;
-use sequoia_store as store;
 
+use crate::{
+    Config,
+    parse_armor_kind,
+};
+
+#[cfg(feature = "autocrypt")]
+pub mod autocrypt;
 pub mod decrypt;
 pub use self::decrypt::decrypt;
-mod sign;
+pub mod sign;
 pub use self::sign::sign;
 pub mod dump;
-use dump::Convert;
 pub use self::dump::dump;
 mod inspect;
 pub use self::inspect::inspect;
 pub mod key;
+pub mod merge_signatures;
+pub use self::merge_signatures::merge_signatures;
+pub mod keyring;
+#[cfg(feature = "net")]
+pub mod net;
+pub mod certify;
 
 /// Returns suitable signing keys from a given list of Certs.
 fn get_signing_keys(certs: &[openpgp::Cert], p: &dyn Policy,
@@ -194,8 +206,8 @@ pub fn encrypt<'a>(policy: &'a dyn Policy,
 }
 
 struct VHelper<'a> {
-    ctx: &'a Context,
-    mapping: &'a mut store::Mapping,
+    #[allow(dead_code)]
+    config: Config<'a>,
     signatures: usize,
     certs: Option<Vec<Cert>>,
     labels: HashMap<KeyID, String>,
@@ -209,12 +221,11 @@ struct VHelper<'a> {
 }
 
 impl<'a> VHelper<'a> {
-    fn new(ctx: &'a Context, mapping: &'a mut store::Mapping, signatures: usize,
+    fn new(config: &Config<'a>, signatures: usize,
            certs: Vec<Cert>)
            -> Self {
         VHelper {
-            ctx: ctx,
-            mapping: mapping,
+            config: config.clone(),
             signatures: signatures,
             certs: Some(certs),
             labels: HashMap::new(),
@@ -252,13 +263,15 @@ impl<'a> VHelper<'a> {
     }
 
     fn print_sigs(&mut self, results: &[VerificationResult]) {
+        use crate::print_error_chain;
         use self::VerificationError::*;
         for result in results {
             let (issuer, level) = match result {
                 Ok(GoodChecksum { sig, ka, .. }) =>
                     (ka.key().keyid(), sig.level()),
                 Err(MalformedSignature { error, .. }) => {
-                    eprintln!("Malformed signature: {}", error);
+                    eprintln!("Malformed signature:");
+                    print_error_chain(error);
                     self.broken_signatures += 1;
                     continue;
                 },
@@ -275,14 +288,16 @@ impl<'a> VHelper<'a> {
                     continue;
                 },
                 Err(UnboundKey { cert, error, .. }) => {
-                    eprintln!("Signing key on {} is not bound: {}",
-                              cert.fingerprint(), error);
+                    eprintln!("Signing key on {} is not bound:",
+                              cert.fingerprint());
+                    print_error_chain(error);
                     self.bad_checksums += 1;
                     continue;
                 },
                 Err(BadKey { ka, error, .. }) => {
-                    eprintln!("Signing key on {} is bad: {}",
-                              ka.cert().fingerprint(), error);
+                    eprintln!("Signing key on {} is bad:",
+                              ka.cert().fingerprint());
+                    print_error_chain(error);
                     self.bad_checksums += 1;
                     continue;
                 },
@@ -292,8 +307,9 @@ impl<'a> VHelper<'a> {
                         0 => "checksum".into(),
                         n => format!("level {} notarizing checksum", n),
                     };
-                    eprintln!("Error verifying {} from {}: {}",
-                              what, issuer, error);
+                    eprintln!("Error verifying {} from {}:",
+                              what, issuer);
+                    print_error_chain(error);
                     self.bad_checksums += 1;
                     continue;
                 }
@@ -321,8 +337,8 @@ impl<'a> VHelper<'a> {
 }
 
 impl<'a> VerificationHelper for VHelper<'a> {
-    fn get_certs(&mut self, ids: &[openpgp::KeyHandle]) -> Result<Vec<Cert>> {
-        let mut certs = self.certs.take().unwrap();
+    fn get_certs(&mut self, _ids: &[openpgp::KeyHandle]) -> Result<Vec<Cert>> {
+        let certs = self.certs.take().unwrap();
         // Get all keys.
         let seen: HashSet<_> = certs.iter()
             .flat_map(|cert| {
@@ -330,46 +346,8 @@ impl<'a> VerificationHelper for VHelper<'a> {
             }).collect();
 
         // Explicitly provided keys are trusted.
-        self.trusted = seen.clone();
+        self.trusted = seen;
 
-        // Try to get missing Certs from the mapping.
-        for id in ids.iter().map(|i| KeyID::from(i))
-            .filter(|i| !seen.contains(i))
-        {
-            let _ =
-                self.mapping.lookup_by_subkeyid(&id)
-                .and_then(|binding| {
-                    self.labels.insert(id.clone(), binding.label()?);
-
-                    // Keys from our mapping are trusted.
-                    self.trusted.insert(id.clone());
-
-                    binding.cert()
-                })
-                .and_then(|cert| {
-                    certs.push(cert);
-                    Ok(())
-                });
-        }
-
-        // Update seen.
-        let seen = self.trusted.clone();
-
-        // Try to get missing Certs from the pool.
-        for id in ids.iter().map(|i| KeyID::from(i.clone()))
-            .filter(|i| !seen.contains(i))
-        {
-            let _ =
-                store::Store::lookup_by_subkeyid(self.ctx, &id)
-                .and_then(|key| {
-                    // Keys from the pool are NOT trusted.
-                    key.cert()
-                })
-                .and_then(|cert| {
-                    certs.push(cert);
-                    Ok(())
-                });
-        }
         Ok(certs)
     }
 
@@ -400,22 +378,21 @@ impl<'a> VerificationHelper for VHelper<'a> {
     }
 }
 
-pub fn verify(ctx: &Context, policy: &dyn Policy,
-              mapping: &mut store::Mapping,
+pub fn verify(config: Config,
               input: &mut (dyn io::Read + Sync + Send),
               detached: Option<&mut (dyn io::Read + Sync + Send)>,
               output: &mut dyn io::Write,
               signatures: usize, certs: Vec<Cert>)
               -> Result<()> {
-    let helper = VHelper::new(ctx, mapping, signatures, certs);
+    let helper = VHelper::new(&config, signatures, certs);
     let helper = if let Some(dsig) = detached {
         let mut v = DetachedVerifierBuilder::from_reader(dsig)?
-            .with_policy(policy, None, helper)?;
+            .with_policy(&config.policy, None, helper)?;
         v.verify_reader(input)?;
         v.into_helper()
     } else {
         let mut v = VerifierBuilder::from_reader(input)?
-            .with_policy(policy, None, helper)?;
+            .with_policy(&config.policy, None, helper)?;
         io::copy(&mut v, output)?;
         v.into_helper()
     };
@@ -471,17 +448,55 @@ pub fn split(input: &mut (dyn io::Read + Sync + Send), prefix: &str)
 }
 
 /// Joins the given files.
-pub fn join(inputs: Option<clap::Values>, output: &mut dyn io::Write)
+pub fn join(config: Config, m: &clap::ArgMatches)
             -> Result<()> {
+    // Either we know what kind of armor we want to produce, or we
+    // need to detect it using the first packet we see.
+    let kind = parse_armor_kind(m.value_of("kind"));
+    let output = m.value_of("output");
+    let mut sink =
+        if m.is_present("binary") {
+            // No need for any auto-detection.
+            Some(config.create_or_stdout_pgp(output,
+                                             true, // Binary.
+                                             armor::Kind::File)?)
+        } else if let Some(kind) = kind {
+            Some(config.create_or_stdout_pgp(output,
+                                             false, // Armored.
+                                             kind)?)
+        } else {
+            None // Defer.
+        };
+
     /// Writes a bit-accurate copy of all top-level packets in PPR to
     /// OUTPUT.
-    fn copy(mut ppr: PacketParserResult, output: &mut dyn io::Write)
+    fn copy(config: &Config,
+            mut ppr: PacketParserResult,
+            output: Option<&str>,
+            sink: &mut Option<Message>)
             -> Result<()> {
         while let PacketParserResult::Some(pp) = ppr {
+            if sink.is_none() {
+                // Autodetect using the first packet.
+                let kind = match pp.packet {
+                    Packet::Signature(_) => armor::Kind::Signature,
+                    Packet::SecretKey(_) => armor::Kind::SecretKey,
+                    Packet::PublicKey(_) => armor::Kind::PublicKey,
+                    Packet::PKESK(_) | Packet::SKESK(_) =>
+                        armor::Kind::Message,
+                    _ => armor::Kind::File,
+                };
+
+                *sink = Some(config.create_or_stdout_pgp(output,
+                                                         false, // Armored.
+                                                         kind)?);
+            }
+
             // We (ab)use the mapping feature to create byte-accurate
             // copies.
             for field in pp.map().expect("must be mapped").iter() {
-                output.write_all(field.as_bytes())?;
+                sink.as_mut().expect("initialized at this point")
+                    .write_all(field.as_bytes())?;
             }
 
             ppr = pp.next()?.1;
@@ -489,53 +504,20 @@ pub fn join(inputs: Option<clap::Values>, output: &mut dyn io::Write)
         Ok(())
     }
 
-    if let Some(inputs) = inputs {
+    if let Some(inputs) = m.values_of("input") {
         for name in inputs {
             let ppr =
                 openpgp::parse::PacketParserBuilder::from_file(name)?
                 .map(true).build()?;
-            copy(ppr, output)?;
+            copy(&config, ppr, output, &mut sink)?;
         }
     } else {
         let ppr =
             openpgp::parse::PacketParserBuilder::from_reader(io::stdin())?
             .map(true).build()?;
-        copy(ppr, output)?;
-    }
-    Ok(())
-}
-
-pub fn mapping_print_stats(mapping: &store::Mapping, label: &str) -> Result<()> {
-    fn print_stamps(st: &store::Stamps) -> Result<()> {
-        println!("{} messages using this key", st.count);
-        if let Some(t) = st.first {
-            println!("    First: {}", t.convert());
-        }
-        if let Some(t) = st.last {
-            println!("    Last: {}", t.convert());
-        }
-        Ok(())
+        copy(&config, ppr, output, &mut sink)?;
     }
 
-    fn print_stats(st: &store::Stats) -> Result<()> {
-        if let Some(t) = st.created {
-            println!("  Created: {}", t.convert());
-        }
-        if let Some(t) = st.updated {
-            println!("  Updated: {}", t.convert());
-        }
-        print!("  Encrypted ");
-        print_stamps(&st.encryption)?;
-        print!("  Verified ");
-        print_stamps(&st.verification)?;
-        Ok(())
-    }
-
-    let binding = mapping.lookup(label)?;
-    println!("Binding {:?}", label);
-    print_stats(&binding.stats().context("Failed to get stats")?)?;
-    let key = binding.key().context("Failed to get key")?;
-    println!("Key");
-    print_stats(&key.stats().context("Failed to get stats")?)?;
+    sink.unwrap().finalize()?;
     Ok(())
 }

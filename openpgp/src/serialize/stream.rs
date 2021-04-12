@@ -75,9 +75,7 @@
 //!
 //! This example demonstrates how to create the most common OpenPGP
 //! message structure (see [Section 11.3 of RFC 4880]).  The plaintext
-//! is first signed, then compressed, encrypted, and finally ASCII
-//! armored.  Our example pads the plaintext instead of compressing
-//! it, but the resulting message structure is the same.
+//! is first signed, then encrypted, and finally ASCII armored.
 //!
 //! ```
 //! # fn main() -> sequoia_openpgp::Result<()> {
@@ -87,7 +85,6 @@
 //! use openpgp::cert::prelude::*;
 //! use openpgp::serialize::stream::{
 //!     Message, Armorer, Encryptor, Signer, LiteralWriter,
-//!     padding::Padder,
 //! };
 //! # use openpgp::parse::Parse;
 //!
@@ -114,7 +111,6 @@
 //! let message = Armorer::new(message).build()?;
 //! let message = Encryptor::for_recipients(message, recipients).build()?;
 //! // Reduce metadata leakage by concealing the message size.
-//! let message = Padder::new(message).build()?;
 //! let message = Signer::new(message, signing_keypair)
 //!     // Prevent Surreptitious Forwarding.
 //!     .add_intended_recipient(&recipient)
@@ -163,6 +159,11 @@ pub(crate) mod writer;
 pub mod padding;
 mod partial_body;
 use partial_body::PartialBodyFilter;
+mod dash_escape;
+use dash_escape::DashEscapeFilter;
+mod trim_whitespace;
+use trim_whitespace::TrailingWSFilter;
+
 
 /// Cookie must be public because the writers are.
 #[derive(Debug)]
@@ -639,14 +640,27 @@ pub struct Signer<'a> {
     inner: Option<writer::BoxStack<'a, Cookie>>,
     signers: Vec<Box<dyn crypto::Signer + Send + Sync + 'a>>,
     intended_recipients: Vec<Fingerprint>,
-    detached: bool,
+    mode: SignatureMode,
     template: signature::SignatureBuilder,
     creation_time: Option<SystemTime>,
     hash: Box<dyn crypto::hash::Digest>,
     cookie: Cookie,
     position: u64,
+
+    /// When creating a message using the cleartext signature
+    /// framework, the final newline is not part of the signature,
+    /// hence, we delay hashing up to two bytes so that we can omit
+    /// them when the message is finalized.
+    hash_stash: Vec<u8>,
 }
 assert_send_and_sync!(Signer<'_>);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SignatureMode {
+    Inline,
+    Detached,
+    Cleartext,
+}
 
 impl<'a> Signer<'a> {
     /// Creates a signer.
@@ -803,7 +817,7 @@ impl<'a> Signer<'a> {
             inner: Some(inner),
             signers: vec![Box::new(signer)],
             intended_recipients: Vec::new(),
-            detached: false,
+            mode: SignatureMode::Inline,
             template: template.into(),
             creation_time: None,
             hash: HashAlgorithm::default().context().unwrap(),
@@ -812,6 +826,7 @@ impl<'a> Signer<'a> {
                 private: Private::Signer,
             },
             position: 0,
+            hash_stash: Vec::with_capacity(0),
         }
     }
 
@@ -821,8 +836,11 @@ impl<'a> Signer<'a> {
     /// [Section 11.4 of RFC 4880]).  Note that the literal data *must
     /// not* be wrapped using the [`LiteralWriter`].
     ///
+    /// This overrides any prior call to [`Signer::cleartext`].
+    ///
     ///   [Section 11.4 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-11.4
     ///   [`LiteralWriter`]: ../struct.LiteralWriter.html
+    ///   [`Signer::cleartext`]: #method.cleartext
     ///
     /// # Examples
     ///
@@ -831,7 +849,7 @@ impl<'a> Signer<'a> {
     /// use std::io::Write;
     /// use sequoia_openpgp as openpgp;
     /// use openpgp::serialize::stream::{Message, Signer};
-    /// use sequoia_openpgp::policy::StandardPolicy;
+    /// use openpgp::policy::StandardPolicy;
     /// # use openpgp::{Result, Cert};
     /// # use openpgp::packet::prelude::*;
     /// # use openpgp::crypto::KeyPair;
@@ -887,7 +905,124 @@ impl<'a> Signer<'a> {
     /// # Ok(()) }
     /// ```
     pub fn detached(mut self) -> Self {
-        self.detached = true;
+        self.mode = SignatureMode::Detached;
+        self
+    }
+
+    /// Creates a signer for a cleartext signed message.
+    ///
+    /// Changes the `Signer` to create a cleartext signed message (see
+    /// [Section 7 of RFC 4880]).  Note that the literal data *must
+    /// not* be wrapped using the [`LiteralWriter`].  This implies
+    /// ASCII armored output, *do not* add an [`Armorer`] to the
+    /// stack.
+    ///
+    /// Note:
+    ///
+    /// - If your message does not end in a newline, creating a signed
+    ///   message using the Cleartext Signature Framework will add
+    ///   one.
+    ///
+    /// - The cleartext signature framework does not hash trailing
+    ///   whitespace (in this case, space and tab, see [Section 7.1 of
+    ///   RFC 4880] for more information).  We align what we emit and
+    ///   what is being signed by trimming whitespace off of line
+    ///   endings.
+    ///
+    /// - That means that you can not recover a byte-accurate copy of
+    ///   the signed message if your message contains either a line
+    ///   with trailing whitespace, or no final newline.  This is a
+    ///   limitation of the Cleartext Signature Framework, which is
+    ///   not designed to be reversible (see [Section 7 of RFC 4880]).
+    ///
+    /// This overrides any prior call to [`Signer::detached`].
+    ///
+    ///   [Section 7 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-7
+    ///   [Section 7.1 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-7.1
+    ///   [`LiteralWriter`]: ../struct.LiteralWriter.html
+    ///   [`Armorer`]: ../struct.Armorer.html
+    ///   [`Signer::detached`]: #method.detached
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # fn main() -> sequoia_openpgp::Result<()> {
+    /// use std::io::{Write, Read};
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::serialize::stream::{Message, Signer};
+    /// use openpgp::policy::StandardPolicy;
+    /// # use openpgp::{Result, Cert};
+    /// # use openpgp::packet::prelude::*;
+    /// # use openpgp::crypto::KeyPair;
+    /// # use openpgp::parse::Parse;
+    /// # use openpgp::parse::stream::*;
+    ///
+    /// let p = &StandardPolicy::new();
+    /// # let cert = Cert::from_bytes(&include_bytes!(
+    /// #     "../../tests/data/keys/testy-new-private.pgp")[..])?;
+    /// # let signing_keypair
+    /// #     = cert.keys().secret()
+    /// #           .with_policy(p, None).supported().alive().revoked(false).for_signing()
+    /// #           .nth(0).unwrap()
+    /// #           .key().clone().into_keypair()?;
+    ///
+    /// let mut sink = vec![];
+    /// {
+    ///     let message = Message::new(&mut sink);
+    ///     let mut signer = Signer::new(message, signing_keypair)
+    ///         .cleartext()
+    ///         // Customize the `Signer` here.
+    ///         .build()?;
+    ///
+    ///     // Write the data directly to the `Signer`.
+    ///     signer.write_all(b"Make it so, number one!")?;
+    ///     // In reality, just io::copy() the file to be signed.
+    ///     signer.finalize()?;
+    /// }
+    ///
+    /// // Now check the signature.
+    /// struct Helper<'a>(&'a openpgp::Cert);
+    /// impl<'a> VerificationHelper for Helper<'a> {
+    ///     fn get_certs(&mut self, _: &[openpgp::KeyHandle])
+    ///                        -> openpgp::Result<Vec<openpgp::Cert>> {
+    ///         Ok(vec![self.0.clone()])
+    ///     }
+    ///
+    ///     fn check(&mut self, structure: MessageStructure)
+    ///              -> openpgp::Result<()> {
+    ///         if let MessageLayer::SignatureGroup { ref results } =
+    ///             structure.iter().nth(0).unwrap()
+    ///         {
+    ///             results.get(0).unwrap().as_ref().unwrap();
+    ///             Ok(())
+    ///         } else { panic!() }
+    ///     }
+    /// }
+    ///
+    /// let mut verifier = VerifierBuilder::from_bytes(&sink)?
+    ///     .with_policy(p, None, Helper(&cert))?;
+    ///
+    /// let mut content = Vec::new();
+    /// verifier.read_to_end(&mut content)?;
+    /// assert_eq!(content, b"Make it so, number one!\n");
+    /// # Ok(()) }
+    /// ```
+    //
+    // Some notes on the implementation:
+    //
+    // There are a few pitfalls when implementing the CSF.  We
+    // separate concerns as much as possible.
+    //
+    // - Trailing whitespace must be stripped.  We do this using the
+    //   TrailingWSFilter before the data hits this streaming signer.
+    //   This filter also adds a final newline, if missing.
+    //
+    // - We hash what we get from the TrailingWSFilter.
+    //
+    // - We write into the DashEscapeFilter, which takes care of the
+    //   dash-escaping.
+    pub fn cleartext(mut self) -> Self {
+        self.mode = SignatureMode::Cleartext;
         self
     }
 
@@ -1120,28 +1255,69 @@ impl<'a> Signer<'a> {
     /// ```
     pub fn build(mut self) -> Result<Message<'a>>
     {
-        assert!(self.signers.len() > 0, "The constructor adds a signer.");
+        assert!(!self.signers.is_empty(), "The constructor adds a signer.");
         assert!(self.inner.is_some(), "The constructor adds an inner writer.");
 
-        if ! self.detached {
-            // For every key we collected, build and emit a one pass
-            // signature packet.
-            for (i, keypair) in self.signers.iter().enumerate() {
-                let key = keypair.public();
-                let mut ops = OnePassSig3::new(self.template.typ());
-                ops.set_pk_algo(key.pk_algo());
-                ops.set_hash_algo(self.hash.algo());
-                ops.set_issuer(key.keyid());
-                ops.set_last(i == self.signers.len() - 1);
-                Packet::OnePassSig(ops.into())
-                    .serialize(self.inner.as_mut().unwrap())?;
-            }
+        match self.mode {
+            SignatureMode::Inline => {
+                // For every key we collected, build and emit a one pass
+                // signature packet.
+                for (i, keypair) in self.signers.iter().enumerate() {
+                    let key = keypair.public();
+                    let mut ops = OnePassSig3::new(self.template.typ());
+                    ops.set_pk_algo(key.pk_algo());
+                    ops.set_hash_algo(self.hash.algo());
+                    ops.set_issuer(key.keyid());
+                    ops.set_last(i == self.signers.len() - 1);
+                    Packet::OnePassSig(ops.into())
+                        .serialize(self.inner.as_mut().unwrap())?;
+                }
+            },
+            SignatureMode::Detached => (), // Do nothing.
+            SignatureMode::Cleartext => {
+                // Cleartext signatures are always text signatures.
+                self.template = self.template.set_type(SignatureType::Text);
+
+                // Write the header.
+                let mut sink = self.inner.take().unwrap();
+                writeln!(sink, "-----BEGIN PGP SIGNED MESSAGE-----")?;
+                writeln!(sink, "Hash: {}", self.hash.algo().text_name()?)?;
+                writeln!(sink)?;
+
+                // We now install two filters.  See the comment on
+                // Signer::cleartext.
+
+                // Install the filter dash-escaping the text below us.
+                self.inner =
+                    Some(writer::BoxStack::from(
+                        DashEscapeFilter::new(Message::from(sink),
+                                              Default::default())));
+
+                // Install the filter trimming the trailing whitespace
+                // above us.
+                return Ok(TrailingWSFilter::new(Message::from(Box::new(self)),
+                                                Default::default()));
+            },
         }
 
         Ok(Message::from(Box::new(self)))
     }
 
     fn emit_signatures(&mut self) -> Result<()> {
+        if self.mode == SignatureMode::Cleartext {
+            // Pop off the DashEscapeFilter.
+            let inner = self.inner.take().expect("It's the DashEscapeFilter")
+                .into_inner()?.expect("It's the DashEscapeFilter");
+
+            // And install an armorer.
+            self.inner =
+                Some(writer::BoxStack::from(
+                    writer::Armorer::new(Message::from(inner),
+                                         Default::default(),
+                                         armor::Kind::Signature,
+                                         Option::<(&str, &str)>::None)?));
+        }
+
         if let Some(ref mut sink) = self.inner {
             // Emit the signatures in reverse, so that the
             // one-pass-signature and signature packets "bracket" the
@@ -1178,29 +1354,79 @@ impl<'a> fmt::Debug for Signer<'a> {
         f.debug_struct("Signer")
             .field("inner", &self.inner)
             .field("cookie", &self.cookie)
+            .field("mode", &self.mode)
             .finish()
     }
 }
 
 impl<'a> Write for Signer<'a> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let written = match self.inner.as_mut() {
+        // Shortcut empty writes.  This is important for the code
+        // below that delays hashing newlines when creating cleartext
+        // signed messages.
+        if buf.is_empty() {
+            return Ok(0);
+        }
+
+        use SignatureMode::*;
+        let written = match (self.inner.as_mut(), self.mode) {
             // If we are creating a normal signature, pass data
             // through.
-            Some(ref mut w) if ! self.detached => w.write(buf),
+            (Some(ref mut w), Inline) => w.write(buf),
             // If we are creating a detached signature, just hash all
             // bytes.
-            Some(_) => Ok(buf.len()),
+            (Some(_), Detached) => Ok(buf.len()),
+            // If we are creating a cleartext signed message, just
+            // write through (the DashEscapeFilter takes care of the
+            // encoding), and hash all bytes as is.
+            (Some(ref mut w), Cleartext) => w.write(buf),
             // When we are popped off the stack, we have no inner
             // writer.  Just hash all bytes.
-            None => Ok(buf.len()),
+            (None, _) => Ok(buf.len()),
         };
 
         if let Ok(amount) = written {
-            if self.template.typ() == SignatureType::Text {
-                crate::parse::hash_update_text(&mut self.hash, &buf[..amount]);
+            let data = &buf[..amount];
+
+            if self.mode == Cleartext {
+                // Delay hashing the last two bytes, because we the
+                // final newline is not part of the signature (see
+                // Section 7.1 of RFC4880).
+
+                // First, hash the stashed bytes.  We know that it is
+                // a newline, but we know that more text follows (buf
+                // is not empty), so it cannot be the last.
+                assert!(! buf.is_empty());
+                crate::parse::hash_update_text(&mut self.hash,
+                                               &self.hash_stash[..]);
+                crate::vec_truncate(&mut self.hash_stash, 0);
+
+                // Compute the length of data that should be hashed.
+                // If it ends in a newline, we delay hashing it.
+                let l = data.len() - if data.ends_with(b"\r\n") {
+                    2
+                } else if data.ends_with(b"\n") {
+                    1
+                } else {
+                    0
+                };
+
+                // XXX: This logic breaks if we get a b"\r\n" in two
+                // writes.  However, TrailingWSFilter will only emit
+                // b"\r\n" in one write.
+
+                // Hash everything but the last newline now.
+                crate::parse::hash_update_text(&mut self.hash, &data[..l]);
+                // The newline we stash away.  If more text is written
+                // later, we will hash it then.  Otherwise, it is
+                // implicitly omitted when the signer is finalized.
+                self.hash_stash.extend_from_slice(&data[l..]);
             } else {
-                self.hash.update(&buf[..amount]);
+                if self.template.typ() == SignatureType::Text {
+                    crate::parse::hash_update_text(&mut self.hash, data);
+                } else {
+                    self.hash.update(data);
+                }
             }
             self.position += amount as u64;
         }
@@ -1443,14 +1669,10 @@ impl<'a> LiteralWriter<'a> {
         // Signer, and if so, we pop it off the stack and
         // store it in 'self.signature_writer'.
         let signer_above =
-            if let &Cookie {
+            matches!(self.inner.cookie_ref(), &Cookie {
                 private: Private::Signer{..},
                 ..
-            } = self.inner.cookie_ref() {
-                true
-            } else {
-                false
-            };
+            });
 
         if signer_above {
             let stack = self.inner.pop()?;
@@ -2095,11 +2317,11 @@ impl<'a> Encryptor<'a> {
     /// To add more recipients, use [`Encryptor::add_recipients`].  To
     /// add a password, use [`Encryptor::add_password`].  To change
     /// the symmetric encryption algorithm, use
-    /// [`Encryptor::sym_algo`].
+    /// [`Encryptor::symmetric_algo`].
     ///
     ///   [`Encryptor::add_recipients`]: #method.add_recipients
     ///   [`Encryptor::add_password`]: #method.add_password
-    ///   [`Encryptor::sym_algo`]: #method.sym_algo
+    ///   [`Encryptor::symmetric_algo`]: #method.symmetric_algo
     ///
     /// # Examples
     ///
@@ -2169,11 +2391,11 @@ impl<'a> Encryptor<'a> {
     /// To add more passwords, use [`Encryptor::add_password`].  To
     /// add an recipient, use [`Encryptor::add_recipients`].  To change
     /// the symmetric encryption algorithm, use
-    /// [`Encryptor::sym_algo`].
+    /// [`Encryptor::symmetric_algo`].
     ///
     ///   [`Encryptor::add_recipients`]: #method.add_recipients
     ///   [`Encryptor::add_password`]: #method.add_password
-    ///   [`Encryptor::sym_algo`]: #method.sym_algo
+    ///   [`Encryptor::symmetric_algo`]: #method.symmetric_algo
     ///
     /// # Examples
     ///
@@ -2547,7 +2769,7 @@ impl<'a> Encryptor<'a> {
             aed.serialize_headers(&mut inner)?;
 
             writer::AEADEncryptor::new(
-                inner.into(),
+                inner,
                 Cookie::new(level),
                 aed.symmetric_algo(),
                 aed.aead(),
@@ -2564,7 +2786,7 @@ impl<'a> Encryptor<'a> {
 
             // Install encryptor.
             self.inner = Some(writer::Encryptor::new(
-                inner.into(),
+                inner,
                 Cookie::new(level),
                 self.sym_algo,
                 &sk,
@@ -2891,7 +3113,7 @@ mod test {
         let mut good = 0;
         while let PacketParserResult::Some(mut pp) = ppr {
             if let Packet::Signature(sig) = &mut pp.packet {
-                let key = keys.get(&sig.issuer_fingerprints().nth(0).unwrap())
+                let key = keys.get(&sig.issuer_fingerprints().next().unwrap())
                     .unwrap();
                 sig.verify(key).unwrap();
                 good += 1;
@@ -3188,7 +3410,7 @@ mod test {
             .generate().unwrap();
 
         // What we're going to sign with.
-        let ka = cert.keys().with_policy(p, None).for_signing().nth(0).unwrap();
+        let ka = cert.keys().with_policy(p, None).for_signing().next().unwrap();
 
         // A timestamp later than the key's creation.
         let timestamp = ka.key().creation_time()
@@ -3257,8 +3479,7 @@ mod test {
             eprintln!("{:?}", String::from_utf8(data.to_vec())?);
             let signing_keypair = cert.keys().secret()
                 .with_policy(p, None).supported()
-                .alive().revoked(false).for_signing()
-                .nth(0).unwrap()
+                .alive().revoked(false).for_signing().next().unwrap()
                 .key().clone().into_keypair()?;
             let mut signature = vec![];
             {

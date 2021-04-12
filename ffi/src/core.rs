@@ -30,7 +30,7 @@
 //! sq_context_t ctx;
 //!
 //! cfg = sq_context_configure ();
-//! sq_config_network_policy (cfg, SQ_NETWORK_POLICY_OFFLINE);
+//! sq_config_ipc_policy (cfg, SQ_IPC_POLICY_ROBUST);
 //! ctx = sq_config_build (cfg, NULL);
 //!
 //! /* Use Sequoia.  */
@@ -41,8 +41,8 @@
 use std::ptr;
 use libc::{c_char, c_int};
 
-use sequoia_core as core;
-use sequoia_core::Config;
+use sequoia_ipc::core as core;
+use sequoia_ipc::core::Config;
 
 /// Wraps a Context and provides an error slot.
 #[doc(hidden)]
@@ -58,6 +58,16 @@ impl Context {
 
     pub(crate) fn errp(&mut self) -> &mut *mut crate::error::Error {
         &mut self.e
+    }
+}
+
+impl Drop for Context {
+    fn drop(&mut self) {
+        if !self.e.is_null() {
+            unsafe {
+                drop(Box::from_raw(self.e));
+            }
+        }
     }
 }
 
@@ -78,7 +88,7 @@ fn sq_context_last_error(ctx: *mut Context) -> *mut crate::error::Error {
 fn sq_context_new(errp: Option<&mut *mut crate::error::Error>)
                   -> *mut Context {
     ffi_make_fry_from_errp!(errp);
-    ffi_try_box!(core::Context::new().map(|ctx| Context::new(ctx)))
+    ffi_try_box!(core::Context::new().map(Context::new))
 }
 
 /// Frees a context.
@@ -111,13 +121,6 @@ fn sq_context_lib(ctx: *const Context) -> *const c_char {
     ctx.c.lib().to_string_lossy().as_bytes().as_ptr() as *const c_char
 }
 
-/// Returns the network policy.
-#[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
-fn sq_context_network_policy(ctx: *const Context) -> c_int {
-    let ctx = ffi_param_ref!(ctx);
-    u8::from(ctx.c.network_policy()) as c_int
-}
-
 /// Returns the IPC policy.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
 fn sq_context_ipc_policy(ctx: *const Context) -> c_int {
@@ -145,7 +148,7 @@ fn sq_config_build(cfg: *mut Config, errp: Option<&mut *mut crate::error::Error>
     ffi_make_fry_from_errp!(errp);
     let cfg = ffi_param_move!(cfg);
 
-    ffi_try_box!(cfg.build().map(|ctx| Context::new(ctx)))
+    ffi_try_box!(cfg.build().map(Context::new))
 }
 
 /// Sets the directory containing shared state.
@@ -164,16 +167,6 @@ fn sq_config_lib(cfg: *mut Config, lib: *const c_char) {
     cfg.set_lib(&lib.as_ref());
 }
 
-/// Sets the network policy.
-#[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
-fn sq_config_network_policy(cfg: *mut Config, policy: c_int) {
-    let cfg = ffi_param_ref_mut!(cfg);
-    if policy < 0 || policy > 3 {
-        panic!("Bad network policy: {}", policy);
-    }
-    cfg.set_network_policy((policy as u8).into());
-}
-
 /// Sets the IPC policy.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle] pub extern "C"
 fn sq_config_ipc_policy(cfg: *mut Config, policy: c_int) {
@@ -189,4 +182,20 @@ fn sq_config_ipc_policy(cfg: *mut Config, policy: c_int) {
 fn sq_config_ephemeral(cfg: *mut Config) {
     let cfg = ffi_param_ref_mut!(cfg);
     cfg.set_ephemeral();
+}
+
+#[test]
+fn test_drop_context() {
+    {
+        use crate::MoveIntoRaw;
+
+        let c = sq_context_new(None);
+        let ctx = ffi_param_ref_mut!(c);
+        let errp = ctx.errp();
+        {
+            let e = anyhow::anyhow!("bad");
+            *errp = e.move_into_raw();
+        }
+        sq_context_free(Some(ctx));
+    }
 }

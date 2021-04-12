@@ -71,7 +71,7 @@
 //! # Selecting Keys
 //!
 //! It is essential to choose the right keys, and to make sure that
-//! they appropriate.  Below, we present some guidelines for the most
+//! they are appropriate.  Below, we present some guidelines for the most
 //! common situations.
 //!
 //! ## Encrypting and Signing Messages
@@ -190,7 +190,7 @@
 //!
 //! ## Decrypting a Message
 //!
-//! When decrypting a message, it seems like one ought to only keys
+//! When decrypting a message, it seems like one ought to only use keys
 //! that were alive, not revoked, and encryption-capable when the
 //! message was encrypted.  Unfortunately, we don't know when a
 //! message was encrypted.  But anyway, due to the slow propagation of
@@ -2278,7 +2278,7 @@ mod test {
         let mut primary_signer = cert.primary_key().key().clone()
             .parts_into_secret().unwrap().into_keypair().unwrap();
         let mut signing_subkey_signer = cert.with_policy(p, None).unwrap()
-            .keys().for_signing().nth(0).unwrap()
+            .keys().for_signing().next().unwrap()
             .key().clone().parts_into_secret().unwrap()
             .into_keypair().unwrap();
 
@@ -2346,13 +2346,10 @@ mod test {
         // Remove the direct key signatures.
         let cert = Cert::from_packets(Vec::from(cert)
             .into_iter()
-            .filter(|p| {
-                match p {
-                    Packet::Signature(s)
-                        if s.typ() == SignatureType::DirectKey => false,
-                    _ => true,
-                }
-            }))?;
+            .filter(|p| ! matches!(
+                        p,
+                        Packet::Signature(s) if s.typ() == SignatureType::DirectKey
+            )))?;
 
         let vc = cert.with_policy(p, None)?;
 

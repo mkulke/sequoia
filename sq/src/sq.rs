@@ -1,53 +1,44 @@
 /// A command-line frontend for Sequoia.
 
-use crossterm;
-
-use crossterm::terminal;
 use anyhow::Context as _;
-use prettytable::{Table, Cell, Row, row, cell};
 use std::fs::OpenOptions;
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
-use std::process::exit;
+use std::time::Duration;
 use chrono::{DateTime, offset::Utc};
+use itertools::Itertools;
 
-use buffered_reader::File;
+use buffered_reader::{BufferedReader, Dup, File, Generic, Limitor};
 use sequoia_openpgp as openpgp;
-use sequoia_core;
-use sequoia_net;
-use sequoia_store as store;
 
 use openpgp::{
     Result,
-    Fingerprint,
-    KeyID,
-    KeyHandle,
-    packet::UserID,
 };
 use crate::openpgp::{armor, Cert};
-use sequoia_autocrypt as autocrypt;
+use crate::openpgp::crypto::Password;
 use crate::openpgp::fmt::hex;
 use crate::openpgp::types::KeyFlags;
-use crate::openpgp::parse::Parse;
+use crate::openpgp::packet::prelude::*;
+use crate::openpgp::parse::{Parse, PacketParser, PacketParserResult};
+use crate::openpgp::packet::signature::subpacket::NotationData;
+use crate::openpgp::packet::signature::subpacket::NotationDataFlags;
 use crate::openpgp::serialize::{Serialize, stream::{Message, Armorer}};
 use crate::openpgp::cert::prelude::*;
 use crate::openpgp::policy::StandardPolicy as P;
-use sequoia_core::{Context, NetworkPolicy};
-use sequoia_net::{KeyServer, wkd};
-use store::{Mapping, LogIter};
 
 mod sq_cli;
 mod commands;
-use commands::dump::Convert;
 
-fn open_or_stdin(f: Option<&str>) -> Result<Box<dyn io::Read + Send + Sync>> {
+fn open_or_stdin(f: Option<&str>)
+                 -> Result<Box<dyn BufferedReader<()>>> {
     match f {
         Some(f) => Ok(Box::new(File::open(f)
                                .context("Failed to open input file")?)),
-        None => Ok(Box::new(io::stdin())),
+        None => Ok(Box::new(Generic::new(io::stdin(), None))),
     }
 }
 
+#[deprecated(note = "Use the appropriate function on Config instead")]
 fn create_or_stdout(f: Option<&str>, force: bool)
     -> Result<Box<dyn io::Write + Sync + Send>> {
     match f {
@@ -64,22 +55,77 @@ fn create_or_stdout(f: Option<&str>, force: bool)
                             .context("Failed to create output file")?))
             } else {
                 Err(anyhow::anyhow!(
-                    format!("File {:?} exists, use --force to overwrite", p)))
+                    format!("File {:?} exists, use \"sq --force ...\" to \
+                             overwrite", p)))
             }
         }
     }
 }
 
-fn create_or_stdout_pgp<'a>(f: Option<&str>, force: bool,
-                            binary: bool, kind: armor::Kind)
-                            -> Result<Message<'a>>
-{
-    let sink = create_or_stdout(f, force)?;
-    let mut message = Message::new(sink);
-    if ! binary {
-        message = Armorer::new(message).kind(kind).build()?;
+const SECONDS_IN_DAY : u64 = 24 * 60 * 60;
+const SECONDS_IN_YEAR : u64 =
+    // Average number of days in a year.
+    (365.2422222 * SECONDS_IN_DAY as f64) as u64;
+
+fn parse_duration(expiry: &str) -> Result<Duration> {
+    let mut expiry = expiry.chars().peekable();
+
+    let _ = expiry.by_ref()
+        .peeking_take_while(|c| c.is_whitespace())
+        .for_each(|_| ());
+    let digits = expiry.by_ref()
+        .peeking_take_while(|c| {
+            *c == '+' || *c == '-' || c.is_digit(10)
+        }).collect::<String>();
+    let _ = expiry.by_ref()
+        .peeking_take_while(|c| c.is_whitespace())
+        .for_each(|_| ());
+    let suffix = expiry.next();
+    let _ = expiry.by_ref()
+        .peeking_take_while(|c| c.is_whitespace())
+        .for_each(|_| ());
+    let junk = expiry.collect::<String>();
+
+    if digits.is_empty() {
+        return Err(anyhow::anyhow!(
+            "--expiry: missing count \
+             (try: '2y' for 2 years)"));
     }
-    Ok(message)
+
+    let count = match digits.parse::<i32>() {
+        Ok(count) if count < 0 =>
+            return Err(anyhow::anyhow!(
+                "--expiry: Expiration can't be in the past")),
+        Ok(count) => count as u64,
+        Err(err) =>
+            return Err(err).context("--expiry: count is out of range"),
+    };
+
+    let factor = match suffix {
+        Some('y') | Some('Y') => SECONDS_IN_YEAR,
+        Some('m') | Some('M') => SECONDS_IN_YEAR / 12,
+        Some('w') | Some('W') => 7 * SECONDS_IN_DAY,
+        Some('d') | Some('D') => SECONDS_IN_DAY,
+        None =>
+            return Err(anyhow::anyhow!(
+                "--expiry: missing suffix \
+                 (try: '{}y', '{}m', '{}w' or '{}d' instead)",
+                digits, digits, digits, digits)),
+        Some(suffix) =>
+            return Err(anyhow::anyhow!(
+                "--expiry: invalid suffix '{}' \
+                 (try: '{}y', '{}m', '{}w' or '{}d' instead)",
+                suffix, digits, digits, digits, digits)),
+    };
+
+    if !junk.is_empty() {
+        return Err(anyhow::anyhow!(
+            "--expiry: contains trailing junk ('{:?}') \
+             (try: '{}{}')",
+            junk, count, factor));
+    }
+
+    Ok(Duration::new(count * factor, 0))
 }
 
 /// Loads one TSK from every given file.
@@ -117,6 +163,7 @@ fn load_certs<'a, I>(files: I) -> openpgp::Result<Vec<Cert>>
 }
 
 /// Serializes a keyring, adding descriptive headers if armored.
+#[allow(dead_code)]
 fn serialize_keyring(mut output: &mut dyn io::Write, certs: &[Cert], binary: bool)
                      -> openpgp::Result<()> {
     // Handle the easy options first.  No armor no cry:
@@ -152,14 +199,108 @@ fn serialize_keyring(mut output: &mut dyn io::Write, certs: &[Cert], binary: boo
     Ok(())
 }
 
-fn parse_armor_kind(kind: Option<&str>) -> armor::Kind {
+fn parse_armor_kind(kind: Option<&str>) -> Option<armor::Kind> {
     match kind.expect("has default value") {
-        "message" => armor::Kind::Message,
-        "publickey" => armor::Kind::PublicKey,
-        "secretkey" => armor::Kind::SecretKey,
-        "signature" => armor::Kind::Signature,
-        "file" => armor::Kind::File,
+        "auto" =>    None,
+        "message" => Some(armor::Kind::Message),
+        "cert" =>    Some(armor::Kind::PublicKey),
+        "key" =>     Some(armor::Kind::SecretKey),
+        "sig" =>     Some(armor::Kind::Signature),
+        "file" =>    Some(armor::Kind::File),
         _ => unreachable!(),
+    }
+}
+
+/// How much data to look at when detecting armor kinds.
+const ARMOR_DETECTION_LIMIT: u64 = 1 << 24;
+
+/// Peeks at the first packet to guess the type.
+///
+/// Returns the given reader unchanged.  If the detection fails,
+/// armor::Kind::File is returned as safe default.
+fn detect_armor_kind(input: Box<dyn BufferedReader<()>>)
+                     -> (Box<dyn BufferedReader<()>>, armor::Kind) {
+    let mut dup = Limitor::new(Dup::new(input), ARMOR_DETECTION_LIMIT).as_boxed();
+    let kind = 'detection: loop {
+        if let Ok(ppr) = PacketParser::from_reader(&mut dup) {
+            if let PacketParserResult::Some(pp) = ppr {
+                let (packet, _) = match pp.next() {
+                    Ok(v) => v,
+                    Err(_) => break 'detection armor::Kind::File,
+                };
+
+                break 'detection match packet {
+                    Packet::Signature(_) => armor::Kind::Signature,
+                    Packet::SecretKey(_) => armor::Kind::SecretKey,
+                    Packet::PublicKey(_) => armor::Kind::PublicKey,
+                    Packet::PKESK(_) | Packet::SKESK(_) =>
+                        armor::Kind::Message,
+                    _ => armor::Kind::File,
+                };
+            }
+        }
+        break 'detection armor::Kind::File;
+    };
+    (dup.into_inner().unwrap().into_inner().unwrap(), kind)
+}
+
+// Decrypts a key, if possible.
+//
+// The passwords in `passwords` are tried first.  If the key can't be
+// decrypted using those, the user is prompted.  If a valid password
+// is entered, it is added to `passwords`.
+fn decrypt_key<R>(key: Key<key::SecretParts, R>, passwords: &mut Vec<String>)
+    -> Result<Key<key::SecretParts, R>>
+    where R: key::KeyRole + Clone
+{
+    let key = key.parts_as_secret()?;
+    match key.secret() {
+        SecretKeyMaterial::Unencrypted(_) => {
+            Ok(key.clone())
+        }
+        SecretKeyMaterial::Encrypted(_) => {
+            for p in passwords.iter() {
+                if let Ok(key)
+                    = key.clone().decrypt_secret(&Password::from(&p[..]))
+                {
+                    return Ok(key);
+                }
+            }
+
+            let mut first = true;
+            loop {
+                // Prompt the user.
+                match rpassword::read_password_from_tty(
+                    Some(&format!(
+                        "{}Enter password to unlock {} (blank to skip): ",
+                        if first { "" } else { "Invalid password. " },
+                        key.keyid().to_hex())))
+                {
+                    Ok(p) => {
+                        first = false;
+                        if p.is_empty() {
+                            // Give up.
+                            break;
+                        }
+
+                        if let Ok(key) = key
+                            .clone()
+                            .decrypt_secret(&Password::from(&p[..]))
+                        {
+                            passwords.push(p);
+                            return Ok(key);
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("While reading password: {}", err);
+                        break;
+                    }
+                }
+            }
+
+            Err(anyhow::anyhow!("Key {}: Unable to decrypt secret key material",
+                                key.keyid().to_hex()))
+        }
     }
 }
 
@@ -168,10 +309,82 @@ fn parse_armor_kind(kind: Option<&str>) -> armor::Kind {
 ///
 /// This should be used wherever a positional argument is followed by
 /// an optional positional argument.
+#[allow(dead_code)]
 fn help_warning(arg: &str) {
     if arg == "help" {
         eprintln!("Warning: \"help\" is not a subcommand here.  \
                    Did you mean --help?");
+    }
+}
+
+/// Prints a warning if sq is run in a non-interactive setting without
+/// a terminal.
+///
+/// Detecting non-interactive use is done using a heuristic.
+fn emit_unstable_cli_warning() {
+    if term_size::dimensions_stdout().is_some() {
+        // stdout is connected to a terminal, assume interactive use.
+        return;
+    }
+
+    // For bash shells, we can use a very simple heuristic.  We simply
+    // look at whether the COLUMNS variable is defined in our
+    // environment.
+    if std::env::var_os("COLUMNS").is_some() {
+        // Heuristic detected interactive use.
+        return;
+    }
+
+    eprintln!("\nWARNING: sq does not have a stable CLI interface.  \
+               Use with caution in scripts.\n");
+}
+
+#[derive(Clone)]
+pub struct Config<'a> {
+    force: bool,
+    policy: P<'a>,
+    /// Have we emitted the warning yet?
+    unstable_cli_warning_emitted: bool,
+}
+
+impl Config<'_> {
+    /// Opens the file (or stdout) for writing data that is safe for
+    /// non-interactive use.
+    ///
+    /// This is suitable for any kind of OpenPGP data, or decrypted or
+    /// authenticated payloads.
+    fn create_or_stdout_safe(&self, f: Option<&str>)
+                             -> Result<Box<dyn io::Write + Sync + Send>> {
+        #[allow(deprecated)]
+        create_or_stdout(f, self.force)
+    }
+
+    /// Opens the file (or stdout) for writing data that is NOT safe
+    /// for non-interactive use.
+    ///
+    /// If our heuristic detects non-interactive use, we will emit a
+    /// warning.
+    fn create_or_stdout_unsafe(&mut self, f: Option<&str>)
+                               -> Result<Box<dyn io::Write + Sync + Send>> {
+        if ! self.unstable_cli_warning_emitted {
+            emit_unstable_cli_warning();
+            self.unstable_cli_warning_emitted = true;
+        }
+        #[allow(deprecated)]
+        create_or_stdout(f, self.force)
+    }
+
+    /// Opens the file (or stdout) for writing data that is safe for
+    /// non-interactive use because it is an OpenPGP data stream.
+    fn create_or_stdout_pgp<'a>(&self, f: Option<&str>,
+                                binary: bool, kind: armor::Kind)
+                                -> Result<Message<'a>> {
+        let sink = self.create_or_stdout_safe(f)?;
+        let mut message = Message::new(sink);
+        if ! binary {
+            message = Armorer::new(message).kind(kind).build()?;
+        }
+        Ok(message)
     }
 }
 
@@ -185,78 +398,58 @@ fn main() -> Result<()> {
         .collect();
     policy.good_critical_notations(&known_notations);
 
-    let network_policy = match matches.value_of("policy") {
-        None => NetworkPolicy::Encrypted,
-        Some("offline") => NetworkPolicy::Offline,
-        Some("anonymized") => NetworkPolicy::Anonymized,
-        Some("encrypted") => NetworkPolicy::Encrypted,
-        Some("insecure") => NetworkPolicy::Insecure,
-        Some(_) => {
-            eprintln!("Bad network policy, must be offline, anonymized, encrypted, or insecure.");
-            exit(1);
-        },
-    };
     let force = matches.is_present("force");
-    let (realm_name, mapping_name) = {
-        let s = matches.value_of("mapping").expect("has a default value");
-        if let Some(i) = s.find('/') {
-            (&s[..i], &s[i+1..])
-        } else {
-            (s, "default")
-        }
+
+    let mut config = Config {
+        force,
+        policy: policy.clone(),
+        unstable_cli_warning_emitted: false,
     };
-    let mut builder = Context::configure()
-        .network_policy(network_policy);
-    if let Some(dir) = matches.value_of("home") {
-        builder = builder.home(dir);
-    }
-    let ctx = builder.build()?;
-    let mut rt = tokio::runtime::Builder::new()
-        .basic_scheduler()
-        .enable_io()
-        .enable_time()
-        .build()?;
 
     match matches.subcommand() {
         ("decrypt",  Some(m)) => {
             let mut input = open_or_stdin(m.value_of("input"))?;
-            let mut output = create_or_stdout(m.value_of("output"), force)?;
-            let signatures: usize =
-                m.value_of("signatures").unwrap_or("0").parse()?;
+            let mut output =
+                config.create_or_stdout_safe(m.value_of("output"))?;
             let certs = m.values_of("sender-cert-file")
                 .map(load_certs)
-                .unwrap_or(Ok(vec![]))?;
+                .unwrap_or_else(|| Ok(vec![]))?;
+            // Fancy default for --signatures.  If you change this,
+            // also change the description in the CLI definition.
+            let signatures: usize =
+                if let Some(n) = m.value_of("signatures") {
+                    n.parse()?
+                } else if certs.is_empty() {
+                    // No certs are given for verification, use 0 as
+                    // threshold so we handle only-encrypted messages
+                    // gracefully.
+                    0
+                } else {
+                    // At least one cert given, expect at least one
+                    // valid signature.
+                    1
+                };
             let secrets = m.values_of("secret-key-file")
                 .map(load_keys)
-                .unwrap_or(Ok(vec![]))?;
-            let mut mapping = Mapping::open(&ctx, realm_name, mapping_name)
-                .context("Failed to open the mapping")?;
-            commands::decrypt(&ctx, policy, &mut mapping,
+                .unwrap_or_else(|| Ok(vec![]))?;
+            commands::decrypt(config,
                               &mut input, &mut output,
                               signatures, certs, secrets,
                               m.is_present("dump-session-key"),
                               m.is_present("dump"), m.is_present("hex"))?;
         },
         ("encrypt",  Some(m)) => {
-            let mapping = Mapping::open(&ctx, realm_name, mapping_name)
-                .context("Failed to open the mapping")?;
-            let mut recipients = m.values_of("recipients-cert-file")
+            let recipients = m.values_of("recipients-cert-file")
                 .map(load_certs)
-                .unwrap_or(Ok(vec![]))?;
-            if let Some(r) = m.values_of("recipient") {
-                for recipient in r {
-                    recipients.push(mapping.lookup(recipient)
-                                    .context("No such key found")?.cert()?);
-                }
-            }
+                .unwrap_or_else(|| Ok(vec![]))?;
             let mut input = open_or_stdin(m.value_of("input"))?;
             let output =
-                create_or_stdout_pgp(m.value_of("output"), force,
-                                     m.is_present("binary"),
-                                     armor::Kind::Message)?;
+                config.create_or_stdout_pgp(m.value_of("output"),
+                                            m.is_present("binary"),
+                                            armor::Kind::Message)?;
             let additional_secrets = m.values_of("signer-key-file")
                 .map(load_keys)
-                .unwrap_or(Ok(vec![]))?;
+                .unwrap_or_else(|| Ok(vec![]))?;
             let mode = match m.value_of("mode").expect("has default") {
                 "rest" => KeyFlags::empty()
                     .set_storage_encryption(),
@@ -279,7 +472,7 @@ fn main() -> Result<()> {
                               &recipients, additional_secrets,
                               mode,
                               m.value_of("compression").expect("has default"),
-                              time.into(),
+                              time,
                               m.is_present("use-expired-subkey"),
             )?;
         },
@@ -292,7 +485,7 @@ fn main() -> Result<()> {
             let notarize = m.is_present("notarize");
             let secrets = m.values_of("secret-key-file")
                 .map(load_keys)
-                .unwrap_or(Ok(vec![]))?;
+                .unwrap_or_else(|| Ok(vec![]))?;
             let time = if let Some(time) = m.value_of("time") {
                 Some(parse_iso8601(time, chrono::NaiveTime::from_hms(0, 0, 0))
                          .context(format!("Bad value passed to --time: {:?}",
@@ -300,101 +493,142 @@ fn main() -> Result<()> {
             } else {
                 None
             };
-            commands::sign(policy, &mut input, output, secrets, detached, binary,
-                           append, notarize, time, force)?;
+            // Each --notation takes two values.  The iterator
+            // returns them one at a time, however.
+            let mut notations: Vec<(bool, NotationData)> = Vec::new();
+            if let Some(mut n) = m.values_of("notation") {
+                while let Some(name) = n.next() {
+                    let value = n.next().unwrap();
+
+                    let (critical, name) = if !name.is_empty()
+                        && Some('!') == name.chars().next()
+                    {
+                        (true, &name[1..])
+                    } else {
+                        (false, name)
+                    };
+
+                    notations.push(
+                        (critical,
+                         NotationData::new(
+                             name, value,
+                             NotationDataFlags::empty().set_human_readable())));
+                }
+            }
+
+            if let Some(merge) = m.value_of("merge") {
+                let output = config.create_or_stdout_pgp(output, binary,
+                                                         armor::Kind::Message)?;
+                let mut input2 = open_or_stdin(Some(merge))?;
+                commands::merge_signatures(&mut input, &mut input2, output)?;
+            } else if m.is_present("clearsign") {
+                let output = config.create_or_stdout_safe(output)?;
+                commands::sign::clearsign(config, input, output, secrets,
+                                          time, &notations)?;
+            } else {
+                commands::sign(config, &mut input, output, secrets, detached,
+                               binary, append, notarize, time, &notations)?;
+            }
         },
         ("verify",  Some(m)) => {
             let mut input = open_or_stdin(m.value_of("input"))?;
-            let mut output = create_or_stdout(m.value_of("output"), force)?;
+            let mut output =
+                config.create_or_stdout_safe(m.value_of("output"))?;
             let mut detached = if let Some(f) = m.value_of("detached") {
                 Some(File::open(f)?)
             } else {
                 None
             };
             let signatures: usize =
-                m.value_of("signatures").unwrap_or("0").parse()?;
+                m.value_of("signatures").expect("has a default").parse()?;
             let certs = m.values_of("sender-cert-file")
                 .map(load_certs)
-                .unwrap_or(Ok(vec![]))?;
-            let mut mapping = Mapping::open(&ctx, realm_name, mapping_name)
-                .context("Failed to open the mapping")?;
-            commands::verify(&ctx, policy, &mut mapping, &mut input,
+                .unwrap_or_else(|| Ok(vec![]))?;
+            commands::verify(config, &mut input,
                              detached.as_mut().map(|r| r as &mut (dyn io::Read + Sync + Send)),
                              &mut output, signatures, certs)?;
         },
 
-        ("enarmor",  Some(m)) => {
-            let mut input = open_or_stdin(m.value_of("input"))?;
+        ("armor",  Some(m)) => {
+            let input = open_or_stdin(m.value_of("input"))?;
+            let mut want_kind = parse_armor_kind(m.value_of("kind"));
+
+            // Peek at the data.  If it looks like it is armored
+            // data, avoid armoring it again.
+            let mut dup = Limitor::new(Dup::new(input), ARMOR_DETECTION_LIMIT);
+            let (already_armored, have_kind) = {
+                let mut reader =
+                    armor::Reader::new(&mut dup,
+                                       armor::ReaderMode::Tolerant(None));
+                (reader.data(8).is_ok(), reader.kind())
+            };
+            let mut input =
+                dup.as_boxed().into_inner().unwrap().into_inner().unwrap();
+
+            if already_armored
+                && (want_kind.is_none() || want_kind == have_kind)
+            {
+                // It is already armored and has the correct kind.
+                let mut output =
+                    config.create_or_stdout_safe(m.value_of("output"))?;
+                io::copy(&mut input, &mut output)?;
+                return Ok(());
+            }
+
+            if want_kind.is_none() {
+                let (tmp, kind) = detect_armor_kind(input);
+                input = tmp;
+                want_kind = Some(kind);
+            }
+
+            // At this point, want_kind is determined.
+            let want_kind = want_kind.expect("given or detected");
+
             let mut output =
-                create_or_stdout_pgp(m.value_of("output"), force,
-                                     false,
-                                     parse_armor_kind(m.value_of("kind")))?;
-            io::copy(&mut input, &mut output)?;
+                config.create_or_stdout_pgp(m.value_of("output"),
+                                            false, want_kind)?;
+
+            if already_armored {
+                // Dearmor and copy to change the type.
+                let mut reader =
+                    armor::Reader::new(input,
+                                       armor::ReaderMode::Tolerant(None));
+                io::copy(&mut reader, &mut output)?;
+            } else {
+                io::copy(&mut input, &mut output)?;
+            }
             output.finalize()?;
         },
         ("dearmor",  Some(m)) => {
             let mut input = open_or_stdin(m.value_of("input"))?;
-            let mut output = create_or_stdout(m.value_of("output"), force)?;
+            let mut output =
+                config.create_or_stdout_safe(m.value_of("output"))?;
             let mut filter = armor::Reader::new(&mut input, None);
             io::copy(&mut filter, &mut output)?;
         },
-        ("autocrypt", Some(m)) => {
-            match m.subcommand() {
-                ("decode",  Some(m)) => {
-                    let input = open_or_stdin(m.value_of("input"))?;
-                    let mut output =
-                        create_or_stdout_pgp(m.value_of("output"), force,
-                                             true,
-                                             armor::Kind::PublicKey)?;
-                    let ac = autocrypt::AutocryptHeaders::from_reader(input)?;
-                    for h in &ac.headers {
-                        if let Some(ref cert) = h.key {
-                            cert.serialize(&mut output)?;
-                        }
-                    }
-                    output.finalize()?;
-                },
-                ("encode-sender",  Some(m)) => {
-                    let input = open_or_stdin(m.value_of("input"))?;
-                    let mut output = create_or_stdout(m.value_of("output"),
-                                                      force)?;
-                    let cert = Cert::from_reader(input)?;
-                    let addr = m.value_of("address").map(|a| a.to_string())
-                        .or_else(|| {
-                            cert.with_policy(policy, None)
-                                .and_then(|vcert| vcert.primary_userid()).ok()
-                                .map(|ca| ca.userid().to_string())
-                        });
-                    let ac = autocrypt::AutocryptHeader::new_sender(
-                        policy,
-                        &cert,
-                        &addr.ok_or(anyhow::anyhow!(
-                            "No well-formed primary userid found, use \
-                             --address to specify one"))?,
-                        m.value_of("prefer-encrypt").expect("has default"))?;
-                    write!(&mut output, "Autocrypt: ")?;
-                    ac.serialize(&mut output)?;
-                },
-                _ => unreachable!(),
-            }
-        },
+        #[cfg(feature = "autocrypt")]
+        ("autocrypt", Some(m)) => commands::autocrypt::dispatch(config, m)?,
 
         ("inspect",  Some(m)) => {
-            let mut output = create_or_stdout(m.value_of("output"), force)?;
+            let mut output =
+                config.create_or_stdout_unsafe(m.value_of("output"))?;
             commands::inspect(m, policy, &mut output)?;
         },
+
+        ("keyring", Some(m)) => commands::keyring::dispatch(config, m)?,
 
         ("packet", Some(m)) => match m.subcommand() {
             ("dump",  Some(m)) => {
                 let mut input = open_or_stdin(m.value_of("input"))?;
-                let mut output = create_or_stdout(m.value_of("output"), force)?;
+                let mut output =
+                    config.create_or_stdout_unsafe(m.value_of("output"))?;
                 let session_key: Option<openpgp::crypto::SessionKey> =
                     if let Some(sk) = m.value_of("session-key") {
                         Some(hex::decode_pretty(sk)?.into())
                     } else {
                         None
                     };
-                let width = terminal::size().ok().map(|(cols, _)| cols as usize);
+                let width = term_size::dimensions_stdout().map(|(w, _)| w);
                 commands::dump(&mut input, &mut output,
                                m.is_present("mpis"), m.is_present("hex"),
                                session_key.as_ref(), width)?;
@@ -403,16 +637,14 @@ fn main() -> Result<()> {
             ("decrypt",  Some(m)) => {
                 let mut input = open_or_stdin(m.value_of("input"))?;
                 let mut output =
-                    create_or_stdout_pgp(m.value_of("output"), force,
-                                         m.is_present("binary"),
-                                         armor::Kind::Message)?;
+                    config.create_or_stdout_pgp(m.value_of("output"),
+                                                m.is_present("binary"),
+                                                armor::Kind::Message)?;
                 let secrets = m.values_of("secret-key-file")
                     .map(load_keys)
-                    .unwrap_or(Ok(vec![]))?;
-                let mut mapping = Mapping::open(&ctx, realm_name, mapping_name)
-                    .context("Failed to open the mapping")?;
+                    .unwrap_or_else(|| Ok(vec![]))?;
                 commands::decrypt::decrypt_unwrap(
-                    &ctx, policy, &mut mapping,
+                    config,
                     &mut input, &mut output,
                     secrets, m.is_present("dump-session-key"))?;
                 output.finalize()?;
@@ -431,298 +663,32 @@ fn main() -> Result<()> {
                             p.file_name().map(|f| String::from(f.to_string_lossy()))
                         })
                         // ... or we use a generic prefix...
-                            .unwrap_or(String::from("output"))
+                            .unwrap_or_else(|| String::from("output"))
                         // ... finally, add a hyphen to the derived prefix.
                             + "-");
                 commands::split(&mut input, &prefix)?;
             },
-            ("join",  Some(m)) => {
-                let mut output =
-                    create_or_stdout_pgp(m.value_of("output"), force,
-                                         m.is_present("binary"),
-                                         parse_armor_kind(m.value_of("kind")))?;
-                commands::join(m.values_of("input"), &mut output)?;
-                output.finalize()?;
-            },
+            ("join",  Some(m)) => commands::join(config, m)?,
             _ => unreachable!(),
         },
 
-        ("keyserver",  Some(m)) => {
-            let mut ks = if let Some(uri) = m.value_of("server") {
-                KeyServer::new(&ctx, &uri)
-            } else {
-                KeyServer::keys_openpgp_org(&ctx)
-            }.context("Malformed keyserver URI")?;
+        #[cfg(feature = "net")]
+        ("keyserver",  Some(m)) =>
+            commands::net::dispatch_keyserver(config, m)?,
 
-            match m.subcommand() {
-                ("get",  Some(m)) => {
-                    let query = m.value_of("query").unwrap();
+        ("key", Some(m)) => commands::key::dispatch(config, m)?,
 
-                    let handle: Option<KeyHandle> = {
-                        let q_fp = query.parse::<Fingerprint>();
-                        let q_id = query.parse::<KeyID>();
-                        if let Ok(Fingerprint::V4(_)) = q_fp {
-                            q_fp.ok().map(Into::into)
-                        } else if let Ok(KeyID::V4(_)) = q_id {
-                            q_fp.ok().map(Into::into)
-                        } else {
-                            None
-                        }
-                    };
+        #[cfg(feature = "net")]
+        ("wkd",  Some(m)) => commands::net::dispatch_wkd(config, m)?,
 
-                    if let Some(handle) = handle {
-                        let cert = rt.block_on(ks.get(handle))
-                            .context("Failed to retrieve cert")?;
-
-                        let mut output =
-                            create_or_stdout(m.value_of("output"), force)?;
-                        if ! m.is_present("binary") {
-                            cert.armored().serialize(&mut output)
-                        } else {
-                            cert.serialize(&mut output)
-                        }.context("Failed to serialize cert")?;
-                    } else if let Ok(Some(addr)) = UserID::from(query).email() {
-                        let certs = rt.block_on(ks.search(addr))
-                            .context("Failed to retrieve certs")?;
-
-                        let mut output =
-                            create_or_stdout_pgp(m.value_of("output"), force,
-                                                 m.is_present("binary"),
-                                                 armor::Kind::PublicKey)?;
-                        for cert in certs {
-                            cert.serialize(&mut output)
-                                .context("Failed to serialize cert")?;
-                        }
-                        output.finalize()?;
-                    } else {
-                        Err(anyhow::anyhow!(
-                            "Query must be a fingerprint, a keyid, \
-                             or an email address: {:?}", query))?;
-                    }
-                },
-                ("send",  Some(m)) => {
-                    let mut input = open_or_stdin(m.value_of("input"))?;
-                    let cert = Cert::from_reader(&mut input).
-                        context("Malformed key")?;
-
-                    rt.block_on(ks.send(&cert))
-                        .context("Failed to send key to server")?;
-                },
-                _ => unreachable!(),
-            }
+        ("certify",  Some(m)) => {
+            commands::certify::certify(config, m)?;
         },
-        ("mapping",  Some(m)) => {
-            let mapping = Mapping::open(&ctx, realm_name, mapping_name)
-                .context("Failed to open the mapping")?;
 
-            match m.subcommand() {
-                ("list",  Some(_)) => {
-                    list_bindings(&mapping, realm_name, mapping_name)?;
-                },
-                ("add",  Some(m)) => {
-                    let fp = m.value_of("fingerprint").unwrap().parse()
-                        .expect("Malformed fingerprint");
-                    mapping.add(m.value_of("label").unwrap(), &fp)?;
-                },
-                ("import",  Some(m)) => {
-                    let label = m.value_of("label").unwrap();
-                    help_warning(label);
-                    let mut input = open_or_stdin(m.value_of("input"))?;
-                    let cert = Cert::from_reader(&mut input)?;
-                    mapping.import(label, &cert)?;
-                },
-                ("export",  Some(m)) => {
-                    let cert = mapping.lookup(m.value_of("label").unwrap())?.cert()?;
-                    let mut output = create_or_stdout(m.value_of("output"), force)?;
-                    if m.is_present("binary") {
-                        cert.serialize(&mut output)?;
-                    } else {
-                        cert.armored().serialize(&mut output)?;
-                    }
-                },
-                ("delete",  Some(m)) => {
-                    if m.is_present("label") == m.is_present("the-mapping") {
-                        eprintln!("Please specify either a label or --the-mapping.");
-                        exit(1);
-                    }
-
-                    if m.is_present("the-mapping") {
-                        mapping.delete().context("Failed to delete the mapping")?;
-                    } else {
-                        let binding = mapping.lookup(m.value_of("label").unwrap())
-                            .context("Failed to get key")?;
-                        binding.delete().context("Failed to delete the binding")?;
-                    }
-                },
-                ("stats",  Some(m)) => {
-                    commands::mapping_print_stats(&mapping,
-                                                m.value_of("label").unwrap())?;
-                },
-                ("log",  Some(m)) => {
-                    if m.is_present("label") {
-                        let binding = mapping.lookup(m.value_of("label").unwrap())
-                            .context("No such key")?;
-                        print_log(binding.log().context("Failed to get log")?, false);
-                    } else {
-                        print_log(mapping.log().context("Failed to get log")?, true);
-                    }
-                },
-                _ => unreachable!(),
-            }
-        },
-        ("list",  Some(m)) => {
-            match m.subcommand() {
-                ("mappings",  Some(m)) => {
-                    let mut table = Table::new();
-                    table.set_format(*prettytable::format::consts::FORMAT_NO_LINESEP_WITH_TITLE);
-                    table.set_titles(row!["realm", "name", "network policy"]);
-
-                    for (realm, name, network_policy, _)
-                        in Mapping::list(&ctx, m.value_of("prefix").unwrap_or(""))? {
-                            table.add_row(Row::new(vec![
-                                Cell::new(&realm),
-                                Cell::new(&name),
-                                Cell::new(&format!("{:?}", network_policy))
-                            ]));
-                        }
-
-                    table.printstd();
-                },
-                ("bindings",  Some(m)) => {
-                    for (realm, name, _, mapping)
-                        in Mapping::list(&ctx, m.value_of("prefix").unwrap_or(""))? {
-                            list_bindings(&mapping, &realm, &name)?;
-                        }
-                },
-                ("keys",  Some(_)) => {
-                    let mut table = Table::new();
-                    table.set_format(*prettytable::format::consts::FORMAT_NO_LINESEP_WITH_TITLE);
-                    table.set_titles(row!["fingerprint", "updated", "status"]);
-
-                    for (fingerprint, key) in store::Store::list_keys(&ctx)? {
-                            let stats = key.stats()
-                                .context("Failed to get key stats")?;
-                            table.add_row(Row::new(vec![
-                                Cell::new(&fingerprint.to_string()),
-                                if let Some(t) = stats.updated {
-                                    Cell::new(&t.convert().to_string())
-                                } else {
-                                    Cell::new("")
-                                },
-                                Cell::new("")
-                            ]));
-                        }
-
-                    table.printstd();
-                },
-                ("log",  Some(_)) => {
-                    print_log(store::Store::server_log(&ctx)?, true);
-                },
-                _ => unreachable!(),
-            }
-        },
-        ("key", Some(m)) => match m.subcommand() {
-            ("generate", Some(m)) => commands::key::generate(m, force)?,
-            _ => unreachable!(),
-        },
-        ("wkd",  Some(m)) => {
-            match m.subcommand() {
-                ("url",  Some(m)) => {
-                    let email_address = m.value_of("input").unwrap();
-                    let wkd_url = wkd::Url::from(email_address)?;
-                    // XXX: Add other subcomand to specify whether it should be
-                    // created with the advanced or the direct method.
-                    let url = wkd_url.to_url(None)?;
-                    println!("{}", url);
-                },
-                ("get",  Some(m)) => {
-                    let email_address = m.value_of("input").unwrap();
-                    // XXX: EmailAddress could be created here to
-                    // check it's a valid email address, print the error to
-                    // stderr and exit.
-                    // Because it might be created a WkdServer struct, not
-                    // doing it for now.
-                    let certs = rt.block_on(wkd::get(&email_address))?;
-                    // ```text
-                    //     The HTTP GET method MUST return the binary representation of the
-                    //     OpenPGP key for the given mail address.
-                    // [draft-koch]: https://datatracker.ietf.org/doc/html/draft-koch-openpgp-webkey-service-07
-                    // ```
-                    // But to keep the parallelism with `store export` and `keyserver get`,
-                    // The output is armored if not `--binary` option is given.
-                    let mut output = create_or_stdout(m.value_of("output"), force)?;
-                    serialize_keyring(&mut output, &certs,
-                                      m.is_present("binary"))?;
-                },
-                ("generate", Some(m)) => {
-                    let domain = m.value_of("domain").unwrap();
-                    let f = open_or_stdin(m.value_of("input"))?;
-                    let base_path =
-                        m.value_of("base_directory").expect("required");
-                    let variant = if m.is_present("direct_method") {
-                        wkd::Variant::Direct
-                    } else {
-                        wkd::Variant::Advanced
-                    };
-                    let parser = CertParser::from_reader(f)?;
-                    let certs: Vec<Cert> = parser.filter_map(|cert| cert.ok())
-                        .collect();
-                    for cert in certs {
-                        wkd::insert(&base_path, domain, variant, &cert)
-                            .context(format!("Failed to generate the WKD in \
-                                              {}.", base_path))?;
-                    }
-                },
-                _ => unreachable!(),
-            }
-        },
         _ => unreachable!(),
     }
 
-    return Ok(())
-}
-
-fn list_bindings(mapping: &Mapping, realm: &str, name: &str)
-                 -> Result<()> {
-    if mapping.iter()?.count() == 0 {
-        println!("No label-key bindings in the \"{}/{}\" mapping.",
-                 realm, name);
-        return Ok(());
-    }
-
-    println!("Realm: {:?}, mapping: {:?}:", realm, name);
-
-    let mut table = Table::new();
-    table.set_format(*prettytable::format::consts::FORMAT_NO_LINESEP_WITH_TITLE);
-    table.set_titles(row!["label", "fingerprint"]);
-    for (label, fingerprint, _) in mapping.iter()? {
-        table.add_row(Row::new(vec![
-            Cell::new(&label),
-            Cell::new(&fingerprint.to_string())]));
-    }
-    table.printstd();
     Ok(())
-}
-
-fn print_log(iter: LogIter, with_slug: bool) {
-    let mut table = Table::new();
-    table.set_format(*prettytable::format::consts::FORMAT_NO_LINESEP_WITH_TITLE);
-    let mut head = row!["timestamp", "message"];
-    if with_slug {
-        head.insert_cell(1, Cell::new("slug"));
-    }
-    table.set_titles(head);
-
-    for entry in iter {
-        let mut row = row![&entry.timestamp.convert().to_string(),
-                           &entry.short()];
-        if with_slug {
-            row.insert_cell(1, Cell::new(&entry.slug));
-        }
-        table.add_row(row);
-    }
-
-    table.printstd();
 }
 
 /// Parses the given string depicting a ISO 8601 timestamp.
@@ -795,4 +761,10 @@ fn test_parse_iso8601() {
     // parse_iso8601("201703", z).unwrap(); // ditto
     parse_iso8601("2017031", z).unwrap();
     // parse_iso8601("2017", z).unwrap(); // ditto
+}
+
+/// Prints the error and causes, if any.
+pub fn print_error_chain(err: &anyhow::Error) {
+    eprintln!("           {}", err);
+    err.chain().skip(1).for_each(|cause| eprintln!("  because: {}", cause));
 }

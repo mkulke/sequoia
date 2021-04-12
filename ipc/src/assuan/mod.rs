@@ -163,7 +163,7 @@ impl Client {
         let mut data = data.as_ref();
         let mut request = Vec::with_capacity(data.len());
         while ! data.is_empty() {
-            if request.len() > 0 {
+            if !request.is_empty() {
                 request.push(0x0a);
             }
             write!(&mut request, "D ").unwrap();
@@ -409,33 +409,24 @@ impl Response {
                     }
                 }
                 Err(anyhow::anyhow!(
-                    String::from_utf8_lossy(&msg).to_string()).into())
+                    String::from_utf8_lossy(&msg).to_string()))
             },
         }
     }
 
     /// Returns true if this message indicates success.
     pub fn is_ok(&self) -> bool {
-        match self {
-            Response::Ok { .. } => true,
-            _ => false,
-        }
+        matches!(self, Response::Ok { .. } )
     }
 
     /// Returns true if this message indicates an error.
     pub fn is_err(&self) -> bool {
-        match self {
-            Response::Error { .. } => true,
-            _ => false,
-        }
+        matches!(self, Response::Error { .. })
     }
 
     /// Returns true if this message is an inquiry.
     pub fn is_inquire(&self) -> bool {
-        match self {
-            Response::Inquire { .. } => true,
-            _ => false,
-        }
+        matches!(self, Response::Inquire { .. })
     }
 
     /// Returns true if this response concludes the server's response.

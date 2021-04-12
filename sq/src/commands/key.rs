@@ -3,21 +3,40 @@ use clap::ArgMatches;
 use itertools::Itertools;
 use std::time::{SystemTime, Duration};
 
-use crate::openpgp::Result;
+use crate::openpgp::KeyHandle;
 use crate::openpgp::Packet;
-use crate::openpgp::cert::prelude::*;
-use crate::openpgp::types::KeyFlags;
+use crate::openpgp::Result;
 use crate::openpgp::armor::{Writer, Kind};
+use crate::openpgp::cert::prelude::*;
+use crate::openpgp::packet::prelude::*;
+use crate::openpgp::packet::signature::subpacket::SubpacketTag;
+use crate::openpgp::parse::Parse;
+use crate::openpgp::policy::Policy;
 use crate::openpgp::serialize::Serialize;
+use crate::openpgp::types::KeyFlags;
+use crate::openpgp::types::SignatureType;
 
-use crate::create_or_stdout;
+use crate::{
+    open_or_stdin,
+};
+use crate::Config;
+use crate::SECONDS_IN_YEAR;
+use crate::parse_duration;
+use crate::decrypt_key;
 
-const SECONDS_IN_DAY : u64 = 24 * 60 * 60;
-const SECONDS_IN_YEAR : u64 =
-    // Average number of days in a year.
-    (365.2422222 * SECONDS_IN_DAY as f64) as u64;
+pub fn dispatch(config: Config, m: &clap::ArgMatches) -> Result<()> {
+    match m.subcommand() {
+        ("generate", Some(m)) => generate(config, m)?,
+        ("extract-cert", Some(m)) => extract_cert(config, m)?,
+        ("adopt", Some(m)) => adopt(config, m)?,
+        ("attest-certifications", Some(m)) =>
+            attest_certifications(config, m)?,
+        _ => unreachable!(),
+        }
+    Ok(())
+}
 
-pub fn generate(m: &ArgMatches, force: bool) -> Result<()> {
+fn generate(config: Config, m: &ArgMatches) -> Result<()> {
     let mut builder = CertBuilder::new();
 
     // User ID
@@ -159,7 +178,7 @@ pub fn generate(m: &ArgMatches, force: bool) -> Result<()> {
                 .map(|value| ("Comment", value.as_str()))
                 .collect();
 
-            let w = create_or_stdout(Some(&key_path), force)?;
+            let w = config.create_or_stdout_safe(Some(&key_path))?;
             let mut w = Writer::with_headers(w, Kind::SecretKey, headers)?;
             cert.as_tsk().serialize(&mut w)?;
             w.finalize()?;
@@ -172,7 +191,7 @@ pub fn generate(m: &ArgMatches, force: bool) -> Result<()> {
                 .collect();
             headers.insert(0, ("Comment", "Revocation certificate for"));
 
-            let w = create_or_stdout(Some(&rev_path), force)?;
+            let w = config.create_or_stdout_safe(Some(&rev_path))?;
             let mut w = Writer::with_headers(w, Kind::Signature, headers)?;
             Packet::Signature(rev).serialize(&mut w)?;
             w.finalize()?;
@@ -186,63 +205,367 @@ pub fn generate(m: &ArgMatches, force: bool) -> Result<()> {
     Ok(())
 }
 
-fn parse_duration(expiry: &str) -> Result<Duration> {
-    let mut expiry = expiry.chars().peekable();
+fn extract_cert(config: Config, m: &ArgMatches) -> Result<()> {
+    let input = open_or_stdin(m.value_of("input"))?;
+    let mut output = config.create_or_stdout_safe(m.value_of("output"))?;
 
-    let _ = expiry.by_ref()
-        .peeking_take_while(|c| c.is_whitespace())
-        .for_each(|_| ());
-    let digits = expiry.by_ref()
-        .peeking_take_while(|c| {
-            *c == '+' || *c == '-' || c.is_digit(10)
-        }).collect::<String>();
-    let _ = expiry.by_ref()
-        .peeking_take_while(|c| c.is_whitespace())
-        .for_each(|_| ());
-    let suffix = expiry.next();
-    let _ = expiry.by_ref()
-        .peeking_take_while(|c| c.is_whitespace())
-        .for_each(|_| ());
-    let junk = expiry.collect::<String>();
+    let cert = Cert::from_reader(input)?;
+    if m.is_present("binary") {
+        cert.serialize(&mut output)?;
+    } else {
+        cert.armored().serialize(&mut output)?;
+    }
+    Ok(())
+}
 
-    if digits == "" {
-        return Err(anyhow::anyhow!(
-            "--expiry: missing count \
-             (try: '2y' for 2 years)"));
+fn adopt(config: Config, m: &ArgMatches) -> Result<()> {
+    let input = open_or_stdin(m.value_of("certificate"))?;
+    let cert = Cert::from_reader(input)?;
+    let mut wanted: Vec<(KeyHandle,
+                         Option<(Key<key::PublicParts, key::SubordinateRole>,
+                                 SignatureBuilder)>)>
+        = vec![];
+
+    // Gather the Key IDs / Fingerprints and make sure they are valid.
+    for id in m.values_of("key").unwrap_or_default() {
+        let h = id.parse::<KeyHandle>()?;
+        if h.is_invalid() {
+            return Err(anyhow::anyhow!(
+                "Invalid Fingerprint or KeyID ('{:?}')", id));
+        }
+        wanted.push((h, None));
     }
 
-    let count = match digits.parse::<i32>() {
-        Ok(count) if count < 0 =>
-            return Err(anyhow::anyhow!(
-                "--expiry: Expiration can't be in the past")),
-        Ok(count) => count as u64,
-        Err(err) =>
-            return Err(err).context("--expiry: count is out of range"),
-    };
+    let null_policy = &crate::openpgp::policy::NullPolicy::new();
+    let adoptee_policy: &dyn Policy =
+        if m.values_of("allow-broken-crypto").is_some() {
+            null_policy
+        } else {
+            &config.policy
+        };
 
-    let factor = match suffix {
-        Some('y') | Some('Y') => SECONDS_IN_YEAR,
-        Some('m') | Some('M') => SECONDS_IN_YEAR / 12,
-        Some('w') | Some('W') => 7 * SECONDS_IN_DAY,
-        Some('d') | Some('D') => SECONDS_IN_DAY,
-        None =>
-            return Err(anyhow::anyhow!(
-                "--expiry: missing suffix \
-                 (try: '{}y', '{}m', '{}w' or '{}d' instead)",
-                digits, digits, digits, digits)),
-        Some(suffix) =>
-            return Err(anyhow::anyhow!(
-                "--expiry: invalid suffix '{}' \
-                 (try: '{}y', '{}m', '{}w' or '{}d' instead)",
-                suffix, digits, digits, digits, digits)),
-    };
+    // Find the corresponding keys.
+    for keyring in m.values_of("keyring").unwrap_or_default() {
+        for cert in CertParser::from_file(keyring)
+            .context(format!("Parsing: {}", keyring))?
+        {
+            let cert = cert.context(format!("Parsing {}", keyring))?;
 
-    if junk != "" {
-        return Err(anyhow::anyhow!(
-            "--expiry: contains trailing junk ('{:?}') \
-             (try: '{}{}')",
-            junk, count, factor));
+            let vc = match cert.with_policy(adoptee_policy, None) {
+                Ok(vc) => vc,
+                Err(err) => {
+                    eprintln!("Ignoring {} from '{}': {}",
+                              cert.keyid().to_hex(), keyring, err);
+                    continue;
+                }
+            };
+
+            for key in vc.keys() {
+                for (id, ref mut keyo) in wanted.iter_mut() {
+                    if id.aliases(key.key_handle()) {
+                        match keyo {
+                            Some((_, _)) =>
+                                // We already saw this key.
+                                (),
+                            None => {
+                                let sig = key.binding_signature();
+                                let builder: SignatureBuilder = match sig.typ() {
+                                    SignatureType::SubkeyBinding =>
+                                        sig.clone().into(),
+                                    SignatureType::DirectKey
+                                        | SignatureType::PositiveCertification
+                                        | SignatureType::CasualCertification
+                                        | SignatureType::PersonaCertification
+                                        | SignatureType::GenericCertification =>
+                                    {
+                                        // Convert to a binding
+                                        // signature.
+                                        let kf = sig.key_flags()
+                                            .context("Missing required \
+                                                      subpacket, KeyFlags")?;
+                                        SignatureBuilder::new(
+                                            SignatureType::SubkeyBinding)
+                                            .set_key_flags(kf)?
+                                    },
+                                    _ => panic!("Unsupported binding \
+                                                 signature: {:?}",
+                                                sig),
+                                };
+
+                                *keyo = Some(
+                                    (key.key().clone().role_into_subordinate(),
+                                     builder));
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
-    Ok(Duration::new(count * factor, 0))
+
+    // If we are missing any keys, stop now.
+    let missing: Vec<&KeyHandle> = wanted
+        .iter()
+        .filter_map(|(id, keyo)| {
+            match keyo {
+                Some(_) => None,
+                None => Some(id),
+            }
+        })
+        .collect();
+    if !missing.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Keys not found: {}",
+            missing.iter().map(|&h| h.to_hex()).join(", ")));
+    }
+
+
+    let passwords = &mut Vec::new();
+
+    // Get a signer.
+    let pk = cert.primary_key().key();
+    let mut pk_signer =
+        decrypt_key(
+            pk.clone().parts_into_secret()?,
+            passwords)?
+        .into_keypair()?;
+
+
+    // Add the keys and signatues to cert.
+    let mut packets: Vec<Packet> = vec![];
+    for (_, ka) in wanted.into_iter() {
+        let (key, builder) = ka.expect("Checked for missing keys above.");
+        let mut builder = builder;
+
+        // If there is a valid backsig, recreate it.
+        let need_backsig = builder.key_flags()
+            .map(|kf| kf.for_signing() || kf.for_certification())
+            .expect("Missing keyflags");
+
+        if need_backsig {
+            // Derive a signer.
+            let mut subkey_signer
+                = decrypt_key(
+                    key.clone().parts_into_secret()?,
+                    passwords)?
+                .into_keypair()?;
+
+            let backsig = builder.embedded_signatures()
+                .filter(|backsig| {
+                    (*backsig).clone().verify_primary_key_binding(
+                        &cert.primary_key(),
+                        &key).is_ok()
+                })
+                .next()
+                .map(|sig| SignatureBuilder::from(sig.clone()))
+                .unwrap_or_else(|| {
+                    SignatureBuilder::new(SignatureType::PrimaryKeyBinding)
+                })
+                .sign_primary_key_binding(&mut subkey_signer, pk, &key)?;
+
+            builder = builder.set_embedded_signature(backsig)?;
+        } else {
+            builder = builder.modify_hashed_area(|mut a| {
+                a.remove_all(SubpacketTag::EmbeddedSignature);
+                Ok(a)
+            })?;
+        }
+
+        let mut sig = builder.sign_subkey_binding(&mut pk_signer, pk, &key)?;
+
+        // Verify it.
+        assert!(sig.verify_subkey_binding(pk_signer.public(), pk, &key)
+                .is_ok());
+
+        packets.push(key.into());
+        packets.push(sig.into());
+    }
+
+    let cert = cert.clone().insert_packets(packets.clone())?;
+
+    let mut sink = config.create_or_stdout_safe(m.value_of("output"))?;
+    if m.is_present("binary") {
+        cert.as_tsk().serialize(&mut sink)?;
+    } else {
+        cert.as_tsk().armored().serialize(&mut sink)?;
+    }
+
+    let vc = cert.with_policy(&config.policy, None).expect("still valid");
+    for pair in packets[..].chunks(2) {
+        let newkey: &Key<key::PublicParts, key::UnspecifiedRole> = match pair[0] {
+            Packet::PublicKey(ref k) => k.into(),
+            Packet::PublicSubkey(ref k) => k.into(),
+            Packet::SecretKey(ref k) => k.into(),
+            Packet::SecretSubkey(ref k) => k.into(),
+            ref p => panic!("Expected a key, got: {:?}", p),
+        };
+        let newsig: &Signature = match pair[1] {
+            Packet::Signature(ref s) => s,
+            ref p => panic!("Expected a sig, got: {:?}", p),
+        };
+
+        let mut found = false;
+        for key in vc.keys() {
+            if key.fingerprint() == newkey.fingerprint() {
+                for sig in key.self_signatures() {
+                    if sig == newsig {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+        }
+        assert!(found, "Subkey: {:?}\nSignature: {:?}", newkey, newsig);
+    }
+
+    Ok(())
+}
+
+fn attest_certifications(config: Config, m: &ArgMatches)
+                         -> Result<()> {
+    // XXX: This function has to do some steps manually, because
+    // Sequoia does not expose this functionality because it has not
+    // been standardized yet.
+    use sequoia_openpgp::{
+        crypto::hash::{Hash, Digest},
+        packet::signature::subpacket::*,
+        types::HashAlgorithm,
+    };
+    #[allow(non_upper_case_globals)]
+    const SignatureType__AttestedKey: SignatureType =
+        SignatureType::Unknown(0x16);
+    #[allow(non_upper_case_globals)]
+    const SubpacketTag__AttestedCertifications: SubpacketTag =
+        SubpacketTag::Unknown(37);
+
+    // Attest to all certifications?
+    let all = ! m.is_present("none"); // All is the default.
+
+    // Some configuration.
+    let hash_algo = HashAlgorithm::default();
+    let digest_size = hash_algo.context()?.digest_size();
+    let reserve_area_space = 256; // For the other subpackets.
+    let digests_per_sig = ((1usize << 16) - reserve_area_space) / digest_size;
+
+    let input = open_or_stdin(m.value_of("key"))?;
+    let key = Cert::from_reader(input)?;
+
+
+    // First, remove all attestations.
+    let key = Cert::from_packets(key.into_packets().filter(|p| {
+        !matches!(
+                p,
+                Packet::Signature(s) if s.typ() == SignatureType__AttestedKey
+        )
+    }))?;
+
+    // Get a signer.
+    let mut passwords = Vec::new();
+    let pk = key.primary_key().key();
+    let mut pk_signer =
+        decrypt_key(
+            pk.clone().parts_into_secret()?,
+            &mut passwords)?
+        .into_keypair()?;
+
+    // Now, create new attestation signatures.
+    let mut attestation_signatures = Vec::new();
+    for uid in key.userids() {
+        let mut attestations = Vec::new();
+
+        if all {
+            for certification in uid.certifications() {
+                let mut h = hash_algo.context()?;
+                certification.hash_for_confirmation(&mut h);
+                attestations.push(h.into_digest()?);
+            }
+        }
+
+        // Hashes SHOULD be sorted.
+        attestations.sort();
+
+        // All attestation signatures we generate for this component
+        // should have the same creation time.  Fix it now.
+        let t = std::time::SystemTime::now();
+
+        // Hash the components like in a binding signature.
+        let mut hash = hash_algo.context()?;
+        key.primary_key().hash(&mut hash);
+        uid.hash(&mut hash);
+
+        for digests in attestations.chunks(digests_per_sig) {
+            let mut body = Vec::with_capacity(digest_size * digests.len());
+            digests.iter().for_each(|d| body.extend(d));
+
+            attestation_signatures.push(
+                SignatureBuilder::new(SignatureType__AttestedKey)
+                    .set_signature_creation_time(t)?
+                    .modify_hashed_area(|mut a| {
+                        a.add(Subpacket::new(
+                            SubpacketValue::Unknown {
+                                tag: SubpacketTag__AttestedCertifications,
+                                body,
+                            },
+                            true)?)?;
+                        Ok(a)
+                    })?
+                    .sign_hash(&mut pk_signer, hash.clone())?);
+        }
+    }
+
+    for ua in key.user_attributes() {
+        let mut attestations = Vec::new();
+
+        if all {
+            for certification in ua.certifications() {
+                let mut h = hash_algo.context()?;
+                certification.hash_for_confirmation(&mut h);
+                attestations.push(h.into_digest()?);
+            }
+        }
+
+        // Hashes SHOULD be sorted.
+        attestations.sort();
+
+        // All attestation signatures we generate for this component
+        // should have the same creation time.  Fix it now.
+        let t = std::time::SystemTime::now();
+
+        // Hash the components like in a binding signature.
+        let mut hash = hash_algo.context()?;
+        key.primary_key().hash(&mut hash);
+        ua.hash(&mut hash);
+
+        for digests in attestations.chunks(digests_per_sig) {
+            let mut body = Vec::with_capacity(digest_size * digests.len());
+            digests.iter().for_each(|d| body.extend(d));
+
+            attestation_signatures.push(
+                SignatureBuilder::new(SignatureType__AttestedKey)
+                    .set_signature_creation_time(t)?
+                    .modify_hashed_area(|mut a| {
+                        a.add(Subpacket::new(
+                            SubpacketValue::Unknown {
+                                tag: SubpacketTag__AttestedCertifications,
+                                body,
+                            },
+                            true)?)?;
+                        Ok(a)
+                    })?
+                    .sign_hash(&mut pk_signer, hash.clone())?);
+        }
+    }
+
+    // Finally, add the new signatures.
+    let key = key.insert_packets(attestation_signatures)?;
+
+    let mut sink = config.create_or_stdout_safe(m.value_of("output"))?;
+    if m.is_present("binary") {
+        key.as_tsk().serialize(&mut sink)?;
+    } else {
+        key.as_tsk().armored().serialize(&mut sink)?;
+    }
+
+    Ok(())
 }

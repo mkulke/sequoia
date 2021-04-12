@@ -159,6 +159,7 @@ mod keyid;
 pub use keyid::KeyID;
 mod keyhandle;
 pub use keyhandle::KeyHandle;
+pub mod regex;
 pub mod policy;
 
 pub(crate) mod seal;
@@ -177,7 +178,7 @@ fn frozen_time() -> std::time::SystemTime {
 }
 
 /// The version of this crate.
-pub const VERSION: &'static str = env!("CARGO_PKG_VERSION");
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Crate result specialization.
 pub type Result<T> = ::std::result::Result<T, anyhow::Error>;
@@ -304,7 +305,7 @@ pub enum Error {
     /// determined to no longer be secure.
     #[error("{0} is not considered secure{}",
             .1.as_ref().map(|t| format!(" since {}", crate::fmt::time(t)))
-            .unwrap_or("".into()))]
+            .unwrap_or_else(|| "".into()))]
     PolicyViolation(String, Option<std::time::SystemTime>),
 }
 

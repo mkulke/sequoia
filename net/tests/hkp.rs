@@ -11,10 +11,10 @@ use sequoia_openpgp::KeyID;
 use sequoia_openpgp::armor::Reader;
 use sequoia_openpgp::Cert;
 use sequoia_openpgp::parse::Parse;
-use sequoia_core::{Context, NetworkPolicy};
+use sequoia_net as net;
 use sequoia_net::KeyServer;
 
-const RESPONSE: &'static str = "-----BEGIN PGP PUBLIC KEY BLOCK-----
+const RESPONSE: &str = "-----BEGIN PGP PUBLIC KEY BLOCK-----
 
 xsBNBFoVcvoBCACykTKOJddF8SSUAfCDHk86cNTaYnjCoy72rMgWJsrMLnz/V16B
 J9M7l6nrQ0JMnH2Du02A3w+kNb5q97IZ/M6NkqOOl7uqjyRGPV+XKwt0G5mN/ovg
@@ -46,8 +46,8 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
 -----END PGP PUBLIC KEY BLOCK-----
 ";
 
-const FP: &'static str = "3E8877C877274692975189F5D03F6F865226FE8B";
-const ID: &'static str = "D03F6F865226FE8B";
+const FP: &str = "3E8877C877274692975189F5D03F6F865226FE8B";
+const ID: &str = "D03F6F865226FE8B";
 
 async fn service(req: Request<Body>)
            -> Result<Response<Body>, Box<dyn std::error::Error + Send + Sync>> {
@@ -118,17 +118,14 @@ fn start_server() -> SocketAddr {
     addr
 }
 
+const P: net::Policy = net::Policy::Insecure;
+
 #[tokio::test]
 async fn get() -> anyhow::Result<()> {
-    let ctx = Context::configure()
-        .ephemeral()
-        .network_policy(NetworkPolicy::Insecure)
-        .build()?;
-
     // Start server.
     let addr = start_server();
 
-    let mut keyserver = KeyServer::new(&ctx, &format!("hkp://{}", addr))?;
+    let mut keyserver = KeyServer::new(P, &format!("hkp://{}", addr))?;
     let keyid: KeyID = ID.parse()?;
     let key = keyserver.get(keyid).await?;
 
@@ -139,16 +136,11 @@ async fn get() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn send() -> anyhow::Result<()> {
-    let ctx = Context::configure()
-        .ephemeral()
-        .network_policy(NetworkPolicy::Insecure)
-        .build()?;
-
     // Start server.
     let addr = start_server();
     eprintln!("{}", format!("hkp://{}", addr));
     let mut keyserver =
-        KeyServer::new(&ctx, &format!("hkp://{}", addr))?;
+        KeyServer::new(P, &format!("hkp://{}", addr))?;
     let key = Cert::from_reader(Reader::new(Cursor::new(RESPONSE), None))?;
     keyserver.send(&key).await?;
 

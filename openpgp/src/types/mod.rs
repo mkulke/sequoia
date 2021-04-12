@@ -29,7 +29,7 @@
 //!
 //! Describes a key that has been designated to issue revocation signatures.
 //!
-//! # `ServerPreferences`
+//! # `KeyServerPreferences`
 //!
 //! Describes preferences regarding to key servers.
 //!
@@ -145,11 +145,13 @@ impl PublicKeyAlgorithm {
     /// ```
     pub fn for_signing(&self) -> bool {
         use self::PublicKeyAlgorithm::*;
-        #[allow(deprecated)]
-        match &self {
-            RSAEncryptSign | RSASign | DSA | ECDSA | ElGamalEncryptSign
-                | EdDSA => true,
-            _ => false,
+        #[allow(deprecated)] {
+            matches!(self, RSAEncryptSign
+                     | RSASign
+                     | DSA
+                     | ECDSA
+                     | ElGamalEncryptSign
+                     | EdDSA)
         }
     }
 
@@ -167,11 +169,12 @@ impl PublicKeyAlgorithm {
     /// ```
     pub fn for_encryption(&self) -> bool {
         use self::PublicKeyAlgorithm::*;
-        #[allow(deprecated)]
-        match &self {
-            RSAEncryptSign | RSAEncrypt | ElGamalEncrypt | ECDH
-                | ElGamalEncryptSign => true,
-            _ => false,
+        #[allow(deprecated)] {
+            matches!(self, RSAEncryptSign
+                     | RSAEncrypt
+                     | ElGamalEncrypt
+                     | ECDH
+                     | ElGamalEncryptSign)
         }
     }
 
@@ -1017,19 +1020,19 @@ impl FromStr for HashAlgorithm {
     type Err = ();
 
     fn from_str(s: &str) -> result::Result<Self, ()> {
-        if s == "MD5" {
+        if s.eq_ignore_ascii_case("MD5") {
             Ok(HashAlgorithm::MD5)
-        } else if s == "SHA1" {
+        } else if s.eq_ignore_ascii_case("SHA1") {
             Ok(HashAlgorithm::SHA1)
-        } else if s == "RipeMD160" {
+        } else if s.eq_ignore_ascii_case("RipeMD160") {
             Ok(HashAlgorithm::RipeMD)
-        } else if s == "SHA256" {
+        } else if s.eq_ignore_ascii_case("SHA256") {
             Ok(HashAlgorithm::SHA256)
-        } else if s == "SHA384" {
+        } else if s.eq_ignore_ascii_case("SHA384") {
             Ok(HashAlgorithm::SHA384)
-        } else if s == "SHA512" {
+        } else if s.eq_ignore_ascii_case("SHA512") {
             Ok(HashAlgorithm::SHA512)
-        } else if s == "SHA224" {
+        } else if s.eq_ignore_ascii_case("SHA224") {
             Ok(HashAlgorithm::SHA224)
         } else {
             Err(())
@@ -1051,6 +1054,42 @@ impl fmt::Display for HashAlgorithm {
                 f.write_fmt(format_args!("Private/Experimental hash algorithm {}", u)),
             HashAlgorithm::Unknown(u) =>
                 f.write_fmt(format_args!("Unknown hash algorithm {}", u)),
+        }
+    }
+}
+
+impl HashAlgorithm {
+    /// Returns the text name of this algorithm.
+    ///
+    /// [Section 9.4 of RFC 4880] defines a textual representation of
+    /// hash algorithms.  This is used in cleartext signed messages
+    /// (see [Section 7 of RFC 4880]).
+    ///
+    ///   [Section 9.4 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-9.4
+    ///   [Section 7 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-7
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # use sequoia_openpgp as openpgp;
+    /// # use openpgp::types::HashAlgorithm;
+    /// # fn main() -> openpgp::Result<()> {
+    /// assert_eq!(HashAlgorithm::RipeMD.text_name()?, "RIPEMD160");
+    /// # Ok(()) }
+    /// ```
+    pub fn text_name(&self) -> Result<&str> {
+        match self {
+            HashAlgorithm::MD5 =>    Ok("MD5"),
+            HashAlgorithm::SHA1 =>   Ok("SHA1"),
+            HashAlgorithm::RipeMD => Ok("RIPEMD160"),
+            HashAlgorithm::SHA256 => Ok("SHA256"),
+            HashAlgorithm::SHA384 => Ok("SHA384"),
+            HashAlgorithm::SHA512 => Ok("SHA512"),
+            HashAlgorithm::SHA224 => Ok("SHA224"),
+            HashAlgorithm::Private(_) =>
+                Err(Error::UnsupportedHashAlgorithm(*self).into()),
+            HashAlgorithm::Unknown(_) =>
+                Err(Error::UnsupportedHashAlgorithm(*self).into()),
         }
     }
 }
@@ -1126,6 +1165,12 @@ pub enum SignatureType {
     Unknown(u8),
 }
 assert_send_and_sync!(SignatureType);
+
+/// An attested key signature.
+#[allow(non_upper_case_globals)]
+pub(crate) const SignatureType__AttestedKey: SignatureType =
+    SignatureType::Unknown(0x16);
+
 
 impl From<u8> for SignatureType {
     fn from(u: u8) -> Self {
@@ -1816,6 +1861,18 @@ mod tests {
                 hash => {
                     let s = format!("{}", hash);
                     hash == HashAlgorithm::from_str(&s).unwrap()
+                }
+            }
+        }
+    }
+
+    quickcheck! {
+        fn hash_roundtrip_text_name(hash: HashAlgorithm) -> bool {
+            match hash {
+                HashAlgorithm::Private(_) | HashAlgorithm::Unknown(_) => true,
+                hash => {
+                    let s = hash.text_name().unwrap();
+                    hash == HashAlgorithm::from_str(s).unwrap()
                 }
             }
         }

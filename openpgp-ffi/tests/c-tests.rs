@@ -1,5 +1,4 @@
 use anyhow::{Result, Context};
-use filetime;
 
 use std::cmp::min;
 use std::env::{self, var_os};
@@ -162,7 +161,7 @@ fn for_all_tests<F>(path: &Path, mut fun: F)
             }
 
             if let Some(name) = exported_function_name(&line) {
-                if test.len() > 0 {
+                if !test.is_empty() {
                     fun(path, test_starts_at, &name, replace(&mut test, vec![]),
                         run)?;
                     test.clear();
@@ -174,7 +173,7 @@ fn for_all_tests<F>(path: &Path, mut fun: F)
                 continue;
             }
 
-            if line == "//! ```" && test.len() > 0 {
+            if line == "//! ```" && !test.is_empty() {
                 let name = format!("{}_{}",
                                    path.file_stem().unwrap().to_string_lossy(),
                                    lineno); // XXX: nicer to point to the top
@@ -221,7 +220,7 @@ fn build(include_dirs: &[PathBuf], ldpath: &Path, target_dir: &Path,
         // rust source.
         use filetime::FileTime;
         let mtime = FileTime::from_last_modification_time(&meta_rs);
-        filetime::set_file_times(target_c, mtime.clone(), mtime).unwrap();
+        filetime::set_file_times(target_c, mtime, mtime).unwrap();
     }
 
     let includes =
@@ -229,7 +228,7 @@ fn build(include_dirs: &[PathBuf], ldpath: &Path, target_dir: &Path,
         .collect::<Vec<String>>().join(" ");
     let st = Command::new("make")
         .env("CFLAGS", &format!("-Wall -O0 -ggdb {} {}", includes,
-                                env::var("CFLAGS").unwrap_or("".into())))
+                                env::var("CFLAGS").unwrap_or_else(|_| "".into())))
         .env("LDFLAGS", &format!("-L{:?}", ldpath))
         .env("LDLIBS", "-lsequoia_openpgp_ffi")
         .arg("-C").arg(&target_dir)

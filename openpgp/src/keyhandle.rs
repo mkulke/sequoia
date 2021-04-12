@@ -16,7 +16,7 @@ use crate::{
 /// This is needed because signatures can reference their issuer
 /// either by `Fingerprint` or by `KeyID`.
 ///
-/// Currently, sequoia supports *version 4* fingerprints and Key ID
+/// Currently, Sequoia supports *version 4* fingerprints and Key ID
 /// only.  *Version 3* fingerprints and Key ID were deprecated by [RFC
 /// 4880] in 2007.
 ///
@@ -205,6 +205,25 @@ impl PartialEq for KeyHandle {
     }
 }
 
+impl std::str::FromStr for KeyHandle {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        let bytes = &crate::fmt::hex::decode_pretty(s)?[..];
+        match Fingerprint::from_bytes(bytes) {
+            fpr @ Fingerprint::Invalid(_) => {
+                match KeyID::from_bytes(bytes) {
+                    // If it can't be parsed as either a Fingerprint or a
+                    // KeyID, return Fingerprint::Invalid.
+                    KeyID::Invalid(_) => Ok(fpr.into()),
+                    kid => Ok(kid.into()),
+                }
+            }
+            fpr => Ok(fpr.into()),
+        }
+    }
+}
+
 impl KeyHandle {
     /// Returns the raw identifier as a byte slice.
     pub fn as_bytes(&self) -> &[u8] {
@@ -279,6 +298,102 @@ impl KeyHandle {
         self.partial_cmp(other.borrow()).unwrap_or(Ordering::Equal)
             == Ordering::Equal
     }
+
+    /// Returns whether the KeyHandle is invalid.
+    ///
+    /// A KeyHandle is invalid if the `Fingerprint` or `KeyID` that it
+    /// contains is valid.
+    ///
+    /// ```
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::Fingerprint;
+    /// use openpgp::KeyID;
+    /// use openpgp::KeyHandle;
+    ///
+    /// # fn main() -> sequoia_openpgp::Result<()> {
+    /// // A perfectly valid fingerprint:
+    /// let kh : KeyHandle = "8F17 7771 18A3 3DDA 9BA4  8E62 AACB 3243 6300 52D9"
+    ///     .parse()?;
+    /// assert!(! kh.is_invalid());
+    ///
+    /// // But, V3 fingerprints are invalid.
+    /// let kh : KeyHandle = "9E 94 45 13 39 83 5F 70 7B E7 D8 ED C4 BE 5A A6"
+    ///     .parse()?;
+    /// assert!(kh.is_invalid());
+    ///
+    /// // A perfectly valid Key ID:
+    /// let kh : KeyHandle = "AACB 3243 6300 52D9"
+    ///     .parse()?;
+    /// assert!(! kh.is_invalid());
+    ///
+    /// // But, short Key IDs are invalid:
+    /// let kh : KeyHandle = "6300 52D9"
+    ///     .parse()?;
+    /// assert!(kh.is_invalid());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_invalid(&self) -> bool {
+        matches!(self,
+                 KeyHandle::Fingerprint(Fingerprint::Invalid(_))
+                 | KeyHandle::KeyID(KeyID::Invalid(_)))
+    }
+
+    /// Converts this `KeyHandle` to its canonical hexadecimal
+    /// representation.
+    ///
+    /// This representation is always uppercase and without spaces and
+    /// is suitable for stable key identifiers.
+    ///
+    /// The output of this function is exactly the same as formatting
+    /// this object with the `:X` format specifier.
+    ///
+    /// ```rust
+    /// # fn main() -> sequoia_openpgp::Result<()> {
+    /// # use sequoia_openpgp as openpgp;
+    /// use openpgp::KeyHandle;
+    ///
+    /// let h: KeyHandle =
+    ///     "0123 4567 89AB CDEF 0123 4567 89AB CDEF 0123 4567".parse()?;
+    ///
+    /// assert_eq!("0123456789ABCDEF0123456789ABCDEF01234567", h.to_hex());
+    /// assert_eq!(format!("{:X}", h), h.to_hex());
+    /// # Ok(()) }
+    /// ```
+    pub fn to_hex(&self) -> String {
+        format!("{:X}", self)
+    }
+
+    /// Converts this `KeyHandle` to its hexadecimal representation
+    /// with spaces.
+    ///
+    /// This representation is always uppercase and with spaces
+    /// grouping the hexadecimal digits into groups of four.  It is
+    /// only suitable for manual comparison of key handles.
+    ///
+    /// Note: The spaces will hinder other kind of use cases.  For
+    /// example, it is harder to select the whole key handle for
+    /// copying, and it has to be quoted when used as a command line
+    /// argument.  Only use this form for displaying a key handle with
+    /// the intent of manual comparisons.
+    ///
+    /// ```rust
+    /// # fn main() -> sequoia_openpgp::Result<()> {
+    /// # use sequoia_openpgp as openpgp;
+    /// use openpgp::KeyHandle;
+    ///
+    /// let h: KeyHandle =
+    ///     "0123 4567 89AB CDEF 0123 4567 89AB CDEF 0123 4567".parse()?;
+    ///
+    /// assert_eq!("0123 4567 89AB CDEF 0123  4567 89AB CDEF 0123 4567",
+    ///            h.to_spaced_hex());
+    /// # Ok(()) }
+    /// ```
+    pub fn to_spaced_hex(&self) -> String {
+        match self {
+            KeyHandle::Fingerprint(v) => v.to_spaced_hex(),
+            KeyHandle::KeyID(v) => v.to_spaced_hex(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -315,5 +430,32 @@ mod tests {
 
         let handle = KeyHandle::KeyID(KeyID::Invalid(Box::new([10, 2])));
         assert_eq!(format!("{:x}", handle), "0a02");
+    }
+
+    #[test]
+    fn parse() -> Result<()> {
+        let handle: KeyHandle =
+            "0123 4567 89AB CDEF 0123 4567 89AB CDEF 0123 4567".parse()?;
+        assert_match!(&KeyHandle::Fingerprint(Fingerprint::V4(_)) = &handle);
+        assert_eq!(handle.as_bytes(),
+                   [0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0x01, 0x23,
+                    0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0x01, 0x23, 0x45, 0x67]);
+
+        let handle: KeyHandle = "89AB CDEF 0123 4567".parse()?;
+        assert_match!(&KeyHandle::KeyID(KeyID::V4(_)) = &handle);
+        assert_eq!(handle.as_bytes(),
+                   [0x89, 0xAB, 0xCD, 0xEF, 0x01, 0x23, 0x45, 0x67]);
+
+        // Invalid handles are parsed as invalid Fingerprints, not
+        // invalid KeyIDs.
+        let handle: KeyHandle = "4567 89AB CDEF 0123 4567".parse()?;
+        assert_match!(&KeyHandle::Fingerprint(Fingerprint::Invalid(_)) = &handle);
+        assert_eq!(handle.as_bytes(),
+                   [0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0x01, 0x23, 0x45, 0x67]);
+
+        let handle: Result<KeyHandle> = "INVALID CHARACTERS".parse();
+        assert!(handle.is_err());
+
+        Ok(())
     }
 }

@@ -383,20 +383,20 @@ impl Hash for signature::SignatureFields {
 ///
 /// <a name="hashing-functions"></a>
 impl signature::SignatureFields {
-    /// Computes the message digest of standalone signatures.
+    /// Hashes this standalone signature.
     pub fn hash_standalone(&self, hash: &mut dyn Digest)
     {
         self.hash(hash);
     }
 
-    /// Computes the message digest of timestamp signatures.
+    /// Hashes this timestamp signature.
     pub fn hash_timestamp(&self, hash: &mut dyn Digest)
     {
         self.hash_standalone(hash);
     }
 
-    /// Returns the message digest of the direct key signature over
-    /// the specified primary key.
+    /// Hashes this direct key signature over the specified primary
+    /// key, and the primary key.
     pub fn hash_direct_key<P>(&self, hash: &mut dyn Digest,
                               key: &Key<P, key::PrimaryRole>)
         where P: key::KeyParts,
@@ -405,8 +405,8 @@ impl signature::SignatureFields {
         self.hash(hash);
     }
 
-    /// Returns the message digest of the subkey binding over the
-    /// specified primary key and subkey.
+    /// Hashes this subkey binding over the specified primary key and
+    /// subkey, the primary key, and the subkey.
     pub fn hash_subkey_binding<P, Q>(&self, hash: &mut dyn Digest,
                                      key: &Key<P, key::PrimaryRole>,
                                      subkey: &Key<Q, key::SubordinateRole>)
@@ -418,8 +418,8 @@ impl signature::SignatureFields {
         self.hash(hash);
     }
 
-    /// Returns the message digest of the primary key binding over the
-    /// specified primary key and subkey.
+    /// Hashes this primary key binding over the specified primary key
+    /// and subkey, the primary key, and the subkey.
     pub fn hash_primary_key_binding<P, Q>(&self, hash: &mut dyn Digest,
                                           key: &Key<P, key::PrimaryRole>,
                                           subkey: &Key<Q, key::SubordinateRole>)
@@ -429,8 +429,8 @@ impl signature::SignatureFields {
         self.hash_subkey_binding(hash, key, subkey);
     }
 
-    /// Returns the message digest of the user ID binding over the
-    /// specified primary key, user ID, and signature.
+    /// Hashes this user ID binding over the specified primary key and
+    /// user ID, the primary key, and the userid.
     pub fn hash_userid_binding<P>(&self, hash: &mut dyn Digest,
                                   key: &Key<P, key::PrimaryRole>,
                                   userid: &UserID)
@@ -441,8 +441,9 @@ impl signature::SignatureFields {
         self.hash(hash);
     }
 
-    /// Returns the message digest of the user attribute binding over
-    /// the specified primary key, user attribute, and signature.
+    /// Hashes this user attribute binding over the specified primary
+    /// key and user attribute, the primary key, and the user
+    /// attribute.
     pub fn hash_user_attribute_binding<P>(
         &self,
         hash: &mut dyn Digest,
@@ -453,6 +454,68 @@ impl signature::SignatureFields {
         key.hash(hash);
         ua.hash(hash);
         self.hash(hash);
+    }
+}
+
+/// Hashing-related functionality.
+///
+/// <a name="hashing-functions"></a>
+impl Signature {
+    /// Hashes this signature for use in a Third-Party Confirmation
+    /// signature.
+    pub fn hash_for_confirmation(&self, hash: &mut dyn Digest) {
+        match self {
+            Signature::V4(s) => s.hash_for_confirmation(hash),
+        }
+    }
+}
+
+/// Hashing-related functionality.
+///
+/// <a name="hashing-functions"></a>
+impl Signature4 {
+    /// Hashes this signature for use in a Third-Party Confirmation
+    /// signature.
+    pub fn hash_for_confirmation(&self, hash: &mut dyn Digest) {
+        use crate::serialize::{Marshal, MarshalInto};
+        // Section 5.2.4 of RFC4880:
+        //
+        // > When a signature is made over a Signature packet (type
+        // > 0x50), the hash data starts with the octet 0x88, followed
+        // > by the four-octet length of the signature, and then the
+        // > body of the Signature packet.  (Note that this is an
+        // > old-style packet header for a Signature packet with the
+        // > length-of-length set to zero.)  The unhashed subpacket
+        // > data of the Signature packet being hashed is not included
+        // > in the hash, and the unhashed subpacket data length value
+        // > is set to zero.
+
+        // This code assumes that the signature has been verified
+        // prior to being confirmed, so it is well-formed.
+        let mut body = Vec::new();
+        body.push(self.version());
+        body.push(self.typ().into());
+        body.push(self.pk_algo().into());
+        body.push(self.hash_algo().into());
+
+        // The hashed area.
+        let l = self.hashed_area().serialized_len()
+             // Assumes well-formedness.
+            .min(std::u16::MAX as usize);
+        body.extend(&(l as u16).to_be_bytes());
+         // Assumes well-formedness.
+        let _ = self.hashed_area().serialize(&mut body);
+
+        // The unhashed area.
+        body.extend(&[0, 0]); // Size replaced by zero.
+        // Unhashed packets omitted.
+
+        body.extend(self.digest_prefix());
+        let _ = self.mpis().serialize(&mut body);
+
+        hash.update(&[0x88]);
+        hash.update(&(body.len() as u32).to_be_bytes());
+        hash.update(&body);
     }
 }
 

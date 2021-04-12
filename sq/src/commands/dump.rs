@@ -268,7 +268,7 @@ impl PacketDumper {
         Ok(())
     }
 
-    fn dump_packet(&self, output: &mut dyn io::Write, i: &str,
+    fn dump_packet(&self, mut output: &mut dyn io::Write, i: &str,
                   header: Option<&Header>, p: &Packet, map: Option<&Map>,
                   additional_fields: Option<&Vec<String>>)
                   -> Result<()> {
@@ -552,7 +552,11 @@ impl PacketDumper {
             },
 
             Trust(ref p) => {
-                writeln!(output, "{}  Value: {}", i, hex::encode(p.value()))?;
+                writeln!(output, "{}  Value:", i)?;
+                let mut hd = hex::Dumper::new(
+                    &mut output,
+                    self.indentation_for_hexdump(&format!("{}  ", i), 16));
+                hd.write_ascii(p.value())?;
             },
 
             UserID(ref u) => {
@@ -761,7 +765,7 @@ impl PacketDumper {
             Unknown { body, .. } => {
                 writeln!(output, "{}    {:?}{}:", i, s.tag(),
                          if s.critical() { " (critical)" } else { "" })?;
-                hexdump_unknown(output, body)?;
+                hexdump_unknown(output, body.as_slice())?;
             },
             SignatureCreationTime(t) =>
                 write!(output, "{}    Signature creation time: {}", i,
@@ -802,8 +806,24 @@ impl PacketDumper {
             },
             Issuer(ref is) =>
                 write!(output, "{}    Issuer: {}", i, is)?,
-            NotationData(ref n) =>
-                write!(output, "{}    Notation: {:?}", i, n)?,
+            NotationData(n) => if n.flags().human_readable() {
+                write!(output, "{}    Notation: {}", i, n)?;
+                if s.critical() {
+                    write!(output, " (critical)")?;
+                }
+                writeln!(output)?;
+            } else {
+                write!(output, "{}    Notation: {}", i, n.name())?;
+                let flags = format!("{:?}", n.flags());
+                if ! flags.is_empty() {
+                    write!(output, "{}", flags)?;
+                }
+                if s.critical() {
+                    write!(output, " (critical)")?;
+                }
+                writeln!(output)?;
+                hexdump_unknown(output, n.value())?;
+            },
             PreferredHashAlgorithms(ref h) =>
                 write!(output, "{}    Hash preferences: {}", i,
                        h.iter().map(|h| format!("{:?}", h))
@@ -855,6 +875,7 @@ impl PacketDumper {
 
         match s.value() {
             Unknown { .. } => (),
+            NotationData { .. } => (),
             EmbeddedSignature(ref sig) => {
                 if s.critical() {
                     write!(output, " (critical)")?;
@@ -920,7 +941,7 @@ impl PacketDumper {
     fn dump_mpis(&self, output: &mut dyn io::Write, i: &str,
                  chunks: &[&[u8]], keys: &[&str]) -> Result<()> {
         assert_eq!(chunks.len(), keys.len());
-        if chunks.len() == 0 {
+        if chunks.is_empty() {
             return Ok(());
         }
 

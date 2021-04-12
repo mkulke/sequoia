@@ -1,6 +1,4 @@
-//! Autocrypt.
-//!
-//! This module deals with Autocrypt encoded data (see the [Autocrypt
+//! This crate deals with Autocrypt encoded data (see the [Autocrypt
 //! Spec]).
 //!
 //!   [Autocrypt Spec]: https://autocrypt.org/level1.html#openpgp-based-key-data
@@ -11,7 +9,9 @@
 //! of Autocrypt headers and setup messages.  Note: Autocrypt is more
 //! than just headers; it requires tight integration with the MUA.
 
-use base64;
+#![doc(html_favicon_url = "https://docs.sequoia-pgp.org/favicon.png")]
+#![doc(html_logo_url = "https://docs.sequoia-pgp.org/logo.svg")]
+#![warn(missing_docs)]
 
 use std::convert::TryFrom;
 use std::io;
@@ -131,12 +131,14 @@ impl AutocryptHeader {
         }
 
         // The UserIDs matching ADDR.
+        let mut found_one = false;
         for uidb in cert.userids().with_policy(policy, None) {
             // XXX: Fix match once we have the rfc2822-name-addr.
             if let Ok(Some(a)) = uidb.userid().email() {
                 if &a == addr {
                     acc.push(uidb.userid().clone().into());
                     acc.push(uidb.binding_signature().clone().into());
+                    found_one = true;
                 } else {
                     // Address is not matching.
                     continue;
@@ -144,6 +146,16 @@ impl AutocryptHeader {
             } else {
                 // Malformed UserID.
                 continue;
+            }
+        }
+
+        // User ids are only decorative in Autocrypt.  By convention,
+        // the cert should include a user id matching the sender's
+        // address, but we should include at least one user id.
+        if ! found_one {
+            if let Ok(uidb) = cert.with_policy(policy, None)?.primary_userid() {
+                acc.push(uidb.userid().clone().into());
+                acc.push(uidb.binding_signature().clone().into());
             }
         }
 
@@ -179,6 +191,7 @@ impl AutocryptHeader {
         None
     }
 
+    /// Writes a serialized version of the object to `o`.
     pub fn serialize(&self, o: &mut dyn std::io::Write) -> Result<()> {
         if self.key.is_none() {
             return Err(Error::InvalidOperation("No key".into()).into());
@@ -224,7 +237,7 @@ impl AutocryptHeaders {
             // Return any error.
             let mut line = line?;
 
-            if line == "" {
+            if line.is_empty() {
                 // End of headers.
                 break;
             }
@@ -237,7 +250,7 @@ impl AutocryptHeaders {
             //
             // See https://tools.ietf.org/html/rfc5322#section-2.2.3
             while let Some(Ok(nl)) = next_line {
-                if nl.len() > 0 && (&nl[0..1] == " " || &nl[0..1] == "\t") {
+                if !nl.is_empty() && (&nl[0..1] == " " || &nl[0..1] == "\t") {
                     line.push_str(&nl[..]);
                     next_line = lines.next();
                 } else {
@@ -259,7 +272,7 @@ impl AutocryptHeaders {
             }
         }
 
-        return Ok(headers)
+        Ok(headers)
     }
 
     /// Decode header that has the same format as the Autocrypt header.
@@ -300,7 +313,7 @@ impl AutocryptHeaders {
                 }
             }
 
-            let critical = key.len() >= 1 && &key[0..1] == "_";
+            let critical = !key.is_empty() && &key[0..1] == "_";
             header.attributes.push(Attribute {
                 critical,
                 key: if critical {
@@ -453,10 +466,10 @@ impl AutocryptSetupMessage {
         let mut p : Vec<u8> = Vec::new();
         for i in 0..36 {
             if i > 0 && i % 4 == 0 {
-                p.push('-' as u8);
+                p.push(b'-');
             }
 
-            p.push(('0' as u8) + ((p_as_u128 as u8) % 10));
+            p.push(b'0' + ((p_as_u128 as u8) % 10));
             p_as_u128 = p_as_u128 / 10;
         }
 
@@ -556,7 +569,7 @@ impl AutocryptSetupMessage {
                     if k == "Passphrase-Format" { Some(v) } else { None }
                 })
                 .collect::<Vec<&String>>();
-            let format = if format.len() > 0 {
+            let format = if !format.is_empty() {
                 // If there are multiple headers, then just silently take
                 // the first one.
                 Some(format[0].clone())
@@ -569,7 +582,7 @@ impl AutocryptSetupMessage {
                     if k == "Passphrase-Begin" { Some(v) } else { None }
                 })
                 .collect::<Vec<&String>>();
-            let begin = if begin.len() > 0 {
+            let begin = if !begin.is_empty() {
                 // If there are multiple headers, then just silently take
                 // the first one.
                 Some(begin[0].clone())
@@ -604,8 +617,7 @@ impl AutocryptSetupMessage {
             Packet::SKESK(skesk) => skesk,
             p => return Err(
                 Error::MalformedMessage(
-                    format!("Expected a SKESK packet, found a {}", p.tag())
-                        .into())
+                    format!("Expected a SKESK packet, found a {}", p.tag()))
                 .into()),
         };
 
@@ -621,8 +633,7 @@ impl AutocryptSetupMessage {
                     ref p => return Err(
                         Error::MalformedMessage(
                             format!("Expected a SEIP packet, found a {}",
-                                    p.tag())
-                                .into())
+                                    p.tag()))
                         .into()),
                 }
 
@@ -718,7 +729,7 @@ impl<'a> AutocryptSetupMessageParser<'a> {
                 p => return Err(Error::MalformedMessage(
                     format!("SEIP container contains a {}, \
                              expected a Literal Data packet",
-                            p.tag()).into()).into()),
+                            p.tag())).into()),
             }
 
             // The inner message consists of an ASCII-armored encoded
@@ -741,7 +752,7 @@ impl<'a> AutocryptSetupMessageParser<'a> {
                         })
                         .collect::<Vec<&String>>();
 
-                    if prefer_encrypt.len() > 0 {
+                    if !prefer_encrypt.is_empty() {
                         // If there are multiple headers, then just
                         // silently take the first one.
                         Some(prefer_encrypt[0].clone())
@@ -772,8 +783,7 @@ impl<'a> AutocryptSetupMessageParser<'a> {
                 ref p => return
                     Err(Error::MalformedMessage(
                         format!("Expected an MDC packet, got a {}",
-                                p.tag())
-                            .into())
+                                p.tag()))
                         .into()),
             }
 
@@ -787,8 +797,7 @@ impl<'a> AutocryptSetupMessageParser<'a> {
                 // has the right sequence of packets, but we haven't
                 // carefully checked the nesting.  We do that now.
                 if let Err(err) = pp.is_message() {
-                    return Err(err.context(
-                        "Invalid OpenPGP Message").into());
+                    return Err(err.context("Invalid OpenPGP Message"));
                 }
             }
             PacketParserResult::Some(pp) =>
@@ -1052,11 +1061,46 @@ mod test {
 
         let cert = ac.headers[0].key.as_ref()
             .expect("Failed to parse key material.");
-        assert_eq!(&cert.fingerprint().to_string(),
-                   "3E88 77C8 7727 4692 9751  89F5 D03F 6F86 5226 FE8B");
+        assert_eq!(&cert.fingerprint().to_hex(),
+                   "3E8877C877274692975189F5D03F6F865226FE8B");
         assert_eq!(cert.userids().len(), 1);
         assert_eq!(cert.keys().subkeys().count(), 1);
         assert_eq!(cert.userids().next().unwrap().userid().value(),
                    &b"Testy McTestface <testy@example.org>"[..]);
+    }
+
+    #[test]
+    fn autocrypt_header_new_address_mismatch() -> Result<()> {
+        let p = &P::new();
+
+        let cert =
+            Cert::from_bytes(&include_bytes!("../tests/data/testy.pgp")[..])?;
+        let header = AutocryptHeader::new_sender(p, &cert,
+                                                 "anna-lena@example.org",
+                                                 "mutual")?;
+        let mut buf = Vec::new();
+        write!(&mut buf, "Autocrypt: ")?;
+        header.serialize(&mut buf)?;
+
+        let ac = AutocryptHeaders::from_bytes(&buf)?;
+
+        // We expect exactly one Autocrypt header.
+        assert_eq!(ac.headers.len(), 1);
+
+        assert_eq!(ac.headers[0].get("addr").unwrap().value,
+                   "anna-lena@example.org");
+
+        assert_eq!(ac.headers[0].get("prefer-encrypt").unwrap().value,
+                   "mutual");
+
+        let cert = ac.headers[0].key.as_ref()
+            .expect("Failed to parse key material.");
+        assert_eq!(&cert.fingerprint().to_hex(),
+                   "3E8877C877274692975189F5D03F6F865226FE8B");
+        assert_eq!(cert.userids().len(), 1);
+        assert_eq!(cert.keys().subkeys().count(), 1);
+        assert_eq!(cert.userids().next().unwrap().userid().value(),
+                   &b"Testy McTestface <testy@example.org>"[..]);
+        Ok(())
     }
 }

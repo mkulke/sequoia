@@ -8,7 +8,8 @@ use tempfile::NamedTempFile;
 use sequoia_openpgp as openpgp;
 use crate::openpgp::armor;
 use crate::openpgp::{Packet, Result};
-use crate::openpgp::packet::Signature;
+use crate::openpgp::packet::prelude::*;
+use crate::openpgp::packet::signature::subpacket::NotationData;
 use crate::openpgp::parse::{
     Parse,
     PacketParserResult,
@@ -17,33 +18,33 @@ use crate::openpgp::serialize::Serialize;
 use crate::openpgp::serialize::stream::{
     Message, Armorer, Signer, LiteralWriter,
 };
-use crate::openpgp::policy::Policy;
+use crate::openpgp::types::SignatureType;
 use crate::{
-    create_or_stdout,
-    create_or_stdout_pgp,
+    Config,
 };
 
-pub fn sign(policy: &dyn Policy,
+pub fn sign(config: Config,
             input: &mut (dyn io::Read + Sync + Send),
             output_path: Option<&str>,
             secrets: Vec<openpgp::Cert>, detached: bool, binary: bool,
             append: bool, notarize: bool, time: Option<SystemTime>,
-            force: bool)
+            notations: &[(bool, NotationData)])
             -> Result<()> {
     match (detached, append|notarize) {
         (_, false) | (true, true) =>
-            sign_data(policy, input, output_path, secrets, detached, binary,
-                      append, time, force),
+            sign_data(config, input, output_path, secrets, detached, binary,
+                      append, time, notations),
         (false, true) =>
-            sign_message(policy, input, output_path, secrets, binary, notarize,
-                         time, force),
+            sign_message(config, input, output_path, secrets, binary, notarize,
+                         time, notations),
     }
 }
 
-fn sign_data(policy: &dyn Policy,
+fn sign_data(config: Config,
              input: &mut dyn io::Read, output_path: Option<&str>,
              secrets: Vec<openpgp::Cert>, detached: bool, binary: bool,
-             append: bool, time: Option<SystemTime>, force: bool)
+             append: bool, time: Option<SystemTime>,
+             notations: &[(bool, NotationData)])
              -> Result<()> {
     let (mut output, prepend_sigs, tmp_path):
     (Box<dyn io::Write + Sync + Send>, Vec<Signature>, Option<PathBuf>) =
@@ -62,7 +63,7 @@ fn sign_data(policy: &dyn Policy,
                     p => return Err(
                         anyhow::anyhow!(
                             format!("{} in detached signature", p.tag()))
-                            .context("Invalid detached signature").into()),
+                            .context("Invalid detached signature")),
                 }
             }
 
@@ -75,10 +76,10 @@ fn sign_data(policy: &dyn Policy,
             let tmp_path = tmp_file.path().into();
             (Box::new(tmp_file), sigs, Some(tmp_path))
         } else {
-            (create_or_stdout(output_path, force)?, Vec::new(), None)
+            (config.create_or_stdout_safe(output_path)?, Vec::new(), None)
         };
 
-    let mut keypairs = super::get_signing_keys(&secrets, policy, time)?;
+    let mut keypairs = super::get_signing_keys(&secrets, &config.policy, time)?;
     if keypairs.is_empty() {
         return Err(anyhow::anyhow!("No signing keys found"));
     }
@@ -103,12 +104,22 @@ fn sign_data(policy: &dyn Policy,
         Packet::Signature(sig).serialize(&mut message)?;
     }
 
-    let mut signer = Signer::new(message, keypairs.pop().unwrap());
+    let mut builder = SignatureBuilder::new(SignatureType::Binary);
+    for (critical, n) in notations.iter() {
+        builder = builder.add_notation(
+            n.name(),
+            n.value(),
+            Some(n.flags().clone()),
+            *critical)?;
+    }
+
+    let mut signer = Signer::with_template(
+        message, keypairs.pop().unwrap(), builder);
+    if let Some(time) = time {
+        signer = signer.creation_time(time);
+    }
     for s in keypairs {
         signer = signer.add_signer(s);
-        if let Some(time) = time {
-            signer = signer.creation_time(time);
-        }
     }
     if detached {
         signer = signer.detached();
@@ -140,29 +151,31 @@ fn sign_data(policy: &dyn Policy,
     Ok(())
 }
 
-fn sign_message(policy: &dyn Policy,
+fn sign_message(config: Config,
                 input: &mut (dyn io::Read + Sync + Send),
                 output_path: Option<&str>,
                 secrets: Vec<openpgp::Cert>, binary: bool, notarize: bool,
-                time: Option<SystemTime>, force: bool)
+                time: Option<SystemTime>,
+                notations: &[(bool, NotationData)])
              -> Result<()> {
     let mut output =
-        create_or_stdout_pgp(output_path, force,
-                             binary,
-                             armor::Kind::Message)?;
-    sign_message_(policy, input, &mut output, secrets, notarize, time)?;
+        config.create_or_stdout_pgp(output_path,
+                                    binary,
+                                    armor::Kind::Message)?;
+    sign_message_(config, input, &mut output, secrets, notarize, time, notations)?;
     output.finalize()?;
     Ok(())
 }
 
-fn sign_message_(policy: &dyn Policy,
+fn sign_message_(config: Config,
                  input: &mut (dyn io::Read + Sync + Send),
                  output: &mut (dyn io::Write + Sync + Send),
                  secrets: Vec<openpgp::Cert>, notarize: bool,
-                 time: Option<SystemTime>)
+                 time: Option<SystemTime>,
+                 notations: &[(bool, NotationData)])
                  -> Result<()>
 {
-    let mut keypairs = super::get_signing_keys(&secrets, policy, time)?;
+    let mut keypairs = super::get_signing_keys(&secrets, &config.policy, time)?;
     if keypairs.is_empty() {
         return Err(anyhow::anyhow!("No signing keys found"));
     }
@@ -186,7 +199,7 @@ fn sign_message_(policy: &dyn Policy,
             signature_count: isize,
         },
         Done,
-    };
+    }
     let mut state =
         if ! notarize {
             State::InFirstSigGroup
@@ -198,7 +211,7 @@ fn sign_message_(policy: &dyn Policy,
 
     while let PacketParserResult::Some(mut pp) = ppr {
         if let Err(err) = pp.possible_message() {
-            return Err(err.context("Malformed OpenPGP message").into());
+            return Err(err.context("Malformed OpenPGP message"));
         }
 
         match pp.packet {
@@ -231,12 +244,22 @@ fn sign_message_(policy: &dyn Policy,
             State::AfterFirstSigGroup => {
                 // After the first signature group, we push the signer
                 // onto the writer stack.
-                let mut signer = Signer::new(sink, keypairs.pop().unwrap());
+                let mut builder = SignatureBuilder::new(SignatureType::Binary);
+                for (critical, n) in notations.iter() {
+                    builder = builder.add_notation(
+                        n.name(),
+                        n.value(),
+                        Some(n.flags().clone()),
+                        *critical)?;
+                }
+
+                let mut signer = Signer::with_template(
+                    sink, keypairs.pop().unwrap(), builder);
+                if let Some(time) = time {
+                    signer = signer.creation_time(time);
+                }
                 for s in keypairs.drain(..) {
                     signer = signer.add_signer(s);
-                    if let Some(time) = time {
-                        signer = signer.creation_time(time);
-                    }
                 }
                 sink = signer.build().context("Failed to create signer")?;
                 state = State::Signing { signature_count: 0, };
@@ -330,7 +353,7 @@ fn sign_message_(policy: &dyn Policy,
 
     if let PacketParserResult::EOF(eof) = ppr {
         if let Err(err) = eof.is_message() {
-            return Err(err.context("Malformed OpenPGP message").into());
+            return Err(err.context("Malformed OpenPGP message"));
         }
     } else {
         unreachable!()
@@ -345,6 +368,51 @@ fn sign_message_(policy: &dyn Policy,
         State::Done => (),
         _ => panic!("Unexpected state: {:?}", state),
     }
+
+    Ok(())
+}
+
+pub fn clearsign(config: Config,
+                 mut input: impl io::Read + Sync + Send,
+                 mut output: impl io::Write + Sync + Send,
+                 secrets: Vec<openpgp::Cert>,
+                 time: Option<SystemTime>,
+                 notations: &[(bool, NotationData)])
+                 -> Result<()>
+{
+    let mut keypairs = super::get_signing_keys(&secrets, &config.policy, time)?;
+    if keypairs.is_empty() {
+        return Err(anyhow::anyhow!("No signing keys found"));
+    }
+
+    // Prepare a signature template.
+    let mut builder = SignatureBuilder::new(SignatureType::Text);
+    for (critical, n) in notations.iter() {
+        builder = builder.add_notation(
+            n.name(),
+            n.value(),
+            Some(n.flags().clone()),
+            *critical)?;
+    }
+
+    let message = Message::new(&mut output);
+    let mut signer = Signer::with_template(
+        message, keypairs.pop().unwrap(), builder)
+        .cleartext();
+    if let Some(time) = time {
+        signer = signer.creation_time(time);
+    }
+    for s in keypairs {
+        signer = signer.add_signer(s);
+    }
+    let mut message = signer.build().context("Failed to create signer")?;
+
+    // Finally, copy stdin to our writer stack to sign the data.
+    io::copy(&mut input, &mut message)
+        .context("Failed to sign")?;
+
+    message.finalize()
+        .context("Failed to sign")?;
 
     Ok(())
 }

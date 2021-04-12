@@ -820,6 +820,12 @@ impl<'a, C> ComponentAmalgamation<'a, C> {
     pub fn other_revocations(&self) -> impl Iterator<Item=&'a Signature> + Send + Sync {
         self.bundle().other_revocations().iter()
     }
+
+    /// Returns all of the component's signatures.
+    pub fn signatures(&self)
+                      -> impl Iterator<Item = &'a Signature> + Send + Sync {
+        self.bundle().signatures()
+    }
 }
 
 macro_rules! impl_with_policy {
@@ -1135,8 +1141,8 @@ impl<'a, C> ValidComponentAmalgamation<'a, C>
                 // Fallback to a lexographical comparison.  Prefer
                 // the "smaller" one.
                 match a.0.component().cmp(&b.0.component()) {
-                    Ordering::Less => return Ordering::Greater,
-                    Ordering::Greater => return Ordering::Less,
+                    Ordering::Less => Ordering::Greater,
+                    Ordering::Greater => Ordering::Less,
                     Ordering::Equal =>
                         panic!("non-canonicalized Cert (duplicate components)"),
                 }
@@ -1144,7 +1150,7 @@ impl<'a, C> ValidComponentAmalgamation<'a, C>
             .ok_or_else(|| {
                 error.map(|e| e.context(format!(
                     "No binding signature at time {}", crate::fmt::time(&t))))
-                    .unwrap_or(Error::NoBindingSignature(t).into())
+                    .unwrap_or_else(|| Error::NoBindingSignature(t).into())
             })
             .and_then(|c| ComponentAmalgamation::new(cert, (c.0).0)
                       .with_policy_relaxed(policy, t, valid_cert))
@@ -1184,6 +1190,18 @@ impl<'a, C> ValidComponentAmalgamation<'a, C>
     /// This method only returns signatures that are valid under the current policy.
     pub fn other_revocations(&self) -> impl Iterator<Item=&Signature> + Send + Sync {
         std::ops::Deref::deref(self).other_revocations()
+          .filter(move |sig| self.cert.policy().signature(sig,
+            HashAlgoSecurity::CollisionResistance).is_ok())
+    }
+
+
+    /// Returns all of the component's signatures.
+    ///
+    /// This method only returns signatures that are valid under the
+    /// current policy.
+    pub fn signatures(&self)
+                      -> impl Iterator<Item = &Signature> + Send + Sync {
+        std::ops::Deref::deref(self).signatures()
           .filter(move |sig| self.cert.policy().signature(sig,
             HashAlgoSecurity::CollisionResistance).is_ok())
     }
@@ -1285,7 +1303,7 @@ mod test {
             .generate()
             .unwrap();
 
-        let userid : UserIDAmalgamation = cert.userids().nth(0).unwrap();
+        let userid : UserIDAmalgamation = cert.userids().next().unwrap();
         assert_eq!(userid.userid(), userid.clone().userid());
 
         let userid : ValidUserIDAmalgamation
