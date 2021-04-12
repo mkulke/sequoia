@@ -103,7 +103,7 @@ build-release:
 	$(MAKE) -Csqv build-release
 
 .PHONY: install
-install: build-release
+install:
 	$(MAKE) -Copenpgp-ffi install
 	$(MAKE) -Cffi install
 	$(MAKE) -Csq install
