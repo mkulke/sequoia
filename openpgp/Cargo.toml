@@ -12,6 +12,7 @@ authors = [
 ]
 build = "build.rs"
 documentation = "https://docs.rs/sequoia-openpgp"
+autobenches = false
 homepage = "https://sequoia-pgp.org/"
 repository = "https://gitlab.com/sequoia-pgp/sequoia"
 readme = "README.md"
@@ -61,6 +62,7 @@ lalrpop = ">=0.17"
 quickcheck = { version = "0.9", default-features = false }
 rand = { version = "0.7", default-features = false }
 rpassword = "5.0"
+criterion = { version = "0.3.4", features = ["html_reports"] }
 
 [features]
 default = ["compression", "crypto-nettle"]
@@ -77,6 +79,13 @@ compression-bzip2 = ["bzip2", "buffered-reader/compression-bzip2"]
 vendored = ["vendored-nettle"]
 vendored-nettle = ["nettle/vendored"]
 
+[lib]
+bench = false
+
 [[example]]
 name = "pad"
 required-features = ["compression-deflate"]
+
+[[bench]]
+name = "run_benchmarks"
+harness = false
