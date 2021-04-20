@@ -234,10 +234,10 @@ pub mod aed;
 /// are equal, modulo the OpenPGP framing ([`CTB`] and [length style],
 /// potential [partial body encoding]).
 ///
-/// [`Unknown`]: struct.Unknown.html
+/// [`Unknown`]: crate::packet::Unknown
 /// [tag]: https://tools.ietf.org/html/rfc4880#section-4.3
-/// [module-level documentation]: index.html#unknown-packets
-/// [`CTB`]: header/enum.CTB.html
+/// [module-level documentation]: crate::packet#unknown-packets
+/// [`CTB`]: crate::packet::header::CTB
 /// [length style]: https://tools.ietf.org/html/rfc4880#section-4.2
 /// [partial body encoding]: https://tools.ietf.org/html/rfc4880#section-4.2.2.4
 #[non_exhaustive]
@@ -1368,7 +1368,7 @@ impl From<SKESK> for Packet {
 /// packet, as the following example demonstrates.
 ///
 /// [the different key formats]: https://tools.ietf.org/html/rfc4880#section-5.5.2
-/// [a proposal for a new key format]: https://www.ietf.org/id/draft-ietf-openpgp-rfc4880bis-09.html#section-5.5.2
+/// [a proposal for a new key format]: https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-09.html#section-5.5.2
 /// [`Key4::generate_ecc`]: key/struct.Key4.html#method.generate_ecc
 ///
 ///
