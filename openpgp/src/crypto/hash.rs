@@ -56,7 +56,7 @@ const DUMP_HASHED_VALUES: Option<&str> = None;
 /// Hasher capable of calculating a digest for the input byte stream.
 ///
 /// This provides an abstract interface to the hash functions used in
-/// OpenPGP.  `Digest`s can be are created using [`HashAlgorithm::context`].
+/// OpenPGP.  `Digest`s can be created using [`HashAlgorithm::context`].
 ///
 ///   [`HashAlgorithm::context`]: ../../types/enum.HashAlgorithm.html#method.context
 pub trait Digest: DynClone + Write + Send + Sync {
