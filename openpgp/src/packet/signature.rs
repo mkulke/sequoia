@@ -1556,7 +1556,51 @@ impl SignatureBuilder {
         self.sign(signer, digest)
     }
 
-    fn pre_sign(mut self, signer: &dyn Signer) -> Result<Self> {
+    /// Adjusts signature prior to signing.
+    ///
+    /// This function is called implicitly when a signature is created
+    /// (e.g. using [`SignatureBuilder::sign_message`]).  Usually,
+    /// there is no need to call it explicitly.
+    ///
+    /// This function makes sure that generated signatures have a
+    /// creation time, issuer information, and are not predictable by
+    /// including a salt.  Then, it sorts the subpackets.  The
+    /// function is idempotent modulo salt value.
+    ///
+    /// # Examples
+    ///
+    /// Occasionally, it is useful to determine the available space in
+    /// a subpacket area.  To take the effect of this function into
+    /// account, call this function explicitly:
+    ///
+    /// ```
+    /// # use sequoia_openpgp as openpgp;
+    /// # fn main() -> openpgp::Result<()> {
+    /// # use openpgp::packet::prelude::*;
+    /// # use openpgp::types::Curve;
+    /// # use openpgp::packet::signature::subpacket::SubpacketArea;
+    /// # use openpgp::types::SignatureType;
+    /// #
+    /// # let key: Key<key::SecretParts, key::PrimaryRole>
+    /// #     = Key::from(Key4::generate_ecc(true, Curve::Ed25519)?);
+    /// # let mut signer = key.into_keypair()?;
+    /// let sig = SignatureBuilder::new(SignatureType::Binary)
+    ///     .pre_sign(&mut signer)?; // Important for size calculation.
+    ///
+    /// // Compute the available space in the hashed area.  For this,
+    /// // it is important that template.pre_sign has been called.
+    /// use openpgp::serialize::MarshalInto;
+    /// let available_space =
+    ///     SubpacketArea::MAX_SIZE - sig.hashed_area().serialized_len();
+    ///
+    /// // Let's check whether our prediction was right.
+    /// let sig = sig.sign_message(&mut signer, b"Hello World :)")?;
+    /// assert_eq!(
+    ///     available_space,
+    ///     SubpacketArea::MAX_SIZE - sig.hashed_area().serialized_len());
+    /// # Ok(()) }
+    /// ```
+    pub fn pre_sign(mut self, signer: &dyn Signer) -> Result<Self> {
         use std::time;
         self.pk_algo = signer.public().pk_algo();
 
@@ -2214,6 +2258,7 @@ impl crate::packet::Signature {
                     | SignatureTarget
                     | PreferredAEADAlgorithms
                     | IntendedRecipient
+                    | AttestedCertifications
                     | Reserved(_)
                     => false,
                 Issuer
@@ -2786,6 +2831,12 @@ impl Signature {
 
     /// Verifies an attested key signature on a user id.
     ///
+    /// This feature is [experimental](crate#experimental-features).
+    ///
+    /// Allows the certificate owner to attest to third party
+    /// certifications. See [Section 5.2.3.30 of RFC 4880bis] for
+    /// details.
+    ///
     /// `self` is the attested key signature, `signer` is the key that
     /// allegedly made the signature, `pk` is the primary key, and
     /// `userid` is the user id.
@@ -2801,7 +2852,9 @@ impl Signature {
     /// key is not revoked, not expired, has a valid self-signature,
     /// has a subkey binding signature (if appropriate), has the
     /// signing capability, etc.
-    pub(crate) fn verify_userid_attestation<P, Q, R>(
+    ///
+    ///   [Section 5.2.3.30 of RFC 4880bis]: https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-10.html#section-5.2.3.30
+    pub fn verify_userid_attestation<P, Q, R>(
         &mut self,
         signer: &Key<P, R>,
         pk: &Key<Q, key::PrimaryRole>,
@@ -2811,37 +2864,18 @@ impl Signature {
               Q: key::KeyParts,
               R: key::KeyRole,
     {
-        use crate::types::SignatureType__AttestedKey;
-        use crate::packet::signature::subpacket
-            ::SubpacketTag__AttestedCertifications;
-
-        if self.typ() != SignatureType__AttestedKey {
+        if self.typ() != SignatureType::AttestationKey {
             return Err(Error::UnsupportedSignatureType(self.typ()).into());
         }
 
         let mut hash = self.hash_algo().context()?;
 
-        if self.hashed_area()
-            .subpackets(SubpacketTag__AttestedCertifications).count() != 1
-            || self.unhashed_area()
-            .subpackets(SubpacketTag__AttestedCertifications).count() != 0
+        if self.attested_certifications()?
+            .any(|d| d.len() != hash.digest_size())
         {
             return Err(Error::BadSignature(
-                "Wrong number of attested certification subpackets".into())
+                "Wrong number of bytes in certification subpacket".into())
                        .into());
-        }
-
-        if let SubpacketValue::Unknown { body, .. } =
-            self.subpacket(SubpacketTag__AttestedCertifications).unwrap()
-            .value()
-        {
-            if body.len() % hash.digest_size() != 0 {
-                return Err(Error::BadSignature(
-                    "Wrong number of bytes in certification subpacket".into())
-                           .into());
-            }
-        } else {
-            unreachable!("Selected attested certifications, got wrong value");
         }
 
         self.hash_userid_binding(&mut hash, pk, userid);
@@ -2928,6 +2962,12 @@ impl Signature {
 
     /// Verifies an attested key signature on a user attribute.
     ///
+    /// This feature is [experimental](crate#experimental-features).
+    ///
+    /// Allows the certificate owner to attest to third party
+    /// certifications. See [Section 5.2.3.30 of RFC 4880bis] for
+    /// details.
+    ///
     /// `self` is the attested key signature, `signer` is the key that
     /// allegedly made the signature, `pk` is the primary key, and
     /// `ua` is the user attribute.
@@ -2943,7 +2983,9 @@ impl Signature {
     /// key is not revoked, not expired, has a valid self-signature,
     /// has a subkey binding signature (if appropriate), has the
     /// signing capability, etc.
-    pub(crate) fn verify_user_attribute_attestation<P, Q, R>(
+    ///
+    ///   [Section 5.2.3.30 of RFC 4880bis]: https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-10.html#section-5.2.3.30
+    pub fn verify_user_attribute_attestation<P, Q, R>(
         &mut self,
         signer: &Key<P, R>,
         pk: &Key<Q, key::PrimaryRole>,
@@ -2953,37 +2995,18 @@ impl Signature {
               Q: key::KeyParts,
               R: key::KeyRole,
     {
-        use crate::types::SignatureType__AttestedKey;
-        use crate::packet::signature::subpacket
-            ::SubpacketTag__AttestedCertifications;
-
-        if self.typ() != SignatureType__AttestedKey {
+        if self.typ() != SignatureType::AttestationKey {
             return Err(Error::UnsupportedSignatureType(self.typ()).into());
         }
 
         let mut hash = self.hash_algo().context()?;
 
-        if self.hashed_area()
-            .subpackets(SubpacketTag__AttestedCertifications).count() != 1
-            || self.unhashed_area()
-            .subpackets(SubpacketTag__AttestedCertifications).count() != 0
+        if self.attested_certifications()?
+            .any(|d| d.len() != hash.digest_size())
         {
             return Err(Error::BadSignature(
-                "Wrong number of attested certification subpackets".into())
+                "Wrong number of bytes in certification subpacket".into())
                        .into());
-        }
-
-        if let SubpacketValue::Unknown { body, .. } =
-            self.subpacket(SubpacketTag__AttestedCertifications).unwrap()
-            .value()
-        {
-            if body.len() % hash.digest_size() != 0 {
-                return Err(Error::BadSignature(
-                    "Wrong number of bytes in certification subpacket".into())
-                           .into());
-            }
-        } else {
-            unreachable!("Selected attested certifications, got wrong value");
         }
 
         self.hash_user_attribute_binding(&mut hash, pk, ua);

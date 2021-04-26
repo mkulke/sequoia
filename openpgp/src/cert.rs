@@ -626,6 +626,7 @@ pub trait Preferences<'a>: seal::Sealed {
 ///     for c in cert.userids() {
 ///         acc.push(c.userid().clone().into());
 ///         for s in c.self_signatures()   { acc.push(s.clone().into()) }
+///         for s in c.attestations()      { acc.push(s.clone().into()) }
 ///         for s in c.certifications()    { acc.push(s.clone().into()) }
 ///         for s in c.self_revocations()  { acc.push(s.clone().into()) }
 ///         for s in c.other_revocations() { acc.push(s.clone().into()) }
@@ -635,6 +636,7 @@ pub trait Preferences<'a>: seal::Sealed {
 ///     for c in cert.user_attributes() {
 ///         acc.push(c.user_attribute().clone().into());
 ///         for s in c.self_signatures()   { acc.push(s.clone().into()) }
+///         for s in c.attestations()      { acc.push(s.clone().into()) }
 ///         for s in c.certifications()    { acc.push(s.clone().into()) }
 ///         for s in c.self_revocations()  { acc.push(s.clone().into()) }
 ///         for s in c.other_revocations() { acc.push(s.clone().into()) }
@@ -1806,7 +1808,7 @@ impl Cert {
                     }
                 },
 
-                crate::types::SignatureType__AttestedKey => {
+                crate::types::SignatureType::AttestationKey => {
                     for binding in self.userids.iter_mut() {
                         check_one!(format!("userid \"{}\"",
                                            String::from_utf8_lossy(
@@ -6011,10 +6013,10 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
     #[test]
     fn attested_key_signatures() -> Result<()> {
         use crate::{
-            crypto::hash::Hash,
-            packet::signature::{SignatureBuilder, subpacket::*},
+            packet::signature::SignatureBuilder,
             types::*,
         };
+        let p = &crate::policy::StandardPolicy::new();
 
         let (alice, _) = CertBuilder::new()
             .add_userid("alice@foo.com")
@@ -6037,34 +6039,25 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
             = bob.userids().next().unwrap().userid().bind(
                 &mut alice_signer, &bob,
                 SignatureBuilder::new(SignatureType::GenericCertification))?;
-
-        // Have Bob attest that certification.
-        let hash_algo = HashAlgorithm::default();
-
-        // First, hash the certification.
-        let mut h = hash_algo.context()?;
-        alice_certifies_bob.hash_for_confirmation(&mut h);
-        let digest = h.into_digest()?;
-
-        // Then, prepare an attested key signature.
-        let mut h = hash_algo.context()?;
-        bob.primary_key().key().hash(&mut h);
-        bob.userids().next().unwrap().userid().hash(&mut h);
-
-        let attestation = SignatureBuilder::new(SignatureType__AttestedKey)
-            .modify_hashed_area(|mut a| {
-                a.add(Subpacket::new(
-                    SubpacketValue::Unknown {
-                        tag: SubpacketTag__AttestedCertifications,
-                        body: digest,
-                    },
-                    true)?)?;
-                Ok(a)
-            })?
-            .sign_hash(&mut bob_signer, h)?;
-
         let bob = bob.insert_packets(vec![
             alice_certifies_bob.clone(),
+        ])?;
+
+        assert_eq!(bob.with_policy(p, None)?.userids().next().unwrap()
+                   .certifications().count(), 1);
+        assert_eq!(bob.with_policy(p, None)?.userids().next().unwrap()
+                   .attested_certifications().count(), 0);
+
+        // Have Bob attest that certification.
+        let attestations =
+            bob.userids().next().unwrap().attest_certifications(
+                p,
+                &mut bob_signer,
+                vec![&alice_certifies_bob])?;
+        assert_eq!(attestations.len(), 1);
+        let attestation = attestations[0].clone();
+
+        let bob = bob.insert_packets(vec![
             attestation.clone(),
         ])?;
 
@@ -6073,6 +6066,10 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
                    Some(&alice_certifies_bob));
         assert_eq!(&bob.userids().next().unwrap().bundle().attestations[0],
                    &attestation);
+        assert_eq!(bob.with_policy(p, None)?.userids().next().unwrap()
+                   .certifications().count(), 1);
+        assert_eq!(bob.with_policy(p, None)?.userids().next().unwrap()
+                   .attested_certifications().count(), 1);
 
         // Check that attested key signatures are kept over merges.
         let bob_ = bob.clone().merge_public(bob_pristine.clone())?;
@@ -6081,6 +6078,8 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
                    Some(&alice_certifies_bob));
         assert_eq!(&bob_.userids().next().unwrap().bundle().attestations[0],
                    &attestation);
+        assert_eq!(bob_.with_policy(p, None)?.userids().next().unwrap()
+                   .attested_certifications().count(), 1);
 
         // And the other way around.
         let bob_ = bob_pristine.clone().merge_public(bob.clone())?;
@@ -6089,6 +6088,33 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
                    Some(&alice_certifies_bob));
         assert_eq!(&bob_.userids().next().unwrap().bundle().attestations[0],
                    &attestation);
+        assert_eq!(bob_.with_policy(p, None)?.userids().next().unwrap()
+                   .attested_certifications().count(), 1);
+
+        // Have Bob withdraw any prior attestations.
+
+        let attestations =
+            bob.userids().next().unwrap().attest_certifications(
+                p,
+                &mut bob_signer,
+                &[])?;
+        assert_eq!(attestations.len(), 1);
+        let attestation = attestations[0].clone();
+
+        let bob = bob.insert_packets(vec![
+            attestation.clone(),
+        ])?;
+
+        assert_eq!(bob.bad_signatures().count(), 0);
+        assert_eq!(bob.userids().next().unwrap().certifications().next(),
+                   Some(&alice_certifies_bob));
+        assert_eq!(&bob.userids().next().unwrap().bundle().attestations[0],
+                   &attestation);
+        assert_eq!(bob.with_policy(p, None)?.userids().next().unwrap()
+                   .certifications().count(), 1);
+        assert_eq!(bob.with_policy(p, None)?.userids().next().unwrap()
+                   .attested_certifications().count(), 0);
+
 
         Ok(())
     }
@@ -6098,9 +6124,9 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
     fn attested_key_signatures_dkgpg() -> Result<()> {
         const DUMP: bool = false;
         use crate::{
-            packet::signature::subpacket::*,
             crypto::hash::Digest,
         };
+        let p = &crate::policy::StandardPolicy::new();
 
         let test = Cert::from_bytes(crate::tests::key("1pa3pc-dkgpg.pgp"))?;
         assert_eq!(test.bad_signatures().count(), 0);
@@ -6112,22 +6138,15 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
         let attestation =
             &test.userids().next().unwrap().bundle().attestations[0];
 
-        let digest_size = attestation.hash_algo().context()?.digest_size();
-        let digests = if let Some(SubpacketValue::Unknown { body, .. }) =
-            attestation.subpacket(SubpacketTag__AttestedCertifications)
-                .map(|sp| sp.value())
-        {
-            body.chunks(digest_size).map(|d| d.to_vec()).collect::<Vec<_>>()
-        } else {
-            unreachable!("Valid attestation signatures contain one");
-        };
-
         if DUMP {
-            for (i, d) in digests.iter().enumerate() {
+            for (i, d) in attestation.attested_certifications()?.enumerate() {
                 crate::fmt::hex::Dumper::new(std::io::stderr(), "")
                     .write(d, format!("expected digest {}", i))?;
             }
         }
+
+        let digests: std::collections::HashSet<_> =
+            attestation.attested_certifications()?.collect();
 
         for (i, certification) in
             test.userids().next().unwrap().certifications().enumerate()
@@ -6142,8 +6161,13 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
                     .write(&digest, format!("computed digest {}", i))?;
             }
 
-            assert!(digests.contains(&digest));
+            assert!(digests.contains(&digest[..]));
         }
+
+        assert_eq!(test.with_policy(p, None)?.userids().next().unwrap()
+                   .certifications().count(), 1);
+        assert_eq!(test.with_policy(p, None)?.userids().next().unwrap()
+                   .attested_certifications().count(), 1);
 
         Ok(())
     }
