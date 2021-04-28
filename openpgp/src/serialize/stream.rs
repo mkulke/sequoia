@@ -2296,12 +2296,8 @@ impl<'a> Recipient<'a> {
 /// # Ok(()) }
 /// ```
 pub struct Encryptor<'a> {
-    // XXX: Opportunity for optimization.  Previously, this writer
-    // implemented `Drop`, so we could not move the inner writer out
-    // of this writer.  We therefore wrapped it with `Option` so that
-    // we can `take()` it.  This writer no longer implements Drop, so
-    // we could avoid the Option here.
-    inner: Option<writer::BoxStack<'a, Cookie>>,
+    inner: writer::BoxStack<'a, Cookie>,
+    session_key: Option<SessionKey>,
     recipients: Vec<Recipient<'a>>,
     passwords: Vec<Password>,
     sym_algo: SymmetricAlgorithm,
@@ -2315,13 +2311,9 @@ impl<'a> Encryptor<'a> {
     /// Creates a new encryptor for the given recipients.
     ///
     /// To add more recipients, use [`Encryptor::add_recipients`].  To
-    /// add a password, use [`Encryptor::add_password`].  To change
+    /// add passwords, use [`Encryptor::add_passwords`].  To change
     /// the symmetric encryption algorithm, use
     /// [`Encryptor::symmetric_algo`].
-    ///
-    ///   [`Encryptor::add_recipients`]: #method.add_recipients
-    ///   [`Encryptor::add_password`]: #method.add_password
-    ///   [`Encryptor::symmetric_algo`]: #method.symmetric_algo
     ///
     /// # Examples
     ///
@@ -2375,8 +2367,9 @@ impl<'a> Encryptor<'a> {
         where R: IntoIterator,
               R::Item: Into<Recipient<'a>>,
     {
-            Self {
-            inner: Some(inner.into()),
+        Self {
+            inner: inner.into(),
+            session_key: None,
             recipients: recipients.into_iter().map(|r| r.into()).collect(),
             passwords: Vec::new(),
             sym_algo: Default::default(),
@@ -2388,14 +2381,10 @@ impl<'a> Encryptor<'a> {
 
     /// Creates a new encryptor for the given passwords.
     ///
-    /// To add more passwords, use [`Encryptor::add_password`].  To
-    /// add an recipient, use [`Encryptor::add_recipients`].  To change
+    /// To add more passwords, use [`Encryptor::add_passwords`].  To
+    /// add recipients, use [`Encryptor::add_recipients`].  To change
     /// the symmetric encryption algorithm, use
     /// [`Encryptor::symmetric_algo`].
-    ///
-    ///   [`Encryptor::add_recipients`]: #method.add_recipients
-    ///   [`Encryptor::add_password`]: #method.add_password
-    ///   [`Encryptor::symmetric_algo`]: #method.symmetric_algo
     ///
     /// # Examples
     ///
@@ -2421,7 +2410,8 @@ impl<'a> Encryptor<'a> {
               P::Item: Into<Password>,
     {
         Self {
-            inner: Some(inner.into()),
+            inner: inner.into(),
+            session_key: None,
             recipients: Vec::new(),
             passwords: passwords.into_iter().map(|p| p.into()).collect(),
             sym_algo: Default::default(),
@@ -2429,6 +2419,174 @@ impl<'a> Encryptor<'a> {
             hash: HashAlgorithm::SHA1.context().unwrap(),
             cookie: Default::default(), // Will be fixed in build.
         }
+    }
+
+    /// Creates a new encryptor for the given algorithm and session
+    /// key.
+    ///
+    /// Usually, the encryptor creates a session key and decrypts it
+    /// for the given recipients and passwords.  Using this function,
+    /// the session key can be supplied instead.  There are two main
+    /// use cases for this:
+    ///
+    ///   - Replying to an encrypted message usually requires the
+    ///     encryption (sub)keys for every recipient.  If even one key
+    ///     is not available, it is not possible to encrypt the new
+    ///     session key.  Rather than falling back to replying
+    ///     unencrypted, one can reuse the original message's session
+    ///     key that was encrypted for every recipient and reuse the
+    ///     original [`PKESK`](crate::packet::PKESK)s.
+    ///
+    ///   - Using the encryptor if the session key is transmitted or
+    ///     derived using a scheme not supported by Sequoia.
+    ///
+    /// To add more passwords, use [`Encryptor::add_passwords`].  To
+    /// add recipients, use [`Encryptor::add_recipients`].
+    ///
+    /// # Examples
+    ///
+    /// This example demonstrates how to fall back to the original
+    /// message's session key in order to encrypt a reply.
+    ///
+    /// ```
+    /// # fn main() -> sequoia_openpgp::Result<()> {
+    /// # use std::io::{self, Write};
+    /// # use sequoia_openpgp as openpgp;
+    /// # use openpgp::{KeyHandle, KeyID, Fingerprint, Result};
+    /// # use openpgp::cert::prelude::*;
+    /// # use openpgp::packet::prelude::*;
+    /// # use openpgp::crypto::{KeyPair, SessionKey};
+    /// # use openpgp::types::SymmetricAlgorithm;
+    /// # use openpgp::parse::{Parse, stream::*};
+    /// # use openpgp::serialize::{Serialize, stream::*};
+    /// # use openpgp::policy::{Policy, StandardPolicy};
+    /// # let p = &StandardPolicy::new();
+    /// #
+    /// // Generate two keys.
+    /// let (alice, _) = CertBuilder::general_purpose(
+    ///         None, Some("Alice Lovelace <alice@example.org>")).generate()?;
+    /// let (bob, _) = CertBuilder::general_purpose(
+    ///         None, Some("Bob Babbage <bob@example.org>")).generate()?;
+    ///
+    /// // Encrypt a message for both keys.
+    /// let recipients = vec![&alice, &bob].into_iter().flat_map(|cert| {
+    ///     cert.keys().with_policy(p, None).supported().alive().revoked(false)
+    ///         .for_transport_encryption()
+    /// });
+    ///
+    /// let mut original = vec![];
+    /// let message = Message::new(&mut original);
+    /// let message = Encryptor::for_recipients(message, recipients).build()?;
+    /// let mut w = LiteralWriter::new(message).build()?;
+    /// w.write_all(b"Original message")?;
+    /// w.finalize()?;
+    ///
+    /// // Decrypt original message using Alice's key.
+    /// let mut decryptor = DecryptorBuilder::from_bytes(&original)?
+    ///     .with_policy(p, None, Helper::new(alice))?;
+    /// io::copy(&mut decryptor, &mut io::sink())?;
+    /// let (algo, sk, pkesks) = decryptor.into_helper().recycling_bin.unwrap();
+    ///
+    /// // Compose the reply using the same session key.
+    /// let mut reply = vec![];
+    /// let mut message = Message::new(&mut reply);
+    /// for p in pkesks { // Emit the stashed PKESK packets.
+    ///     Packet::from(p).serialize(&mut message)?;
+    /// }
+    /// let message = Encryptor::with_session_key(message, algo, sk)?.build()?;
+    /// let mut w = LiteralWriter::new(message).build()?;
+    /// w.write_all(b"Encrypted reply")?;
+    /// w.finalize()?;
+    ///
+    /// // Check that Bob can decrypt it.
+    /// let mut decryptor = DecryptorBuilder::from_bytes(&reply)?
+    ///     .with_policy(p, None, Helper::new(bob))?;
+    /// io::copy(&mut decryptor, &mut io::sink())?;
+    ///
+    /// /// Decrypts the message preserving algo, session key, and PKESKs.
+    /// struct Helper {
+    ///     key: Cert,
+    ///     recycling_bin: Option<(SymmetricAlgorithm, SessionKey, Vec<PKESK>)>,
+    /// }
+    ///
+    /// # impl Helper {
+    /// #     fn new(key: Cert) -> Self {
+    /// #         Helper { key, recycling_bin: None, }
+    /// #     }
+    /// # }
+    /// #
+    /// impl DecryptionHelper for Helper {
+    ///     fn decrypt<D>(&mut self, pkesks: &[PKESK], _skesks: &[SKESK],
+    ///                   sym_algo: Option<SymmetricAlgorithm>, mut decrypt: D)
+    ///                   -> Result<Option<Fingerprint>>
+    ///         where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool
+    ///     {
+    ///         let p = &StandardPolicy::new();
+    ///         let mut encryption_context = None;
+    ///
+    ///         for pkesk in pkesks { // Try each PKESK until we succeed.
+    ///             for ka in self.key.keys().with_policy(p, None)
+    ///                 .supported().unencrypted_secret()
+    ///                 .key_handle(pkesk.recipient())
+    ///                 .for_storage_encryption().for_transport_encryption()
+    ///             {
+    ///                 let mut pair = ka.key().clone().into_keypair().unwrap();
+    ///                 if pkesk.decrypt(&mut pair, sym_algo)
+    ///                     .map(|(algo, session_key)| {
+    ///                         let success = decrypt(algo, &session_key);
+    ///                         if success {
+    ///                             // Copy algor, session key, and PKESKs.
+    ///                             encryption_context =
+    ///                                 Some((algo, session_key.clone(),
+    ///                                       pkesks.iter().cloned().collect()));
+    ///                         }
+    ///                         success
+    ///                     })
+    ///                     .unwrap_or(false)
+    ///                 {
+    ///                     break; // Decryption successful.
+    ///                 }
+    ///             }
+    ///         }
+    ///
+    ///         self.recycling_bin = encryption_context; // Store for the reply.
+    ///         Ok(Some(self.key.fingerprint()))
+    ///     }
+    /// }
+    ///
+    /// impl VerificationHelper for Helper {
+    ///     // ...
+    /// #   fn get_certs(&mut self, _ids: &[KeyHandle]) -> Result<Vec<Cert>> {
+    /// #       Ok(Vec::new()) // Lookup certificates here.
+    /// #   }
+    /// #   fn check(&mut self, structure: MessageStructure) -> Result<()> {
+    /// #       Ok(()) // Implement your verification policy here.
+    /// #   }
+    /// }
+    /// # Ok(()) }
+    /// ```
+    pub fn with_session_key(inner: Message<'a>,
+                            sym_algo: SymmetricAlgorithm,
+                            session_key: SessionKey)
+                            -> Result<Self>
+    {
+        let sym_key_size = sym_algo.key_size()?;
+        if session_key.len() != sym_key_size {
+            return Err(Error::InvalidArgument(
+                format!("{} requires a {} bit key, but session key has {}",
+                        sym_algo, sym_key_size, session_key.len())).into());
+        }
+
+        Ok(Self {
+            inner: inner.into(),
+            session_key: Some(session_key),
+            recipients: Vec::new(),
+            passwords: Vec::with_capacity(0),
+            sym_algo,
+            aead_algo: Default::default(),
+            hash: HashAlgorithm::SHA1.context().unwrap(),
+            cookie: Default::default(), // Will be fixed in build.
+        })
     }
 
     /// Adds recipients.
@@ -2704,9 +2862,12 @@ impl<'a> Encryptor<'a> {
     /// # Ok(()) }
     /// ```
     pub fn build(mut self) -> Result<Message<'a>> {
-        if self.recipients.len() + self.passwords.len() == 0 {
+        if self.recipients.len() + self.passwords.len() == 0
+            && self.session_key.is_none()
+        {
             return Err(Error::InvalidOperation(
-                "Neither recipients nor passwords given".into()).into());
+                "Neither recipients, passwords, nor session key given".into()
+            ).into());
         }
 
         struct AEADParameters {
@@ -2727,11 +2888,18 @@ impl<'a> Encryptor<'a> {
             None
         };
 
-        let mut inner = self.inner.take().expect("Added in constructors");
+        let mut inner = self.inner;
         let level = inner.as_ref().cookie_ref().level + 1;
 
-        // Generate a session key.
-        let sk = SessionKey::new(self.sym_algo.key_size()?);
+        // Reuse existing session key or generate a new one.
+        let sym_key_size = self.sym_algo.key_size()?;
+        let sk = self.session_key.take()
+            .unwrap_or_else(|| SessionKey::new(sym_key_size));
+        if sk.len() != sym_key_size {
+            return Err(Error::InvalidOperation(
+                format!("{} requires a {} bit key, but session key has {}",
+                        self.sym_algo, sym_key_size, sk.len())).into());
+        }
 
         // Write the PKESK packet(s).
         for recipient in self.recipients.iter() {
@@ -2785,12 +2953,12 @@ impl<'a> Encryptor<'a> {
             inner.write_all(&[1])?; // Version.
 
             // Install encryptor.
-            self.inner = Some(writer::Encryptor::new(
+            self.inner = writer::Encryptor::new(
                 inner,
                 Cookie::new(level),
                 self.sym_algo,
                 &sk,
-            )?.into());
+            )?.into();
             self.cookie = Cookie::new(level);
 
             // Write the initialization vector, and the quick-check
@@ -2807,29 +2975,26 @@ impl<'a> Encryptor<'a> {
     }
 
     /// Emits the MDC packet and recovers the original writer.
-    fn emit_mdc(&mut self) -> Result<writer::BoxStack<'a, Cookie>> {
-        if let Some(mut w) = self.inner.take() {
-            // Write the MDC, which must be the last packet inside the
-            // encrypted packet stream.  The hash includes the MDC's
-            // CTB and length octet.
-            let mut header = Vec::new();
-            CTB::new(Tag::MDC).serialize(&mut header)?;
-            BodyLength::Full(20).serialize(&mut header)?;
+    fn emit_mdc(mut self) -> Result<writer::BoxStack<'a, Cookie>> {
+        let mut w = self.inner;
 
-            self.hash.update(&header);
-            Packet::MDC(MDC::from(self.hash.clone())).serialize(&mut w)?;
+        // Write the MDC, which must be the last packet inside the
+        // encrypted packet stream.  The hash includes the MDC's
+        // CTB and length octet.
+        let mut header = Vec::new();
+        CTB::new(Tag::MDC).serialize(&mut header)?;
+        BodyLength::Full(20).serialize(&mut header)?;
 
-            // Now recover the original writer.  First, strip the
-            // Encryptor.
-            let w = w.into_inner()?.unwrap();
-            // And the partial body filter.
-            let w = w.into_inner()?.unwrap();
+        self.hash.update(&header);
+        Packet::MDC(MDC::from(self.hash.clone())).serialize(&mut w)?;
 
-            Ok(w)
-        } else {
-            Err(Error::InvalidOperation(
-                "Inner writer already taken".into()).into())
-        }
+        // Now recover the original writer.  First, strip the
+        // Encryptor.
+        let w = w.into_inner()?.unwrap();
+        // And the partial body filter.
+        let w = w.into_inner()?.unwrap();
+
+        Ok(w)
     }
 }
 
@@ -2843,10 +3008,7 @@ impl<'a> fmt::Debug for Encryptor<'a> {
 
 impl<'a> Write for Encryptor<'a> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let written = match self.inner.as_mut() {
-            Some(ref mut w) => w.write(buf),
-            None => Ok(buf.len()),
-        };
+        let written = self.inner.write(buf);
         if let Ok(amount) = written {
             self.hash.update(&buf[..amount]);
         }
@@ -2854,10 +3016,7 @@ impl<'a> Write for Encryptor<'a> {
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        match self.inner.as_mut() {
-            Some(ref mut w) => w.flush(),
-            None => Ok(()),
-        }
+        self.inner.flush()
     }
 }
 
@@ -2870,16 +3029,12 @@ impl<'a> writer::Stackable<'a, Cookie> for Encryptor<'a> {
         unreachable!("Only implemented by Signer")
     }
     fn inner_ref(&self) -> Option<&(dyn writer::Stackable<'a, Cookie> + Send + Sync)> {
-        self.inner.as_ref().map(|r| r.as_ref())
+        Some(&self.inner)
     }
     fn inner_mut(&mut self) -> Option<&mut (dyn writer::Stackable<'a, Cookie> + Send + Sync)> {
-        if let Some(ref mut i) = self.inner {
-            Some(i)
-        } else {
-            None
-        }
+        Some(&mut self.inner)
     }
-    fn into_inner(mut self: Box<Self>) -> Result<Option<writer::BoxStack<'a, Cookie>>> {
+    fn into_inner(self: Box<Self>) -> Result<Option<writer::BoxStack<'a, Cookie>>> {
         Ok(Some(self.emit_mdc()?))
     }
     fn cookie_set(&mut self, cookie: Cookie) -> Cookie {
@@ -2892,7 +3047,7 @@ impl<'a> writer::Stackable<'a, Cookie> for Encryptor<'a> {
         &mut self.cookie
     }
     fn position(&self) -> u64 {
-        self.inner.as_ref().map(|i| i.position()).unwrap_or(0)
+        self.inner.position()
     }
 }
 
