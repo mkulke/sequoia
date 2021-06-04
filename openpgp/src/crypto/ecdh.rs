@@ -507,4 +507,61 @@ mod tests {
             assert_eq!(&Protected::from(test.key_data), &key_data);
         }
     }
+
+    #[test]
+    fn test_25519_decryption() -> Result<()> {
+	use crate::cert::prelude::*;
+	use crate::policy::StandardPolicy;
+	use crate::parse::{Parse, stream::{DecryptorBuilder, DecryptionHelper, VerificationHelper, MessageStructure}};
+
+	let key = Cert::from_file("tests/data/keys/25519-secret.asc")?;
+	let ref p = StandardPolicy::new();
+
+	struct Helper<'a>(&'a Cert, &'a dyn crate::policy::Policy);
+
+	let helper = Helper(&key, p);
+
+	impl DecryptionHelper for Helper<'_> {
+	    fn decrypt<D>(&mut self,
+			  pkesks: &[crate::packet::PKESK],
+			  _skesks: &[crate::packet::SKESK],
+			  sym_algo: Option<crate::SymmetricAlgorithm>,
+			  mut decrypt: D) -> crate::Result<Option<crate::Fingerprint>>
+	    where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool {
+		let key = self
+		    .0
+		    .keys()
+		    .with_policy(self.1, None)
+		    .for_transport_encryption().next().unwrap()
+		    .key().clone().parts_into_secret()?;
+
+		let mut pair = key.decrypt_secret(&"t".into())?.into_keypair()?;
+
+		pkesks[0].decrypt(&mut pair, sym_algo).map(|(algo, session_key)| decrypt(algo, &session_key));
+
+		Ok(None)
+	    }
+	}
+
+	impl VerificationHelper for Helper<'_> {
+	    fn get_certs(&mut self, _ids: &[crate::KeyHandle]) -> crate::Result<Vec<crate::Cert>> {
+		Ok(Vec::new())
+	    }
+
+	    fn check(&mut self, _structure: MessageStructure) -> crate::Result<()> {
+		Ok(())
+	    }
+	}
+
+	let mut decryptor = DecryptorBuilder::from_file("tests/data/messages/25519-encrypted.pgp")?.with_policy(p, None, helper)?;
+
+	let mut plaintext = Vec::new();
+
+	std::io::copy(&mut decryptor, &mut plaintext)?;
+
+	let plaintext = String::from_utf8_lossy(&plaintext);
+	assert_eq!("дружба", plaintext);
+
+	Ok(())
+    }
 }

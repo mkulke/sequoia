@@ -164,30 +164,19 @@ where
 
     let S: Protected = match curve {
         Curve::Cv25519 => {
+            use x25519_dalek::{PublicKey, StaticSecret};
+	    use std::convert::TryInto;
+
             // Get the public part V of the ephemeral key.
-            let V = e.decode_point(curve)?.0;
+            let V: [u8; 32] = e.decode_point(curve)?.0.try_into()?;
+            let V = PublicKey::from(V);
 
-            let provider = AsymmetricAlgorithm::open(AsymmetricAlgorithmId::Ecdh(NamedCurve::Curve25519))?;
-            let V = AsymmetricKey::<Ecdh<Curve25519>, Public>::import_from_parts(
-                &provider,
-                V,
-            )?;
-
-            let mut scalar = pad_secret_to(scalar.value(), 32).into_owned();
-            // Reverse the scalar.  See
-            // https://lists.gnupg.org/pipermail/gnupg-devel/2018-February/033437.html.
+            let mut scalar: [u8; 32] = scalar.value().try_into()?;
             scalar.reverse();
+            let r = StaticSecret::from(scalar);
 
-            let r = AsymmetricKey::<Ecdh<Curve25519>, Private>::import_from_parts(
-                &provider,
-                &scalar,
-            )?;
-
-            let secret = cng::asymmetric::agreement::secret_agreement(&r, &V)?;
-            // Returned secret is little-endian, flip it to big-endian
-            let mut secret = secret.derive_raw()?;
-            secret.reverse();
-            secret.into()
+            let secret = r.diffie_hellman(&V);
+            Vec::from(secret.to_bytes()).into()
         }
 
         Curve::NistP256 | Curve::NistP384 | Curve::NistP521 => {
@@ -297,15 +286,6 @@ impl AsRef<[u8]> for PaddedSecret<'_> {
         match self {
             PaddedSecret::Ref(value) => value,
             PaddedSecret::Own(value) => value.as_ref(),
-        }
-    }
-}
-
-impl PaddedSecret<'_> {
-    fn into_owned(self) -> Protected {
-        match self {
-            PaddedSecret::Ref(value) => Protected::from(value),
-            PaddedSecret::Own(value) => value,
         }
     }
 }
