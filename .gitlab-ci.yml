@@ -310,6 +310,46 @@ windows-msvc-32:
   variables:
     CFLAGS: "" # Silence some C warnings when compiling with MSVC
 
+docker-build-release:
+  # Official docker image.
+  image: docker:stable
+  stage: build
+  services:
+    - docker:dind
+  tags:
+    - docker
+    - self-hosted
+  before_script:
+    - >
+      docker login
+      --username "$CI_REGISTRY_USER"
+      --password "$CI_REGISTRY_PASSWORD" $CI_REGISTRY
+  script:
+    - >
+      docker build
+      --no-cache
+      --target sq
+      --tag "$CI_REGISTRY_IMAGE":"sq-$CI_COMMIT_TAG" .
+    - docker push "$CI_REGISTRY_IMAGE":"sq-$CI_COMMIT_TAG"
+    - docker tag "$CI_REGISTRY_IMAGE":"sq-$CI_COMMIT_TAG" "$CI_REGISTRY_IMAGE":sq
+    - docker push "$CI_REGISTRY_IMAGE":sq
+    - >
+      docker build
+      --target sqv
+      --tag "$CI_REGISTRY_IMAGE":"sqv-$CI_COMMIT_TAG" .
+    - docker push "$CI_REGISTRY_IMAGE":"sqv-$CI_COMMIT_TAG"
+    - docker tag "$CI_REGISTRY_IMAGE":"sqv-$CI_COMMIT_TAG" "$CI_REGISTRY_IMAGE":sqv
+    - docker push "$CI_REGISTRY_IMAGE":sqv
+  after_script: []
+  only:
+    refs:
+      - tags
+  variables:
+    CI_REGISTRY: "docker.io"
+    CI_REGISTRY_ORG: "index.docker.io/sequoiapgp/sequoia-pgp"
+    CI_REGISTRY_PASSWORD: "$DOCKERHUB_ACCESS_TOKEN"
+    CI_REGISTRY_USER: "puzzlewolf"
+
 variables:
   DEBIAN_FRONTEND: noninteractive
   CARGO_HOME: $CI_PROJECT_DIR/../cargo
