@@ -65,7 +65,10 @@ The foreign function interface provides a C API for some of Sequoia's
 low- and high-level interfaces, but it is incomplete.
 
 There is a mostly feature-complete command-line verification tool for
-detached messages called 'sqv'.
+detached messages called ['sqv'].
+
+['sqv']: https://gitlab.com/sequoia-pgp/sequoia-sqv
+
 
 LICENSE
 =======
@@ -178,7 +181,7 @@ build `sequoia-openpgp-ffi` to build a shared object with the C API.
 Using Docker
 ------------
 
-Command line tools can also be built using Docker:
+The command line tool `sq` can also be built using Docker:
 
 ```shell
 $ docker build -t sq .
@@ -190,13 +193,6 @@ For example retrieving a certificate and inspecting its contents:
 ```shell
 $ docker run --rm -i sq keyserver get 653909A2F0E37C106F5FAF546C8857E0D8E8F074 > cert.asc
 $ docker run --rm -i sq packet dump < cert.asc
-```
-
-Building and running `sqv` the command line OpenPGP signature verification tool:
-
-```shell
-docker build --target sqv -t sqv
-docker run --rm -i sqv --help
 ```
 
 ## Requirements
