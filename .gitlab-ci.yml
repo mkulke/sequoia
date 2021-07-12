@@ -275,6 +275,7 @@ windows-msvc:
     - cargo build --manifest-path ffi/Cargo.toml --no-default-features --features crypto-cng,compression
     - cargo build --manifest-path openpgp-ffi/Cargo.toml --no-default-features --features crypto-cng,compression
     - cargo test --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-cng,compression
+    - cargo test --manifest-path sq/Cargo.toml --no-default-features --features crypto-cng,compression
   after_script: []
   variables:
     CFLAGS: "" # Silence some C warnings when compiling with MSVC
@@ -304,6 +305,7 @@ windows-msvc-32:
     - cargo build --manifest-path ffi/Cargo.toml --no-default-features --features crypto-cng,compression
     - cargo build --manifest-path openpgp-ffi/Cargo.toml --no-default-features --features crypto-cng,compression
     - cargo test --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-cng,compression
+    - cargo test --manifest-path sq/Cargo.toml --no-default-features --features crypto-cng,compression
   after_script: []
   variables:
     CFLAGS: "" # Silence some C warnings when compiling with MSVC
