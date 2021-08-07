@@ -1,0 +1,1 @@
+(10:public-key(3:ecc(5:curve15:brainpoolP256r1)(1:q65:™Ô`6zoû×=?ò)_¨+äD!sŒ_¦T©£Æû7íşÀLiµ¤ùC«Í9•MwUWÿtÍZ×ÚÓ’ê)))

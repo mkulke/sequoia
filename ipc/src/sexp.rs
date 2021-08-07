@@ -142,6 +142,134 @@ impl Sexp {
         }
     }
 
+    /// Parses this s-expression to a public key.
+    ///
+    /// Such an expression is returned from gpg-agent's `READKEY`
+    /// command.
+    pub fn to_public_key(&self) ->Result<mpi::PublicKey> {
+        use openpgp::types::{Curve, HashAlgorithm, SymmetricAlgorithm};
+        let not_a_pubkey = || -> anyhow::Error {
+            Error::MalformedMPI(
+                format!("Not a public key: {:?}", self)).into()
+        };
+
+        let key = self.get(b"public-key")?.ok_or_else(not_a_pubkey)?
+            .into_iter().next().ok_or_else(not_a_pubkey)?;
+
+        if let Some(param) = key.get(b"rsa")? {
+            let n = param.iter().find_map(|p| {
+                p.get(b"n").ok().unwrap_or_default()
+                    .and_then(|l| l.get(0).and_then(Sexp::string).cloned())
+            }).ok_or_else(not_a_pubkey)?;
+            let e = param.iter().find_map(|p| {
+                p.get(b"e").ok().unwrap_or_default()
+                    .and_then(|l| l.get(0).and_then(Sexp::string).cloned())
+            }).ok_or_else(not_a_pubkey)?;
+            Ok(mpi::PublicKey::RSA {
+                e: mpi::MPI::new(&e),
+                n: mpi::MPI::new(&n),
+            })
+        } else if let Some(param) = key.get(b"dsa")? {
+            let p = param.iter().find_map(|p| {
+                p.get(b"p").ok().unwrap_or_default()
+                    .and_then(|l| l.get(0).and_then(Sexp::string).cloned())
+            }).ok_or_else(not_a_pubkey)?;
+            let q = param.iter().find_map(|p| {
+                p.get(b"q").ok().unwrap_or_default()
+                    .and_then(|l| l.get(0).and_then(Sexp::string).cloned())
+            }).ok_or_else(not_a_pubkey)?;
+            let g = param.iter().find_map(|p| {
+                p.get(b"g").ok().unwrap_or_default()
+                    .and_then(|l| l.get(0).and_then(Sexp::string).cloned())
+            }).ok_or_else(not_a_pubkey)?;
+            let y = param.iter().find_map(|p| {
+                p.get(b"y").ok().unwrap_or_default()
+                    .and_then(|l| l.get(0).and_then(Sexp::string).cloned())
+            }).ok_or_else(not_a_pubkey)?;
+            Ok(mpi::PublicKey::DSA {
+                p: mpi::MPI::new(&p),
+                q: mpi::MPI::new(&q),
+                g: mpi::MPI::new(&g),
+                y: mpi::MPI::new(&y),
+            })
+        } else if let Some(param) = key.get(b"elg")? {
+            let p = param.iter().find_map(|p| {
+                p.get(b"p").ok().unwrap_or_default()
+                    .and_then(|l| l.get(0).and_then(Sexp::string).cloned())
+            }).ok_or_else(not_a_pubkey)?;
+            let g = param.iter().find_map(|p| {
+                p.get(b"g").ok().unwrap_or_default()
+                    .and_then(|l| l.get(0).and_then(Sexp::string).cloned())
+            }).ok_or_else(not_a_pubkey)?;
+            let y = param.iter().find_map(|p| {
+                p.get(b"y").ok().unwrap_or_default()
+                    .and_then(|l| l.get(0).and_then(Sexp::string).cloned())
+            }).ok_or_else(not_a_pubkey)?;
+            Ok(mpi::PublicKey::ElGamal {
+                p: mpi::MPI::new(&p),
+                g: mpi::MPI::new(&g),
+                y: mpi::MPI::new(&y),
+            })
+        } else if let Some(param) = key.get(b"ecc")? {
+            // the following segment is not validated fully due to lack of documentation
+            // on the gpg-agent output format
+            let curve = param.iter().find_map(|p| {
+                p.get(b"curve").ok().unwrap_or_default()
+                    .and_then(|l| l.get(0).and_then(Sexp::string).cloned())
+            }).ok_or_else(not_a_pubkey)?;
+            // flags parameter is optional
+            let flags = param.iter().find_map(|p| {
+                p.get(b"flags").ok().unwrap_or_default()
+                    .and_then(|l| l.get(0).and_then(Sexp::string).cloned())
+            }).unwrap_or(String_::new(&b""[..]));
+            let q = param.iter().find_map(|p| {
+                p.get(b"q").ok().unwrap_or_default()
+                    .and_then(|l| l.get(0).and_then(Sexp::string).cloned())
+            }).ok_or_else(not_a_pubkey)?;
+
+            let curve = match curve.deref() {
+                b"Curve25519" => Curve::Cv25519,
+                b"Ed25519" => Curve::Ed25519,
+                b"NIST P-256" => Curve::NistP256,
+                b"NIST P-384" => Curve::NistP384,
+                b"NIST P-521" => Curve::NistP521,
+                b"brainpoolP256r1" => Curve::BrainpoolP256,
+                b"brainpoolP512r1" => Curve::BrainpoolP512,
+                // unsupported examples: secp256k1 BrainpoolP384
+                _ => return Err(Error::MalformedMessage(format!("unknown or unsupported curve: {:?}", curve)).into())
+            };
+
+            let q = mpi::MPI::new(&q);
+
+            // TODO: verify that the following classification is correct
+            // reference: https://github.com/gpg/gnupg/blob/25ae80b8eb6e9011049d76440ad7d250c1d02f7c/g10/keyid.c#L1071-L1078
+            Ok(
+                if flags.deref() == b"eddsa" {
+                    mpi::PublicKey::EdDSA {
+                        curve,
+                        q,
+                    }
+                } else if flags.deref() == b"djb-tweak"{
+                    mpi::PublicKey::ECDH {
+                        curve,
+                        q,
+                        // TODO: verify if this is correct
+                        hash: HashAlgorithm::SHA256,
+                        sym: SymmetricAlgorithm::AES128,
+                    }
+                } else {
+                    mpi::PublicKey::ECDSA {
+                        curve,
+                        q,
+                    }
+                }
+            )
+        } else {
+            Err(Error::MalformedMPI(
+                format!("Unknown public key sexp: {:?}", self)).into())
+        }
+    }
+
     /// Parses this s-expression to a signature.
     ///
     /// Such an expression is returned from gpg-agent's `PKSIGN`
@@ -469,5 +597,26 @@ mod tests {
                     .to_signature().unwrap(),
                 RSA { .. }
         ));
+    }
+
+    #[test]
+    fn to_public_key() {
+        use openpgp::Cert;
+        fn compare_keys(sexp: &str, expected: &str, key_no: usize) {
+            let sexp = Sexp::from_bytes(
+                crate::tests::file(sexp)).unwrap()
+                    .to_public_key().unwrap();
+            let cert = Cert::from_bytes(crate::tests::file(expected)).unwrap();
+            let key = cert.keys().nth(key_no).unwrap().key().clone();
+            assert_eq!(&sexp, key.mpis());
+        }
+
+        compare_keys("sexp/testy-brainpoolp256-primary-pubkey.sexp", "keys/testy-brainpoolp256-primary-pubkey.pgp", 0);
+        compare_keys("sexp/testy-rsa-pubkey.sexp", "keys/testy.pgp", 0);
+        compare_keys("sexp/testy-new-ed25519-pubkey.sexp", "keys/testy-new.pgp", 0);
+        compare_keys("sexp/testy-new-cv25519-pubkey.sexp", "keys/testy-new.pgp", 1);
+        compare_keys("sexp/testy-nistp256-pubkey.sexp", "keys/testy-nistp256-pubkey.pgp", 0);
+        compare_keys("sexp/dsa2048-elgamal3072-dsa-pubkey.sexp", "keys/dsa2048-elgamal3072.pgp", 0);
+        compare_keys("sexp/dsa2048-elgamal3072-elg-pubkey.sexp", "keys/dsa2048-elgamal3072.pgp", 1);
     }
 }

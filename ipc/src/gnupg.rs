@@ -362,6 +362,11 @@ impl Agent {
         DecryptionRequest::new(&mut self.c, key, ciphertext).await
     }
 
+    /// Get the public key with the specified keygrip from the agent.
+    pub async fn get_public_key<'a>(&'a mut self, grip: &Keygrip) -> Result<crypto::mpi::PublicKey>{
+        PubkeyRequest::new(&mut self.c, grip).await
+    }
+
     /// Computes options that we want to communicate.
     fn options() -> Vec<String> {
         use std::env::var;
@@ -734,6 +739,104 @@ impl<'a, 'b, 'c, R> Future for DecryptionRequest<'a, 'b, 'c, R>
                     },
                     Poll::Pending => return Poll::Pending,
                 },
+            }
+        }
+    }
+}
+
+struct PubkeyRequest<'a, 'b>
+{
+    c: &'a mut assuan::Client,
+    keygrip: &'b Keygrip,
+    options: Vec<String>,
+    state: PubkeyRequestState,
+}
+
+impl<'a, 'b> PubkeyRequest<'a, 'b>
+{
+    fn new(c: &'a mut assuan::Client,
+           keygrip: &'b Keygrip)
+           -> Self {
+        Self {
+            c,
+            keygrip,
+            options: Agent::options(),
+            state: PubkeyRequestState::Start,
+        }
+    }
+}
+
+#[derive(Debug)]
+enum PubkeyRequestState {
+    Start,
+    Options,
+    ReadKey(Vec<u8>)
+}
+
+impl<'a, 'b> Future for PubkeyRequest<'a, 'b>
+{
+    type Output = Result<crypto::mpi::PublicKey>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<Self::Output> {
+        use self::PubkeyRequestState::*;
+
+        // The compiler is not smart enough to figure out disjoint borrows
+        // through Pin via DerefMut (which wholly borrows `self`), so unwrap it
+        let Self { c, keygrip, options, state } = Pin::into_inner(self);
+        let mut client = Pin::new(c);
+
+        loop {
+            match state {
+                Start => {
+                    if options.is_empty() {
+                        client.send(format!("READKEY {}", keygrip))?;
+                        *state = ReadKey(Vec::new());
+                    } else {
+                        let opts = options.pop().unwrap();
+                        client.send(opts)?;
+                        *state = Options;
+                    }
+                },
+                Options => match client.as_mut().poll_next(cx)? {
+                    Poll::Ready(Some(r)) => match r {
+                        assuan::Response::Ok { .. }
+                        | assuan::Response::Comment { .. }
+                        | assuan::Response::Status { .. } =>
+                            (), // Ignore.
+                        assuan::Response::Error { ref message, .. } =>
+                            return Poll::Ready(operation_failed(message)),
+                        _ =>
+                            return Poll::Ready(protocol_error(&r)),
+                    },
+                    Poll::Ready(None) => {
+                        if let Some(option) = options.pop() {
+                            client.send(option)?;
+                        } else {
+                            client.send(format!("READKEY {}", keygrip))?;
+                            *state = ReadKey(Vec::new());
+                        }
+                    },
+                    Poll::Pending => return Poll::Pending,
+                },
+                ReadKey(ref mut data) => match client.as_mut().poll_next(cx)? {
+                    Poll::Ready(Some(r)) => match r {
+                        assuan::Response::Ok { .. }
+                        | assuan::Response::Comment { .. }
+                        | assuan::Response::Status { .. } =>
+                            (), // Ignore.
+                        assuan::Response::Error { ref message, .. } =>
+                            return Poll::Ready(operation_failed(message)),
+                        assuan::Response::Data { ref partial } =>
+                            data.extend_from_slice(partial),
+                        _ =>
+                            return Poll::Ready(protocol_error(&r)),
+                    },
+                    Poll::Ready(None) => {
+                        return Poll::Ready(
+                            Sexp::from_bytes(&data)?.to_public_key());
+                    },
+                    Poll::Pending => return Poll::Pending,
+                }
             }
         }
     }
