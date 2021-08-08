@@ -1,0 +1,1 @@
+(10:public-key(3:ecc(5:curve7:Ed25519)(5:flags5:eddsa)(1:q33:@ø@¶¦÷›¤Fó<X¦U`U|ä n^+îð³•À`,š)))
