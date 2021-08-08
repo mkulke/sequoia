@@ -362,9 +362,11 @@ impl Agent {
         DecryptionRequest::new(&mut self.c, key, ciphertext).await
     }
 
-    /// Get the public key with the specified keygrip from the agent.
-    pub async fn get_public_key<'a>(&'a mut self, grip: &Keygrip) -> Result<crypto::mpi::PublicKey>{
-        PubkeyRequest::new(&mut self.c, grip).await
+    /// Get the signing public key with the specified keygrip from the agent.
+    ///
+    /// **Note:** This function **MAY NOT** return a correct public key when the key is used for purposes other than signing!
+    pub async fn get_signing_public_key<'a>(&'a mut self, grip: &Keygrip) -> Result<crypto::mpi::PublicKey>{
+        SigningPubkeyRequest::new(&mut self.c, grip).await
     }
 
     /// Computes options that we want to communicate.
@@ -744,15 +746,15 @@ impl<'a, 'b, 'c, R> Future for DecryptionRequest<'a, 'b, 'c, R>
     }
 }
 
-struct PubkeyRequest<'a, 'b>
+struct SigningPubkeyRequest<'a, 'b>
 {
     c: &'a mut assuan::Client,
     keygrip: &'b Keygrip,
     options: Vec<String>,
-    state: PubkeyRequestState,
+    state: SigningPubkeyRequestState,
 }
 
-impl<'a, 'b> PubkeyRequest<'a, 'b>
+impl<'a, 'b> SigningPubkeyRequest<'a, 'b>
 {
     fn new(c: &'a mut assuan::Client,
            keygrip: &'b Keygrip)
@@ -761,24 +763,24 @@ impl<'a, 'b> PubkeyRequest<'a, 'b>
             c,
             keygrip,
             options: Agent::options(),
-            state: PubkeyRequestState::Start,
+            state: SigningPubkeyRequestState::Start,
         }
     }
 }
 
 #[derive(Debug)]
-enum PubkeyRequestState {
+enum SigningPubkeyRequestState {
     Start,
     Options,
     ReadKey(Vec<u8>)
 }
 
-impl<'a, 'b> Future for PubkeyRequest<'a, 'b>
+impl<'a, 'b> Future for SigningPubkeyRequest<'a, 'b>
 {
     type Output = Result<crypto::mpi::PublicKey>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<Self::Output> {
-        use self::PubkeyRequestState::*;
+        use self::SigningPubkeyRequestState::*;
 
         // The compiler is not smart enough to figure out disjoint borrows
         // through Pin via DerefMut (which wholly borrows `self`), so unwrap it
@@ -833,7 +835,7 @@ impl<'a, 'b> Future for PubkeyRequest<'a, 'b>
                     },
                     Poll::Ready(None) => {
                         return Poll::Ready(
-                            Sexp::from_bytes(&data)?.to_public_key());
+                            Sexp::from_bytes(&data)?.to_public_key(None));
                     },
                     Poll::Pending => return Poll::Pending,
                 }

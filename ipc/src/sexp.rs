@@ -16,6 +16,7 @@ use quickcheck::{Arbitrary, Gen};
 use sequoia_openpgp as openpgp;
 use openpgp::crypto::{mpi, SessionKey};
 use openpgp::crypto::mem::Protected;
+use openpgp::types::{HashAlgorithm, SymmetricAlgorithm};
 
 use openpgp::Error;
 use openpgp::Result;
@@ -146,8 +147,15 @@ impl Sexp {
     ///
     /// Such an expression is returned from gpg-agent's `READKEY`
     /// command.
-    pub fn to_public_key(&self) ->Result<mpi::PublicKey> {
-        use openpgp::types::{Curve, HashAlgorithm, SymmetricAlgorithm};
+    ///
+    /// `ecdh_params` needs to be provided when the key is known to be a ECDH key and it 
+    /// will be used for encryption or decryption.
+    ///
+    /// **NOTE:** The function will return a correct public key when the key is used for signing
+    /// but **MAY NOT** return a correct public key if the key is of ECDH type due to how `gpg-agent`
+    /// formats it output.
+    pub fn to_public_key(&self, ecdh_params: Option<(HashAlgorithm, SymmetricAlgorithm)>) ->Result<mpi::PublicKey> {
+        use openpgp::types::Curve;
         let not_a_pubkey = || -> anyhow::Error {
             Error::MalformedMPI(
                 format!("Not a public key: {:?}", self)).into()
@@ -241,7 +249,6 @@ impl Sexp {
 
             let q = mpi::MPI::new(&q);
 
-            // TODO: verify that the following classification is correct
             // reference: https://github.com/gpg/gnupg/blob/25ae80b8eb6e9011049d76440ad7d250c1d02f7c/g10/keyid.c#L1071-L1078
             Ok(
                 if flags.deref() == b"eddsa" {
@@ -249,18 +256,32 @@ impl Sexp {
                         curve,
                         q,
                     }
-                } else if flags.deref() == b"djb-tweak"{
-                    mpi::PublicKey::ECDH {
-                        curve,
-                        q,
-                        // TODO: verify if this is correct
-                        hash: HashAlgorithm::SHA256,
-                        sym: SymmetricAlgorithm::AES128,
+                } else if flags.deref() == b"djb-tweak" {
+                    if let Some(ecdh_params) = ecdh_params {
+                        mpi::PublicKey::ECDH {
+                            curve,
+                            q,
+                            hash: ecdh_params.0,
+                            sym: ecdh_params.1,
+                        }
+                    } else {
+                        // the key must be a ECDH key when `djb-tweak` flag is set, see the link provided above
+                        return Err(Error::InvalidArgument("Expected an ECDH public key, but no ecdh parameters given.".to_string()).into())
                     }
                 } else {
-                    mpi::PublicKey::ECDSA {
-                        curve,
-                        q,
+                    // gpg-agent doesn't report the correct key type in this case
+                    if let Some(ecdh_params) = ecdh_params {
+                        mpi::PublicKey::ECDH {
+                            curve,
+                            q,
+                            hash: ecdh_params.0,
+                            sym: ecdh_params.1,
+                        }
+                    } else {
+                        mpi::PublicKey::ECDSA {
+                            curve,
+                            q,
+                        }
                     }
                 }
             )
@@ -602,21 +623,21 @@ mod tests {
     #[test]
     fn to_public_key() {
         use openpgp::Cert;
-        fn compare_keys(sexp: &str, expected: &str, key_no: usize) {
+        fn compare_keys(sexp: &str, expected: &str, key_no: usize, ecdh_params: Option<(HashAlgorithm, SymmetricAlgorithm)>) {
             let sexp = Sexp::from_bytes(
                 crate::tests::file(sexp)).unwrap()
-                    .to_public_key().unwrap();
+                    .to_public_key(ecdh_params).unwrap();
             let cert = Cert::from_bytes(crate::tests::file(expected)).unwrap();
             let key = cert.keys().nth(key_no).unwrap().key().clone();
             assert_eq!(&sexp, key.mpis());
         }
 
-        compare_keys("sexp/testy-brainpoolp256-primary-pubkey.sexp", "keys/testy-brainpoolp256-primary-pubkey.pgp", 0);
-        compare_keys("sexp/testy-rsa-pubkey.sexp", "keys/testy.pgp", 0);
-        compare_keys("sexp/testy-new-ed25519-pubkey.sexp", "keys/testy-new.pgp", 0);
-        compare_keys("sexp/testy-new-cv25519-pubkey.sexp", "keys/testy-new.pgp", 1);
-        compare_keys("sexp/testy-nistp256-pubkey.sexp", "keys/testy-nistp256-pubkey.pgp", 0);
-        compare_keys("sexp/dsa2048-elgamal3072-dsa-pubkey.sexp", "keys/dsa2048-elgamal3072.pgp", 0);
-        compare_keys("sexp/dsa2048-elgamal3072-elg-pubkey.sexp", "keys/dsa2048-elgamal3072.pgp", 1);
+        compare_keys("sexp/testy-brainpoolp256-primary-pubkey.sexp", "keys/testy-brainpoolp256-primary-pubkey.pgp", 0, None);
+        compare_keys("sexp/testy-rsa-pubkey.sexp", "keys/testy.pgp", 0, None);
+        compare_keys("sexp/testy-new-ed25519-pubkey.sexp", "keys/testy-new.pgp", 0, None);
+        compare_keys("sexp/testy-new-cv25519-pubkey.sexp", "keys/testy-new.pgp", 1, Some((HashAlgorithm::SHA256, SymmetricAlgorithm::AES128)));
+        compare_keys("sexp/testy-nistp256-pubkey.sexp", "keys/testy-nistp256-pubkey.pgp", 0, None);
+        compare_keys("sexp/dsa2048-elgamal3072-dsa-pubkey.sexp", "keys/dsa2048-elgamal3072.pgp", 0, None);
+        compare_keys("sexp/dsa2048-elgamal3072-elg-pubkey.sexp", "keys/dsa2048-elgamal3072.pgp", 1, None);
     }
 }
