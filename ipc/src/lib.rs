@@ -1,4 +1,7 @@
-//! Low-level IPC mechanism for Sequoia.
+//! IPC mechanisms for Sequoia.
+//!
+//! This crate implements IPC mechanisms to communicate with Sequoia
+//! and GnuPG background services.
 //!
 //! # Rationale
 //!
@@ -27,14 +30,7 @@
 //! also means that we do not spawn a thread in your process, which is
 //! frowned upon for various reasons.
 //!
-//! Please see [IPCPolicy] for more information.
-//!
-//! [IPCPolicy]: ../../sequoia_core/enum.IPCPolicy.html
-//!
-//! # Note
-//!
-//! Windows support is currently not implemented, but should be
-//! straight forward.
+//! Please see [`IPCPolicy`] for more information.
 
 #![doc(html_favicon_url = "https://docs.sequoia-pgp.org/favicon.png")]
 #![doc(html_logo_url = "https://docs.sequoia-pgp.org/logo.svg")]
@@ -45,7 +41,7 @@ use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream, TcpListener};
 use std::path::PathBuf;
 
-use anyhow::{anyhow, Result};
+use anyhow::anyhow;
 use fs2::FileExt;
 
 use tokio_util::compat::Compat;
@@ -72,7 +68,8 @@ pub mod keybox;
 mod keygrip;
 pub use self::keygrip::Keygrip;
 pub mod sexp;
-pub mod core;
+mod core;
+pub use crate::core::{Config, Context, IPCPolicy};
 
 #[cfg(test)]
 mod tests;
@@ -507,6 +504,9 @@ pub enum Error {
     #[error("Connection closed unexpectedly.")]
     ConnectionClosed(Vec<u8>),
 }
+
+/// Result type specialization.
+pub type Result<T> = ::std::result::Result<T, anyhow::Error>;
 
 // Global initialization and cleanup of the Windows Sockets API (WSA) module.
 // NOTE: This has to be top-level in order for `ctor::{ctor, dtor}` to work.
