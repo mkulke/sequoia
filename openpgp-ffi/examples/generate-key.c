@@ -31,8 +31,10 @@ main () {
   rc = pgp_tsk_serialize (NULL, tsk, armor);
   assert (rc == PGP_STATUS_SUCCESS);
 
+  rc = pgp_armor_writer_finalize (NULL, armor);
+  assert (rc == PGP_STATUS_SUCCESS);
+
   pgp_tsk_free (tsk);
-  pgp_writer_free (armor);
   pgp_writer_free (sink);
   pgp_cert_free (cert);
 }

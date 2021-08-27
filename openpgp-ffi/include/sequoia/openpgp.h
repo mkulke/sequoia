@@ -1923,10 +1923,11 @@ pgp_message_layer_variant (pgp_message_layer_t);
 /*/
 /// Return the fields of the variants.
 /*/
-bool pgp_message_layer_compression (pgp_message_layer_t, uint8_t *);
-bool pgp_message_layer_encryption (pgp_message_layer_t, uint8_t *, uint8_t *);
-bool pgp_message_layer_signature_group (pgp_message_layer_t,
-					pgp_verification_result_iter_t *);
+bool pgp_message_layer_compression (pgp_message_layer_t layer, uint8_t *algo);
+bool pgp_message_layer_encryption (pgp_message_layer_t layer, uint8_t *sym_algo,
+                                   uint8_t *aead_algo);
+bool pgp_message_layer_signature_group (pgp_message_layer_t layer,
+                                        pgp_verification_result_iter_t *results);
 
 /*/
 /// Frees this object.
@@ -1956,35 +1957,35 @@ pgp_verification_result_variant_t pgp_verification_result_variant (
 /*/
 /// Return the fields of the variants.
 /*/
-bool pgp_verification_result_good_checksum (pgp_verification_result_t,
-					    pgp_signature_t *,
-					    pgp_cert_t *,
-					    pgp_key_t *,
-					    pgp_signature_t *,
-					    pgp_revocation_status_t *);
-bool pgp_verification_result_malformed_signature (pgp_verification_result_t,
-                                                  pgp_signature_t *,
-                                                  pgp_error_t *);
-bool pgp_verification_result_missing_key (pgp_verification_result_t,
-                                          pgp_signature_t *);
-bool pgp_verification_result_unbound_key (pgp_verification_result_t,
-                                          pgp_signature_t *,
-                                          pgp_cert_t *,
-                                          pgp_error_t *);
-bool pgp_verification_result_bad_key (pgp_verification_result_t,
-                                      pgp_signature_t *,
-                                      pgp_cert_t *,
-                                      pgp_key_t *,
-                                      pgp_signature_t *,
-                                      pgp_revocation_status_t *,
-                                      pgp_error_t *);
-bool pgp_verification_result_bad_signature (pgp_verification_result_t,
-                                            pgp_signature_t *,
-                                            pgp_cert_t *,
-                                            pgp_key_t *,
-                                            pgp_signature_t *,
-                                            pgp_revocation_status_t *,
-                                            pgp_error_t *);
+bool pgp_verification_result_good_checksum (pgp_verification_result_t result,
+					    pgp_signature_t *sig_r,
+					    pgp_cert_t *cert_r,
+					    pgp_key_t *key_r,
+					    pgp_signature_t *binding_r,
+					    pgp_revocation_status_t *revocation_status_r);
+bool pgp_verification_result_malformed_signature (pgp_verification_result_t result,
+                                                  pgp_signature_t *sig_r,
+                                                  pgp_error_t *error_r);
+bool pgp_verification_result_missing_key (pgp_verification_result_t result,
+                                          pgp_signature_t *sig_r);
+bool pgp_verification_result_unbound_key (pgp_verification_result_t result,
+                                          pgp_signature_t *sig_r,
+                                          pgp_cert_t *cert_r,
+                                          pgp_error_t *error_r);
+bool pgp_verification_result_bad_key (pgp_verification_result_t result,
+                                      pgp_signature_t *sig_r,
+                                      pgp_cert_t *cert_r,
+                                      pgp_key_t *key_r,
+                                      pgp_signature_t *binding_r,
+                                      pgp_revocation_status_t *revocation_status_r,
+                                      pgp_error_t *error_r);
+bool pgp_verification_result_bad_signature (pgp_verification_result_t result,
+                                            pgp_signature_t *sig_r,
+                                            pgp_cert_t *cert_r,
+                                            pgp_key_t *key_r,
+                                            pgp_signature_t *binding_r,
+                                            pgp_revocation_status_t *revocation_status_r,
+                                            pgp_error_t *error_r);
 
 /*/
 /// Decrypts an OpenPGP message.

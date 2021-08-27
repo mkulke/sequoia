@@ -108,6 +108,11 @@ typedef enum pgp_status {
   PGP_STATUS_MALFORMED_CERT = -13,
 
   /*/
+  /// Malformed MPI.
+  /*/
+  PGP_STATUS_ALFORMED_MPI = -16,
+
+  /*/
   /// Bad signature.
   /*/
   PGP_STATUS_BAD_SIGNATURE = -19,
@@ -141,6 +146,21 @@ typedef enum pgp_status {
   /// Not yet live.
   /*/
   PGP_STATUS_NOT_YET_LIVE = -31,
+
+  /*/
+  /// No binding signature.
+  /*/
+  PGP_STATUS_NO_BINDING_SIGNATURE = -32,
+
+  /*/
+  /// Invalid key.
+  /*/
+  PGP_STATUS_INVALID_KEY = -33,
+
+  /*/
+  /// Policy violation.
+  /*/
+  PGP_STATUS_POLICY_VIOLATION = -34,
 
   /* Dummy value to make sure the enumeration has a defined size.  Do
      not use this value.  */

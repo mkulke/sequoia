@@ -1,6 +1,8 @@
 #ifndef SEQUOIA_IO_H
 #define SEQUOIA_IO_H
 
+#include <sys/types.h>
+
 #include <sequoia/openpgp/error.h>
 
 /*/
