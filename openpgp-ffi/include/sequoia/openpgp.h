@@ -577,7 +577,7 @@ void pgp_literal_free (pgp_literal_t literal);
 ///
 /// The caller must free the returned value.
 /*/
-pgp_packet_t pgp_user_id_amalgamation_user_id (pgp_user_id_amalgamation_t ua);
+pgp_user_id_t pgp_user_id_amalgamation_user_id (pgp_user_id_amalgamation_t ua);
 
 /*/
 /// Frees the User ID Amalgamation.
@@ -600,7 +600,7 @@ char *pgp_user_id_amalgamation_debug (const pgp_user_id_amalgamation_t ua);
 ///
 /// The caller must free the returned value.
 /*/
-pgp_packet_t pgp_valid_user_id_amalgamation_user_id
+pgp_user_id_t pgp_valid_user_id_amalgamation_user_id
     (pgp_valid_user_id_amalgamation_t ua);
 
 /*/
@@ -1540,7 +1540,7 @@ bool pgp_user_id_equal (const pgp_user_id_t a, const pgp_user_id_t b);
 /// is not written to it.  Either way, `key_len` is set to the size of
 /// the session key.
 /*/
-pgp_status_t pgp_skesk_decrypt (pgp_error_t *errp, pgp_packet_t skesk,
+pgp_status_t pgp_skesk_decrypt (pgp_error_t *errp, pgp_skesk_t skesk,
                               const uint8_t *password, size_t password_len,
                               uint8_t *algo, /* XXX */
                               uint8_t *key, size_t *key_len);
@@ -1760,9 +1760,9 @@ pgp_status_t pgp_packet_parser_recurse (pgp_error_t *errp,
 /// prefer streaming its content unless you are certain that the
 /// content is small.
 /*/
-uint8_t *pgp_packet_parser_buffer_unread_content (pgp_error_t *errp,
-                                                 pgp_packet_parser_t pp,
-                                                 size_t *len);
+const uint8_t *pgp_packet_parser_buffer_unread_content (pgp_error_t *errp,
+                                                       pgp_packet_parser_t pp,
+                                                       size_t *len);
 
 /*/
 /// Finishes parsing the current packet.

@@ -4,10 +4,9 @@ use std::slice;
 use libc::size_t;
 
 use sequoia_openpgp as openpgp;
-use super::Packet;
+use self::openpgp::packet::SKESK;
 
 use crate::error::Status;
-use crate::RefRaw;
 
 /// Returns the session key.
 ///
@@ -17,7 +16,7 @@ use crate::RefRaw;
 /// the session key.
 #[::sequoia_ffi_macros::extern_fn] #[no_mangle]
 pub extern "C" fn pgp_skesk_decrypt(errp: Option<&mut *mut crate::error::Error>,
-                                        skesk: *const Packet,
+                                        skesk: *const SKESK,
                                         password: *const u8,
                                         password_len: size_t,
                                         algo: *mut u8, // XXX
@@ -25,6 +24,7 @@ pub extern "C" fn pgp_skesk_decrypt(errp: Option<&mut *mut crate::error::Error>,
                                         key_len: *mut size_t)
                                         -> Status {
     ffi_make_fry_from_errp!(errp);
+    let skesk = ffi_param_ref!(skesk);
     assert!(!password.is_null());
     let password = unsafe {
         slice::from_raw_parts(password, password_len as usize)
@@ -32,23 +32,19 @@ pub extern "C" fn pgp_skesk_decrypt(errp: Option<&mut *mut crate::error::Error>,
     let algo = ffi_param_ref_mut!(algo);
     let key_len = ffi_param_ref_mut!(key_len);
 
-    if let &openpgp::Packet::SKESK(ref skesk) = skesk.ref_raw() {
-        match skesk.decrypt(&password.to_owned().into()) {
-            Ok((a, k)) => {
-                *algo = a.into();
-                if !key.is_null() && *key_len >= k.len() {
-                    unsafe {
-                        ::std::ptr::copy(k.as_ptr(),
-                                         key,
-                                         k.len());
-                    }
+    match skesk.decrypt(&password.to_owned().into()) {
+        Ok((a, k)) => {
+            *algo = a.into();
+            if !key.is_null() && *key_len >= k.len() {
+                unsafe {
+                    ::std::ptr::copy(k.as_ptr(),
+                                     key,
+                                     k.len());
                 }
-                *key_len = k.len();
-                Status::Success
-            },
-            Err(e) => ffi_try_status!(Err::<(), anyhow::Error>(e)),
-        }
-    } else {
-        panic!("Not a SKESK packet");
+            }
+            *key_len = k.len();
+            Status::Success
+        },
+        Err(e) => ffi_try_status!(Err::<(), anyhow::Error>(e)),
     }
 }

@@ -61,9 +61,9 @@ pub struct ValidUserIDAmalgamation<'a>(ValidUserIDAmalgamationType<'a>);
 pub extern "C" fn pgp_valid_user_id_amalgamation_user_id<'a>(ua: *const ValidUserIDAmalgamation<'a>)
     -> *const UserID
 {
-    let ua = ua.ref_raw();
-
-    ua.userid().move_into_raw()
+    ua.ref_raw()
+        .userid()
+        .move_into_raw()
 }
 
 /// Returns the UserID's revocation status.
