@@ -4,13 +4,24 @@
 //! [`Decryptor`]: super::super::asymmetric::Decryptor
 //! [`KeyPair`]: super::super::asymmetric::KeyPair
 
-use nettle::{curve25519, ecc, ecdh, ecdsa, ed25519, dsa, rsa, random::Yarrow};
+use nettle::{
+    curve25519,
+    curve448,
+    dsa,
+    ecc,
+    ecdh,
+    ecdsa,
+    ed25519,
+    ed448,
+    random::Yarrow,
+    rsa,
+};
 
 use crate::{Error, Result};
 
 use crate::packet::{key, Key};
 use crate::crypto::asymmetric::{KeyPair, Decryptor, Signer};
-use crate::crypto::mpi::{self, MPI, PublicKey};
+use crate::crypto::mpi::{self, MPI, ProtectedMPI, PublicKey};
 use crate::crypto::SessionKey;
 use crate::types::{Curve, HashAlgorithm};
 
@@ -94,8 +105,17 @@ impl Signer for KeyPair {
                         s: MPI::new(&sig[ed25519::ED25519_KEY_SIZE..]),
                     })
                 },
-                Curve::Ed448 => Err(
-                    Error::UnsupportedEllipticCurve(curve.clone()).into()),
+
+                Curve::Ed448 => {
+                    let public = q.decode_octet_string(curve.field_size()?)?;
+                    let secret = scalar.decode_octet_string(curve.field_size()?)?;
+                    let mut sig = vec![0; ed448::ED448_SIGNATURE_SIZE];
+                    ed448::sign(public, secret, digest, &mut sig)?;
+                    Ok(mpi::Signature::EdDSA {
+                        r: MPI::new_octet_string(sig),
+                        s: MPI::zero(),
+                    })
+                },
                 _ => Err(
                     Error::UnsupportedEllipticCurve(curve.clone()).into()),
             },
@@ -288,8 +308,19 @@ impl<P: key::KeyParts, R: key::KeyRole> Key<P, R> {
 
                     ed25519::verify(&q.value()[1..], digest, &signature)?
                 },
-                Curve::Ed448 => return
-                      Err(Error::UnsupportedEllipticCurve(curve.clone()).into()),
+                Curve::Ed448 => {
+                    let public = q.decode_octet_string(curve.field_size()?)?;
+                    let signature =
+                        r.decode_octet_string(curve.field_size()? * 2)?;
+                    assert_eq!(signature.len(), ed448::ED448_SIGNATURE_SIZE);
+                    if ! s.is_zero() {
+                        return Err(Error::BadSignature(
+                            "Ed448 signature's S parameter is not zero".into())
+                                   .into());
+                    }
+
+                    ed448::verify(public, digest, signature)?
+                },
                 _ => return
                     Err(Error::UnsupportedEllipticCurve(curve.clone()).into()),
             },
@@ -495,6 +526,42 @@ impl<R> Key4<SecretParts, R>
 
                 (public_mpis, sec, ECDH)
             }
+
+            (Curve::Ed448, true) => {
+                let private: Protected =
+                    ed448::private_key(&mut rng).into();
+                let mut public = [0; ed448::ED448_KEY_SIZE];
+                ed448::public_key(&mut public, &private)?;
+
+                let public = PublicKey::EdDSA {
+                    curve: Curve::Ed448,
+                    q: MPI::new_octet_string(public),
+                };
+                let private = mpi::SecretKeyMaterial::EdDSA {
+                    scalar: ProtectedMPI::new_octet_string(private),
+                };
+
+                (public, private.into(), EdDSA)
+            },
+
+            (Curve::Cv448, false) => {
+                let private: Protected =
+                    curve448::private_key(&mut rng).into();
+                let mut public = [0; curve448::CURVE448_SIZE];
+                curve448::mul_g(&mut public, &private)?;
+
+                let public = PublicKey::ECDH {
+                    curve: Curve::Cv448,
+                    q: MPI::new_octet_string(public),
+                    hash: HashAlgorithm::SHA512,
+                    sym: SymmetricAlgorithm::AES256,
+                };
+                let private = mpi::SecretKeyMaterial::ECDH {
+                    scalar: ProtectedMPI::new_octet_string(private),
+                };
+
+                (public, private.into(), ECDH)
+            },
 
             (Curve::NistP256, true)  | (Curve::NistP384, true)
             | (Curve::NistP521, true) => {
