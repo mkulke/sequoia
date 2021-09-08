@@ -236,6 +236,10 @@ impl MPI {
                 Ok((&value[1..], &[]))
             },
 
+            Ed448 | Cv448 =>
+                Err(Error::InvalidOperation(
+                    "Native octet string is not a point".into()).into()),
+
             NistP256
                 | NistP384
                 | NistP521

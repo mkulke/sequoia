@@ -45,6 +45,8 @@ pub fn encrypt<R>(recipient: &Key<key::PublicParts, R>,
 
                 encrypt_wrap(recipient, session_key, VB, &S)
             }
+            Curve::Cv448 =>
+                Err(Error::UnsupportedEllipticCurve(curve.clone()).into()),
             Curve::NistP256 | Curve::NistP384 | Curve::NistP521 => {
                 // Obtain the authenticated recipient public key R and
                 // generate an ephemeral private key v.
@@ -107,7 +109,7 @@ pub fn encrypt<R>(recipient: &Key<key::PublicParts, R>,
                 Err(Error::UnsupportedEllipticCurve(curve.clone()).into()),
 
             // N/A
-            Curve::Unknown(_) | Curve::Ed25519 =>
+            Curve::Unknown(_) | Curve::Ed25519 | Curve::Ed448 =>
                 Err(Error::UnsupportedEllipticCurve(curve.clone()).into()),
         }
     } else {
@@ -153,6 +155,9 @@ pub fn decrypt<R>(recipient: &Key<key::PublicParts, R>,
                         .expect("buffers are of the wrong size");
                     S
                 }
+
+                Curve::Cv448 => return
+                    Err(Error::UnsupportedEllipticCurve(curve.clone()).into()),
 
                 Curve::NistP256 | Curve::NistP384 | Curve::NistP521 => {
                     // Get the public part V of the ephemeral key and
@@ -208,7 +213,7 @@ pub fn decrypt<R>(recipient: &Key<key::PublicParts, R>,
                     Err(Error::UnsupportedEllipticCurve(curve.clone()).into()),
 
                 // N/A
-                Curve::Unknown(_) | Curve::Ed25519 =>
+                Curve::Unknown(_) | Curve::Ed25519 | Curve::Ed448 =>
                     return
                     Err(Error::UnsupportedEllipticCurve(curve.clone()).into()),
             };

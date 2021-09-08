@@ -94,6 +94,8 @@ impl Signer for KeyPair {
                         s: MPI::new(&sig[ed25519::ED25519_KEY_SIZE..]),
                     })
                 },
+                Curve::Ed448 => Err(
+                    Error::UnsupportedEllipticCurve(curve.clone()).into()),
                 _ => Err(
                     Error::UnsupportedEllipticCurve(curve.clone()).into()),
             },
@@ -286,6 +288,8 @@ impl<P: key::KeyParts, R: key::KeyRole> Key<P, R> {
 
                     ed25519::verify(&q.value()[1..], digest, &signature)?
                 },
+                Curve::Ed448 => return
+                      Err(Error::UnsupportedEllipticCurve(curve.clone()).into()),
                 _ => return
                     Err(Error::UnsupportedEllipticCurve(curve.clone()).into()),
             },

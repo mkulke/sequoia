@@ -26,6 +26,7 @@ pub(crate) use crate::crypto::backend::ecdh::{encrypt, decrypt};
 pub(crate) fn default_ecdh_kdf_hash(curve: &Curve) -> HashAlgorithm {
     match curve {
         Curve::Cv25519 => HashAlgorithm::SHA256,
+        Curve::Cv448   => HashAlgorithm::SHA512,
         // From RFC6637:
         Curve::NistP256 => HashAlgorithm::SHA256,
         Curve::NistP384 => HashAlgorithm::SHA384,
@@ -35,6 +36,7 @@ pub(crate) fn default_ecdh_kdf_hash(curve: &Curve) -> HashAlgorithm {
         Curve::BrainpoolP512 => HashAlgorithm::SHA512,
         // Conservative default.
         Curve::Ed25519 // Odd: Not an encryption algo.
+            | Curve::Ed448 // Odd: Not an encryption algo.
             | Curve::Unknown(_) => HashAlgorithm::SHA512,
     }
 }
@@ -43,6 +45,7 @@ pub(crate) fn default_ecdh_kdf_hash(curve: &Curve) -> HashAlgorithm {
 pub(crate) fn default_ecdh_kek_cipher(curve: &Curve) -> SymmetricAlgorithm {
     match curve {
         Curve::Cv25519 => SymmetricAlgorithm::AES128,
+        Curve::Cv448   => SymmetricAlgorithm::AES256,
         // From RFC6637:
         Curve::NistP256 => SymmetricAlgorithm::AES128,
         Curve::NistP384 => SymmetricAlgorithm::AES192,
@@ -52,6 +55,7 @@ pub(crate) fn default_ecdh_kek_cipher(curve: &Curve) -> SymmetricAlgorithm {
         Curve::BrainpoolP512 => SymmetricAlgorithm::AES256,
         // Conservative default.
         Curve::Ed25519 // Odd: Not an encryption algo.
+            | Curve::Ed448 // Odd: Not an encryption algo.
             | Curve::Unknown(_) => SymmetricAlgorithm::AES256,
     }
 }

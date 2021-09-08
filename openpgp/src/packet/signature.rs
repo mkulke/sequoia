@@ -3709,6 +3709,7 @@ mod test {
 
         for curve in vec![
             Ed25519,
+            Ed448,
             NistP256,
             NistP384,
             NistP521,

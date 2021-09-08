@@ -48,6 +48,8 @@ impl Curve {
                 => false,
             Ed25519 | Cv25519
                 => true,
+            Ed448 | Cv448
+                => false,
             BrainpoolP256 | BrainpoolP512 | Unknown(_)
                 => false,
         }
