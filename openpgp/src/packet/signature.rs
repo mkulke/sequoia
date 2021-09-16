@@ -1046,8 +1046,7 @@ impl SignatureBuilder {
     /// use openpgp::cert::prelude::*;
     /// use openpgp::packet::prelude::*;
     /// use openpgp::policy::StandardPolicy;
-    /// use openpgp::types::KeyFlags;
-    /// use openpgp::types::SignatureType;
+    /// use openpgp::types::{Curve, KeyFlags, SignatureType};
     ///
     /// # fn main() -> openpgp::Result<()> {
     /// let p = &StandardPolicy::new();
@@ -1060,7 +1059,8 @@ impl SignatureBuilder {
     /// let mut pk_signer = pk.clone().into_keypair()?;
     ///
     /// // Generate an encryption subkey.
-    /// let mut subkey: Key<_, _> = Key4::generate_rsa(3072)?.into();
+    /// let mut subkey: Key<_, _> =
+    ///     Key4::generate_ecc(false, Curve::Cv25519)?.into();
     /// // Derive a signer.
     /// let mut sk_signer = subkey.clone().into_keypair()?;
     ///
@@ -1190,8 +1190,7 @@ impl SignatureBuilder {
     /// use openpgp::cert::prelude::*;
     /// use openpgp::packet::prelude::*;
     /// use openpgp::policy::StandardPolicy;
-    /// use openpgp::types::KeyFlags;
-    /// use openpgp::types::SignatureType;
+    /// use openpgp::types::{Curve, KeyFlags, SignatureType};
     ///
     /// # fn main() -> openpgp::Result<()> {
     /// let p = &StandardPolicy::new();
@@ -1204,7 +1203,8 @@ impl SignatureBuilder {
     /// let mut pk_signer = pk.clone().into_keypair()?;
     ///
     /// // Generate a signing subkey.
-    /// let mut subkey: Key<_, _> = Key4::generate_rsa(3072)?.into();
+    /// let mut subkey: Key<_, _> =
+    ///     Key4::generate_ecc(true, Curve::Ed25519)?.into();
     /// // Derive a signer.
     /// let mut sk_signer = subkey.clone().into_keypair()?;
     ///
@@ -3243,6 +3243,11 @@ mod test {
 
             let cert = Cert::from_bytes(crate::tests::key(test.key)).unwrap();
 
+            if ! cert.keys().all(|k| k.pk_algo().is_supported()) {
+                eprintln!("Skipping because one algorithm is not supported");
+                continue;
+            }
+
             let mut good = 0;
             let mut ppr = PacketParser::from_bytes(
                 crate::tests::message(test.data)).unwrap();
@@ -3310,6 +3315,12 @@ mod test {
             "emmelie-dorothea-dina-samantha-awina-ed25519-private.pgp",
         ] {
             let cert = Cert::from_bytes(crate::tests::key(key)).unwrap();
+
+            if ! cert.primary_key().pk_algo().is_supported() {
+                eprintln!("Skipping because we don't support the algo");
+                continue;
+            }
+
             let mut pair = cert.primary_key().key().clone()
                 .parts_into_secret().unwrap()
                 .into_keypair()
@@ -3477,6 +3488,11 @@ mod test {
 
     #[test]
     fn timestamp_signature() {
+        if ! PublicKeyAlgorithm::DSA.is_supported() {
+            eprintln!("Skipping test, algorithm is not supported.");
+            return;
+        }
+
         let alpha = Cert::from_bytes(crate::tests::file(
             "contrib/gnupg/keys/alpha.pgp")).unwrap();
         let p = Packet::from_bytes(crate::tests::file(
