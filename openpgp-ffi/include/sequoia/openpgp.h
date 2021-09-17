@@ -577,7 +577,7 @@ void pgp_literal_free (pgp_literal_t literal);
 ///
 /// The caller must free the returned value.
 /*/
-pgp_packet_t pgp_user_id_amalgamation_user_id (pgp_user_id_amalgamation_t ua);
+pgp_user_id_t pgp_user_id_amalgamation_user_id (pgp_user_id_amalgamation_t ua);
 
 /*/
 /// Frees the User ID Amalgamation.
@@ -600,7 +600,7 @@ char *pgp_user_id_amalgamation_debug (const pgp_user_id_amalgamation_t ua);
 ///
 /// The caller must free the returned value.
 /*/
-pgp_packet_t pgp_valid_user_id_amalgamation_user_id
+pgp_user_id_t pgp_valid_user_id_amalgamation_user_id
     (pgp_valid_user_id_amalgamation_t ua);
 
 /*/
@@ -1381,10 +1381,10 @@ pgp_key_t pgp_key_decrypt_secret(pgp_error_t *errp, pgp_key_t key,
 /// This does a basic check and any necessary escaping to form a de
 /// facto User ID.  Only the address is required.
 /*/
-pgp_packet_t pgp_user_id_from_address (pgp_error_t *errp,
-                                       const char *name,
-                                       const char *comment,
-                                       const char *address);
+pgp_user_id_t pgp_user_id_from_address (pgp_error_t *errp,
+                                        const char *name,
+                                        const char *comment,
+                                        const char *address);
 
 /*/
 /// Constructs a User ID.
@@ -1395,20 +1395,25 @@ pgp_packet_t pgp_user_id_from_address (pgp_error_t *errp,
 /// This is useful when you want to specify a URI instead of an
 /// email address.
 /*/
-pgp_packet_t pgp_user_id_from_unchecked_address (pgp_error_t *errp,
-                                                 const char *name,
-                                                 const char *comment,
-                                                 const char *address);
+pgp_user_id_t pgp_user_id_from_unchecked_address (pgp_error_t *errp,
+                                                  const char *name,
+                                                  const char *comment,
+                                                  const char *address);
 
 /*/
 /// Create a new User ID with the value `value`.
 /*/
-pgp_packet_t pgp_user_id_new (const char *value);
+pgp_user_id_t pgp_user_id_new (const char *value);
 
 /*/
 /// Create a new User ID with the value `value`.
 /*/
-pgp_packet_t pgp_user_id_from_raw (const char *value, size_t len);
+pgp_user_id_t pgp_user_id_from_raw (const char *value, size_t len);
+
+/*/
+/// Converts the User ID to a packet.
+/*/
+pgp_packet_t pgp_user_id_into_packet (pgp_user_id_t userid);
 
 /*/
 /// Returns the value of the User ID Packet.
@@ -1416,7 +1421,7 @@ pgp_packet_t pgp_user_id_from_raw (const char *value, size_t len);
 /// The returned pointer is valid until `uid` is deallocated.  If
 /// `value_len` is not `NULL`, the size of value is stored there.
 /*/
-const uint8_t *pgp_user_id_value (pgp_packet_t uid,
+const uint8_t *pgp_user_id_value (pgp_user_id_t uid,
 				 size_t *value_len);
 
 /*/
@@ -1430,7 +1435,7 @@ const uint8_t *pgp_user_id_value (pgp_packet_t uid,
 /// If the User ID does not contain a name component, *namep is set to
 /// NULL.
 /*/
-pgp_status_t pgp_user_id_name(pgp_error_t *errp, pgp_packet_t uid,
+pgp_status_t pgp_user_id_name(pgp_error_t *errp, pgp_user_id_t uid,
                               char **namep);
 
 /*/
@@ -1444,7 +1449,7 @@ pgp_status_t pgp_user_id_name(pgp_error_t *errp, pgp_packet_t uid,
 /// If the User ID does not contain a comment, *commentp is set
 /// to NULL.
 /*/
-pgp_status_t pgp_user_id_comment(pgp_error_t *errp, pgp_packet_t uid,
+pgp_status_t pgp_user_id_comment(pgp_error_t *errp, pgp_user_id_t uid,
                                  char **commentp);
 
 /*/
@@ -1458,7 +1463,7 @@ pgp_status_t pgp_user_id_comment(pgp_error_t *errp, pgp_packet_t uid,
 /// If the User ID does not contain an email address, *addressp is set
 /// to NULL.
 /*/
-pgp_status_t pgp_user_id_email(pgp_error_t *errp, pgp_packet_t uid,
+pgp_status_t pgp_user_id_email(pgp_error_t *errp, pgp_user_id_t uid,
                                char **emailp);
 
 /*/
@@ -1481,7 +1486,7 @@ pgp_status_t pgp_user_id_email(pgp_error_t *errp, pgp_packet_t uid,
 ///   [empty locale]: https://www.w3.org/International/wiki/Case_folding
 ///   [Autocryt]: https://autocrypt.org/level1.html#e-mail-address-canonicalization
 /*/
-pgp_status_t pgp_user_id_email_normalized(pgp_error_t *errp, pgp_packet_t uid,
+pgp_status_t pgp_user_id_email_normalized(pgp_error_t *errp, pgp_user_id_t uid,
                                           char **emailp);
 
 /*/
@@ -1494,7 +1499,7 @@ pgp_status_t pgp_user_id_email_normalized(pgp_error_t *errp, pgp_packet_t uid,
 ///
 /// If the User ID does not contain a URI, *urip is set to NULL.
 /*/
-pgp_status_t pgp_user_id_uri(pgp_error_t *errp, pgp_packet_t uid,
+pgp_status_t pgp_user_id_uri(pgp_error_t *errp, pgp_user_id_t uid,
                              char **uri);
 
 /*/
@@ -1535,7 +1540,7 @@ bool pgp_user_id_equal (const pgp_user_id_t a, const pgp_user_id_t b);
 /// is not written to it.  Either way, `key_len` is set to the size of
 /// the session key.
 /*/
-pgp_status_t pgp_skesk_decrypt (pgp_error_t *errp, pgp_packet_t skesk,
+pgp_status_t pgp_skesk_decrypt (pgp_error_t *errp, pgp_skesk_t skesk,
                               const uint8_t *password, size_t password_len,
                               uint8_t *algo, /* XXX */
                               uint8_t *key, size_t *key_len);
@@ -1755,9 +1760,9 @@ pgp_status_t pgp_packet_parser_recurse (pgp_error_t *errp,
 /// prefer streaming its content unless you are certain that the
 /// content is small.
 /*/
-uint8_t *pgp_packet_parser_buffer_unread_content (pgp_error_t *errp,
-                                                 pgp_packet_parser_t pp,
-                                                 size_t *len);
+const uint8_t *pgp_packet_parser_buffer_unread_content (pgp_error_t *errp,
+                                                       pgp_packet_parser_t pp,
+                                                       size_t *len);
 
 /*/
 /// Finishes parsing the current packet.
