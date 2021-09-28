@@ -825,6 +825,7 @@ pub enum CompressionAlgorithm {
 assert_send_and_sync!(CompressionAlgorithm);
 
 impl Default for CompressionAlgorithm {
+    #[rustfmt::skip]
     fn default() -> Self {
         use self::CompressionAlgorithm::*;
         #[cfg(feature = "compression-deflate")]

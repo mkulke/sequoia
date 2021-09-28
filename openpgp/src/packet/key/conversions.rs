@@ -413,8 +413,11 @@ macro_rules! create_conversions {
     }
 }
 
+#[rustfmt::skip]
 create_conversions!(Key<>);
+#[rustfmt::skip]
 create_conversions!(Key4<>);
+#[rustfmt::skip]
 create_conversions!(KeyBundle<>);
 
 // A hack, since the type has to be an ident, which means that we
