@@ -200,6 +200,25 @@ codespell:
     - $MAKE_TOP codespell CODESPELL_FLAGS=--summary
   after_script: []
 
+audit:
+  tags:
+    - linux
+  stage: pre-check
+  image: registry.gitlab.com/sequoia-pgp/build-docker-image/bullseye-prebuild:latest
+  only:
+    refs:
+      - /audit/i # refs containing 'audit' keyword
+      - tags
+      - web
+      - schedules
+  script:
+    - cargo install cargo-audit
+    - cargo audit --color always
+  variables:
+    CARGO_TARGET_DIR: /target
+    CARGO_HOME: /cargo
+  after_script: []
+
 rust-stable:
   tags:
     - linux
