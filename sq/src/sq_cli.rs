@@ -462,6 +462,11 @@ $ sq inspect message.sig
                     .arg(Arg::with_name("certifications")
                          .long("certifications")
                          .help("Prints third-party certifications"))
+                    .arg(Arg::with_name("output-format")
+                         .takes_value(true)
+                         .long("output-format")
+                         .possible_values(&["human", "json"])
+                         .help("Format of output"))
         )
 
         .subcommand(

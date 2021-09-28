@@ -1357,7 +1357,7 @@
 //! of it.
 //!
 //! USAGE:
-//!     sq inspect [FLAGS] [FILE]
+//!     sq inspect [FLAGS] [OPTIONS] [FILE]
 //!
 //! FLAGS:
 //!         --certifications
@@ -1365,6 +1365,11 @@
 //!
 //!     -h, --help
 //!             Prints help information
+//!
+//!
+//! OPTIONS:
+//!         --output-format <output-format>
+//!             Format of output [possible values: human, json]
 //!
 //!
 //! ARGS:
