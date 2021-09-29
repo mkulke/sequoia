@@ -78,6 +78,7 @@ fn gpg_import(ctx: &Context, what: &[u8]) {
     assert!(status.success());
 }
 
+#[ignore]
 #[test]
 fn sign() -> openpgp::Result<()> {
     use self::CipherSuite::*;

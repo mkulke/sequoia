@@ -302,9 +302,10 @@ impl Stream for Client {
             // First, grow the buffer.
             let buffer_len = buffer.len();
             buffer.resize(buffer_len + MAX_LINE_LENGTH, 0);
+            let mut read_buf = tokio::io::ReadBuf::new(buffer);
 
-            match reader.as_mut().poll_read(cx, &mut buffer[buffer_len..])? {
-                Poll::Ready(n_read) if n_read == 0 => {
+            match reader.as_mut().poll_read(cx, &mut read_buf)? {
+                Poll::Ready(_) if read_buf.filled().len() == 0 => {
                     // EOF.
                     buffer.resize(buffer_len, 0);
                     if ! buffer.is_empty() {
@@ -318,7 +319,8 @@ impl Stream for Client {
                     return Poll::Ready(None);
                 },
 
-                Poll::Ready(n_read) => {
+                Poll::Ready(_) => {
+                    let n_read = read_buf.filled().len();
                     buffer.resize(buffer_len + n_read, 0);
                     continue;
                 },
