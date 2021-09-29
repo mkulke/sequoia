@@ -123,14 +123,14 @@ impl Store {
     fn connect(c: &Context) -> Result<(RpcRuntime, node::Client)> {
         let descriptor = descriptor(c);
 
-        let rt = tokio::runtime::Builder::new()
-            .basic_scheduler()
+        let rt = tokio::runtime::Builder::new_current_thread()
             .enable_io()
             .enable_time()
             .build()?;
         // Need to enter Tokio context due to Tokio TcpStream creation binding
         // eagerly to an I/O reactor
-        let mut rpc_system = rt.enter(|| descriptor.connect())?;
+        let _guard = rt.enter();
+        let mut rpc_system = descriptor.connect()?;
 
         let client: node::Client = rpc_system.bootstrap(Side::Server);
 

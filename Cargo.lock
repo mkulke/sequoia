@@ -2969,8 +2969,8 @@ dependencies = [
  "sequoia-net",
  "sequoia-openpgp",
  "thiserror",
- "tokio 0.2.25",
- "tokio-util 0.3.1",
+ "tokio 1.12.0",
+ "tokio-util 0.6.8",
 ]
 
 [[package]]
@@ -3117,6 +3117,15 @@ name = "shlex"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7fdf1b9db47230893d76faad238fd6097fd6d6a9245cd7a4d90dbd639536bbd2"
+
+[[package]]
+name = "signal-hook-registry"
+version = "1.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e51e73328dc4ac0c7ccbda3a494dfa03df1de2f46018127f60c693f2648455b0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "signature"
@@ -3546,7 +3555,11 @@ dependencies = [
  "libc",
  "memchr",
  "mio 0.7.14",
+ "num_cpus",
+ "once_cell",
+ "parking_lot",
  "pin-project-lite 0.2.7",
+ "signal-hook-registry",
  "tokio-macros 1.5.0",
  "winapi 0.3.9",
 ]
@@ -3606,6 +3619,7 @@ checksum = "08d3725d3efa29485e87311c5b699de63cde14b00ed4d256b8318aa30ca452cd"
 dependencies = [
  "bytes 1.1.0",
  "futures-core",
+ "futures-io",
  "futures-sink",
  "log",
  "pin-project-lite 0.2.7",

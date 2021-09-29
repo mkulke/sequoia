@@ -943,7 +943,7 @@ impl KeyServer {
             let duration = Self::update(&c, net::Policy::Encrypted).await;
 
             let duration = duration.unwrap_or_else(|_| min_sleep_time());
-            tokio::time::delay_for(random_duration(duration)).await;
+            tokio::time::sleep(random_duration(duration)).await;
         }
     }
 }
