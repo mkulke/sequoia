@@ -597,9 +597,9 @@ impl<'a, P> ValidateAmalgamation<'a, Key<P, key::UnspecifiedRole>>
             // need to check the user's policy.  So, it is safe to
             // create a ValidCert from scratch.
             cert: ValidCert {
-                cert: cert,
-                policy: policy,
-                time: time,
+                cert,
+                policy,
+                time,
             },
             binding_signature
         };
@@ -788,15 +788,15 @@ impl<'a, P: 'a + key::KeyParts> ErasedKeyAmalgamation<'a, P> {
                     // Look for direct key signatures.
                     self.cert().primary_key().bundle()
                         .binding_signature(policy, time)
-                        .or_else(|e1| {
+                        .map_err(|e1| {
                             // Both lookups failed.  Keep the more
                             // meaningful error.
                             if let Some(Error::NoBindingSignature(_))
                                 = e1.downcast_ref()
                             {
-                                Err(e0) // Return the original error.
+                                e0 // Return the original error.
                             } else {
-                                Err(e1)
+                                e1
                             }
                         })
                 })

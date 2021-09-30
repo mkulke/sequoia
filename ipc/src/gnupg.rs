@@ -324,7 +324,7 @@ impl Agent {
     /// Note: This function does not try to start the server.  If no
     /// server is running for the given context, this operation will
     /// fail.
-    pub async fn connect<'c>(ctx: &'c Context) -> Result<Self> {
+    pub async fn connect(ctx: &Context) -> Result<Self> {
         let path = ctx.socket("agent")?;
         Self::connect_to(path).await
     }
@@ -708,7 +708,7 @@ impl<'a, 'b, 'c, R> Future for DecryptionRequest<'a, 'b, 'c, R>
                             (), // Ignore.
                         assuan::Response::Status { ref keyword, ref message } =>
                             if keyword == "PADDING" {
-                                *padding = &message != &"0";
+                                *padding = message != "0";
                             },
                         assuan::Response::Error { ref message, .. } =>
                             return Poll::Ready(operation_failed(message)),

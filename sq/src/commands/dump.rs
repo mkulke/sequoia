@@ -52,6 +52,7 @@ impl Convert<chrono::DateTime<chrono::offset::Utc>> for Timestamp {
     }
 }
 
+#[allow(clippy::redundant_pattern_matching)]
 pub fn dump<W>(input: &mut (dyn io::Read + Sync + Send),
                output: &mut dyn io::Write,
                mpis: bool, hex: bool, sk: Option<&SessionKey>,
@@ -185,10 +186,10 @@ impl Node {
     fn new(header: Header, packet: Packet, map: Option<Map>,
            additional_fields: Option<Vec<String>>) -> Self {
         Node {
-            header: header,
-            packet: packet,
-            map: map,
-            additional_fields: additional_fields,
+            header,
+            packet,
+            map,
+            additional_fields,
             children: Vec::new(),
         }
     }
@@ -211,8 +212,8 @@ pub struct PacketDumper {
 impl PacketDumper {
     pub fn new(width: usize, mpis: bool) -> Self {
         PacketDumper {
-            width: width,
-            mpis: mpis,
+            width,
+            mpis,
             root: None,
         }
     }
@@ -225,14 +226,12 @@ impl PacketDumper {
         if self.root.is_none() {
             assert_eq!(depth, 0);
             self.root = Some(node);
+        } else if depth == 0 {
+            let root = self.root.take().unwrap();
+            self.dump_tree(output, "", &root)?;
+            self.root = Some(node);
         } else {
-            if depth == 0 {
-                let root = self.root.take().unwrap();
-                self.dump_tree(output, "", &root)?;
-                self.root = Some(node);
-            } else {
-                self.root.as_mut().unwrap().append(depth - 1, node);
-            }
+            self.root.as_mut().unwrap().append(depth - 1, node);
         }
         Ok(())
     }

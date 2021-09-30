@@ -137,8 +137,8 @@ fn load_keys<'a, I>(files: I) -> openpgp::Result<Vec<Cert>>
         let cert = Cert::from_file(f)
             .context(format!("Failed to load key from file {:?}", f))?;
         if ! cert.is_tsk() {
-            Err(anyhow::anyhow!(
-                "Cert in file {:?} does not contain secret keys", f))?;
+            return Err(anyhow::anyhow!(
+                "Cert in file {:?} does not contain secret keys", f));
         }
         certs.push(cert);
     }
@@ -218,6 +218,7 @@ const ARMOR_DETECTION_LIMIT: u64 = 1 << 24;
 ///
 /// Returns the given reader unchanged.  If the detection fails,
 /// armor::Kind::File is returned as safe default.
+#[allow(clippy::never_loop)]
 fn detect_armor_kind(input: Box<dyn BufferedReader<()>>)
                      -> (Box<dyn BufferedReader<()>>, armor::Kind) {
     let mut dup = Limitor::new(Dup::new(input), ARMOR_DETECTION_LIMIT).as_boxed();
@@ -501,7 +502,7 @@ fn main() -> Result<()> {
                     let value = n.next().unwrap();
 
                     let (critical, name) = if !name.is_empty()
-                        && Some('!') == name.chars().next()
+                        && name.starts_with('!')
                     {
                         (true, &name[1..])
                     } else {
@@ -715,10 +716,8 @@ fn parse_iso8601(s: &str, pad_date_with: chrono::NaiveTime)
             if let Ok(d) = DateTime::parse_from_str(s, *f) {
                 return Ok(d.into());
             }
-        } else {
-            if let Ok(d) = chrono::NaiveDateTime::parse_from_str(s, *f) {
-                return Ok(DateTime::from_utc(d, Utc));
-            }
+        } else if let Ok(d) = chrono::NaiveDateTime::parse_from_str(s, *f) {
+            return Ok(DateTime::from_utc(d, Utc));
         }
     }
     for f in &[

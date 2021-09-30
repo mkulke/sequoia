@@ -7,7 +7,7 @@ pub enum LexicalError {
 impl fmt::Display for LexicalError {
     // This trait requires `fmt` with this exact signature.
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", "{}")
+        f.write_str("{}")
     }
 }
 
@@ -75,10 +75,6 @@ impl From<Token> for String {
 }
 
 impl Token {
-    pub fn to_string(self) -> String {
-        self.into()
-    }
-
     pub fn to_char(&self) -> char {
         use self::Token::*;
         match self {

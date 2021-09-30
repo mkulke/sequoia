@@ -46,7 +46,12 @@ fn min_sleep_time() -> Duration {
 
 /// Interval after which all keys should be refreshed once.
 fn refresh_interval() -> Duration {
-    Duration::new(1 * 7 * 24 * 60 * 60, 0)
+    let secs_in_min = 60;
+    let mins_in_hour = 60;
+    let hours_in_day = 24;
+    let days_in_week = 7;
+    let weeks = 1;
+    Duration::new(weeks * days_in_week * hours_in_day * mins_in_hour * secs_in_min, 0)
 }
 
 /// Returns a value from the uniform distribution over [0, 2*d).
@@ -281,7 +286,7 @@ impl Query for MappingServer {
 
 impl MappingServer {
     fn new(c: Rc<Connection>, id: ID) -> MappingServer {
-        MappingServer{c: c, id: id}
+        MappingServer{c, id}
     }
 
     fn open(c: Rc<Connection>, realm: &str, policy: net::Policy, name: &str)
@@ -423,8 +428,8 @@ struct BindingServer {
 impl BindingServer {
     fn new(c: Rc<Connection>, id: ID) -> Self {
         BindingServer {
-            c: c,
-            id: id,
+            c,
+            id,
         }
     }
 
@@ -576,8 +581,8 @@ impl node::binding::Server for BindingServer {
             }
         }
 
-        if current.is_some() {
-            new = sry!(current.unwrap().merge_public(new));
+        if let Some(cert) = current {
+            new = sry!(cert.merge_public(new));
         }
 
         // Write key back to the database.
@@ -691,8 +696,8 @@ struct KeyServer {
 impl KeyServer {
     fn new(c: Rc<Connection>, id: ID) -> Self {
         KeyServer {
-            c: c,
-            id: id,
+            c,
+            id,
         }
     }
 
@@ -1088,7 +1093,7 @@ struct MappingIterServer {
 
 impl MappingIterServer {
     fn new(c: Rc<Connection>, prefix: &str) -> Self {
-        MappingIterServer{c: c, prefix: String::from(prefix) + "%", n: ID::null()}
+        MappingIterServer{c, prefix: String::from(prefix) + "%", n: ID::null()}
     }
 }
 
@@ -1132,7 +1137,7 @@ struct BundleIterServer {
 
 impl BundleIterServer {
     fn new(c: Rc<Connection>, mapping_id: ID) -> Self {
-        BundleIterServer{c: c, mapping_id: mapping_id, n: ID::null()}
+        BundleIterServer{c, mapping_id, n: ID::null()}
     }
 }
 
@@ -1168,7 +1173,7 @@ struct KeyIterServer {
 
 impl KeyIterServer {
     fn new(c: Rc<Connection>) -> Self {
-        KeyIterServer{c: c, n: ID::null()}
+        KeyIterServer{c, n: ID::null()}
     }
 }
 

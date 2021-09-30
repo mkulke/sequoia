@@ -887,11 +887,11 @@ macro_rules! impl_with_policy {
             Ok(ValidComponentAmalgamation {
                 ca: self,
                 cert: ValidCert {
-                    cert: cert,
-                    policy: policy,
-                    time: time,
+                    cert,
+                    policy,
+                    time,
                 },
-                binding_signature: binding_signature,
+                binding_signature,
             })
         }
     }
@@ -1067,6 +1067,7 @@ impl<'a> UserAttributeAmalgamation<'a> {
 }
 
 /// Attests to third-party certifications.
+#[allow(clippy::let_and_return)]
 fn attest_certifications_common<C, S>(hash: Box<dyn Digest>,
                                       old_attestation: Option<Signature>,
                                       primary_signer: &mut dyn Signer,
@@ -1112,6 +1113,7 @@ where C: IntoIterator<Item = S>,
         let template = SignatureBuilder::new(SignatureType::AttestationKey)
             .set_signature_creation_time(creation_time)?;
         template
+
     };
 
     let template = template

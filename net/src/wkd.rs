@@ -128,7 +128,7 @@ impl Url {
         let local_encoded = encode_local_part(&email.local_part);
         let url = Url {
             domain : email.domain,
-            local_encoded : local_encoded,
+            local_encoded,
             local_part : email.local_part,
         };
         Ok(url)
@@ -400,7 +400,7 @@ pub fn insert<P, S, V>(base_path: P, domain: S, variant: V,
         .open(well_known.expect("at least one address").join("policy"))
     {
         Err(ref e) if e.kind() == std::io::ErrorKind::AlreadyExists => (),
-        r @ _ => drop(r?),
+        r => drop(r?),
     }
 
     Ok(())

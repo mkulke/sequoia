@@ -96,7 +96,7 @@ pub struct AutocryptHeader {
 impl AutocryptHeader {
     fn empty(header_type: AutocryptHeaderType) -> Self {
         AutocryptHeader {
-            header_type: header_type,
+            header_type,
             key: None,
             attributes: Vec::new(),
         }
@@ -135,7 +135,7 @@ impl AutocryptHeader {
         for uidb in cert.userids().with_policy(policy, None) {
             // XXX: Fix match once we have the rfc2822-name-addr.
             if let Ok(Some(a)) = uidb.userid().email() {
-                if &a == addr {
+                if a == addr {
                     acc.push(uidb.userid().clone().into());
                     acc.push(uidb.binding_signature().clone().into());
                     found_one = true;
@@ -265,9 +265,8 @@ impl AutocryptHeaders {
             const AUTOCRYPT_GOSSIP : &str = "Autocrypt-Gossip: ";
             const FROM : &str = "From: ";
 
-            if line.starts_with(FROM) {
-                headers.from
-                    = Some(line[FROM.len()..].trim_matches(' ').into());
+            if let Some(rest) = line.strip_prefix(FROM) {
+                headers.from = Some(rest.trim_matches(' ').into());
             } else if line.starts_with(AUTOCRYPT) || line.starts_with(AUTOCRYPT_GOSSIP) {
                 headers.headers.push(Self::decode_autocrypt_like_header(&line));
             }
@@ -471,7 +470,7 @@ impl AutocryptSetupMessage {
             }
 
             p.push(b'0' + ((p_as_u128 as u8) % 10));
-            p_as_u128 = p_as_u128 / 10;
+            p_as_u128 /= 10;
         }
 
         p.into()
@@ -645,8 +644,8 @@ impl AutocryptSetupMessage {
         Ok(AutocryptSetupMessageParser {
             passcode_format: format,
             passcode_begin: begin,
-            skesk: skesk,
-            pp: pp,
+            skesk,
+            pp,
             passcode: None,
         })
     }
@@ -809,7 +808,7 @@ impl<'a> AutocryptSetupMessageParser<'a> {
 
         // We're done!
         Ok(AutocryptSetupMessage {
-            prefer_encrypt: prefer_encrypt,
+            prefer_encrypt,
             passcode: self.passcode,
             passcode_format: self.passcode_format,
             passcode_begin: self.passcode_begin,

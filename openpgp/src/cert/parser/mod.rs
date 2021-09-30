@@ -602,6 +602,7 @@ impl<'a> Parse<'a, CertParser<'a>> for CertParser<'a>
     }
 }
 
+#[allow(clippy::should_implement_trait)]
 impl<'a> CertParser<'a> {
     /// Creates a `CertParser` from a `Result<Packet>` iterator.
     ///
@@ -783,7 +784,7 @@ impl<'a> CertParser<'a> {
     // Returns the old state.  Note: the packet iterator is preserved.
     fn reset(&mut self) -> Self {
         // We need to preserve `source` and `filter`.
-        let mut orig = mem::replace(self, Default::default());
+        let mut orig = mem::take(self);
         self.source = orig.source.take();
         mem::swap(&mut self.filter, &mut orig.filter);
         orig
@@ -904,12 +905,10 @@ pub(crate) fn split_sigs<C>(primary: &KeyHandle, primary_keyid: &KeyHandle,
             } else {
                 other_revs.push(sig);
             }
+        } else if is_selfsig {
+            self_signatures.push(sig);
         } else {
-            if is_selfsig {
-                self_signatures.push(sig);
-            } else {
-                certifications.push(sig);
-            }
+            certifications.push(sig);
         }
     }
 

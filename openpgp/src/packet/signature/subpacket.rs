@@ -2108,7 +2108,7 @@ impl SubpacketAreas {
     ///
     /// For subpackets that can safely occur in both subpacket areas,
     /// this function prefers instances in the hashed subpacket area.
-    pub fn subpacket<'a>(&'a self, tag: SubpacketTag) -> Option<&Subpacket> {
+    pub fn subpacket(&self, tag: SubpacketTag) -> Option<&Subpacket> {
         if let Some(sb) = self.hashed_area().subpacket(tag) {
             return Some(sb);
         }
@@ -2141,8 +2141,9 @@ impl SubpacketAreas {
     ///
     /// For subpackets that can safely occur in both subpacket areas,
     /// this function prefers instances in the hashed subpacket area.
-    pub fn subpacket_mut<'a>(&'a mut self, tag: SubpacketTag)
-                             -> Option<&mut Subpacket> {
+    #[allow(clippy::redundant_pattern_matching)]
+    pub fn subpacket_mut(&mut self, tag: SubpacketTag)
+                         -> Option<&mut Subpacket> {
         if let Some(_) = self.hashed_area().subpacket(tag) {
             return self.hashed_area_mut().subpacket_mut(tag);
         }
@@ -6869,7 +6870,7 @@ impl signature::SignatureBuilder {
         where T: AsRef<[Fingerprint]>
     {
         self.hashed_area.remove_all(SubpacketTag::IntendedRecipient);
-        for fp in recipients.as_ref().into_iter() {
+        for fp in recipients.as_ref().iter() {
             self.hashed_area.add(
                 Subpacket::new(SubpacketValue::IntendedRecipient(fp.clone()), false)?)?;
         }

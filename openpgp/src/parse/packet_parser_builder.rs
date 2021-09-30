@@ -133,7 +133,7 @@ impl<'a> PacketParserBuilder<'a> {
             -> Result<Self> {
         bio.cookie_mut().level = None;
         Ok(PacketParserBuilder {
-            bio: bio,
+            bio,
             dearmor: Default::default(),
             settings: PacketParserSettings::default(),
             csf_transformation: false,
@@ -396,6 +396,7 @@ impl<'a> PacketParserBuilder<'a> {
     ///     ppr = pp.recurse()?.1;
     /// }
     /// # Ok(()) }
+    #[allow(clippy::redundant_pattern_matching)]
     pub fn build(mut self)
         -> Result<PacketParserResult<'a>>
         where Self: 'a

@@ -72,7 +72,7 @@ impl<'a> Helper<'a> {
             secret_keys: keys,
             key_identities: identities,
             key_hints: hints,
-            dump_session_key: dump_session_key,
+            dump_session_key,
             dumper: if dump {
                 let width = term_size::dimensions_stdout().map(|(w, _)| w)
                     .unwrap_or(80);
@@ -102,7 +102,7 @@ impl<'a> Helper<'a> {
                 if self.dump_session_key {
                     eprintln!("Session key: {}", hex::encode(&sk));
                 }
-                Some(self.key_identities.get(&keyid).map(|fp| fp.clone()))
+                Some(self.key_identities.get(&keyid).cloned())
             },
             None => None,
         }
@@ -115,7 +115,7 @@ impl<'a> VerificationHelper for Helper<'a> {
             dumper.packet(&mut io::stderr(),
                           pp.recursion_depth() as usize,
                           pp.header().clone(), pp.packet.clone(),
-                          pp.map().map(|m| m.clone()), None)?;
+                          pp.map().cloned(), None)?;
         }
         Ok(())
     }
@@ -129,6 +129,7 @@ impl<'a> VerificationHelper for Helper<'a> {
 }
 
 impl<'a> DecryptionHelper for Helper<'a> {
+    #[allow(clippy::if_let_some_result)]
     fn decrypt<D>(&mut self, pkesks: &[PKESK], skesks: &[SKESK],
                   sym_algo: Option<SymmetricAlgorithm>,
                   mut decrypt: D) -> openpgp::Result<Option<Fingerprint>>

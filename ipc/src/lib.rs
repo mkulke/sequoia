@@ -287,10 +287,11 @@ impl Descriptor {
     fn spawn(&self, l: TcpListener) -> Result<()> {
         let descriptor = self.clone();
         thread::spawn(move || -> Result<()> {
-            Ok(Server::new(descriptor)
+            Server::new(descriptor)
                .expect("Failed to spawn server") // XXX
                .serve_listener(l)
-               .expect("Failed to spawn server")) // XXX
+               .expect("Failed to spawn server"); // XXX
+            Ok(())
         });
         Ok(())
     }
@@ -357,14 +358,11 @@ impl Server {
     ///
     /// use sequoia_ipc::Server;
     ///
-    /// fn main() {
-    ///     let ctx = Server::context()
-    ///         .expect("Failed to create context");
-    ///     Server::new(sequoia_store::descriptor(&ctx))
-    ///         .expect("Failed to create server")
-    ///         .serve()
-    ///         .expect("Failed to start server");
-    /// }
+    /// let ctx = Server::context().expect("Failed to create context");
+    /// Server::new(sequoia_store::descriptor(&ctx))
+    ///     .expect("Failed to create server")
+    ///     .serve()
+    ///     .expect("Failed to start server");
     /// ```
     pub fn serve(&mut self) -> Result<()> {
         let listener = platform! {
@@ -535,6 +533,7 @@ fn wsa_cleanup() {
     }
 }
 
+#[allow(clippy::let_and_return)]
 pub(crate) fn new_background_command<S>(program: S) -> Command
 where
     S: AsRef<std::ffi::OsStr>,

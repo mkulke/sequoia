@@ -452,11 +452,11 @@ impl<'a, T: 'a + BufferedReader<Cookie>> PacketHeaderParser<T> {
         };
         PacketHeaderParser {
             reader: buffered_reader::Dup::with_cookie(inner, cookie),
-            header: header,
-            header_bytes: header_bytes,
-            path: path,
-            state: state,
-            map: map,
+            header,
+            header_bytes,
+            path,
+            state,
+            map,
         }
     }
 
@@ -1874,6 +1874,7 @@ impl OnePassSig {
 impl_parse_generic_packet!(OnePassSig);
 
 impl OnePassSig3 {
+    #[allow(clippy::blocks_in_if_conditions)]
     fn parse<'a, T: 'a + BufferedReader<Cookie>>(mut php: PacketHeaderParser<T>)
         -> Result<PacketParser<'a>>
     {
@@ -2052,8 +2053,8 @@ fn one_pass_sig_parser_test () {
 
 impl<'a> Parse<'a, OnePassSig3> for OnePassSig3 {
     fn from_reader<R: 'a + Read + Send + Sync>(reader: R) -> Result<Self> {
-        OnePassSig::from_reader(reader).and_then(|p| match p {
-            OnePassSig::V3(p) => Ok(p),
+        OnePassSig::from_reader(reader).map(|p| match p {
+            OnePassSig::V3(p) => p,
             // XXX: Once we have a second variant.
             //
             // p => Err(Error::InvalidOperation(
@@ -2229,12 +2230,10 @@ impl Key4<key::UnspecifiedParts, key::UnspecifiedRole>
                     format!("Unexpected secret key found in {:?} packet", tag)
                 ).into());
             }
-        } else {
-            if tag == Tag::SecretKey || tag == Tag::SecretSubkey {
-                return php.error(Error::MalformedPacket(
-                    format!("Expected secret key in {:?} packet", tag)
-                ).into());
-            }
+        } else if tag == Tag::SecretKey || tag == Tag::SecretSubkey {
+            return php.error(Error::MalformedPacket(
+                format!("Expected secret key in {:?} packet", tag)
+            ).into());
         }
 
         fn k<R>(creation_time: u32,
@@ -2992,8 +2991,8 @@ impl PKESK3 {
 
 impl<'a> Parse<'a, PKESK3> for PKESK3 {
     fn from_reader<R: 'a + Read + Send + Sync>(reader: R) -> Result<Self> {
-        PKESK::from_reader(reader).and_then(|p| match p {
-            PKESK::V3(p) => Ok(p),
+        PKESK::from_reader(reader).map(|p| match p {
+            PKESK::V3(p) => p,
             // XXX: Once we have a second variant.
             //
             // p => Err(Error::InvalidOperation(
@@ -3050,7 +3049,7 @@ struct PacketParserState {
 impl PacketParserState {
     fn new(settings: PacketParserSettings) -> Self {
         PacketParserState {
-            settings: settings,
+            settings,
             message_validator: Default::default(),
             keyring_validator: Default::default(),
             cert_validator: Default::default(),
@@ -4254,7 +4253,7 @@ impl <'a> PacketParser<'a> {
                 }
             }
 
-            skip = skip + 1;
+            skip += 1;
         }
 
         // Prepare to actually consume the header or garbage.
@@ -4807,7 +4806,7 @@ impl <'a> PacketParser<'a> {
         tracer!(TRACE, "PacketParser::finish", indent);
 
         if self.finished {
-            return Ok(&mut self.packet);
+            return Ok(&self.packet);
         }
 
         let recursion_depth = self.recursion_depth();
@@ -4848,14 +4847,16 @@ impl <'a> PacketParser<'a> {
 
         self.finished = true;
 
-        Ok(&mut self.packet)
+        Ok(&self.packet)
     }
 
     /// Hashes content that has been streamed.
     fn hash_read_content(&mut self, b: &[u8]) {
         if !b.is_empty() {
             assert!(self.body_hash.is_some());
-            self.body_hash.as_mut().map(|h| h.update(b));
+            if let Some(h) = self.body_hash.as_mut() {
+                h.update(b);
+            }
             self.content_was_read = true;
         }
     }
@@ -5185,11 +5186,11 @@ impl<'a> PacketParser<'a> {
 
         if self.content_was_read {
             return Err(Error::InvalidOperation(
-                format!("Packet's content has already been read.")).into());
+                "Packet's content has already been read.".to_string()).into());
         }
         if ! self.encrypted {
             return Err(Error::InvalidOperation(
-                format!("Packet not encrypted.")).into());
+                "Packet not encrypted.".to_string()).into());
         }
 
         if algo.key_size()? != key.len () {

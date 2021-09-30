@@ -83,6 +83,7 @@ pub struct CertRevocationBuilder {
 }
 assert_send_and_sync!(CertRevocationBuilder);
 
+#[allow(clippy::new_without_default)]
 impl CertRevocationBuilder {
     /// Returns a new `CertRevocationBuilder`.
     ///
@@ -249,7 +250,7 @@ impl TryFrom<signature::SignatureBuilder> for CertRevocationBuilder {
             return Err(
                 crate::Error::InvalidArgument(
                     format!("Expected signature type to be KeyRevocation but got {}",
-                            builder.typ()).into()).into());
+                            builder.typ())).into());
         }
         Ok(Self {
             builder
@@ -333,6 +334,7 @@ pub struct SubkeyRevocationBuilder {
 }
 assert_send_and_sync!(SubkeyRevocationBuilder);
 
+#[allow(clippy::new_without_default)]
 impl SubkeyRevocationBuilder {
     /// Returns a new `SubkeyRevocationBuilder`.
     ///
@@ -493,7 +495,7 @@ impl TryFrom<signature::SignatureBuilder> for SubkeyRevocationBuilder {
             return Err(
                 crate::Error::InvalidArgument(
                     format!("Expected signature type to be SubkeyRevocation but got {}",
-                            builder.typ()).into()).into());
+                            builder.typ())).into());
         }
         Ok(Self {
             builder
@@ -579,6 +581,7 @@ pub struct UserIDRevocationBuilder {
 }
 assert_send_and_sync!(UserIDRevocationBuilder);
 
+#[allow(clippy::new_without_default)]
 impl UserIDRevocationBuilder {
     /// Returns a new `UserIDRevocationBuilder`.
     ///
@@ -745,7 +748,7 @@ impl TryFrom<signature::SignatureBuilder> for UserIDRevocationBuilder {
             return Err(
                 crate::Error::InvalidArgument(
                     format!("Expected signature type to be CertificationRevocation but got {}",
-                            builder.typ()).into()).into());
+                            builder.typ())).into());
         }
         Ok(Self {
             builder
@@ -839,6 +842,7 @@ pub struct UserAttributeRevocationBuilder {
 }
 assert_send_and_sync!(UserAttributeRevocationBuilder);
 
+#[allow(clippy::new_without_default)]
 impl UserAttributeRevocationBuilder {
     /// Returns a new `UserAttributeRevocationBuilder`.
     ///
@@ -1011,7 +1015,7 @@ impl TryFrom<signature::SignatureBuilder> for UserAttributeRevocationBuilder {
             return Err(
                 crate::Error::InvalidArgument(
                     format!("Expected signature type to be CertificationRevocation but got {}",
-                            builder.typ()).into()).into());
+                            builder.typ())).into());
         }
         Ok(Self {
             builder

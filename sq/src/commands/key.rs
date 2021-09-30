@@ -243,7 +243,7 @@ fn password(config: Config, m: &ArgMatches) -> Result<()> {
             return Err(anyhow::anyhow!("Passwords do not match"));
         }
 
-        if prompt_0.len() == 0 {
+        if prompt_0.is_empty() {
             // Empty password means no password.
             None
         } else {
@@ -420,12 +420,11 @@ fn adopt(config: Config, m: &ArgMatches) -> Result<()> {
                 .into_keypair()?;
 
             let backsig = builder.embedded_signatures()
-                .filter(|backsig| {
+                .find(|backsig| {
                     (*backsig).clone().verify_primary_key_binding(
                         &cert.primary_key(),
                         &key).is_ok()
                 })
-                .next()
                 .map(|sig| SignatureBuilder::from(sig.clone()))
                 .unwrap_or_else(|| {
                     SignatureBuilder::new(SignatureType::PrimaryKeyBinding)

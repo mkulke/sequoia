@@ -1685,7 +1685,7 @@ impl From<Signature4> for SignatureBuilder {
         SignatureBuilder {
             overrode_creation_time: false,
             original_creation_time: creation_time,
-            fields: fields,
+            fields,
         }
     }
 }
@@ -2316,10 +2316,8 @@ impl crate::packet::Signature {
             };
 
             let l = p.serialized_len();
-            if size + l <= std::u16::MAX as usize {
-                if acc.insert(p.clone()) {
-                    size += l;
-                }
+            if size + l <= std::u16::MAX as usize && acc.insert(p.clone()) {
+                size += l;
             }
         }
 
@@ -2343,10 +2341,8 @@ impl crate::packet::Signature {
                    .filter(|p| eligible(p) && ! p.authenticated() && ! prefer(p)))
         {
             let l = p.serialized_len();
-            if size + l <= std::u16::MAX as usize {
-                if acc.insert(p.clone()) {
-                    size += l;
-                }
+            if size + l <= std::u16::MAX as usize && acc.insert(p.clone()) {
+                size += l;
             }
         }
         assert!(size <= std::u16::MAX as usize);

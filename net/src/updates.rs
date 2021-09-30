@@ -79,7 +79,7 @@ impl Manifest {
     /// Iterates over all epochs contained in this Update Manifest.
     pub fn epochs(&self) -> impl Iterator<Item = Epoch> {
         (self.start.0..self.end.0 + 1).into_iter()
-            .map(|n| Epoch(n))
+            .map(Epoch)
     }
 
     /// Returns the start epoch.
@@ -90,6 +90,11 @@ impl Manifest {
     /// Returns the end epoch.
     pub fn end(&self) -> Epoch {
         self.end
+    }
+
+    /// Is the Manifest empty?
+    pub fn is_empty(&self) -> bool {
+        self.prefixes.is_empty()
     }
 
     /// Returns the number of fingerprint prefixes in this Update
@@ -162,7 +167,7 @@ impl Manifest {
 
                 read += n;
                 if read == 4 {
-                    prefixes.insert(u32::from_be_bytes(prefix.clone()));
+                    prefixes.insert(u32::from_be_bytes(prefix));
                     continue 'parse;
                 }
             }
@@ -218,12 +223,12 @@ impl Epoch {
 
     /// Returns the previous Epoch, if any.
     pub fn pred(&self) -> Option<Epoch> {
-        self.0.checked_sub(1).map(|e| Epoch(e))
+        self.0.checked_sub(1).map(Epoch)
     }
 
     /// Returns the next Epoch, if any.
     pub fn succ(&self) -> Option<Epoch> {
-        self.0.checked_add(1).map(|e| Epoch(e))
+        self.0.checked_add(1).map(Epoch)
     }
 
     /// Returns an iterator over all epochs starting from this one to
@@ -231,7 +236,7 @@ impl Epoch {
     pub fn since(&self, other: Epoch)
                  -> anyhow::Result<impl Iterator<Item = Epoch>> {
         if other <= *self {
-            Ok((other.0 + 1..self.0).into_iter().rev().map(|e| Epoch(e)))
+            Ok((other.0 + 1..self.0).into_iter().rev().map(Epoch))
         } else {
             Err(anyhow::anyhow!("other is later than self"))
         }

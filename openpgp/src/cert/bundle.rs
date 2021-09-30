@@ -587,6 +587,7 @@ impl<C> ComponentBundle<C> {
     ///     even if there is a newer self-signature).
     ///
     /// selfsig must be the newest live self signature at time `t`.
+    #[allow(clippy::blocks_in_if_conditions)]
     pub(crate) fn _revocation_status<'a, T>(&'a self, policy: &dyn Policy, t: T,
                                             hard_revocations_are_final: bool,
                                             selfsig: Option<&Signature>)
@@ -613,10 +614,10 @@ impl<C> ComponentBundle<C> {
         let check = |revs: &'a [Signature], sec: HashAlgoSecurity|
             -> Option<Vec<&'a Signature>>
         {
-            let revs = revs.iter().filter_map(|rev| {
+            let revs = revs.iter().filter(|rev| {
                 if let Err(err) = policy.signature(rev, sec) {
                     t!("  revocation rejected by caller policy: {}", err);
-                    None
+                    false
                 } else if hard_revocations_are_final
                     && rev.reason_for_revocation()
                     .map(|(r, _)| {
@@ -632,7 +633,7 @@ impl<C> ComponentBundle<C> {
                        .unwrap_or_else(time_zero),
                        rev.reason_for_revocation()
                        .map(|r| (r.0, String::from_utf8_lossy(r.1))));
-                    Some(rev)
+                    true
                 } else if selfsig_creation_time
                     > rev.signature_creation_time().unwrap_or_else(time_zero)
                 {
@@ -641,7 +642,7 @@ impl<C> ComponentBundle<C> {
                     t!("  newer binding signature trumps soft revocation ({:?} > {:?})",
                        selfsig_creation_time,
                        rev.signature_creation_time().unwrap_or_else(time_zero));
-                    None
+                    false
                 } else if let Err(err)
                     = rev.signature_alive(t, time::Duration::new(0, 0))
                 {
@@ -652,13 +653,13 @@ impl<C> ComponentBundle<C> {
                        rev.signature_validity_period()
                            .unwrap_or_else(|| time::Duration::new(0, 0)),
                        err);
-                    None
+                    false
                 } else {
                     t!("  got a revocation: {:?} ({:?})",
                        rev.signature_creation_time().unwrap_or_else(time_zero),
                        rev.reason_for_revocation()
                            .map(|r| (r.0, String::from_utf8_lossy(r.1))));
-                    Some(rev)
+                    true
                 }
             }).collect::<Vec<&Signature>>();
 
@@ -699,8 +700,8 @@ impl<C> ComponentBundle<C> {
     /// function uses the component's type (`C`) to determine the
     /// packet's type; the type is not a function of whether the key
     /// has secret key material.
-    pub(crate) fn into_packets<'a>(self)
-                                   -> impl Iterator<Item=Packet> + Send + Sync
+    pub(crate) fn into_packets(self)
+                               -> impl Iterator<Item=Packet> + Send + Sync
         where Packet: From<C>
     {
         let p : Packet = self.component.into();

@@ -452,7 +452,7 @@ impl VHelper {
             inspect_cb,
             get_certs_cb: get_certs,
             check_signatures_cb: check_signatures,
-            cookie: cookie,
+            cookie,
         }))
     }
 }
@@ -494,6 +494,7 @@ impl VerificationHelper for VHelper {
             &mut free);
 
         // Free the KeyID wrappers.
+        #[allow(clippy::redundant_closure)]
         ids.into_iter().for_each(|id| super::super::keyid::pgp_keyid_free(id));
 
         if result != Status::Success {
@@ -509,7 +510,8 @@ impl VerificationHelper for VHelper {
         // (i.e., not a Vec<&Cert>).
         let mut certs : Vec<openpgp::Cert> = Vec::with_capacity(cert_refs_raw_len);
         for i in 0..cert_refs_raw_len {
-            let cert_raw = unsafe { *cert_refs_raw.offset(i as isize) };
+            let i = i as isize;
+            let cert_raw = unsafe { *cert_refs_raw.offset(i) };
             certs.push(cert_raw.move_from_raw());
         }
 

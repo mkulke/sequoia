@@ -800,6 +800,7 @@ impl<'a> Reader<'a> {
 
 impl<'a> Reader<'a> {
     /// Consumes the header if not already done.
+    #[allow(clippy::nonminimal_bool)]
     fn initialize(&mut self) -> Result<()> {
         if self.initialized { return Ok(()) }
 
@@ -839,7 +840,7 @@ impl<'a> Reader<'a> {
                 // If there are no dashes at all, match on the BEGIN.
                 valid_start.push(b'B');
 
-                valid_start.sort();
+                valid_start.sort_unstable();
                 valid_start.dedup();
                 valid_start
             };
@@ -857,7 +858,7 @@ impl<'a> Reader<'a> {
                 // If there are no dashes at all, match on the BEGIN.
                 valid_start.push(b'B');
 
-                valid_start.sort();
+                valid_start.sort_unstable();
                 valid_start.dedup();
                 valid_start
             };
@@ -1071,12 +1072,12 @@ impl<'a> Reader<'a> {
             // it couldn't is if we encountered EOF.  We need to strip
             // it.  But, if it ends with \r\n, then we also want to
             // strip the \r too.
-            let line = if line.ends_with(&"\r\n"[..]) {
+            let line = if let Some(rest) = line.strip_suffix(&"\r\n"[..]) {
                 // \r\n.
-                &line[..line.len() - 2]
-            } else if line.ends_with('\n') {
+                rest
+            } else if let Some(rest) = line.strip_suffix('\n') {
                 // \n.
-                &line[..line.len() - 1]
+                rest
             } else {
                 // EOF.
                 line

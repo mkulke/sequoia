@@ -143,10 +143,7 @@ impl<'a, P, R> KeyAmalgamationIter<'a, P, R>
         tracer!(false, "KeyAmalgamationIter::next", 0);
         t!("KeyAmalgamationIter: {:?}", self);
 
-        if self.cert.is_none() {
-            return None;
-        }
-        let cert = self.cert.unwrap();
+        let cert = self.cert?;
 
         loop {
             let ka : ErasedKeyAmalgamation<key::PublicParts>
@@ -178,11 +175,9 @@ impl<'a, P, R> KeyAmalgamationIter<'a, P, R>
                         t!("PK algo is supported... skipping.");
                         continue;
                     }
-                } else {
-                    if want_supported {
-                        t!("PK algo is not supported... skipping.");
-                        continue;
-                    }
+                } else if want_supported {
+                    t!("PK algo is not supported... skipping.");
+                    continue;
                 }
             }
 
@@ -193,11 +188,9 @@ impl<'a, P, R> KeyAmalgamationIter<'a, P, R>
                         t!("Have a secret... skipping.");
                         continue;
                     }
-                } else {
-                    if want_secret {
-                        t!("No secret... skipping.");
-                        continue;
-                    }
+                } else if want_secret {
+                    t!("No secret... skipping.");
+                    continue;
                 }
             }
 
@@ -208,11 +201,9 @@ impl<'a, P, R> KeyAmalgamationIter<'a, P, R>
                             t!("Unencrypted secret... skipping.");
                             continue;
                         }
-                    } else {
-                        if want_unencrypted_secret {
-                            t!("Encrypted secret... skipping.");
-                            continue;
-                        }
+                    } else if want_unencrypted_secret {
+                        t!("Encrypted secret... skipping.");
+                        continue;
                     }
                 } else {
                     // No secret.
@@ -742,10 +733,7 @@ impl<'a, P, R> ValidKeyAmalgamationIter<'a, P, R>
         tracer!(false, "ValidKeyAmalgamationIter::next", 0);
         t!("ValidKeyAmalgamationIter: {:?}", self);
 
-        if self.cert.is_none() {
-            return None;
-        }
-        let cert = self.cert.unwrap();
+        let cert = self.cert?;
 
         if let Some(flags) = self.flags.as_ref() {
             if flags.is_empty() {
@@ -803,11 +791,9 @@ impl<'a, P, R> ValidKeyAmalgamationIter<'a, P, R>
                         t!("PK algo is supported... skipping.");
                         continue;
                     }
-                } else {
-                    if want_supported {
-                        t!("PK algo is not supported... skipping.");
-                        continue;
-                    }
+                } else if want_supported {
+                    t!("PK algo is not supported... skipping.");
+                    continue;
                 }
             }
 
@@ -849,11 +835,9 @@ impl<'a, P, R> ValidKeyAmalgamationIter<'a, P, R>
                         t!("Have a secret... skipping.");
                         continue;
                     }
-                } else {
-                    if want_secret {
-                        t!("No secret... skipping.");
-                        continue;
-                    }
+                } else if want_secret {
+                    t!("No secret... skipping.");
+                    continue;
                 }
             }
 
@@ -864,11 +848,9 @@ impl<'a, P, R> ValidKeyAmalgamationIter<'a, P, R>
                             t!("Unencrypted secret... skipping.");
                             continue;
                         }
-                    } else {
-                        if want_unencrypted_secret {
-                            t!("Encrypted secret... skipping.");
-                            continue;
-                        }
+                    } else if want_unencrypted_secret {
+                        t!("Encrypted secret... skipping.");
+                        continue;
                     }
                 } else {
                     // No secret.

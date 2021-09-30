@@ -458,8 +458,8 @@ impl<'a> MessageStructure<'a> {
     fn new_encryption_layer(&mut self, sym_algo: SymmetricAlgorithm,
                             aead_algo: Option<AEADAlgorithm>) {
         self.0.push(MessageLayer::Encryption {
-            sym_algo: sym_algo,
-            aead_algo: aead_algo,
+            sym_algo,
+            aead_algo,
         })
     }
 
@@ -597,8 +597,8 @@ impl IMessageStructure {
         self.layers.push(IMessageLayer::Encryption {
             depth,
             expect_mdc,
-            sym_algo: sym_algo,
-            aead_algo: aead_algo,
+            sym_algo,
+            aead_algo,
         });
     }
 
@@ -2265,6 +2265,7 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
     }
 
     /// Creates the `Decryptor`, and buffers the data up to `buffer_size`.
+    #[allow(clippy::redundant_pattern_matching)]
     fn from_buffered_reader<T>(
         policy: &'a dyn Policy,
         bio: Box<dyn BufferedReader<Cookie> + 'a>,
@@ -2325,11 +2326,9 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                         format!("Expected signature, got {}", pp.packet.tag()))
                                .into());
                 }
-            } else {
-                if let Err(err) = pp.possible_message() {
-                    t!("Malformed message: {}", err);
-                    return Err(err.context("Malformed OpenPGP message"));
-                }
+            } else if let Err(err) = pp.possible_message() {
+                t!("Malformed message: {}", err);
+                return Err(err.context("Malformed OpenPGP message"));
             }
 
             let sym_algo_hint = if let Packet::AED(ref aed) = pp.packet {
@@ -2478,6 +2477,7 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
 
     /// Stashes the given Signature (if it is one) for later
     /// verification.
+    #[allow(clippy::single_match)]
     fn push_sig(&mut self, p: Packet) -> Result<()> {
         match p {
             Packet::Signature(sig) => {
@@ -2611,6 +2611,7 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
     }
 
     /// Verifies the signatures.
+    #[allow(clippy::blocks_in_if_conditions)]
     fn verify_signatures(&mut self) -> Result<()> {
         tracer!(TRACE, "Decryptor::verify_signatures", 0);
         t!("called");
@@ -2784,7 +2785,7 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                                                sigid[0], sigid[1], ka.fingerprint());
                                             results.push_verification_result(
                                                 Ok(GoodChecksum {
-                                                    sig: sig,
+                                                    sig,
                                                     ka,
                                                 }));
                                             // Continue to the next sig.
