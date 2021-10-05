@@ -62,6 +62,12 @@ fn crypto_backends_sanity_check() {
              production_ready: true,
              constant_time: true,
          }),
+        (cfg!(feature = "crypto-rust"),
+         Backend {
+             name: "RustCrypto",
+             production_ready: false,
+             constant_time: false,
+         }),
     ].into_iter().filter_map(|(selected, backend)| {
         if selected { Some(backend) } else { None }
     }).collect::<Vec<_>>();
@@ -95,5 +101,47 @@ See https://crates.io/crates/sequoia-openpgp#crypto-backends",
             backends.iter().map(|b| b.name).collect::<Vec<_>>().join(", "));
             exit(1);
         },
+    }
+
+    // We now have exactly one backend.
+    assert_eq!(backends.len(), 1);
+    let backend = &backends[0];
+
+    // Check its properties.
+    if ! (backend.production_ready
+          || cfg!(feature = "allow-experimental-crypto"))
+    {
+        eprintln!("
+The cryptographic backend {} is not considered production ready.
+
+If you know what you are doing, you can opt-in to using experimental
+cryptographic backends using the feature flag
+
+    allow-experimental-crypto
+
+See https://crates.io/crates/sequoia-openpgp#crypto-backends",
+                  backend.name);
+        exit(1);
+    }
+
+    if ! (backend.constant_time
+          || cfg!(feature = "allow-variable-time-crypto"))
+    {
+        eprintln!("
+The cryptographic backend {} does not provide constant-time
+operations.  This has the potential of leaking cryptographic secrets,
+enable attackers to forge signatures, or cause other mayhem.
+
+If you are not using Sequoia in an interactive setting, using
+variable-time cryptographic operations is probably safe.
+
+If you know what you are doing, you can opt-in to using variable-time
+cryptographic operations using the feature flag
+
+    allow-variable-time-crypto
+
+See https://crates.io/crates/sequoia-openpgp#crypto-backends",
+                  backend.name);
+        exit(1);
     }
 }
