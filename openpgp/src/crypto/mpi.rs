@@ -71,6 +71,11 @@ impl MPI {
         }
     }
 
+    /// Creates new MPI encoding a native octet string.
+    pub fn new_octet_string<B: AsRef<[u8]>>(bytes: B) -> Self {
+        Self::new_octet_string_common(bytes.as_ref()).into()
+    }
+
     /// Creates new MPI encoding an uncompressed EC point.
     ///
     /// Encodes the given point on a elliptic curve (see [Section 6 of
@@ -106,11 +111,11 @@ impl MPI {
     ///
     ///   [Section 13.2 of RFC4880bis]: https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-09#section-13.2
     pub fn new_compressed_point(x: &[u8]) -> Self {
-        Self::new_compressed_point_common(x).into()
+        Self::new_octet_string_common(x).into()
     }
 
     /// Common implementation shared between MPI and ProtectedMPI.
-    fn new_compressed_point_common(x: &[u8]) -> Vec<u8> {
+    fn new_octet_string_common(x: &[u8]) -> Vec<u8> {
         let mut val = vec![0; 1 + x.len()];
         val[0] = 0x40;
         val[1..].copy_from_slice(x);
@@ -151,6 +156,36 @@ impl MPI {
     /// is returned.
     pub fn value_padded(&self, to: usize) -> Result<Cow<[u8]>> {
         crate::crypto::pad(self.value(), to)
+    }
+
+    /// Decodes a native octet string encoded as MPI.
+    ///
+    /// Decodes the MPI into a native octet string for use with ECC
+    /// algorithms.
+    ///
+    /// # Errors
+    ///
+    /// `Error::MalformedMPI` if the point is formatted incorrectly or
+    /// the length doesn't match the expected length.
+    pub fn decode_octet_string(&self, expected_size: usize) -> Result<&[u8]> {
+        Self::decode_octet_string_common(self.value(), expected_size)
+    }
+
+    /// Common implementation shared between MPI and ProtectedMPI.
+    fn decode_octet_string_common(value: &[u8], expected_size: usize)
+                                  -> Result<&[u8]> {
+        if value.len() != 1 + expected_size {
+            return Err(Error::MalformedMPI(
+                format!("Bad size of octet string: {} expected: {}",
+                        value.len(), 1 + expected_size)).into());
+        }
+
+        if value.get(0).map(|&b| b != 0x40).unwrap_or(true) {
+            return Err(Error::MalformedMPI(
+                "Bad encoding of octet string".into()).into());
+        }
+
+        Ok(&value[1..])
     }
 
     /// Decodes an EC point encoded as MPI.
@@ -372,6 +407,11 @@ impl std::hash::Hash for ProtectedMPI {
 }
 
 impl ProtectedMPI {
+    /// Creates new MPI encoding a native octet string.
+    pub fn new_octet_string<B: AsRef<[u8]>>(bytes: B) -> Self {
+        MPI::new_octet_string_common(bytes.as_ref()).into()
+    }
+
     /// Creates new MPI encoding an uncompressed EC point.
     ///
     /// Encodes the given point on a elliptic curve (see [Section 6 of
@@ -394,7 +434,7 @@ impl ProtectedMPI {
     ///
     ///   [Section 13.2 of RFC4880bis]: https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-09#section-13.2
     pub fn new_compressed_point(x: &[u8]) -> Self {
-        MPI::new_compressed_point_common(x).into()
+        MPI::new_octet_string_common(x).into()
     }
 
     /// Returns the length of the MPI in bits.
@@ -426,6 +466,19 @@ impl ProtectedMPI {
         let mut v: Protected = vec![0; to].into();
         v[missing..].copy_from_slice(&self.value()[..limit]);
         v
+    }
+
+    /// Decodes a native octet string encoded as MPI.
+    ///
+    /// Decodes the MPI into a native octet string for use with ECC
+    /// algorithms.
+    ///
+    /// # Errors
+    ///
+    /// `Error::MalformedMPI` if the point is formatted incorrectly or
+    /// the length doesn't match the expected length.
+    pub fn decode_octet_string(&self, expected_size: usize) -> Result<&[u8]> {
+        MPI::decode_octet_string_common(self.value(), expected_size)
     }
 
     /// Decodes an EC point encoded as MPI.
