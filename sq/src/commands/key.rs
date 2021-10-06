@@ -98,6 +98,9 @@ fn generate(
         Cv25519 => {
             builder = builder.set_cipher_suite(CipherSuite::Cv25519);
         }
+        Cv448 => {
+            builder = builder.set_cipher_suite(CipherSuite::Cv448);
+        }
     }
 
     // Signing Capability
