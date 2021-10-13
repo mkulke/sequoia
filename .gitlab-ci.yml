@@ -19,7 +19,7 @@ build-bullseye:
   tags:
     - linux
   stage: build
-  image: registry.gitlab.com/sequoia-pgp/build-docker-image/bullseye-prebuild:latest
+  image: registry.gitlab.com/sequoia-pgp/build-docker-image/bullseye-prebuild:ddea5861967a7fabf90032090265c045650694e4
   dependencies:
     - codespell
   script:
@@ -38,7 +38,7 @@ build-bullseye:arm64:
   tags:
     - docker-arm64
   stage: build
-  image: registry.gitlab.com/sequoia-pgp/build-docker-image/bullseye-prebuild-arm64:latest
+  image: registry.gitlab.com/sequoia-pgp/build-docker-image/bullseye-prebuild-arm64:ddea5861967a7fabf90032090265c045650694e4
   dependencies:
     - codespell
   when: manual
@@ -61,7 +61,7 @@ bullseye:
   tags:
     - linux
   stage: build
-  image: registry.gitlab.com/sequoia-pgp/build-docker-image/bullseye-prebuild:latest
+  image: registry.gitlab.com/sequoia-pgp/build-docker-image/bullseye-prebuild:ddea5861967a7fabf90032090265c045650694e4
   dependencies:
     - codespell
   script:
@@ -76,7 +76,7 @@ bullseye-crypto-rust:
   tags:
     - linux
   stage: build
-  image: registry.gitlab.com/sequoia-pgp/build-docker-image/bullseye-prebuild:latest
+  image: registry.gitlab.com/sequoia-pgp/build-docker-image/bullseye-prebuild:ddea5861967a7fabf90032090265c045650694e4
   dependencies:
     - codespell
   script:
@@ -104,7 +104,7 @@ bullseye:arm64:
       - $CI_PROJECT_NAMESPACE == "sequoia-pgp"
   when: manual
   stage: build
-  image: registry.gitlab.com/sequoia-pgp/build-docker-image/bullseye-prebuild-arm64:latest
+  image: registry.gitlab.com/sequoia-pgp/build-docker-image/bullseye-prebuild-arm64:ddea5861967a7fabf90032090265c045650694e4
   dependencies:
     - codespell
   script:
@@ -118,7 +118,7 @@ bullseye:arm64:
 
 benchmarks:
   stage: test
-  image: registry.gitlab.com/sequoia-pgp/build-docker-image/bullseye:latest
+  image: registry.gitlab.com/sequoia-pgp/build-docker-image/bullseye:ddea5861967a7fabf90032090265c045650694e4
   needs: ["rust-stable"]
   only:
     refs:
@@ -147,7 +147,7 @@ benchmarks:
 all_commits:
   # Test each commit up to main, to facilitate bisecting.
   stage: test
-  image: registry.gitlab.com/sequoia-pgp/build-docker-image/rust-stable-prebuild:latest
+  image: registry.gitlab.com/sequoia-pgp/build-docker-image/rust-stable-prebuild:ddea5861967a7fabf90032090265c045650694e4
   needs: ["rust-stable"]
   except:
     # Do not run for pushes to the pep-engine branch.
@@ -165,7 +165,7 @@ all_commits:arm64:
   tags:
     - docker-arm64
   stage: test
-  image: registry.gitlab.com/sequoia-pgp/build-docker-image/rust-stable-prebuild-arm64:latest
+  image: registry.gitlab.com/sequoia-pgp/build-docker-image/rust-stable-prebuild-arm64:ddea5861967a7fabf90032090265c045650694e4
   needs: ["rust-stable:arm64"]
   only:
     refs:
@@ -192,7 +192,7 @@ codespell:
   tags:
     - linux
   stage: pre-check
-  image: registry.gitlab.com/sequoia-pgp/build-docker-image/bullseye:latest
+  image: registry.gitlab.com/sequoia-pgp/build-docker-image/bullseye:ddea5861967a7fabf90032090265c045650694e4
 
   before_script:
     - codespell --version
@@ -204,7 +204,7 @@ rust-stable:
   tags:
     - linux
   stage: build
-  image: registry.gitlab.com/sequoia-pgp/build-docker-image/rust-stable-prebuild:latest
+  image: registry.gitlab.com/sequoia-pgp/build-docker-image/rust-stable-prebuild:ddea5861967a7fabf90032090265c045650694e4
   before_script:
     - if [ -d $CARGO_TARGET_DIR ]; then find $CARGO_TARGET_DIR | wc --lines; du -sh $CARGO_TARGET_DIR; fi
     - if [ -d $CARGO_HOME ]; then find $CARGO_HOME | wc --lines; du -sh $CARGO_HOME; fi
@@ -223,7 +223,7 @@ rust-stable:arm64:
   tags:
     - docker-arm64
   stage: build
-  image: registry.gitlab.com/sequoia-pgp/build-docker-image/rust-stable-prebuild-arm64:latest
+  image: registry.gitlab.com/sequoia-pgp/build-docker-image/rust-stable-prebuild-arm64:ddea5861967a7fabf90032090265c045650694e4
   only:
     variables:
       # Forks of this project most likely do not have an arm64 runner
