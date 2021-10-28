@@ -1092,6 +1092,7 @@ pub struct NotationData {
     flags: NotationDataFlags,
     name: String,
     value: Vec<u8>,
+    critical: bool,
 }
 assert_send_and_sync!(NotationData);
 
@@ -1152,13 +1153,14 @@ impl Arbitrary for NotationData {
             flags: Arbitrary::arbitrary(g),
             name: Arbitrary::arbitrary(g),
             value: Arbitrary::arbitrary(g),
+            critical: Arbitrary::arbitrary(g),
         }
     }
 }
 
 impl NotationData {
     /// Creates a new Notation Data subpacket payload.
-    pub fn new<N, V, F>(name: N, value: V, flags: F) -> Self
+    pub fn new<N, V, F>(name: N, value: V, flags: F, critical: bool) -> Self
         where N: AsRef<str>,
               V: AsRef<[u8]>,
               F: Into<Option<NotationDataFlags>>,
@@ -1167,6 +1169,7 @@ impl NotationData {
             flags: flags.into().unwrap_or_else(NotationDataFlags::empty),
             name: name.as_ref().into(),
             value: value.as_ref().into(),
+            critical,
         }
     }
 
@@ -1183,6 +1186,12 @@ impl NotationData {
     /// Returns the value.
     pub fn value(&self) -> &[u8] {
         &self.value
+    }
+
+    /// Returns whether the notation is critical, i.e the containing subpacket's
+    /// critical bit is set.
+    pub fn critical(&self) -> bool {
+        self.critical
     }
 }
 
@@ -1814,6 +1823,7 @@ impl ArbitraryBounded for Subpacket {
                 value: (0..value_size)
                     .map(|_| <u8>::arbitrary(g))
                     .collect::<Vec<u8>>(),
+                critical: Arbitrary::arbitrary(g),
             };
             SubpacketValue::NotationData(nd)
         } else {
@@ -5530,9 +5540,12 @@ impl signature::SignatureBuilder {
                 s.value,
                 SubpacketValue::NotationData(ref v) if v.name == name.as_ref())
         });
-        self.add_notation(name.as_ref(), value.as_ref(),
-                          flags.into().unwrap_or_else(NotationDataFlags::empty),
-                          critical)
+        self.add_notation(
+            name.as_ref(),
+            value.as_ref(),
+            flags.into().unwrap_or_else(NotationDataFlags::empty),
+            critical,
+        )
     }
 
     /// Adds a Notation Data subpacket.
@@ -5619,10 +5632,15 @@ impl signature::SignatureBuilder {
               V: AsRef<[u8]>,
               F: Into<Option<NotationDataFlags>>,
     {
-        self.hashed_area.add(Subpacket::new(SubpacketValue::NotationData(
-            NotationData::new(name.as_ref(), value.as_ref(),
-                              flags.into().unwrap_or_else(NotationDataFlags::empty))),
-                                            critical)?)?;
+        self.hashed_area.add(Subpacket::new(
+            SubpacketValue::NotationData(NotationData::new(
+                name.as_ref(),
+                value.as_ref(),
+                flags.into().unwrap_or_else(NotationDataFlags::empty),
+                critical,
+            )),
+            critical,
+        )?)?;
         Ok(self)
     }
 
@@ -7513,7 +7531,8 @@ fn subpacket_test_2() {
         let n = NotationData {
             flags: NotationDataFlags::empty().set_human_readable(),
             name: "rank@navy.mil".into(),
-            value: b"midshipman".to_vec()
+            value: b"midshipman".to_vec(),
+            critical: false,
         };
         assert_eq!(sig.notation_data().collect::<Vec<&NotationData>>(),
                    vec![&n]);
@@ -7705,17 +7724,20 @@ fn subpacket_test_2() {
         let n1 = NotationData {
             flags: NotationDataFlags::empty().set_human_readable(),
             name: "rank@navy.mil".into(),
-            value: b"third lieutenant".to_vec()
+            value: b"third lieutenant".to_vec(),
+            critical: false
         };
         let n2 = NotationData {
             flags: NotationDataFlags::empty().set_human_readable(),
             name: "foo@navy.mil".into(),
-            value: b"bar".to_vec()
+            value: b"bar".to_vec(),
+            critical: false
         };
         let n3 = NotationData {
             flags: NotationDataFlags::empty().set_human_readable(),
             name: "whistleblower@navy.mil".into(),
-            value: b"true".to_vec()
+            value: b"true".to_vec(),
+            critical: false
         };
 
         // We expect all three notations, in order.

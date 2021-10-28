@@ -1645,7 +1645,9 @@ impl Subpacket {
                                     format!("Malformed notation name: {}", e)))
                             )?,
                         &php.parse_bytes("notation value", value_len)?,
-                        Some(NotationDataFlags::new(&flags)?)))
+                        Some(NotationDataFlags::new(&flags)?),
+                        critical
+                        ))
             },
             SubpacketTag::PreferredHashAlgorithms =>
                 SubpacketValue::PreferredHashAlgorithms(
