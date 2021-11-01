@@ -109,9 +109,9 @@ fn sq_sign_with_notations() {
 
         let hr = NotationDataFlags::empty().set_human_readable();
         let notations = &mut [
-            (NotationData::new("foo", "bar", hr.clone()), false),
-            (NotationData::new("foo", "xyzzy", hr.clone()), false),
-            (NotationData::new("hello@example.org", "1234567890", hr), false)
+            (NotationData::new("foo", "bar", hr.clone(), false), false),
+            (NotationData::new("foo", "xyzzy", hr.clone(), false), false),
+            (NotationData::new("hello@example.org", "1234567890", hr, false), false)
         ];
 
         for n in sig.notation_data() {

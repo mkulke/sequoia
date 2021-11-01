@@ -28,7 +28,7 @@ pub fn sign(config: Config,
             output_path: Option<&str>,
             secrets: Vec<openpgp::Cert>, detached: bool, binary: bool,
             append: bool, notarize: bool, time: Option<SystemTime>,
-            notations: &[(bool, NotationData)])
+            notations: &[NotationData])
             -> Result<()> {
     match (detached, append|notarize) {
         (_, false) | (true, true) =>
@@ -44,7 +44,7 @@ fn sign_data(config: Config,
              input: &mut dyn io::Read, output_path: Option<&str>,
              secrets: Vec<openpgp::Cert>, detached: bool, binary: bool,
              append: bool, time: Option<SystemTime>,
-             notations: &[(bool, NotationData)])
+             notations: &[NotationData])
              -> Result<()> {
     let (mut output, prepend_sigs, tmp_path):
     (Box<dyn io::Write + Sync + Send>, Vec<Signature>, Option<PathBuf>) =
@@ -105,12 +105,12 @@ fn sign_data(config: Config,
     }
 
     let mut builder = SignatureBuilder::new(SignatureType::Binary);
-    for (critical, n) in notations.iter() {
+    for n in notations.iter() {
         builder = builder.add_notation(
             n.name(),
             n.value(),
             Some(n.flags().clone()),
-            *critical)?;
+            n.critical())?;
     }
 
     let mut signer = Signer::with_template(
@@ -156,7 +156,7 @@ fn sign_message(config: Config,
                 output_path: Option<&str>,
                 secrets: Vec<openpgp::Cert>, binary: bool, notarize: bool,
                 time: Option<SystemTime>,
-                notations: &[(bool, NotationData)])
+                notations: &[NotationData])
              -> Result<()> {
     let mut output =
         config.create_or_stdout_pgp(output_path,
@@ -172,7 +172,7 @@ fn sign_message_(config: Config,
                  output: &mut (dyn io::Write + Sync + Send),
                  secrets: Vec<openpgp::Cert>, notarize: bool,
                  time: Option<SystemTime>,
-                 notations: &[(bool, NotationData)])
+                 notations: &[NotationData])
                  -> Result<()>
 {
     let mut keypairs = super::get_signing_keys(&secrets, &config.policy, time)?;
@@ -245,12 +245,12 @@ fn sign_message_(config: Config,
                 // After the first signature group, we push the signer
                 // onto the writer stack.
                 let mut builder = SignatureBuilder::new(SignatureType::Binary);
-                for (critical, n) in notations.iter() {
+                for n in notations {
                     builder = builder.add_notation(
                         n.name(),
                         n.value(),
                         Some(n.flags().clone()),
-                        *critical)?;
+                        n.critical())?;
                 }
 
                 let mut signer = Signer::with_template(
@@ -377,7 +377,7 @@ pub fn clearsign(config: Config,
                  mut output: impl io::Write + Sync + Send,
                  secrets: Vec<openpgp::Cert>,
                  time: Option<SystemTime>,
-                 notations: &[(bool, NotationData)])
+                 notations: &[NotationData])
                  -> Result<()>
 {
     let mut keypairs = super::get_signing_keys(&secrets, &config.policy, time)?;
@@ -387,12 +387,12 @@ pub fn clearsign(config: Config,
 
     // Prepare a signature template.
     let mut builder = SignatureBuilder::new(SignatureType::Text);
-    for (critical, n) in notations.iter() {
+    for n in notations.iter() {
         builder = builder.add_notation(
             n.name(),
             n.value(),
             Some(n.flags().clone()),
-            *critical)?;
+            n.critical())?;
     }
 
     let message = Message::new(&mut output);

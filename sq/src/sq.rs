@@ -496,7 +496,7 @@ fn main() -> Result<()> {
             };
             // Each --notation takes two values.  The iterator
             // returns them one at a time, however.
-            let mut notations: Vec<(bool, NotationData)> = Vec::new();
+            let mut notations: Vec<NotationData> = Vec::new();
             if let Some(mut n) = m.values_of("notation") {
                 while let Some(name) = n.next() {
                     let value = n.next().unwrap();
@@ -510,10 +510,13 @@ fn main() -> Result<()> {
                     };
 
                     notations.push(
-                        (critical,
-                         NotationData::new(
-                             name, value,
-                             NotationDataFlags::empty().set_human_readable())));
+                        NotationData::new(
+                            name,
+                            value,
+                            NotationDataFlags::empty().set_human_readable(),
+                            critical,
+                        ),
+                    );
                 }
             }
 
