@@ -431,9 +431,10 @@ fn main() -> Result<()> {
                     1
                 };
             let secrets = m.values_of("secret-key-file")
-                .map(load_keys)
+                .map(load_certs)
                 .unwrap_or_else(|| Ok(vec![]))?;
-            commands::decrypt(config,
+            let private_key_store = m.value_of("private-key-store");
+            commands::decrypt(config, private_key_store,
                               &mut input, &mut output,
                               signatures, certs, secrets,
                               m.is_present("dump-session-key"),
@@ -449,7 +450,7 @@ fn main() -> Result<()> {
                                             m.is_present("binary"),
                                             armor::Kind::Message)?;
             let additional_secrets = m.values_of("signer-key-file")
-                .map(load_keys)
+                .map(load_certs)
                 .unwrap_or_else(|| Ok(vec![]))?;
             let mode = match m.value_of("mode").expect("has default") {
                 "rest" => KeyFlags::empty()
@@ -468,14 +469,20 @@ fn main() -> Result<()> {
             } else {
                 None
             };
-            commands::encrypt(policy, &mut input, output,
-                              m.occurrences_of("symmetric") as usize,
-                              &recipients, additional_secrets,
-                              mode,
-                              m.value_of("compression").expect("has default"),
-                              time,
-                              m.is_present("use-expired-subkey"),
-            )?;
+            let private_key_store = m.value_of("private-key-store");
+            commands::encrypt(commands::EncryptOpts {
+                policy,
+                private_key_store,
+                input: &mut input,
+                message: output,
+                npasswords: m.occurrences_of("symmetric") as usize,
+                recipients: &recipients,
+                signers: additional_secrets,
+                mode,
+                compression: m.value_of("compression").expect("has default"),
+                time,
+                use_expired_subkey: m.is_present("use-expired-subkey"),
+            })?;
         },
         ("sign",  Some(m)) => {
             let mut input = open_or_stdin(m.value_of("input"))?;
@@ -484,8 +491,9 @@ fn main() -> Result<()> {
             let binary = m.is_present("binary");
             let append = m.is_present("append");
             let notarize = m.is_present("notarize");
+            let private_key_store = m.value_of("private-key-store");
             let secrets = m.values_of("secret-key-file")
-                .map(load_keys)
+                .map(load_certs)
                 .unwrap_or_else(|| Ok(vec![]))?;
             let time = if let Some(time) = m.value_of("time") {
                 Some(parse_iso8601(time, chrono::NaiveTime::from_hms(0, 0, 0))
@@ -524,11 +532,22 @@ fn main() -> Result<()> {
                 commands::merge_signatures(&mut input, &mut input2, output)?;
             } else if m.is_present("clearsign") {
                 let output = config.create_or_stdout_safe(output)?;
-                commands::sign::clearsign(config, input, output, secrets,
+                commands::sign::clearsign(config, private_key_store, input, output, secrets,
                                           time, &notations)?;
             } else {
-                commands::sign(config, &mut input, output, secrets, detached,
-                               binary, append, notarize, time, &notations)?;
+                commands::sign(commands::sign::SignOpts {
+                    config,
+                    private_key_store,
+                    input: &mut input,
+                    output_path: output,
+                    secrets,
+                    detached,
+                    binary,
+                    append,
+                    notarize,
+                    time,
+                    notations: &notations
+                })?;
             }
         },
         ("verify",  Some(m)) => {
