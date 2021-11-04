@@ -42,6 +42,11 @@ pub(crate) struct BufferedReaderPartialBodyFilter<T: BufferedReader<Cookie>> {
     // current packet.  If not, calls Cookie::hashing at
     // the current level to disable hashing while reading headers.
     hash_headers: bool,
+
+    /// Statistics.
+    ///
+    /// Change () to usize to enable.
+    stats: Stats<()>,
 }
 
 impl<T: BufferedReader<Cookie>> std::fmt::Display
@@ -80,6 +85,7 @@ impl<T: BufferedReader<Cookie>> BufferedReaderPartialBodyFilter<T> {
             unused_buffers: Vec::with_capacity(2),
             cookie,
             hash_headers,
+            stats: Default::default(),
         }
     }
 
@@ -120,6 +126,7 @@ impl<T: BufferedReader<Cookie>> BufferedReaderPartialBodyFilter<T> {
             buffer[..amount_buffered]
                 .copy_from_slice(&old_buffer[self.cursor..]);
 
+            self.stats.copied_from_old_buffer.add(amount_buffered);
             t!("Copied {} bytes from the old buffer", amount_buffered);
         }
 
@@ -241,6 +248,7 @@ impl<T: BufferedReader<Cookie>> BufferedReaderPartialBodyFilter<T> {
             // we don't need to double buffer.
             self.unused_buffers.push(self.buffer.take().expect("have buffer"));
             self.cursor = 0;
+            self.stats.happy_again.inc();
         }
 
         if let Some(ref buffer) = self.buffer {
@@ -257,6 +265,7 @@ impl<T: BufferedReader<Cookie>> BufferedReaderPartialBodyFilter<T> {
                 // is borrowed.  Set a flag and do it after the borrow
                 // ends.
                 need_fill = true;
+                self.stats.read_exceeds_buffer_count.inc();
                 t!("Read of {} bytes exceeds buffered {} bytes",
                    amount, amount_buffered);
             }
@@ -292,6 +301,7 @@ impl<T: BufferedReader<Cookie>> BufferedReaderPartialBodyFilter<T> {
                             if and_consume {
                                 self.partial_body_length -=
                                     cmp::min(amount, amount_buffered) as u32;
+                                self.stats.happy_bytes.add(amount_buffered);
                             }
                             return Ok(&buffer[..amount_buffered]);
                         }
@@ -305,6 +315,7 @@ impl<T: BufferedReader<Cookie>> BufferedReaderPartialBodyFilter<T> {
                 //println!("  Read crosses chunk boundary.  Need to buffer.");
 
                 need_fill = true;
+                self.stats.read_straddles_boundary_count.inc();
                 t!("Read straddles partial body chunk boundary");
             }
         }
@@ -331,6 +342,7 @@ impl<T: BufferedReader<Cookie>> BufferedReaderPartialBodyFilter<T> {
         }
         if and_consume {
             self.cursor += cmp::min(amount, buffer.len());
+            self.stats.unhappy_bytes.add(cmp::min(amount, buffer.len()));
         }
         Ok(buffer)
     }
@@ -375,12 +387,15 @@ impl<T: BufferedReader<Cookie>> BufferedReader<Cookie>
             // The caller can't consume more than is buffered!
             assert!(self.cursor <= buffer.len());
 
+            self.stats.unhappy_bytes.add(amount);
             &buffer[self.cursor - amount..]
         } else {
             // Since we don't have a buffer, just pass through to the
             // underlying reader.
             assert!(amount <= self.partial_body_length as usize);
             self.partial_body_length -= amount as u32;
+
+            self.stats.happy_bytes.add(amount);
             self.reader.consume(amount)
         }
     }
@@ -407,6 +422,7 @@ impl<T: BufferedReader<Cookie>> BufferedReader<Cookie>
 
     fn into_inner<'b>(self: Box<Self>) -> Option<Box<dyn BufferedReader<Cookie> + 'b>>
             where Self: 'b {
+        self.stats.dump(self.cookie.level.unwrap_or(0));
         Some(self.reader.as_boxed())
     }
 
@@ -422,5 +438,58 @@ impl<T: BufferedReader<Cookie>> BufferedReader<Cookie>
 
     fn cookie_mut(&mut self) -> &mut Cookie {
         &mut self.cookie
+    }
+}
+
+trait Counter {
+    fn add(&mut self, n: usize);
+    fn inc(&mut self) {
+        self.add(1);
+    }
+}
+
+impl Counter for () {
+    fn add(&mut self, _: usize) {}
+}
+
+impl Counter for usize {
+    fn add(&mut self, n: usize) {
+        *self += n;
+    }
+}
+
+#[derive(Default)]
+struct Stats<T: Default> {
+    happy_bytes: T,
+    unhappy_bytes: T,
+    happy_again: T,
+    copied_from_old_buffer: T,
+    read_exceeds_buffer_count: T,
+    read_straddles_boundary_count: T,
+}
+
+impl Stats<()> {
+    #[allow(dead_code)]
+    fn dump(&self, _indent: isize) {}
+}
+
+impl Stats<usize> {
+    #[allow(dead_code)]
+    fn dump(&self, indent: isize) {
+        use std::convert::TryFrom;
+        let i = String::from_utf8(
+            vec![b' '; usize::try_from(indent).unwrap_or(0)]).unwrap();
+        eprintln!("{}Zero copy bytes:              {}",
+                  i, self.happy_bytes);
+        eprintln!("{}Non-zero copy bytes:          {}",
+                  i, self.unhappy_bytes);
+        eprintln!("{}Gotten back on happy path:    {}",
+                  i, self.happy_again);
+        eprintln!("{}Copied bytes from old buffer: {}",
+                  i, self.copied_from_old_buffer);
+        eprintln!("{}Read exceeded buffered data:  {}",
+                  i, self.read_exceeds_buffer_count);
+        eprintln!("{}Read straddled boundary:      {}",
+                  i, self.read_straddles_boundary_count);
     }
 }
