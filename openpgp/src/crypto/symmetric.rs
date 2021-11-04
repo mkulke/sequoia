@@ -6,7 +6,10 @@ use std::fmt;
 
 use crate::Result;
 use crate::SymmetricAlgorithm;
-use crate::{vec_resize, vec_truncate};
+use crate::vec_resize;
+use crate::{
+    parse::Cookie,
+};
 
 use buffered_reader::BufferedReader;
 
@@ -37,23 +40,37 @@ pub(crate) trait Mode: Send + Sync {
 }
 
 /// A `Read`er for decrypting symmetrically encrypted data.
-pub struct Decryptor<R: io::Read> {
+pub struct Decryptor<'a> {
     // The encrypted data.
-    source: R,
+    source: Box<dyn BufferedReader<Cookie> + 'a>,
 
     dec: Box<dyn Mode>,
     block_size: usize,
     // Up to a block of unread data.
     buffer: Vec<u8>,
-    // Ciphertext buffer.
-    ciphertext: Vec<u8>,
 }
-assert_send_and_sync!(Decryptor<R> where R: io::Read);
+assert_send_and_sync!(Decryptor<'_>);
 
-impl<R: io::Read> Decryptor<R> {
-    /// Instantiate a new symmetric decryptor.  `reader` is the source
-    /// to wrap.
-    pub fn new(algo: SymmetricAlgorithm, key: &[u8], source: R) -> Result<Self> {
+impl<'a> Decryptor<'a> {
+    /// Instantiate a new symmetric decryptor.
+    ///
+    /// `reader` is the source to wrap.
+    pub fn new<R>(algo: SymmetricAlgorithm, key: &[u8], source: R)
+                  -> Result<Self>
+    where
+        R: io::Read + Send + Sync + 'a,
+    {
+        Self::from_buffered_reader(
+            algo, key,
+            Box::new(buffered_reader::Generic::with_cookie(
+                source, None, Default::default())))
+    }
+
+    /// Instantiate a new symmetric decryptor.
+    fn from_buffered_reader(algo: SymmetricAlgorithm, key: &[u8],
+                            source: Box<dyn BufferedReader<Cookie> + 'a>)
+                            -> Result<Self>
+    {
         let block_size = algo.block_size()?;
         let iv = vec![0; block_size];
         let dec = algo.make_decrypt_cfb(key, iv)?;
@@ -63,49 +80,15 @@ impl<R: io::Read> Decryptor<R> {
             dec,
             block_size,
             buffer: Vec::with_capacity(block_size),
-            ciphertext: Vec::with_capacity(8 * 1024),
         })
     }
-}
-
-// Fills `buffer` with data from `R` and returns the number of bytes
-// actually read.  This will only return less than `buffer.len()`
-// bytes if the end of the file is reached or an error is encountered.
-fn read_exact<R: io::Read>(reader: &mut R, mut buffer: &mut [u8])
-    -> io::Result<usize>
-{
-    let mut read = 0;
-
-    while !buffer.is_empty() {
-        match reader.read(buffer) {
-            Ok(0) => break,
-            Ok(n) => {
-                read += n;
-                let tmp = buffer;
-                buffer = &mut tmp[n..];
-            },
-            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => {}
-            Err(e) => {
-                // We don't buffer the error.  Instead, we assume that
-                // the same error will be encountered if the user
-                // tries to read from source again.
-                if read > 0 {
-                    return Ok(read);
-                } else {
-                    return Err(e);
-                }
-            },
-        }
-    }
-
-    Ok(read)
 }
 
 // Note: this implementation tries *very* hard to make sure we don't
 // gratuitiously do a short read.  Specifically, if the return value
 // is less than `plaintext.len()`, then it is either because we
 // reached the end of the input or an error occurred.
-impl<R: io::Read> io::Read for Decryptor<R> {
+impl<'a> io::Read for Decryptor<'a> {
     fn read(&mut self, plaintext: &mut [u8]) -> io::Result<usize> {
         let mut pos = 0;
 
@@ -124,22 +107,21 @@ impl<R: io::Read> io::Read for Decryptor<R> {
         // 2. Decrypt as many whole blocks as `plaintext` can hold.
         let mut to_copy
             = ((plaintext.len() - pos) / self.block_size) *  self.block_size;
-        vec_resize(&mut self.ciphertext, to_copy);
-        let result = read_exact(&mut self.source, &mut self.ciphertext[..]);
+        let result = self.source.data_consume(to_copy);
         let short_read;
-        match result {
-            Ok(amount) => {
-                short_read = amount < to_copy;
-                to_copy = amount;
-                vec_truncate(&mut self.ciphertext, to_copy);
+        let ciphertext = match result {
+            Ok(data) => {
+                short_read = data.len() < to_copy;
+                to_copy = data.len().min(to_copy);
+                &data[..to_copy]
             },
             // We encountered an error, but we did read some.
             Err(_) if pos > 0 => return Ok(pos),
             Err(e) => return Err(e),
-        }
+        };
 
         self.dec.decrypt(&mut plaintext[pos..pos + to_copy],
-                         &self.ciphertext[..])
+                         ciphertext)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput,
                                         format!("{}", e)))?;
 
@@ -154,26 +136,23 @@ impl<R: io::Read> io::Read for Decryptor<R> {
         assert!(0 < to_copy);
         assert!(to_copy < self.block_size);
 
-        vec_resize(&mut self.ciphertext, self.block_size);
-        let result = read_exact(&mut self.source, &mut self.ciphertext[..]);
-        match result {
-            Ok(amount) => {
-                // Make sure `ciphertext` is not larger than the
-                // amount of data that was actually read.
-                vec_truncate(&mut self.ciphertext, amount);
-
+        let to_read = self.block_size;
+        let result = self.source.data_consume(to_read);
+        let ciphertext = match result {
+            Ok(data) => {
                 // Make sure we don't read more than is available.
-                to_copy = cmp::min(to_copy, self.ciphertext.len());
+                to_copy = cmp::min(to_copy, data.len());
+                &data[..data.len().min(to_read)]
             },
             // We encountered an error, but we did read some.
             Err(_) if pos > 0 => return Ok(pos),
             Err(e) => return Err(e),
-        }
-        assert!(self.ciphertext.len() <= self.block_size);
+        };
+        assert!(ciphertext.len() <= self.block_size);
 
-        vec_resize(&mut self.buffer, self.ciphertext.len());
+        vec_resize(&mut self.buffer, ciphertext.len());
 
-        self.dec.decrypt(&mut self.buffer, &self.ciphertext[..])
+        self.dec.decrypt(&mut self.buffer, ciphertext)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput,
                                         format!("{}", e)))?;
 
@@ -188,38 +167,40 @@ impl<R: io::Read> io::Read for Decryptor<R> {
 
 /// A `BufferedReader` that decrypts symmetrically-encrypted data as
 /// it is read.
-pub(crate) struct BufferedReaderDecryptor<R: BufferedReader<C>, C: fmt::Debug + Send + Sync> {
-    reader: buffered_reader::Generic<Decryptor<R>, C>,
+pub(crate) struct BufferedReaderDecryptor<'a> {
+    reader: buffered_reader::Generic<Decryptor<'a>, Cookie>,
 }
 
-impl <R: BufferedReader<C>, C: fmt::Debug + Send + Sync> BufferedReaderDecryptor<R, C> {
+impl<'a> BufferedReaderDecryptor<'a> {
     /// Like `new()`, but sets a cookie, which can be retrieved using
     /// the `cookie_ref` and `cookie_mut` methods, and set using
     /// the `cookie_set` method.
-    pub fn with_cookie(algo: SymmetricAlgorithm, key: &[u8], reader: R,
-                       cookie: C)
+    pub fn with_cookie(algo: SymmetricAlgorithm, key: &[u8],
+                       reader: Box<dyn BufferedReader<Cookie> + 'a>,
+                       cookie: Cookie)
         -> Result<Self>
     {
         Ok(BufferedReaderDecryptor {
             reader: buffered_reader::Generic::with_cookie(
-                Decryptor::new(algo, key, reader)?, None, cookie),
+                Decryptor::from_buffered_reader(algo, key, reader)?,
+                None, cookie),
         })
     }
 }
 
-impl<R: BufferedReader<C>, C: fmt::Debug + Send + Sync> io::Read for BufferedReaderDecryptor<R, C> {
+impl<'a> io::Read for BufferedReaderDecryptor<'a> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.reader.read(buf)
     }
 }
 
-impl<R: BufferedReader<C>, C: fmt::Debug + Send + Sync> fmt::Display for BufferedReaderDecryptor<R, C> {
+impl<'a> fmt::Display for BufferedReaderDecryptor<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "BufferedReaderDecryptor")
     }
 }
 
-impl<R: BufferedReader<C>, C: fmt::Debug + Send + Sync> fmt::Debug for BufferedReaderDecryptor<R, C> {
+impl<'a> fmt::Debug for BufferedReaderDecryptor<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("BufferedReaderDecryptor")
             .field("reader", &self.get_ref().unwrap())
@@ -227,8 +208,7 @@ impl<R: BufferedReader<C>, C: fmt::Debug + Send + Sync> fmt::Debug for BufferedR
     }
 }
 
-impl<R: BufferedReader<C>, C: fmt::Debug + Send + Sync> BufferedReader<C>
-        for BufferedReaderDecryptor<R, C> {
+impl<'a> BufferedReader<Cookie> for BufferedReaderDecryptor<'a> {
     fn buffer(&self) -> &[u8] {
         self.reader.buffer()
     }
@@ -274,28 +254,28 @@ impl<R: BufferedReader<C>, C: fmt::Debug + Send + Sync> BufferedReader<C>
         self.reader.steal_eof()
     }
 
-    fn get_mut(&mut self) -> Option<&mut dyn BufferedReader<C>> {
+    fn get_mut(&mut self) -> Option<&mut dyn BufferedReader<Cookie>> {
         Some(&mut self.reader.reader_mut().source)
     }
 
-    fn get_ref(&self) -> Option<&dyn BufferedReader<C>> {
+    fn get_ref(&self) -> Option<&dyn BufferedReader<Cookie>> {
         Some(&self.reader.reader_ref().source)
     }
 
     fn into_inner<'b>(self: Box<Self>)
-            -> Option<Box<dyn BufferedReader<C> + 'b>> where Self: 'b {
+            -> Option<Box<dyn BufferedReader<Cookie> + 'b>> where Self: 'b {
         Some(self.reader.into_reader().source.as_boxed())
     }
 
-    fn cookie_set(&mut self, cookie: C) -> C {
+    fn cookie_set(&mut self, cookie: Cookie) -> Cookie {
         self.reader.cookie_set(cookie)
     }
 
-    fn cookie_ref(&self) -> &C {
+    fn cookie_ref(&self) -> &Cookie {
         self.reader.cookie_ref()
     }
 
-    fn cookie_mut(&mut self) -> &mut C {
+    fn cookie_mut(&mut self) -> &mut Cookie {
         self.reader.cookie_mut()
     }
 }

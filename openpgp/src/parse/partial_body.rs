@@ -5,7 +5,7 @@ use std::io::{Error, ErrorKind};
 
 use buffered_reader::{buffered_reader_generic_read_impl, BufferedReader};
 
-use crate::vec_truncate;
+use crate::{vec_resize, vec_truncate};
 use crate::packet::header::BodyLength;
 use crate::parse::{Cookie, Hashing};
 
@@ -29,9 +29,11 @@ pub(crate) struct BufferedReaderPartialBodyFilter<T: BufferedReader<Cookie>> {
     // Sometimes we have to double buffer.  This happens if the caller
     // requests X bytes and that chunk straddles a partial body length
     // boundary.
-    buffer: Option<Box<[u8]>>,
+    buffer: Option<Vec<u8>>,
     // The position within the buffer.
     cursor: usize,
+    /// Currently unused buffers.
+    unused_buffers: Vec<Vec<u8>>,
 
     // The user-defined cookie.
     cookie: Cookie,
@@ -79,6 +81,7 @@ impl<T: BufferedReader<Cookie>> BufferedReaderPartialBodyFilter<T> {
             last: false,
             buffer: None,
             cursor: 0,
+            unused_buffers: Vec::with_capacity(2),
             cookie,
             hash_headers,
         }
@@ -86,15 +89,25 @@ impl<T: BufferedReader<Cookie>> BufferedReaderPartialBodyFilter<T> {
 
     // Make sure that the local buffer contains `amount` bytes.
     fn do_fill_buffer (&mut self, amount: usize) -> Result<(), std::io::Error> {
-        if TRACE {
-            eprintln!("BufferedReaderPartialBodyFilter::do_fill_buffer(\
-                       amount: {}) (partial body length: {}, last: {})",
-                      amount, self.partial_body_length, self.last);
+        tracer!(TRACE, "PBF::do_fill_buffer", self.cookie.level.unwrap_or(0));
+        t!("BufferedReaderPartialBodyFilter::do_fill_buffer(\
+            amount: {}) (partial body length: {}, last: {})",
+           amount, self.partial_body_length, self.last);
+
+        if self.last && self.partial_body_length == 0 {
+            // We reached the end.  Avoid fruitlessly copying data
+            // over and over again trying to buffer more data.
+            return Ok(());
         }
 
         // We want to avoid double buffering as much as possible.
         // Thus, we only buffer as much as needed.
-        let mut buffer = vec![0; amount];
+        let mut buffer = self.unused_buffers.pop()
+            .map(|mut v| {
+                vec_resize(&mut v, amount);
+                v
+            })
+            .unwrap_or_else(|| vec![0u8; amount]);
         let mut amount_buffered = 0;
 
         if let Some(ref old_buffer) = self.buffer {
@@ -111,6 +124,7 @@ impl<T: BufferedReader<Cookie>> BufferedReaderPartialBodyFilter<T> {
             buffer[..amount_buffered]
                 .copy_from_slice(&old_buffer[self.cursor..]);
 
+            t!("Copied {} bytes from the old buffer", amount_buffered);
         }
 
         let mut err = None;
@@ -121,20 +135,16 @@ impl<T: BufferedReader<Cookie>> BufferedReaderPartialBodyFilter<T> {
                 self.partial_body_length as usize,
                 // Space left in the buffer.
                 buffer.len() - amount_buffered);
-            if TRACE {
-                eprintln!("Trying to buffer {} bytes \
-                           (partial body length: {}; space: {})",
-                          to_read, self.partial_body_length,
-                          buffer.len() - amount_buffered);
-            }
+            t!("Trying to buffer {} bytes \
+                (partial body length: {}; space: {})",
+               to_read, self.partial_body_length,
+               buffer.len() - amount_buffered);
             if to_read > 0 {
                 let result = self.reader.read(
                     &mut buffer[amount_buffered..amount_buffered + to_read]);
                 match result {
                     Ok(did_read) => {
-                        if TRACE {
-                            eprintln!("Buffered {} bytes", did_read);
-                        }
+                        t!("Buffered {} bytes", did_read);
                         amount_buffered += did_read;
                         self.partial_body_length -= did_read as u32;
 
@@ -146,9 +156,7 @@ impl<T: BufferedReader<Cookie>> BufferedReaderPartialBodyFilter<T> {
                         }
                     },
                     Err(e) => {
-                        if TRACE {
-                            eprintln!("Err reading: {:?}", e);
-                        }
+                        t!("Err reading: {:?}", e);
                         err = Some(e);
                         break;
                     },
@@ -171,10 +179,8 @@ impl<T: BufferedReader<Cookie>> BufferedReaderPartialBodyFilter<T> {
                 }
             }
 
-            if TRACE {
-                eprintln!("Reading next chunk's header (hashing: {}, level: {:?})",
-                          self.hash_headers, self.reader.cookie_ref().level);
-            }
+            t!("Reading next chunk's header (hashing: {}, level: {:?})",
+               self.hash_headers, self.reader.cookie_ref().level);
             let body_length = BodyLength::parse_new_format(&mut self.reader);
 
             if ! self.hash_headers {
@@ -186,12 +192,12 @@ impl<T: BufferedReader<Cookie>> BufferedReaderPartialBodyFilter<T> {
 
             match body_length {
                 Ok(BodyLength::Full(len)) => {
-                    //println!("Last chunk: {} bytes", len);
+                    t!("Last chunk: {} bytes", len);
                     self.last = true;
                     self.partial_body_length = len;
                 },
                 Ok(BodyLength::Partial(len)) => {
-                    //println!("Next chunk: {} bytes", len);
+                    t!("Next chunk: {} bytes", len);
                     self.partial_body_length = len;
                 },
                 Ok(BodyLength::Indeterminate) => {
@@ -199,17 +205,20 @@ impl<T: BufferedReader<Cookie>> BufferedReaderPartialBodyFilter<T> {
                     unreachable!();
                 },
                 Err(e) => {
-                    //println!("Err reading next chunk: {:?}", e);
+                    t!("Err reading next chunk: {:?}", e);
                     err = Some(e);
                     break;
                 }
             }
         }
         vec_truncate(&mut buffer, amount_buffered);
-        buffer.shrink_to_fit();
 
         // We're done.
-        self.buffer = Some(buffer.into_boxed_slice());
+
+        if let Some(b) = self.buffer.take() {
+            self.unused_buffers.push(b);
+        }
+        self.buffer = Some(buffer);
         self.cursor = 0;
 
         if let Some(err) = err {
@@ -221,9 +230,22 @@ impl<T: BufferedReader<Cookie>> BufferedReaderPartialBodyFilter<T> {
 
     fn data_helper(&mut self, amount: usize, hard: bool, and_consume: bool)
                    -> Result<&[u8], std::io::Error> {
+        tracer!(TRACE, "PBF::data_helper", self.cookie.level.unwrap_or(0));
         let mut need_fill = false;
 
-        //println!("BufferedReaderPartialBodyFilter::data_helper({})", amount);
+        t!("amount {}, hard {:?}, and_consume {:?}, buffered {}, cursor {}",
+           amount, hard, and_consume,
+           self.buffer.as_ref().map(|b| b.len()).unwrap_or(0),
+           self.cursor);
+
+        if self.buffer.as_ref().map(|b| b.len() == self.cursor).unwrap_or(false)
+        {
+            // We have data and it has been exhausted exactly.  This
+            // is our opportunity to get back to the happy path where
+            // we don't need to double buffer.
+            self.unused_buffers.push(self.buffer.take().expect("have buffer"));
+            self.cursor = 0;
+        }
 
         if let Some(ref buffer) = self.buffer {
             // We have some data buffered locally.
@@ -239,6 +261,8 @@ impl<T: BufferedReader<Cookie>> BufferedReaderPartialBodyFilter<T> {
                 // is borrowed.  Set a flag and do it after the borrow
                 // ends.
                 need_fill = true;
+                t!("Read of {} bytes exceeds buffered {} bytes",
+                   amount, amount_buffered);
             }
         } else {
             // We don't have any data buffered.
@@ -285,11 +309,12 @@ impl<T: BufferedReader<Cookie>> BufferedReaderPartialBodyFilter<T> {
                 //println!("  Read crosses chunk boundary.  Need to buffer.");
 
                 need_fill = true;
+                t!("Read straddles partial body chunk boundary");
             }
         }
 
         if need_fill {
-            //println!("  Need to refill the buffer.");
+            t!("Need to refill the buffer.");
             let result = self.do_fill_buffer(amount);
             if let Err(err) = result {
                 return Err(err);
