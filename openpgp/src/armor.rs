@@ -46,10 +46,12 @@ use crate::packet::prelude::*;
 use crate::packet::header::{BodyLength, CTBNew, CTBOld};
 use crate::parse::Cookie;
 use crate::serialize::MarshalInto;
-use crate::vec_truncate;
+use crate::{vec_resize, vec_truncate};
 
 mod base64_utils;
 use base64_utils::*;
+mod crc;
+use crc::CRC;
 
 /// The encoded output stream must be represented in lines of no more
 /// than 76 characters each (see (see [RFC 4880, section
@@ -237,6 +239,7 @@ pub struct Writer<W: Write> {
     crc: CRC,
     header: Vec<u8>,
     dirty: bool,
+    scratch: Vec<u8>,
 }
 assert_send_and_sync!(Writer<W> where W: Write);
 
@@ -309,6 +312,7 @@ impl<W: Write> Writer<W> {
             crc: CRC::new(),
             header: Vec::with_capacity(128),
             dirty: false,
+            scratch: vec![0; 4096],
         };
 
         {
@@ -401,6 +405,7 @@ impl<W: Write> Writer<W> {
                LINE_ENDING, self.kind.end(), LINE_ENDING)?;
 
         self.dirty = false;
+        crate::vec_truncate(&mut self.scratch, 0);
         Ok(())
     }
 
@@ -418,6 +423,7 @@ impl<W: Write> Writer<W> {
 impl<W: Write> Write for Writer<W> {
     fn write(&mut self, buf: &[u8]) -> Result<usize> {
         self.finalize_headers()?;
+        assert!(self.dirty);
 
         // Update CRC on the unencoded data.
         self.crc.update(buf);
@@ -430,16 +436,15 @@ impl<W: Write> Write for Writer<W> {
         // might end up with a stash of size 3.
         assert!(self.stash.len() <= 3);
         if !self.stash.is_empty() {
-            while self.stash.len() < 3 {
-                if input.is_empty() {
-                    /* We exhausted the input.  Return now, any
-                     * stashed bytes are encoded when finalizing the
-                     * writer.  */
-                    return Ok(written);
-                }
-                self.stash.push(input[0]);
-                input = &input[1..];
-                written += 1;
+            let missing = 3 - self.stash.len();
+            let n = missing.min(input.len());
+            self.stash.extend_from_slice(&input[..n]);
+            input = &input[n..];
+            written += n;
+            if input.is_empty() {
+                // We exhausted the input.  Return now, any stashed
+                // bytes are encoded when finalizing the writer.
+                return Ok(written);
             }
             assert_eq!(self.stash.len(), 3);
 
@@ -453,30 +458,37 @@ impl<W: Write> Write for Writer<W> {
             crate::vec_truncate(&mut self.stash, 0);
         }
 
-        // Ensure that a multiple of 3 bytes are encoded, stash the
-        // rest from the end of input.
-        while input.len() % 3 > 0 {
-            self.stash.push(input[input.len()-1]);
-            input = &input[..input.len()-1];
-            written += 1;
-        }
-        // We popped values from the end of the input, fix the order.
-        self.stash.reverse();
-        assert!(self.stash.len() < 3);
+        // Encode all whole blocks of 3 bytes.
+        let n_blocks = input.len() / 3;
+        let input_bytes = n_blocks * 3;
+        if input_bytes > 0 {
+            // Encrypt whole blocks.
+            let encoded_bytes = n_blocks * 4;
+            if self.scratch.len() < encoded_bytes {
+                vec_resize(&mut self.scratch, encoded_bytes);
+            }
 
-        // We know that we have a multiple of 3 bytes, encode them and write them out.
-        assert!(input.len() % 3 == 0);
-        let encoded = base64::encode_config(input, base64::STANDARD_NO_PAD);
-        written += input.len();
-        let mut enc = encoded.as_bytes();
-        while !enc.is_empty() {
-            let n = cmp::min(LINE_LENGTH - self.column, enc.len());
-            self.sink
-                .write_all(&enc[..n])?;
-            enc = &enc[n..];
-            self.column += n;
-            self.linebreak()?;
+            written += input_bytes;
+            base64::encode_config_slice(&input[..input_bytes],
+                                        base64::STANDARD_NO_PAD,
+                                        &mut self.scratch[..encoded_bytes]);
+
+            let mut n = 0;
+            while ! self.scratch[n..encoded_bytes].is_empty() {
+                let m = self.scratch[n..encoded_bytes].len()
+                    .min(LINE_LENGTH - self.column);
+                self.sink.write_all(&self.scratch[n..n + m])?;
+                n += m;
+                self.column += m;
+                self.linebreak()?;
+            }
         }
+
+        // Stash rest for later.
+        input = &input[input_bytes..];
+        assert!(input.is_empty() || self.stash.is_empty());
+        self.stash.extend_from_slice(input);
+        written += input.len();
 
         assert_eq!(written, buf.len());
         Ok(written)
@@ -1715,40 +1727,6 @@ impl BufferedReader<Cookie> for Reader<'_> {
     }
 }
 
-const CRC24_INIT: u32 = 0xB704CE;
-const CRC24_POLY: u32 = 0x864CFB;
-
-#[derive(Debug)]
-struct CRC {
-    n: u32,
-}
-
-/// Computes the CRC-24, (see [RFC 4880, section 6.1]).
-///
-/// [RFC 4880, section 6.1]: https://tools.ietf.org/html/rfc4880#section-6.1
-impl CRC {
-    fn new() -> Self {
-        CRC { n: CRC24_INIT }
-    }
-
-    fn update(&mut self, buf: &[u8]) -> &Self {
-        for octet in buf {
-            self.n ^= (*octet as u32) << 16;
-            for _ in 0..8 {
-                self.n <<= 1;
-                if self.n & 0x1000000 > 0 {
-                    self.n ^= CRC24_POLY;
-                }
-            }
-        }
-        self
-    }
-
-    fn finalize(&self) -> u32 {
-        self.n & 0xFFFFFF
-    }
-}
-
 /// Returns all character from Unicode's "Dash Punctuation" category.
 fn dashes() -> impl Iterator<Item = char> {
     ['\u{002D}', // - (Hyphen-Minus)
@@ -1829,30 +1807,8 @@ fn dash_prefix(d: &[u8]) -> (&[u8], &[u8]) {
 #[cfg(test)]
 mod test {
     use std::io::{Cursor, Read, Write};
-    use super::CRC;
     use super::Kind;
     use super::Writer;
-
-    #[test]
-    fn crc() {
-        let b = b"foobarbaz";
-        let crcs = [
-            0xb704ce,
-            0x6d2804,
-            0xa2d10d,
-            0x4fc255,
-            0x7aafca,
-            0xc79c46,
-            0x7334de,
-            0x77dc72,
-            0x000f65,
-            0xf40d86,
-        ];
-
-        for len in 0..b.len() + 1 {
-            assert_eq!(CRC::new().update(&b[..len]).finalize(), crcs[len]);
-        }
-    }
 
     macro_rules! t {
         ( $path: expr ) => {
@@ -1886,7 +1842,9 @@ mod test {
 
     #[test]
     fn enarmor() {
-        for (bin, asc) in TEST_BIN.iter().zip(TEST_ASC.iter()) {
+        for (i, (bin, asc)) in TEST_BIN.iter().zip(TEST_ASC.iter()).enumerate()
+        {
+            eprintln!("Test {}", i);
             let mut w =
                 Writer::new(Vec::new(), Kind::File).unwrap();
             w.write(&[]).unwrap();  // Avoid zero-length optimization.
