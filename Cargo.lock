@@ -431,10 +431,12 @@ version = "0.4.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "670ad68c9088c2a963aaa298cb369688cf3f9465ce5e2d4ca10e6e0098a1ce73"
 dependencies = [
+ "js-sys",
  "libc",
  "num-integer",
  "num-traits",
  "time",
+ "wasm-bindgen",
  "winapi 0.3.9",
 ]
 
@@ -1240,8 +1242,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fc3cb4d91f53b50155bdcfd23f6a4c39ae1969c2ae85982b135750cccaf5fce"
 dependencies = [
  "cfg-if 1.0.0",
+ "js-sys",
  "libc",
  "wasi 0.9.0+wasi-snapshot-preview1",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -1251,8 +1255,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7fcd999463524c52659517fe2cea98493cfe485d10565e7b0fb07dbba7ad2753"
 dependencies = [
  "cfg-if 1.0.0",
+ "js-sys",
  "libc",
  "wasi 0.10.2+wasi-snapshot-preview1",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -2881,6 +2887,7 @@ dependencies = [
  "ed25519-dalek",
  "flate2",
  "generic-array 0.14.4",
+ "getrandom 0.2.3",
  "idea",
  "idna",
  "lalrpop",
@@ -3057,13 +3064,12 @@ dependencies = [
 
 [[package]]
 name = "sha1collisiondetection"
-version = "0.2.3"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7a6cf187c4059b3e63de2358b7e2f9a2261b6f3fd8ef4e7342308d0863ed082"
+checksum = "bc164aaaccb1cdd48663ff54a6ffc3026522e6ce5c4fa24608ea061259b16e8f"
 dependencies = [
  "digest 0.9.0",
- "generic-array 0.14.4",
- "libc",
+ "generic-array 0.12.4",
 ]
 
 [[package]]
