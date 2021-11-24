@@ -239,6 +239,35 @@ rust-stable:
     CARGO_HOME: /cargo
     RUSTFLAGS: -D warnings -A unused-parens
 
+semverver:
+  tags:
+    - linux
+  stage: build
+  image: registry.gitlab.com/sequoia-pgp/build-docker-image/sanitizer-nightly:latest
+  before_script:
+    - if [ -d $CARGO_TARGET_DIR ]; then find $CARGO_TARGET_DIR | wc --lines; du -sh $CARGO_TARGET_DIR; fi
+    - if [ -d $CARGO_HOME ]; then find $CARGO_HOME | wc --lines; du -sh $CARGO_HOME; fi
+    - rm rust-toolchain
+    - rustup default nightly-2021-09-30
+    - rustup component add rustc-dev llvm-tools-preview --toolchain nightly-2021-09-30
+    - cargo +nightly-2021-09-30 install semverver
+    - rustc --version
+    - cargo --version
+    - clang --version
+  script:
+    - cd openpgp
+    # fetch the version in the manifest of your crate (adapt this to your usecase
+    # if needed)
+    - eval "current_version=$(grep -e '^version = .*$' Cargo.toml | cut -d ' ' -f 3)"
+    # run the semver checks and output them for convenience
+    - cargo semver | tee semver_out
+    # fail the build if necessary
+    - (head -n 1 semver_out | grep "\-> $current_version") || (echo "versioning mismatch" && return 1)
+  variables:
+    CARGO_TARGET_DIR: /target
+    CARGO_HOME: /cargo
+    RUSTFLAGS: -D warnings -A unused-parens
+
 clippy:
   tags:
     - linux
