@@ -1,5 +1,6 @@
 stages:
   - pre-check
+  - tokio
   - build
   - test
 
@@ -66,6 +67,36 @@ bullseye:
     - codespell
   script:
     - SEQUOIA_CTEST_VALGRIND=/usr/bin/valgrind $MAKE_TOP test
+  variables:
+    CARGO_TARGET_DIR: /target
+    CARGO_HOME: /cargo
+    RUSTFLAGS: -D warnings -A unused-parens
+  after_script: []
+
+tokio-ipc:
+  tags:
+    - linux
+  stage: tokio
+  image: registry.gitlab.com/sequoia-pgp/build-docker-image/bullseye-prebuild:latest
+  needs:
+    - codespell
+  script:
+    - cargo test -p sequoia-ipc
+  variables:
+    CARGO_TARGET_DIR: /target
+    CARGO_HOME: /cargo
+    RUSTFLAGS: -D warnings -A unused-parens
+  after_script: []
+
+tokio-store:
+  tags:
+    - linux
+  stage: tokio
+  image: registry.gitlab.com/sequoia-pgp/build-docker-image/bullseye-prebuild:latest
+  needs:
+    - codespell
+  script:
+    - cargo test -p sequoia-store
   variables:
     CARGO_TARGET_DIR: /target
     CARGO_HOME: /cargo
