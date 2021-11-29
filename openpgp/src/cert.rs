@@ -814,7 +814,7 @@ impl Cert {
     /// ```
     pub fn primary_key(&self) -> PrimaryKeyAmalgamation<key::PublicParts>
     {
-        PrimaryKeyAmalgamation::new(&self)
+        PrimaryKeyAmalgamation::new(self)
     }
 
     /// Returns the certificate's revocation status.
@@ -961,7 +961,7 @@ impl Cert {
     {
         CertRevocationBuilder::new()
             .set_reason_for_revocation(code, reason)?
-            .build(primary_signer, &self, None)
+            .build(primary_signer, self, None)
     }
 
     /// Sets the key to expire in delta seconds.
@@ -1527,9 +1527,7 @@ impl Cert {
                 t!("check!({}, {}, {:?}, {}, ...)",
                    $desc, stringify!($binding), $binding.$sigs,
                    stringify!($verify_method));
-                for mut sig in mem::replace(&mut $binding.$sigs, Vec::new())
-                    .into_iter()
-                 {
+                for mut sig in mem::take(&mut $binding.$sigs).into_iter() {
                      match sig.$verify_method(self.primary.key(),
                                               self.primary.key(),
                                               $($verify_args),*) {
@@ -1567,9 +1565,7 @@ impl Cert {
                 t!("check_3rd_party!({}, {}, {:?}, {}, {}, ...)",
                    $desc, stringify!($binding), $binding.$sigs,
                    stringify!($verify_method), stringify!($hash_method));
-                for mut sig in mem::replace(&mut $binding.$sigs, Vec::new())
-                    .into_iter()
-                {
+                for mut sig in mem::take(&mut $binding.$sigs) {
                     // Use hash prefix as heuristic.
                     let key = self.primary.key();
                     match sig.hash_algo().context().and_then(|mut ctx| {
@@ -1709,7 +1705,7 @@ impl Cert {
         // See if the signatures that didn't validate are just out of
         // place.
         let mut bad_sigs: Vec<(Option<usize>, Signature)> =
-            mem::replace(&mut self.bad, Vec::new()).into_iter()
+            std::mem::take(&mut self.bad).into_iter()
             .map(|sig| {
                 t!("We're going to reconsider bad signature {:?}", sig);
                 (None, sig)
@@ -1720,15 +1716,15 @@ impl Cert {
         // remember where we took them from.
         for (i, c) in self.unknowns.iter_mut().enumerate() {
             for sig in
-                mem::replace(&mut c.self_signatures, Vec::new()).into_iter()
+                std::mem::take(&mut c.self_signatures).into_iter()
                 .chain(
-                    mem::replace(&mut c.certifications, Vec::new()).into_iter())
+                    std::mem::take(&mut c.certifications).into_iter())
                 .chain(
-                    mem::replace(&mut c.attestations, Vec::new()).into_iter())
+                    std::mem::take(&mut c.attestations).into_iter())
                 .chain(
-                    mem::replace(&mut c.self_revocations, Vec::new()).into_iter())
+                    std::mem::take(&mut c.self_revocations).into_iter())
                 .chain(
-                    mem::replace(&mut c.other_revocations, Vec::new()).into_iter())
+                    std::mem::take(&mut c.other_revocations).into_iter())
             {
                 t!("We're going to reconsider {:?} on unknown component #{}",
                    sig, i);
@@ -2477,29 +2473,29 @@ impl Cert {
                         // they match, then we keep whatever is in the
                         // new key.
                         (Packet::PublicKey(a), Packet::PublicKey(b)) =>
-                            (a.public_cmp(&b) == Ordering::Equal,
+                            (a.public_cmp(b) == Ordering::Equal,
                              a == b),
                         (Packet::SecretKey(a), Packet::SecretKey(b)) =>
-                            (a.public_cmp(&b) == Ordering::Equal,
+                            (a.public_cmp(b) == Ordering::Equal,
                              a == b),
                         (Packet::PublicKey(a), Packet::SecretKey(b)) =>
-                            (a.public_cmp(&b) == Ordering::Equal,
+                            (a.public_cmp(b) == Ordering::Equal,
                              false),
                         (Packet::SecretKey(a), Packet::PublicKey(b)) =>
-                            (a.public_cmp(&b) == Ordering::Equal,
+                            (a.public_cmp(b) == Ordering::Equal,
                              false),
 
                         (Packet::PublicSubkey(a), Packet::PublicSubkey(b)) =>
-                            (a.public_cmp(&b) == Ordering::Equal,
+                            (a.public_cmp(b) == Ordering::Equal,
                              a == b),
                         (Packet::SecretSubkey(a), Packet::SecretSubkey(b)) =>
-                            (a.public_cmp(&b) == Ordering::Equal,
+                            (a.public_cmp(b) == Ordering::Equal,
                              a == b),
                         (Packet::PublicSubkey(a), Packet::SecretSubkey(b)) =>
-                            (a.public_cmp(&b) == Ordering::Equal,
+                            (a.public_cmp(b) == Ordering::Equal,
                              false),
                         (Packet::SecretSubkey(a), Packet::PublicSubkey(b)) =>
-                            (a.public_cmp(&b) == Ordering::Equal,
+                            (a.public_cmp(b) == Ordering::Equal,
                              false),
 
                         // For signatures, don't compare the unhashed
@@ -4097,8 +4093,8 @@ mod test {
 
         // Keyring with two good keys
         let mut combined = vec![];
-        combined.extend_from_slice(&dkg[..]);
-        combined.extend_from_slice(&dkg[..]);
+        combined.extend_from_slice(dkg);
+        combined.extend_from_slice(dkg);
         let certs = CertParser::from_bytes(&combined[..]).unwrap()
             .map(|certr| certr.is_ok())
             .collect::<Vec<bool>>();
@@ -4106,8 +4102,8 @@ mod test {
 
         // Keyring with a good key, and a bad key.
         let mut combined = vec![];
-        combined.extend_from_slice(&dkg[..]);
-        combined.extend_from_slice(&lutz[..]);
+        combined.extend_from_slice(dkg);
+        combined.extend_from_slice(lutz);
         let certs = CertParser::from_bytes(&combined[..]).unwrap()
             .map(|certr| certr.is_ok())
             .collect::<Vec<bool>>();
@@ -4115,8 +4111,8 @@ mod test {
 
         // Keyring with a bad key, and a good key.
         let mut combined = vec![];
-        combined.extend_from_slice(&lutz[..]);
-        combined.extend_from_slice(&dkg[..]);
+        combined.extend_from_slice(lutz);
+        combined.extend_from_slice(dkg);
         let certs = CertParser::from_bytes(&combined[..]).unwrap()
             .map(|certr| certr.is_ok())
             .collect::<Vec<bool>>();
@@ -4124,9 +4120,9 @@ mod test {
 
         // Keyring with a good key, a bad key, and a good key.
         let mut combined = vec![];
-        combined.extend_from_slice(&dkg[..]);
-        combined.extend_from_slice(&lutz[..]);
-        combined.extend_from_slice(&dkg[..]);
+        combined.extend_from_slice(dkg);
+        combined.extend_from_slice(lutz);
+        combined.extend_from_slice(dkg);
         let certs = CertParser::from_bytes(&combined[..]).unwrap()
             .map(|certr| certr.is_ok())
             .collect::<Vec<bool>>();
@@ -4134,9 +4130,9 @@ mod test {
 
         // Keyring with a good key, a bad key, and a bad key.
         let mut combined = vec![];
-        combined.extend_from_slice(&dkg[..]);
-        combined.extend_from_slice(&lutz[..]);
-        combined.extend_from_slice(&lutz[..]);
+        combined.extend_from_slice(dkg);
+        combined.extend_from_slice(lutz);
+        combined.extend_from_slice(lutz);
         let certs = CertParser::from_bytes(&combined[..]).unwrap()
             .map(|certr| certr.is_ok())
             .collect::<Vec<bool>>();
@@ -4144,10 +4140,10 @@ mod test {
 
         // Keyring with a good key, a bad key, a bad key, and a good key.
         let mut combined = vec![];
-        combined.extend_from_slice(&dkg[..]);
-        combined.extend_from_slice(&lutz[..]);
-        combined.extend_from_slice(&lutz[..]);
-        combined.extend_from_slice(&dkg[..]);
+        combined.extend_from_slice(dkg);
+        combined.extend_from_slice(lutz);
+        combined.extend_from_slice(lutz);
+        combined.extend_from_slice(dkg);
         let certs = CertParser::from_bytes(&combined[..]).unwrap()
             .map(|certr| certr.is_ok())
             .collect::<Vec<bool>>();
@@ -4208,7 +4204,7 @@ mod test {
         let cert = Cert::from_bytes(crate::tests::key("already-revoked.pgp")).unwrap();
 
         let rev = crate::tests::key("already-revoked.rev");
-        let rev = PacketPile::from_reader(armor::Reader::new(&rev[..], None))
+        let rev = PacketPile::from_reader(armor::Reader::new(rev, None))
             .unwrap();
 
         let rev : Vec<Packet> = rev.into_children().collect();
@@ -4268,7 +4264,7 @@ mod test {
         // Insert sig_a and sig_b.  Make sure sig_b (and it alone)
         // appears.
         let cert2 = cert.clone().insert_packets(
-            vec![ sig_a.clone().into(), sig_b.clone() ])?;
+            vec![ sig_a.clone(), sig_b.clone() ])?;
         let mut sigs = cert2.primary_key().self_signatures();
         assert_eq!(sigs.next(), Some(&sig_b));
         assert!(sigs.next().is_none());
@@ -4277,7 +4273,7 @@ mod test {
         // Insert sig_b and sig_a.  Make sure sig_a (and it alone)
         // appears.
         let cert2 = cert.clone().insert_packets(
-            vec![ sig_b.clone().into(), sig_a.clone() ])?;
+            vec![ sig_b.clone(), sig_a.clone() ])?;
         let mut sigs = cert2.primary_key().self_signatures();
         assert_eq!(sigs.next(), Some(&sig_a));
         assert!(sigs.next().is_none());

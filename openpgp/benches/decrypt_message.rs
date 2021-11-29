@@ -8,24 +8,24 @@ use openpgp::parse::Parse;
 
 use crate::common::{decrypt, encrypt};
 
-static PASSWORD: &'static str = "password";
+static PASSWORD: &str = "password";
 
 lazy_static::lazy_static! {
     static ref TESTY: Cert =
         Cert::from_bytes(&include_bytes!("../tests/data/keys/testy-private.pgp")[..])
         .unwrap();
-    static ref ZEROS_1_MB: Vec<u8> = vec![0; 1 * 1024 * 1024];
+    static ref ZEROS_1_MB: Vec<u8> = vec![0; 1024 * 1024];
     static ref ZEROS_10_MB: Vec<u8> = vec![0; 10 * 1024 * 1024];
 }
 
 fn decrypt_cert(bytes: &[u8], cert: &Cert) {
     let mut sink = Vec::new();
-    decrypt::decrypt_with_cert(&mut sink, &bytes, cert).unwrap();
+    decrypt::decrypt_with_cert(&mut sink, bytes, cert).unwrap();
 }
 
 fn decrypt_password(bytes: &[u8]) {
     let mut sink = Vec::new();
-    decrypt::decrypt_with_password(&mut sink, &bytes, PASSWORD).unwrap();
+    decrypt::decrypt_with_password(&mut sink, bytes, PASSWORD).unwrap();
 }
 
 fn bench_decrypt(c: &mut Criterion) {
@@ -42,7 +42,7 @@ fn bench_decrypt(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("password", m.len()),
             &encrypted,
-            |b, e| b.iter(|| decrypt_password(&e)),
+            |b, e| b.iter(|| decrypt_password(e)),
         );
     });
 
@@ -53,7 +53,7 @@ fn bench_decrypt(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("cert", m.len()),
             &encrypted,
-            |b, e| b.iter(|| decrypt_cert(&e, &TESTY)),
+            |b, e| b.iter(|| decrypt_cert(e, &TESTY)),
         );
     });
 

@@ -9,7 +9,7 @@ use openpgp::parse::Parse;
 use crate::common::encrypt;
 
 lazy_static::lazy_static! {
-    static ref ZEROS_1_MB: Vec<u8> = vec![0; 1 * 1024 * 1024];
+    static ref ZEROS_1_MB: Vec<u8> = vec![0; 1024 * 1024];
     static ref ZEROS_10_MB: Vec<u8> = vec![0; 10 * 1024 * 1024];
 }
 
@@ -32,7 +32,7 @@ fn bench_sign(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("cert", message.len()),
             &message,
-            |b, m| b.iter(|| sign_by_testy(&m)),
+            |b, m| b.iter(|| sign_by_testy(m)),
         );
     }
     group.finish();

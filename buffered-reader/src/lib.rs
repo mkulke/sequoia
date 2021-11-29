@@ -455,7 +455,7 @@ pub trait BufferedReader<C> : io::Read + fmt::Debug + fmt::Display + Send + Sync
         // must return a slice shorter than std::usize::MAX.
         loop {
             match self.data(s) {
-                Ok(ref buffer) => {
+                Ok(buffer) => {
                     if buffer.len() < s {
                         // We really want to do
                         //
@@ -849,6 +849,7 @@ pub trait BufferedReader<C> : io::Read + fmt::Debug + fmt::Display + Send + Sync
     }
 
     /// Boxes the reader.
+    #[allow(clippy::wrong_self_convention)]
     fn as_boxed<'a>(self) -> Box<dyn BufferedReader<C> + 'a>
         where Self: 'a + Sized
     {

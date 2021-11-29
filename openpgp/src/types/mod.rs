@@ -1712,7 +1712,7 @@ mod tests {
 
     quickcheck! {
         fn comp_roundtrip(comp: CompressionAlgorithm) -> bool {
-            let val: u8 = comp.clone().into();
+            let val: u8 = comp.into();
             comp == CompressionAlgorithm::from(val)
         }
     }
@@ -1728,7 +1728,7 @@ mod tests {
         fn comp_parse(comp: CompressionAlgorithm) -> bool {
             match comp {
                 CompressionAlgorithm::Unknown(u) => u > 110 || (u > 3 && u < 100),
-                CompressionAlgorithm::Private(u) => u >= 100 && u <= 110,
+                CompressionAlgorithm::Private(u) => (100..=110).contains(&u),
                 _ => true
             }
         }
@@ -1737,7 +1737,7 @@ mod tests {
 
     quickcheck! {
         fn sym_roundtrip(sym: SymmetricAlgorithm) -> bool {
-            let val: u8 = sym.clone().into();
+            let val: u8 = sym.into();
             sym == SymmetricAlgorithm::from(val)
         }
     }
@@ -1755,7 +1755,7 @@ mod tests {
                 SymmetricAlgorithm::Unknown(u) =>
                     u == 5 || u == 6 || u > 110 || (u > 10 && u < 100),
                 SymmetricAlgorithm::Private(u) =>
-                    u >= 100 && u <= 110,
+                    (100..=110).contains(&u),
                 _ => true
             }
         }
@@ -1764,7 +1764,7 @@ mod tests {
 
     quickcheck! {
         fn aead_roundtrip(aead: AEADAlgorithm) -> bool {
-            let val: u8 = aead.clone().into();
+            let val: u8 = aead.into();
             aead == AEADAlgorithm::from(val)
         }
     }
@@ -1782,7 +1782,7 @@ mod tests {
                 AEADAlgorithm::Unknown(u) =>
                     u == 0 || u > 110 || (u > 2 && u < 100),
                 AEADAlgorithm::Private(u) =>
-                    u >= 100 && u <= 110,
+                    (100..=110).contains(&u),
                 _ => true
             }
         }
@@ -1791,7 +1791,7 @@ mod tests {
 
     quickcheck! {
         fn pk_roundtrip(pk: PublicKeyAlgorithm) -> bool {
-            let val: u8 = pk.clone().into();
+            let val: u8 = pk.into();
             pk == PublicKeyAlgorithm::from(val)
         }
     }
@@ -1807,9 +1807,9 @@ mod tests {
         fn pk_parse(pk: PublicKeyAlgorithm) -> bool {
             match pk {
                 PublicKeyAlgorithm::Unknown(u) =>
-                    u == 0 || u > 110 || (u >= 4 && u <= 15)
-                    || (u >= 18 && u < 100),
-                PublicKeyAlgorithm::Private(u) => u >= 100 && u <= 110,
+                    u == 0 || u > 110 || (4..=15).contains(&u)
+                    || (18..100).contains(&u),
+                PublicKeyAlgorithm::Private(u) => (100..=110).contains(&u),
                 _ => true
             }
         }
@@ -1825,7 +1825,7 @@ mod tests {
 
     quickcheck! {
         fn signature_type_roundtrip(t: SignatureType) -> bool {
-            let val: u8 = t.clone().into();
+            let val: u8 = t.into();
             t == SignatureType::from(val)
         }
     }
@@ -1840,7 +1840,7 @@ mod tests {
 
     quickcheck! {
         fn hash_roundtrip(hash: HashAlgorithm) -> bool {
-            let val: u8 = hash.clone().into();
+            let val: u8 = hash.into();
             hash == HashAlgorithm::from(val)
         }
     }
@@ -1880,8 +1880,8 @@ mod tests {
         fn hash_parse(hash: HashAlgorithm) -> bool {
             match hash {
                 HashAlgorithm::Unknown(u) => u == 0 || (u > 11 && u < 100) ||
-                    u > 110 || (u >= 4 && u <= 7) || u == 0,
-                HashAlgorithm::Private(u) => u >= 100 && u <= 110,
+                    u > 110 || (4..=7).contains(&u) || u == 0,
+                HashAlgorithm::Private(u) => (100..=110).contains(&u),
                 _ => true
             }
         }
@@ -1889,7 +1889,7 @@ mod tests {
 
     quickcheck! {
         fn rfr_roundtrip(rfr: ReasonForRevocation) -> bool {
-            let val: u8 = rfr.clone().into();
+            let val: u8 = rfr.into();
             rfr == ReasonForRevocation::from(val)
         }
     }
@@ -1909,7 +1909,7 @@ mod tests {
                     || (u > 32 && u < 100)
                     || u > 110,
                 ReasonForRevocation::Private(u) =>
-                    u >= 100 && u <= 110,
+                    (100..=110).contains(&u),
                 _ => true
             }
         }
@@ -1917,7 +1917,7 @@ mod tests {
 
     quickcheck! {
         fn df_roundtrip(df: DataFormat) -> bool {
-            let val: u8 = df.clone().into();
+            let val: u8 = df.into();
             df == DataFormat::from(val)
         }
     }

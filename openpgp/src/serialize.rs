@@ -1395,9 +1395,9 @@ impl Marshal for SubpacketValue {
         use self::SubpacketValue::*;
         match self {
             SignatureCreationTime(t) =>
-                write_be_u32(o, t.clone().into())?,
+                write_be_u32(o, (*t).into())?,
             SignatureExpirationTime(t) =>
-                write_be_u32(o, t.clone().into())?,
+                write_be_u32(o, (*t).into())?,
             ExportableCertification(e) =>
                 o.write_all(&[if *e { 1 } else { 0 }])?,
             TrustSignature { ref level, ref trust } =>
@@ -1409,7 +1409,7 @@ impl Marshal for SubpacketValue {
             Revocable(r) =>
                 o.write_all(&[if *r { 1 } else { 0 }])?,
             KeyExpirationTime(t) =>
-                write_be_u32(o, t.clone().into())?,
+                write_be_u32(o, (*t).into())?,
             PreferredSymmetricAlgorithms(ref p) =>
                 for a in p {
                     o.write_all(&[(*a).into()])?;
@@ -1449,7 +1449,7 @@ impl Marshal for SubpacketValue {
                 o.write_all(reason)?;
             },
             Features(ref f) =>
-                o.write_all(&f.as_slice())?,
+                o.write_all(f.as_slice())?,
             SignatureTarget { pk_algo, hash_algo, ref digest } => {
                 o.write_all(&[(*pk_algo).into(), (*hash_algo).into()])?;
                 o.write_all(digest)?;
@@ -2066,7 +2066,7 @@ impl Literal {
     pub(crate) fn serialize_headers(&self, o: &mut dyn std::io::Write,
                                     write_tag: bool) -> Result<()>
     {
-        let filename = if let Some(ref filename) = self.filename() {
+        let filename = if let Some(filename) = self.filename() {
             let len = cmp::min(filename.len(), 255) as u8;
             &filename[..len as usize]
         } else {
@@ -2689,6 +2689,7 @@ impl MarshalInto for Packet {
 /// [`openpgp::Packet`]: super::Packet
 /// [`packet::Signature`]: crate::packet::Signature
 #[allow(dead_code)]
+#[allow(clippy::upper_case_acronyms)]
 enum PacketRef<'a> {
     /// Unknown packet.
     Unknown(&'a packet::Unknown),
@@ -2736,7 +2737,7 @@ impl<'a> PacketRef<'a> {
     ///   [Section 4.3 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-4.3
     fn tag(&self) -> packet::Tag {
         match self {
-            PacketRef::Unknown(ref packet) => packet.tag(),
+            PacketRef::Unknown(packet) => packet.tag(),
             PacketRef::Signature(_) => Tag::Signature,
             PacketRef::OnePassSig(_) => Tag::OnePassSig,
             PacketRef::PublicKey(_) => Tag::PublicKey,
@@ -2771,7 +2772,7 @@ impl<'a> Marshal for PacketRef<'a> {
         // Special-case the compressed data packet, because we need
         // the accurate length, and CompressedData::net_len()
         // overestimates the size.
-        if let PacketRef::CompressedData(ref p) = self {
+        if let PacketRef::CompressedData(p) = self {
             let mut body = Vec::new();
             p.serialize(&mut body)?;
             BodyLength::Full(body.len() as u32).serialize(o)?;
@@ -2812,7 +2813,7 @@ impl<'a> Marshal for PacketRef<'a> {
         // Special-case the compressed data packet, because we need
         // the accurate length, and CompressedData::net_len()
         // overestimates the size.
-        if let PacketRef::CompressedData(ref p) = self {
+        if let PacketRef::CompressedData(p) = self {
             let mut body = Vec::new();
             p.export(&mut body)?;
             BodyLength::Full(body.len() as u32).export(o)?;
@@ -2984,9 +2985,9 @@ mod test {
             eprintln!("Packet contents don't match (for {}):",
                       filename);
             eprintln!("Expected ({} bytes):\n{}",
-                      expected_body.len(), binary_pp(&expected_body));
+                      expected_body.len(), binary_pp(expected_body));
             eprintln!("Got ({} bytes):\n{}",
-                      got_body.len(), binary_pp(&got_body));
+                      got_body.len(), binary_pp(got_body));
             eprintln!("Packet: {:#?}", packet);
             fail = true;
         }
@@ -3037,7 +3038,7 @@ mod test {
             let data = crate::tests::message(filename);
 
             // 2. Parse the message.
-            let pile = PacketPile::from_bytes(&data[..]).unwrap();
+            let pile = PacketPile::from_bytes(data).unwrap();
 
             // The following test only works if the message has a
             // single top-level packet.
@@ -3050,7 +3051,7 @@ mod test {
                 Packet::Literal(_) | Packet::Signature(_)
                     | Packet::PublicKey(_) | Packet::PublicSubkey(_)
                     | Packet::UserID(_) | Packet::SKESK(_) => (),
-                ref p => {
+                p => {
                     panic!("Didn't expect a {:?} packet.", p.tag());
                 },
             }
@@ -3058,7 +3059,7 @@ mod test {
 
             // 4. Modulo the body length encoding, check that the
             // reserialized content is identical to the original data.
-            packets_bitwise_compare(filename, p, &data[..], &buffer[..]);
+            packets_bitwise_compare(filename, p, data, &buffer[..]);
         }
     }
 
@@ -3079,14 +3080,14 @@ mod test {
             let data = crate::tests::message(filename);
 
             // 2. Parse the message.
-            let u = Packet::Unknown(to_unknown_packet(&data[..]).unwrap());
+            let u = Packet::Unknown(to_unknown_packet(data).unwrap());
 
             // 3. Serialize the packet it into a local buffer.
             let data2 = (&u as &dyn MarshalInto).to_vec().unwrap();
 
             // 4. Modulo the body length encoding, check that the
             // reserialized content is identical to the original data.
-            packets_bitwise_compare(filename, &u, &data[..], &data2[..]);
+            packets_bitwise_compare(filename, &u, data, &data2[..]);
         }
 
     }
@@ -3124,7 +3125,7 @@ mod test {
             // never recurse so that the resulting message only
             // contains the top-level packets.  Any containers will
             // have their raw content stored in packet.content.
-            let pile = PacketParserBuilder::from_bytes(&data[..]).unwrap()
+            let pile = PacketParserBuilder::from_bytes(data).unwrap()
                 .max_recursion_depth(0)
                 .buffer_unread_content()
                 //.trace()

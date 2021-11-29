@@ -238,7 +238,7 @@ impl PacketDumper {
 
     pub fn flush(&self, output: &mut dyn io::Write) -> Result<()> {
         if let Some(root) = self.root.as_ref() {
-            self.dump_tree(output, "", &root)?;
+            self.dump_tree(output, "", root)?;
         }
         Ok(())
     }
@@ -723,8 +723,9 @@ impl PacketDumper {
             }
         }
 
+        writeln!(output, "{}", i)?;
+
         if let Some(map) = map {
-            writeln!(output, "{}", i)?;
             let mut hd = hex::Dumper::new(output, self.indentation_for_hexdump(
                 i, map.iter()
                     .map(|f| if f.name() == "body" { 16 } else { f.name().len() })
@@ -740,8 +741,6 @@ impl PacketDumper {
             }
 
             let output = hd.into_inner();
-            writeln!(output, "{}", i)?;
-        } else {
             writeln!(output, "{}", i)?;
         }
 
@@ -773,7 +772,7 @@ impl PacketDumper {
                 write!(output, "{}    Signature expiration time: {} ({})",
                        i, t.convert(),
                        if let Some(creation) = sig.signature_creation_time() {
-                           (creation + t.clone().into()).convert().to_string()
+                           (creation + (*t).into()).convert().to_string()
                        } else {
                            " (no Signature Creation Time subpacket)".into()
                        })?,

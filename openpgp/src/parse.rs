@@ -445,8 +445,10 @@ impl<'a, T: 'a + BufferedReader<Cookie>> PacketHeaderParser<T> {
     {
         assert!(!path.is_empty());
 
-        let mut cookie = Cookie::default();
-        cookie.level = inner.cookie_ref().level;
+        let cookie = Cookie {
+            level: inner.cookie_ref().level,
+            ..Default::default()
+        };
         let map = if state.settings.map {
             Some(map::Map::new(header_bytes.clone()))
         } else {
@@ -605,6 +607,7 @@ impl<'a, T: 'a + BufferedReader<Cookie>> PacketHeaderParser<T> {
 
 /// What the hash in the Cookie is for.
 #[derive(Copy, Clone, PartialEq, Debug)]
+#[allow(clippy::upper_case_acronyms)]
 pub(crate) enum HashesFor {
     Nothing,
     MDC,
@@ -1822,7 +1825,7 @@ impl SubpacketLength {
                 octet1 as u32,
                 // Unambiguous.
                 None))
-        } else if 192 <= octet1 && octet1 < 255 {
+        } else if (192..255).contains(&octet1) {
             // Two octets length.
             let octet2 = bio.data_consume_hard(1)?[0];
             let len = ((octet1 as u32 - 192) << 8) + octet2 as u32 + 192;
@@ -2106,7 +2109,7 @@ fn one_pass_sig_test () {
                           crate::fmt::to_hex(&test.digest_prefix[sigs][..], false),
                           crate::fmt::to_hex(sig.digest_prefix(), false));
                 eprintln!("  computed hash: {}",
-                          crate::fmt::to_hex(&sig.computed_digest().unwrap(),
+                          crate::fmt::to_hex(sig.computed_digest().unwrap(),
                                              false));
 
                 assert_eq!(&test.digest_prefix[sigs], sig.digest_prefix());
@@ -2511,7 +2514,7 @@ fn literal_parser_test () {
 
             let expected = crate::tests::manifesto();
 
-            assert_eq!(&content[..], &expected[..]);
+            assert_eq!(&content[..], expected);
         } else {
             panic!("Wrong packet!");
         }
@@ -2761,7 +2764,7 @@ fn skesk_parser_test() {
             match skesk.decrypt(&test.password) {
                 Ok((_sym_algo, key)) => {
                     let key = crate::fmt::to_hex(&key[..], false);
-                    assert_eq!(&key[..], &test.key_hex[..]);
+                    assert_eq!(&key[..], test.key_hex);
                 }
                 Err(e) => {
                     panic!("No session key, got: {:?}", e);
@@ -3339,6 +3342,7 @@ impl<'a> std::fmt::Debug for PacketParser<'a> {
 }
 
 /// The return value of PacketParser::parse.
+#[allow(clippy::upper_case_acronyms)]
 enum ParserResult<'a> {
     Success(PacketParser<'a>),
     EOF((Box<dyn BufferedReader<Cookie> + 'a>, PacketParserState, Vec<usize>)),
@@ -4149,13 +4153,13 @@ impl <'a> PacketParser<'a> {
             | Tag::Unknown(_) | Tag::Private(_) =>
                 Err(Error::MalformedPacket("Looks like garbage".into()).into()),
 
-            Tag::Marker => Marker::plausible(bio, &header),
-            Tag::Signature => Signature::plausible(bio, &header),
+            Tag::Marker => Marker::plausible(bio, header),
+            Tag::Signature => Signature::plausible(bio, header),
 
-            Tag::SecretKey => Key::plausible(bio, &header),
-            Tag::PublicKey => Key::plausible(bio, &header),
-            Tag::SecretSubkey => Key::plausible(bio, &header),
-            Tag::PublicSubkey => Key::plausible(bio, &header),
+            Tag::SecretKey => Key::plausible(bio, header),
+            Tag::PublicKey => Key::plausible(bio, header),
+            Tag::SecretSubkey => Key::plausible(bio, header),
+            Tag::PublicSubkey => Key::plausible(bio, header),
 
             Tag::UserID => bad,
             Tag::UserAttribute => bad,
@@ -4803,7 +4807,7 @@ impl <'a> PacketParser<'a> {
     /// }
     /// # Ok(()) }
     // Note: this function is public and may be called multiple times!
-    pub fn finish<'b>(&'b mut self) -> Result<&'b Packet> {
+    pub fn finish(&mut self) -> Result<&Packet> {
         let indent = self.recursion_depth();
         tracer!(TRACE, "PacketParser::finish", indent);
 
@@ -5860,7 +5864,7 @@ mod test {
         // that we don't try to recover.
         let mut msg2 = Vec::new();
         msg2.push(0);
-        msg2.extend_from_slice(&msg[..]);
+        msg2.extend_from_slice(msg);
 
         let ppr = PacketParserBuilder::from_bytes(&msg2[..]).unwrap()
             .dearmor(packet_parser_builder::Dearmor::Disabled)
@@ -5871,8 +5875,8 @@ mod test {
     /// Issue #141.
     #[test]
     fn truncated_packet() {
-        for msg in &[&crate::tests::message("literal-mode-b.gpg")[..],
-                     &crate::tests::message("literal-mode-t-partial-body.gpg")[..],
+        for msg in &[crate::tests::message("literal-mode-b.gpg"),
+                     crate::tests::message("literal-mode-t-partial-body.gpg"),
         ] {
             // Make sure we can read the first packet.
             let ppr = PacketParserBuilder::from_bytes(msg).unwrap()

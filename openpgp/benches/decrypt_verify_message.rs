@@ -15,13 +15,13 @@ lazy_static::lazy_static! {
     static ref RECIPIENT: Cert =
         Cert::from_bytes(&include_bytes!("../tests/data/keys/recipient.pgp")[..])
         .unwrap();
-    static ref ZEROS_1_MB: Vec<u8> = vec![0; 1 * 1024 * 1024];
+    static ref ZEROS_1_MB: Vec<u8> = vec![0; 1024 * 1024];
     static ref ZEROS_10_MB: Vec<u8> = vec![0; 10 * 1024 * 1024];
 }
 
 fn decrypt_and_verify(bytes: &[u8], sender: &Cert, recipient: &Cert) {
     let mut sink = Vec::new();
-    decrypt::decrypt_and_verify(&mut sink, &bytes, sender, recipient).unwrap();
+    decrypt::decrypt_and_verify(&mut sink, bytes, sender, recipient).unwrap();
 }
 
 fn bench_decrypt_verify(c: &mut Criterion) {
@@ -38,7 +38,7 @@ fn bench_decrypt_verify(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("decrypt and verify", m.len()),
             &encrypted,
-            |b, e| b.iter(|| decrypt_and_verify(&e, &SENDER, &RECIPIENT)),
+            |b, e| b.iter(|| decrypt_and_verify(e, &SENDER, &RECIPIENT)),
         );
     });
 

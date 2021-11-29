@@ -7,7 +7,7 @@ use openpgp::parse::Parse;
 use crate::common::encrypt;
 
 lazy_static::lazy_static! {
-    static ref ZEROS_1_MB: Vec<u8> = vec![0; 1 * 1024 * 1024];
+    static ref ZEROS_1_MB: Vec<u8> = vec![0; 1024 * 1024];
     static ref ZEROS_10_MB: Vec<u8> = vec![0; 10 * 1024 * 1024];
 }
 
@@ -34,7 +34,7 @@ fn bench_encrypt_sign(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("encrypt and sign", message.len()),
             &message,
-            |b, m| b.iter(|| encrypt_to_donald_sign_by_ivanka(&m)),
+            |b, m| b.iter(|| encrypt_to_donald_sign_by_ivanka(m)),
         );
     }
     group.finish();

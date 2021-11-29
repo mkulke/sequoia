@@ -147,7 +147,7 @@ impl DecryptionHelper for CertHelper<'_> {
                 .for_transport_encryption()
                 .for_storage_encryption()
                 .secret()
-                .map(|amalgamation| amalgamation.key().clone().into())
+                .map(|amalgamation| amalgamation.key().clone())
                 .collect();
 
         // check that pkesk has right recipient
@@ -157,7 +157,7 @@ impl DecryptionHelper for CertHelper<'_> {
             .cloned()
             .filter_map(|key| {
                 pkesks
-                    .into_iter()
+                    .iter()
                     .find(|pkesk| pkesk.recipient() == &key.keyid())
                     .map(|pkesk| (pkesk, key))
             })

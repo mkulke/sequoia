@@ -52,7 +52,8 @@ assert_send_and_sync!(Token);
 ///
 /// Due to the way the parser code is generated, it must be marked as
 /// public.  But, since this module is not public, it will not
-/// actually be exported to used of the library.
+/// actually be exported to users of the library.
+#[allow(clippy::enum_variant_names)]
 pub enum Component {
     SubkeyBundle(SubkeyBundle<key::PublicParts>),
     UserIDBundle(UserIDBundle),

@@ -81,8 +81,8 @@ impl Cert {
     /// assert!(armored.contains("Mr. Pink ☮☮☮"));
     /// # Ok(()) }
     /// ```
-    pub fn armored<'a>(&'a self)
-        -> impl crate::serialize::Serialize + crate::serialize::SerializeInto + 'a
+    pub fn armored(&self)
+        -> impl crate::serialize::Serialize + crate::serialize::SerializeInto + '_
     {
         Encoder::new(self)
     }
@@ -121,6 +121,7 @@ impl<'a> TSK<'a> {
 }
 
 /// A `Cert` or `TSK` to be armored and serialized.
+#[allow(clippy::upper_case_acronyms)]
 enum Encoder<'a> {
     Cert(&'a Cert),
     TSK(TSK<'a>),
@@ -140,7 +141,7 @@ impl<'a> Encoder<'a> {
     fn serialize_common(&self, o: &mut dyn io::Write, export: bool)
                         -> Result<()> {
         let (prelude, headers) = match self {
-            Encoder::Cert(ref cert) =>
+            Encoder::Cert(cert) =>
                 (armor::Kind::PublicKey, cert.armor_headers()),
             Encoder::TSK(ref tsk) =>
                 (armor::Kind::SecretKey, tsk.cert.armor_headers()),
@@ -157,12 +158,12 @@ impl<'a> Encoder<'a> {
             armor::Writer::with_headers(o, prelude, headers)?;
         if export {
             match self {
-                Encoder::Cert(ref cert) => cert.export(&mut w)?,
+                Encoder::Cert(cert) => cert.export(&mut w)?,
                 Encoder::TSK(ref tsk) => tsk.export(&mut w)?,
             }
         } else {
             match self {
-                Encoder::Cert(ref cert) => cert.serialize(&mut w)?,
+                Encoder::Cert(cert) => cert.serialize(&mut w)?,
                 Encoder::TSK(ref tsk) => tsk.serialize(&mut w)?,
             }
         }
@@ -188,14 +189,14 @@ impl<'a> crate::serialize::SerializeInto for Encoder<'a> {}
 impl<'a> MarshalInto for Encoder<'a> {
     fn serialized_len(&self) -> usize {
         let h = match self {
-            Encoder::Cert(ref cert) => cert.armor_headers(),
+            Encoder::Cert(cert) => cert.armor_headers(),
             Encoder::TSK(ref tsk) => tsk.cert.armor_headers(),
         };
         let headers_len =
             ("Comment: ".len() + 1 /* NL */) * h.len()
             + h.iter().map(|c| c.len()).sum::<usize>();
         let body_len = (match self {
-            Self::Cert(ref cert) => cert.serialized_len(),
+            Self::Cert(cert) => cert.serialized_len(),
             Self::TSK(ref tsk) => tsk.serialized_len(),
         } + 2) / 3 * 4; // base64
 

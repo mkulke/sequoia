@@ -177,7 +177,7 @@ impl SKESK4 {
         // We need to prefix the cipher specifier to the session key.
         let mut psk: SessionKey = vec![0; 1 + session_key.len()].into();
         psk[0] = payload_algo.into();
-        psk[1..].copy_from_slice(&session_key);
+        psk[1..].copy_from_slice(session_key);
         let mut esk = vec![0u8; psk.len()];
 
         for (pt, ct) in psk[..].chunks(block_size)
@@ -252,14 +252,14 @@ impl SKESK4 {
     {
         let key = self.s2k.derive_key(password, self.sym_algo.key_size()?)?;
 
-        if let Some(ref esk) = self.esk()? {
+        if let Some(esk) = self.esk()? {
             // Use the derived key to decrypt the ESK. Unlike SEP &
             // SEIP we have to use plain CFB here.
             let blk_sz = self.sym_algo.block_size()?;
             let iv = vec![0u8; blk_sz];
             let mut dec  = self.sym_algo.make_decrypt_cfb(&key[..], iv)?;
             let mut plain: SessionKey = vec![0u8; esk.len()].into();
-            let cipher = &esk[..];
+            let cipher = esk;
 
             for (pl, ct)
                 in plain[..].chunks_mut(blk_sz).zip(cipher.chunks(blk_sz))
@@ -474,7 +474,7 @@ impl SKESK5 {
 
         // We need to prefix the cipher specifier to the session key.
         let mut esk = vec![0u8; session_key.len()];
-        ctx.encrypt(&mut esk, &session_key);
+        ctx.encrypt(&mut esk, session_key);
 
         // Digest.
         let mut digest = vec![0u8; esk_aead.digest_size()?];
@@ -500,10 +500,10 @@ impl SKESK5 {
         let key = self.s2k().derive_key(password,
                                         self.symmetric_algo().key_size()?)?;
 
-        if let Some(ref esk) = self.esk()? {
+        if let Some(esk) = self.esk()? {
             // Use the derived key to decrypt the ESK.
             let mut cipher = self.aead_algo.context(
-                self.symmetric_algo(), &key, &self.aead_iv()?, CipherOp::Decrypt)?;
+                self.symmetric_algo(), &key, self.aead_iv()?, CipherOp::Decrypt)?;
 
             let ad = [0xc3, 5 /* Version.  */, self.symmetric_algo().into(),
                       self.aead_algo.into()];

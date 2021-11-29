@@ -506,11 +506,11 @@ impl AutocryptSetupMessage {
         let mut headers : Vec<(&str, &str)> = Vec::new();
         if let Some(ref format) = self.passcode_format {
             headers.push(
-                (&"Passphrase-Format"[..], &format[..]));
+                ("Passphrase-Format", &format[..]));
         }
         if let Some(ref begin) = self.passcode_begin {
             headers.push(
-                (&"Passphrase-Begin"[..], &begin[..]));
+                ("Passphrase-Begin", &begin[..]));
         }
 
         let mut armor_writer =
@@ -528,7 +528,7 @@ impl AutocryptSetupMessage {
             let mut w = armor::Writer::with_headers(
                 m, armor::Kind::SecretKey,
                 vec![("Autocrypt-Prefer-Encrypt",
-                      self.prefer_encrypt().unwrap_or(&"nopreference"[..]))])?;
+                      self.prefer_encrypt().unwrap_or("nopreference"))])?;
 
             self.cert.as_tsk().serialize(&mut w)?;
             let m = w.finalize()?;
@@ -542,8 +542,8 @@ impl AutocryptSetupMessage {
     /// Parses the autocrypt setup message in `r`.
     ///
     /// `passcode` is the passcode used to protect the message.
-    pub fn from_bytes<'a>(bytes: &'a [u8])
-        -> Result<AutocryptSetupMessageParser<'a>>
+    pub fn from_bytes(bytes: &[u8])
+        -> Result<AutocryptSetupMessageParser>
     {
         Self::from_reader(bytes)
     }

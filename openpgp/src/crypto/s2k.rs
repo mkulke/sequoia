@@ -198,7 +198,7 @@ impl S2K {
                             // Independent of what the hash count is, we
                             // always hash the whole salt and password once.
                             hash.update(&salt[..]);
-                            hash.update(&string);
+                            hash.update(string);
                         },
                         &S2K::Iterated { ref salt, hash_bytes, .. } => {
                             // Unroll the processing loop N times.
@@ -304,7 +304,7 @@ impl S2K {
                             hash_bytes)).into());
             }
             11..=32 => {
-                let m = 0b1111_000000 << (msb - 11);
+                let m = 0b11_1100_0000 << (msb - 11);
                 let t = 1 << (msb - 11);
 
                 (m, t - 1)
@@ -552,7 +552,7 @@ mod tests {
                 S2K::Unknown { tag, .. } =>
                     (tag > 3 && tag < 100) || tag == 2 || tag > 110,
                 S2K::Private { tag, .. } =>
-                    tag >= 100 && tag <= 110,
+                    (100..=110).contains(&tag),
                 _ => true
             }
         }

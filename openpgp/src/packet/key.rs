@@ -284,9 +284,9 @@ pub trait KeyParts: fmt::Debug + seal::Sealed {
     /// [`key::PublicParts`]: PublicParts
     /// [`key::UnspecifiedParts`]: UnspecifiedParts
     /// [`key::SecretParts`]: SecretParts
-    fn convert_key_amalgamation<'a, R: KeyRole>(
-        ka: ComponentAmalgamation<'a, Key<UnspecifiedParts, R>>)
-        -> Result<ComponentAmalgamation<'a, Key<Self, R>>>
+    fn convert_key_amalgamation<R: KeyRole>(
+        ka: ComponentAmalgamation<Key<UnspecifiedParts, R>>)
+        -> Result<ComponentAmalgamation<Key<Self, R>>>
         where Self: Sized;
 
     /// Converts a key amalgamation reference with unspecified parts
@@ -464,9 +464,9 @@ impl KeyParts for PublicParts {
         Ok(bundle.into())
     }
 
-    fn convert_key_amalgamation<'a, R: KeyRole>(
-        ka: ComponentAmalgamation<'a, Key<UnspecifiedParts, R>>)
-        -> Result<ComponentAmalgamation<'a, Key<Self, R>>> {
+    fn convert_key_amalgamation<R: KeyRole>(
+        ka: ComponentAmalgamation<Key<UnspecifiedParts, R>>)
+        -> Result<ComponentAmalgamation<Key<Self, R>>> {
         Ok(ka.into())
     }
 
@@ -520,9 +520,9 @@ impl KeyParts for SecretParts {
         bundle.try_into()
     }
 
-    fn convert_key_amalgamation<'a, R: KeyRole>(
-        ka: ComponentAmalgamation<'a, Key<UnspecifiedParts, R>>)
-        -> Result<ComponentAmalgamation<'a, Key<Self, R>>> {
+    fn convert_key_amalgamation<R: KeyRole>(
+        ka: ComponentAmalgamation<Key<UnspecifiedParts, R>>)
+        -> Result<ComponentAmalgamation<Key<Self, R>>> {
         ka.try_into()
     }
 
@@ -584,9 +584,9 @@ impl KeyParts for UnspecifiedParts {
         Ok(bundle)
     }
 
-    fn convert_key_amalgamation<'a, R: KeyRole>(
-        ka: ComponentAmalgamation<'a, Key<UnspecifiedParts, R>>)
-        -> Result<ComponentAmalgamation<'a, Key<UnspecifiedParts, R>>> {
+    fn convert_key_amalgamation<R: KeyRole>(
+        ka: ComponentAmalgamation<Key<UnspecifiedParts, R>>)
+        -> Result<ComponentAmalgamation<Key<UnspecifiedParts, R>>> {
         Ok(ka)
     }
 
@@ -1404,10 +1404,9 @@ assert_send_and_sync!(Unencrypted);
 impl From<mpi::SecretKeyMaterial> for Unencrypted {
     fn from(mpis: mpi::SecretKeyMaterial) -> Self {
         use crate::serialize::Marshal;
-        let mut plaintext = Vec::new();
         // We need to store the type.
-        plaintext.push(
-            mpis.algo().unwrap_or(PublicKeyAlgorithm::Unknown(0)).into());
+        let mut plaintext =
+            vec![mpis.algo().unwrap_or(PublicKeyAlgorithm::Unknown(0)).into()];
         mpis.serialize(&mut plaintext)
             .expect("MPI serialization to vec failed");
         Unencrypted { mpis: mem::Encrypted::new(plaintext.into()), }
@@ -2196,7 +2195,7 @@ FwPoSAbbsLkNS/iNN2MDGAVYvezYn2QZ
             Err(_) => true, // Packet failed to parse.
         };
         if ! ok {
-            eprintln!("{} for ({:?}, {})", "mutate_eq_discriminates_key", p, i);
+            eprintln!("mutate_eq_discriminates_key for ({:?}, {})", p, i);
         }
         ok
     }

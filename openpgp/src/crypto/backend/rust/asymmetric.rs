@@ -46,6 +46,7 @@ fn rsa_public_key(e: &MPI, n: &MPI) -> Result<RSAPublicKey> {
     Ok(RSAPublicKey::new(n, e)?)
 }
 
+#[allow(clippy::many_single_char_names)]
 fn rsa_private_key(e: &MPI, n: &MPI, p: &ProtectedMPI, q: &ProtectedMPI, d: &ProtectedMPI)
     -> RSAPrivateKey
 {
@@ -150,7 +151,7 @@ impl Signer for KeyPair {
                         .copy_from_slice(
                             &scalar.value_padded(SECRET_KEY_LENGTH));
                     keypair.as_mut()[SECRET_KEY_LENGTH..]
-                        .copy_from_slice(&public);
+                        .copy_from_slice(public);
                     let pair = Keypair::from_bytes(&keypair)?;
 
                     let sig = pair.sign(digest).to_bytes();
@@ -165,10 +166,15 @@ impl Signer for KeyPair {
                 _ => Err(Error::UnsupportedEllipticCurve(curve.clone()).into()),
             },
 
-            (pk_algo, _, _) => Err(Error::InvalidOperation(format!(
-                "unsupported combination of algorithm {:?}, key {:?}, \
-                 and secret key {:?}",
-                pk_algo, self.public(), self.secret())))?,
+            (pk_algo, _, _) => {
+                Err(Error::InvalidOperation(format!(
+                    "unsupported combination of algorithm {:?}, key {:?}, \
+                        and secret key {:?}",
+                    pk_algo,
+                    self.public(),
+                    self.secret()
+                )).into())
+            }
         })
     }
 }
@@ -403,7 +409,7 @@ impl<R> Key4<SecretParts, R>
                 q: mpi::MPI::new(&public)
             },
             mpi::SecretKeyMaterial::EdDSA {
-                scalar: mpi::MPI::new(&private_key).into(),
+                scalar: mpi::MPI::new(private_key).into(),
             }.into()
         )
     }
@@ -413,6 +419,7 @@ impl<R> Key4<SecretParts, R>
     /// The RSA key will use public exponent `e` and modulo `n`. The key will
     /// have it's creation date set to `ctime` or the current time if `None`
     /// is given.
+    #[allow(clippy::many_single_char_names)]
     pub fn import_secret_rsa<T>(d: &[u8], p: &[u8], q: &[u8], ctime: T)
         -> Result<Self> where T: Into<Option<SystemTime>>
     {
@@ -528,7 +535,7 @@ impl<R> Key4<SecretParts, R>
                     scalar: private_key.into(),
                 };
 
-                (PublicKeyAlgorithm::ECDH, public_mpis, private_mpis.into())
+                (PublicKeyAlgorithm::ECDH, public_mpis, private_mpis)
             }
 
             (Curve::NistP256, true) => {
@@ -546,7 +553,7 @@ impl<R> Key4<SecretParts, R>
                     scalar: Vec::from(secret.to_bytes().as_slice()).into(),
                 };
 
-                (PublicKeyAlgorithm::ECDSA, public_mpis, private_mpis.into())
+                (PublicKeyAlgorithm::ECDSA, public_mpis, private_mpis)
             },
 
             (Curve::NistP256, false) => {
@@ -566,7 +573,7 @@ impl<R> Key4<SecretParts, R>
                     scalar: Vec::from(secret.to_bytes().as_slice()).into(),
                 };
 
-                (PublicKeyAlgorithm::ECDH, public_mpis, private_mpis.into())
+                (PublicKeyAlgorithm::ECDH, public_mpis, private_mpis)
             },
 
             _ => {
