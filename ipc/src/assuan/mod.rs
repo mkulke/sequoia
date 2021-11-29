@@ -77,7 +77,9 @@ assert_send_and_sync!(WriteState);
 impl Client {
     /// Connects to the server.
     pub async fn connect<P>(path: P) -> Result<Client> where P: AsRef<Path> {
+        let path = path.as_ref();
         let connection = socket::sock_connect(path)?;
+        eprintln!("XXX");
         Ok(ConnectionFuture::new(connection).await?)
     }
 
@@ -212,6 +214,7 @@ impl Future for ConnectionFuture {
 
         match Pin::new(&mut responses).poll(cx) {
             Poll::Ready(response) => {
+                dbg!(&response);
                 Poll::Ready(match response.iter().last() {
                     Some(Ok(Response::Ok { .. })) =>
                         Ok(self.0.take().unwrap()),
@@ -302,7 +305,7 @@ impl Stream for Client {
             // First, get a new read buffer.
             // Later, append the read data to the Client's buffer
 
-            let mut vec = Vec::with_capacity(MAX_LINE_LENGTH);
+            let mut vec = vec![0; MAX_LINE_LENGTH];
             let mut read_buf = tokio::io::ReadBuf::new(&mut vec);
 
             match reader.as_mut().poll_read(cx, &mut read_buf)? {
@@ -316,6 +319,7 @@ impl Stream for Client {
 
                     //}
 
+                    eprintln!("GOT: {}", String::from_utf8(read_buf.filled().into()).unwrap());
                     if read_buf.filled().is_empty() {
                         // End of stream.
                         return Poll::Ready(None)
