@@ -305,7 +305,7 @@ impl Stream for Client {
             // First, get a new read buffer.
             // Later, append the read data to the Client's buffer
 
-            let mut vec = vec![0; MAX_LINE_LENGTH];
+            let mut vec = vec![0; 1];
             let mut read_buf = tokio::io::ReadBuf::new(&mut vec);
 
             match reader.as_mut().poll_read(cx, &mut read_buf)? {
@@ -319,7 +319,7 @@ impl Stream for Client {
 
                     //}
 
-                    eprintln!("GOT: {}", String::from_utf8(read_buf.filled().into()).unwrap());
+                    eprintln!("GOT: {}", String::from_utf8_lossy(read_buf.filled()));
                     if read_buf.filled().is_empty() {
                         // End of stream.
                         return Poll::Ready(None)
