@@ -62,7 +62,6 @@ build-release:
 	    $(CARGO) build $(CARGO_FLAGS) --release --package sequoia-ffi
 	$(MAKE) -Clang/python build-release
 	$(call sequoia_pc,$(CARGO_TARGET_DIR)/release,true)
-	$(MAKE) -C../store build-release
 
 .PHONY: install
 install: build-release
@@ -82,7 +81,6 @@ install: build-release
 		$(DESTDIR)$(PREFIX)/lib/libsequoia_ffi.$(_SEQ_LIB_EXT)
 	$(INSTALL) $(CARGO_TARGET_DIR)/release/libsequoia_ffi.a \
 		$(DESTDIR)$(PREFIX)/lib/libsequoia_ffi.a
-	$(MAKE) -C../store install
 	# Now the bindings.
 	$(MAKE) -Clang/python install
 
