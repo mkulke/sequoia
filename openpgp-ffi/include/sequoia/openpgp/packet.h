@@ -1,6 +1,10 @@
 #ifndef SEQUOIA_OPENPGP_PACKET_H
 #define SEQUOIA_OPENPGP_PACKET_H
 
+#include <stdint.h>
+
+#include <sequoia/openpgp/types.h>
+
 /*/
 /// Frees the Packet.
 /*/

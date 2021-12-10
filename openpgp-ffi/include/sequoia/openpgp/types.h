@@ -1,7 +1,12 @@
 #ifndef SEQUOIA_OPENPGP_TYPES_H
 #define SEQUOIA_OPENPGP_TYPES_H
 
+#include <stddef.h>
+#include <stdint.h>
+#include <limits.h>
 #include <stdbool.h>
+
+#include <sequoia/openpgp/error.h>
 
 /*/
 /// Holds a session key.

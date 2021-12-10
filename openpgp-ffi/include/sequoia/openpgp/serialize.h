@@ -1,6 +1,10 @@
 #ifndef SEQUOIA_OPENPGP_SERIALIZE_H
 #define SEQUOIA_OPENPGP_SERIALIZE_H
 
+#include <sys/types.h>
+
+#include <sequoia/openpgp/types.h>
+
 /*/
 /// Creates a new recipient with an explicit recipient keyid.
 ///

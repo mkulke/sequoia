@@ -1,6 +1,9 @@
 #ifndef SEQUOIA_OPENPGP_CRYPTO_H
 #define SEQUOIA_OPENPGP_CRYPTO_H
 
+#include <stdint.h>
+#include <sys/types.h>
+
 #include <sequoia/openpgp/types.h>
 
 /*/
@@ -89,7 +92,7 @@ typedef struct pgp_key_pair *pgp_key_pair_t;
 /*/
 /// Creates a new key pair.
 /*/
-void pgp_key_pair_new (pgp_key_t pub, pgp_key_unencrypted_t secret);
+pgp_key_pair_t pgp_key_pair_new (pgp_key_t pub, pgp_key_unencrypted_t secret);
 
 /*/
 /// Frees a key pair.
