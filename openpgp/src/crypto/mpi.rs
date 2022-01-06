@@ -157,7 +157,8 @@ impl MPI {
     ///
     /// Returns `Error::UnsupportedEllipticCurve` if the curve is not
     /// supported, `Error::MalformedMPI` if the point is formatted
-    /// incorrectly.
+    /// incorrectly, `Error::InvalidOperation` if the given curve is
+    /// operating on native octet strings.
     pub fn decode_point(&self, curve: &Curve) -> Result<(&[u8], &[u8])> {
         Self::decode_point_common(self.value(), curve)
     }
@@ -190,8 +191,13 @@ impl MPI {
                 Ok((&value[1..], &[]))
             },
 
-            _ => {
-
+            NistP256
+                | NistP384
+                | NistP521
+                | BrainpoolP256
+                | BrainpoolP512
+                =>
+            {
                 // Length of one coordinate in bytes, rounded up.
                 let coordinate_length = (curve.len()? + 7) / 8;
 
@@ -216,6 +222,9 @@ impl MPI {
                 Ok((&value[1..1 + coordinate_length],
                     &value[1 + coordinate_length..]))
             },
+
+            Unknown(_) =>
+                Err(Error::UnsupportedEllipticCurve(curve.clone()).into()),
         }
     }
 
@@ -423,7 +432,8 @@ impl ProtectedMPI {
     ///
     /// Returns `Error::UnsupportedEllipticCurve` if the curve is not
     /// supported, `Error::MalformedMPI` if the point is formatted
-    /// incorrectly.
+    /// incorrectly, `Error::InvalidOperation` if the given curve is
+    /// operating on native octet strings.
     pub fn decode_point(&self, curve: &Curve) -> Result<(&[u8], &[u8])> {
         MPI::decode_point_common(self.value(), curve)
     }
