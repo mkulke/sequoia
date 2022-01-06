@@ -932,6 +932,17 @@ impl PacketDumper {
                 writeln!(output, "{}    Salt: {}", i, hex::encode(salt))?;
                 writeln!(output, "{}    Hash bytes: {}", i, hash_bytes)?;
             },
+            Argon2 { salt, t, p, m, } => {
+                writeln!(output, "Argon2id")?;
+                writeln!(output, "{}    Number of passes (t): {}", i, t)?;
+                writeln!(output, "{}    Degree of parallelism (p): {}", i, p)?;
+                writeln!(output, "{}    Memory size (m): {}", i,
+                         2u32.checked_pow(*m as u32)
+                         .map(|b| format!("{} bytes", b))
+                         .unwrap_or_else(
+                             || format!("Invalid parameter: {}", m)))?;
+                writeln!(output, "{}    Salt: {}", i, hex::encode(salt))?;
+            },
             Private { tag, parameters } => {
                 writeln!(output, "Private")?;
                 writeln!(output, "{}    Tag: {}", i, tag)?;
