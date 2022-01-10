@@ -54,6 +54,8 @@ impl AEADAlgorithm {
         match &self {
             EAX
                 => true,
+            GCM
+                => true,
             OCB | Private(_) | Unknown(_)
                 => false,
         }
