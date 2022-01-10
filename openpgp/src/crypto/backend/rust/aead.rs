@@ -150,7 +150,11 @@ impl AEADAlgorithm {
                 | SymmetricAlgorithm::Unencrypted =>
                     Err(Error::UnsupportedSymmetricAlgorithm(sym_algo).into()),
             },
-            AEADAlgorithm::OCB | AEADAlgorithm::Private(_) | AEADAlgorithm::Unknown(_) =>
+            AEADAlgorithm::OCB =>
+                Err(Error::UnsupportedAEADAlgorithm(*self).into()),
+            AEADAlgorithm::GCM =>
+                Err(Error::UnsupportedAEADAlgorithm(*self).into()),
+            AEADAlgorithm::Private(_) | AEADAlgorithm::Unknown(_) =>
                 Err(Error::UnsupportedAEADAlgorithm(*self).into()),
         }
     }

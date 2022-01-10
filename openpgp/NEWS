@@ -4,6 +4,7 @@
 
 * Changes in 1.9.0
 ** New functionality
+   - types::AEADAlgorithm::GCM
    - Packet::version
 * Changes in 1.8.0
 ** New functionality

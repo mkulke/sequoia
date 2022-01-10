@@ -696,6 +696,8 @@ pub enum AEADAlgorithm {
     EAX,
     /// OCB mode.
     OCB,
+    /// Galois/Counter mode.
+    GCM,
     /// Private algorithm identifier.
     Private(u8),
     /// Unknown algorithm identifier.
@@ -724,6 +726,7 @@ impl From<u8> for AEADAlgorithm {
         match u {
             1 => AEADAlgorithm::EAX,
             2 => AEADAlgorithm::OCB,
+            3 => AEADAlgorithm::GCM,
             100..=110 => AEADAlgorithm::Private(u),
             u => AEADAlgorithm::Unknown(u),
         }
@@ -735,6 +738,7 @@ impl From<AEADAlgorithm> for u8 {
         match s {
             AEADAlgorithm::EAX => 1,
             AEADAlgorithm::OCB => 2,
+            AEADAlgorithm::GCM => 3,
             AEADAlgorithm::Private(u) => u,
             AEADAlgorithm::Unknown(u) => u,
         }
@@ -748,6 +752,8 @@ impl fmt::Display for AEADAlgorithm {
                 f.write_str("EAX mode"),
             AEADAlgorithm::OCB =>
                 f.write_str("OCB mode"),
+            AEADAlgorithm::GCM =>
+                f.write_str("GCM mode"),
             AEADAlgorithm::Private(u) =>
                 f.write_fmt(format_args!("Private/Experimental AEAD algorithm {}", u)),
             AEADAlgorithm::Unknown(u) =>

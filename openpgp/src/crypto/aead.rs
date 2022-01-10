@@ -89,6 +89,7 @@ impl AEADAlgorithm {
             EAX => Ok(16),
             // According to RFC4880bis, Section 5.16.2.
             OCB => Ok(16),
+            GCM => Ok(16),
             _ => Err(Error::UnsupportedAEADAlgorithm(*self).into()),
         }
     }
@@ -103,6 +104,7 @@ impl AEADAlgorithm {
             // least 15 octets long".  GnuPG hardcodes 15 in
             // openpgp_aead_algo_info.
             OCB => Ok(15),
+            GCM => Ok(12),
             _ => Err(Error::UnsupportedAEADAlgorithm(*self).into()),
         }
     }

@@ -59,6 +59,30 @@ impl AEADAlgorithm {
                 )),
                 _ => Err(Error::UnsupportedSymmetricAlgorithm(sym_algo).into()),
             },
+            AEADAlgorithm::GCM => match sym_algo {
+                SymmetricAlgorithm::AES128 => Ok(Box::new(
+                    aead::Gcm::<cipher::Aes128>::with_key_and_nonce(key, nonce)?,
+                )),
+                SymmetricAlgorithm::AES192 => Ok(Box::new(
+                    aead::Gcm::<cipher::Aes192>::with_key_and_nonce(key, nonce)?,
+                )),
+                SymmetricAlgorithm::AES256 => Ok(Box::new(
+                    aead::Gcm::<cipher::Aes256>::with_key_and_nonce(key, nonce)?,
+                )),
+                SymmetricAlgorithm::Twofish => Ok(Box::new(
+                    aead::Gcm::<cipher::Twofish>::with_key_and_nonce(key, nonce)?,
+                )),
+                SymmetricAlgorithm::Camellia128 => Ok(Box::new(
+                    aead::Gcm::<cipher::Camellia128>::with_key_and_nonce(key, nonce)?,
+                )),
+                SymmetricAlgorithm::Camellia192 => Ok(Box::new(
+                    aead::Gcm::<cipher::Camellia192>::with_key_and_nonce(key, nonce)?,
+                )),
+                SymmetricAlgorithm::Camellia256 => Ok(Box::new(
+                    aead::Gcm::<cipher::Camellia256>::with_key_and_nonce(key, nonce)?,
+                )),
+                _ => Err(Error::UnsupportedSymmetricAlgorithm(sym_algo).into()),
+            },
             _ => Err(Error::UnsupportedAEADAlgorithm(*self).into()),
         }
     }
