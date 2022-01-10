@@ -6,6 +6,7 @@
 * Changes in 1.14.0
 ** New functionality
    - Packet::version
+   - types::AEADAlgorithm::GCM
 * Changes in 1.13.0
 ** New cryptographic backends
    - We added a backend that uses OpenSSL.

@@ -888,6 +888,8 @@ pub enum AEADAlgorithm {
     EAX,
     /// OCB mode.
     OCB,
+    /// Galois/Counter mode.
+    GCM,
     /// Private algorithm identifier.
     Private(u8),
     /// Unknown algorithm identifier.
@@ -895,9 +897,10 @@ pub enum AEADAlgorithm {
 }
 assert_send_and_sync!(AEADAlgorithm);
 
-const AEAD_ALGORITHM_VARIANTS: [AEADAlgorithm; 2] = [
+const AEAD_ALGORITHM_VARIANTS: [AEADAlgorithm; 3] = [
     AEADAlgorithm::EAX,
     AEADAlgorithm::OCB,
+    AEADAlgorithm::GCM,
 ];
 
 impl AEADAlgorithm {
@@ -930,6 +933,7 @@ impl From<u8> for AEADAlgorithm {
         match u {
             1 => AEADAlgorithm::EAX,
             2 => AEADAlgorithm::OCB,
+            3 => AEADAlgorithm::GCM,
             100..=110 => AEADAlgorithm::Private(u),
             u => AEADAlgorithm::Unknown(u),
         }
@@ -941,6 +945,7 @@ impl From<AEADAlgorithm> for u8 {
         match s {
             AEADAlgorithm::EAX => 1,
             AEADAlgorithm::OCB => 2,
+            AEADAlgorithm::GCM => 3,
             AEADAlgorithm::Private(u) => u,
             AEADAlgorithm::Unknown(u) => u,
         }
@@ -973,6 +978,8 @@ impl fmt::Display for AEADAlgorithm {
                     f.write_str("EAX mode"),
                 AEADAlgorithm::OCB =>
                     f.write_str("OCB mode"),
+                AEADAlgorithm::GCM =>
+                    f.write_str("GCM mode"),
                 AEADAlgorithm::Private(u) =>
                     f.write_fmt(format_args!("Private/Experimental AEAD algorithm {}", u)),
                 AEADAlgorithm::Unknown(u) =>
@@ -984,6 +991,8 @@ impl fmt::Display for AEADAlgorithm {
                     f.write_str("EAX"),
                 AEADAlgorithm::OCB =>
                     f.write_str("OCB"),
+                AEADAlgorithm::GCM =>
+                    f.write_str("GCM"),
                 AEADAlgorithm::Private(u) =>
                     f.write_fmt(format_args!("Private AEAD algo {}", u)),
                 AEADAlgorithm::Unknown(u) =>

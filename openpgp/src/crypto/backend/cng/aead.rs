@@ -80,7 +80,12 @@ impl AEADAlgorithm {
                 }
                 _ => Err(Error::UnsupportedSymmetricAlgorithm(sym_algo).into()),
             },
-            _ => Err(Error::UnsupportedAEADAlgorithm(self.clone()).into()),
+            AEADAlgorithm::OCB =>
+                Err(Error::UnsupportedAEADAlgorithm(*self).into()),
+            AEADAlgorithm::GCM =>
+                Err(Error::UnsupportedAEADAlgorithm(*self).into()),
+            AEADAlgorithm::Private(_) | AEADAlgorithm::Unknown(_) =>
+                Err(Error::UnsupportedAEADAlgorithm(*self).into()),
         }
     }
 }

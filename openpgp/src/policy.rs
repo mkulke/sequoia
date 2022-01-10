@@ -740,11 +740,12 @@ a_cutoff_list!(SymmetricAlgorithmCutoffList, SymmetricAlgorithm, 14,
                    ACCEPT,                   // 13. Camellia256.
                ]);
 
-a_cutoff_list!(AEADAlgorithmCutoffList, AEADAlgorithm, 3,
+a_cutoff_list!(AEADAlgorithmCutoffList, AEADAlgorithm, 4,
                [
                    REJECT,                 // 0. Reserved.
                    ACCEPT,                 // 1. EAX.
                    ACCEPT,                 // 2. OCB.
+                   ACCEPT,                 // 3. GCM.
                ]);
 
 a_versioned_cutoff_list!(PacketTagCutoffList, Tag, 21,
