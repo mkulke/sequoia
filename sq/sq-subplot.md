@@ -111,16 +111,21 @@ then exit code is 0
 then stdout matches regex ^sq \d+\.\d+\.\d+ .*$
 ~~~
 
-# Key generation
+# Key management: `sq key`
 
-This chapter covers key generation with `sq`. Keys are somewhat
+This chapter covers all key management functionality: the `sq key`
+subcommands.
+
+## Key generation: `sq key generate`
+
+This section covers key generation with `sq`. Keys are somewhat
 complicated: it is possible to have keys for specify that they can
 only used for specific operations, or the time period when they are
 valid. Different cryptographic algorithms have different kinds of
 keys. We verify these by varying what kind keys we generate and that
 they look as expected, when inspected.
 
-## Generate a key with defaults
+### Generate a key with defaults
 
 _Requirement: We must be able to generate new encryption keys and
 corresponding certificates._
@@ -141,7 +146,7 @@ then stdout contains "Key flags: signing"
 then stdout contains "Key flags: transport encryption, data-at-rest encryption"
 ~~~
 
-## Generate key without user identifiers
+### Generate key without user identifiers
 
 _Requirement: We must be able to generate new encryption keys without
 any user identifiers._
@@ -153,7 +158,7 @@ then file key.pgp contains "-----BEGIN PGP PRIVATE KEY BLOCK-----"
 ~~~
 
 
-## Generate key with more than one user identifier
+### Generate key with more than one user identifier
 
 _Requirement: We must be able to generate new encryption keys with
 more than one user identifier._
@@ -166,7 +171,7 @@ then file key.pgp contains "Comment: <alice@example.com>"
 ~~~
 
 
-## Generate a key for encryption only
+### Generate a key for encryption only
 
 _Requirement: We must be able to generate a key that can only be used
 for encryption, and can't be used for signing._
@@ -182,7 +187,7 @@ then stdout doesn't contain "Key flags: signing"
 then stdout contains "Key flags: transport encryption, data-at-rest encryption"
 ~~~
 
-## Generate a key for storage encryption only
+### Generate a key for storage encryption only
 
 _Requirement: We must be able to generate a key that can only be used
 for at-rest (storage) encryption._
@@ -196,7 +201,7 @@ then stdout doesn't contain "transport encryption"
 then stdout contains "Key flags: data-at-rest encryption"
 ~~~
 
-## Generate a key for transport encryption only
+### Generate a key for transport encryption only
 
 _Requirement: We must be able to generate a key that can only be used
 for transport encryption._
@@ -210,7 +215,7 @@ then stdout contains "Key flags: transport encryption"
 then stdout doesn't contain "data-at-rest encryption"
 ~~~
 
-## Generate a key for signing only
+### Generate a key for signing only
 
 _Requirement: We must be able to generate a key that can only be used
 for signing, and can't be used for encryption._
@@ -224,7 +229,7 @@ then stdout contains "Key flags: signing"
 then stdout doesn't contain "Key flags: transport encryption, data-at-rest encryption"
 ~~~
 
-## Generate an elliptic curve key
+### Generate an elliptic curve key
 
 _Requirement: We must be able to generate an Curve25519 key_
 
@@ -239,7 +244,7 @@ then stdout contains "Public-key algo: EdDSA Edwards-curve Digital Signature Alg
 then stdout contains "Public-key size: 256 bits"
 ~~~
 
-## Generate a three kilobit RSA key
+### Generate a three kilobit RSA key
 
 _Requirement: We must be able to generate a 3072-bit RSA key._
 
@@ -251,7 +256,7 @@ then stdout contains "Public-key algo: RSA"
 then stdout contains "Public-key size: 3072 bits"
 ~~~
 
-## Generate four kilobit RSA key
+### Generate four kilobit RSA key
 
 _Requirement: We must be able to generate a 4096-bit RSA key._
 
@@ -263,7 +268,7 @@ then stdout contains "Public-key algo: RSA"
 then stdout contains "Public-key size: 4096 bits"
 ~~~
 
-## Generate a key with revocation certificate
+### Generate a key with revocation certificate
 
 _Requirement: We must be able to specify where the revocation
 certificate is store._
@@ -282,7 +287,7 @@ when I run sq key generate --export key2.pgp --rev-cert rev.pgp
 then file rev.pgp contains "Comment: Revocation certificate for"
 ~~~
 
-## Generate a key with default duration
+### Generate a key with default duration
 
 _Requirement: By default, generated key expire._
 
@@ -299,7 +304,7 @@ The check for expiration time assumes the scenario is run the 21st
 century, and will need to be amended in the 2090s or by time
 travellers running it before about the year 2000.
 
-## Generate a key that expires at a given moment
+### Generate a key that expires at a given moment
 
 _Requirement: We must be able to generate a key that expires._
 
@@ -314,7 +319,7 @@ when I run sq inspect key.pgp
 then stdout contains "Expiration time: 2038-01-19 03:14:06 UTC"
 ~~~
 
-## Generate a key with a given duration
+### Generate a key with a given duration
 
 _Requirement: We must be able to generate a key that expires in a
 given time._
@@ -326,7 +331,7 @@ when I run sq inspect key.pgp
 then stdout contains "Expiration time: 20"
 ~~~
 
-## Generate a key without password
+### Generate a key without password
 
 _Requirement: We must be able to generate a that doesn't have a
 password._
@@ -338,7 +343,7 @@ when I run sq inspect key.pgp
 then stdout contains "Secret key: Unencrypted"
 ~~~
 
-## Generate a key with a password
+### Generate a key with a password
 
 _Requirement: We must be able to generate a that does have a
 password._
@@ -355,13 +360,13 @@ when I run sq inspect key.pgp
 then stdout contains "Secret key: Encrypted"
 ~~~
 
-# Certificate extraction
+## Certificate extraction: `sq key extract-cert`
 
-This chapter covers extraction of certificates from keys: the `sq key
+This section covers extraction of certificates from keys: the `sq key
 extract-certificate` subcommand and its variations.
 
 
-## Extract certificate to the standard output
+### Extract certificate to the standard output
 
 _Requirement: We must be able to extract a certificate to standard
 output._
@@ -375,7 +380,7 @@ then stdout contains "-----END PGP PUBLIC KEY BLOCK-----"
 ~~~
 
 
-## Extract certificate to a file
+### Extract certificate to a file
 
 _Requirement: We must be able to extract a certificate to a named
 file._
@@ -389,7 +394,7 @@ then file cert.pgp contains "-----END PGP PUBLIC KEY BLOCK-----"
 ~~~
 
 
-## Extract binary certificate to the standard output
+### Extract binary certificate to the standard output
 
 _Requirement: We must be able to extract a binary certificate to the
 standard output._
@@ -406,7 +411,7 @@ then stdout doesn't contain "-----END PGP PUBLIC KEY BLOCK-----"
 ~~~
 
 
-## Extract binary certificate from the standard input
+### Extract binary certificate from the standard input
 
 _Requirement: We must be able to extract a certificate from a key read
 from the standard input._
@@ -422,6 +427,144 @@ when I run sq key extract-cert < key.pgp
 then stdout contains "-----BEGIN PGP PUBLIC KEY BLOCK-----"
 then stdout contains "-----END PGP PUBLIC KEY BLOCK-----"
 ~~~
+
+
+# Keyring management: `sq keyring`
+
+This chapter verifies that the various subcommands to manage keyring
+files work: subcommands of the `sq keyring` command.
+
+## Joining keys into a keyring: `sq keyring join`
+
+The scenarios in this section verify that various ways of joining keys
+into a keyring work.
+
+### Join two keys into a textual keyring to stdout
+
+_Requirement: we can join two keys into a keyring, and have it written
+to stdout._
+
+This is for secret keys, with the output going to stdout in text form.
+
+~~~scenario
+given an installed sq
+when I run sq key generate --userid Alice --export alice.pgp
+when I run sq key generate --userid Bob --export bob.pgp
+when I run sq keyring join alice.pgp bob.pgp
+then stdout contains "-----BEGIN PGP PUBLIC KEY BLOCK-----"
+then stdout contains "-----END PGP PUBLIC KEY BLOCK-----"
+~~~
+
+### Join two keys into a textual keyring to a named file
+
+_Requirement: we can join two keys into a keyring, and have it written
+to a named file._
+
+This is for secret keys, with the output going to a file in text form.
+
+~~~scenario
+given an installed sq
+when I run sq key generate --userid Alice --export alice.pgp
+when I run sq key generate --userid Bob --export bob.pgp
+when I run sq keyring join alice.pgp bob.pgp -o ring.pgp
+then file ring.pgp contains "-----BEGIN PGP PUBLIC KEY BLOCK-----"
+then file ring.pgp contains "-----END PGP PUBLIC KEY BLOCK-----"
+when I run sq inspect ring.pgp
+then stdout contains "Transferable Secret Key."
+then stdout contains "Alice"
+then stdout contains "Bob"
+~~~
+
+### Join two keys into a binary keyring
+
+_Requirement: we can join two keys into a keyring in binary form._
+
+~~~scenario
+given an installed sq
+when I run sq key generate --userid Alice --export alice.pgp
+when I run sq key generate --userid Bob --export bob.pgp
+when I run sq keyring join alice.pgp bob.pgp -o ring.pgp --binary
+when I try to run grep PGP ring.pgp
+then command fails
+when I run sq inspect ring.pgp
+then stdout contains "Transferable Secret Key."
+then stdout contains "Alice"
+then stdout contains "Bob"
+~~~
+
+### Join two certificates into a keyring
+
+_Requirement: we can join two certificates into a keyring._
+
+This scenario writes the keyring to a named file. We assume the
+writing operation is independent of the types of items in the keyring,
+so we don't change writing to stdout separately.
+
+~~~scenario
+given an installed sq
+when I run sq key generate --userid Alice --export alice.pgp
+when I run sq key generate --userid Bob --export bob.pgp
+when I run sq key extract-cert alice.pgp -o alice-cert.pgp
+when I run sq key extract-cert bob.pgp -o bob-cert.pgp
+when I run sq keyring join alice-cert.pgp bob-cert.pgp -o ring.pgp
+when I run cat ring.pgp
+then stdout contains "-----BEGIN PGP PUBLIC KEY BLOCK-----"
+then stdout contains "-----END PGP PUBLIC KEY BLOCK-----"
+when I run sq inspect ring.pgp
+then stdout doesn't contain "Transferable Secret Key."
+then stdout contains "OpenPGP Certificate."
+then stdout contains "Alice"
+then stdout contains "Bob"
+~~~
+
+## Listing contents of a keyring: `sq keyring list`
+
+The scenarios in this section verify the contents of a keyring can be listed.
+
+### List keys in a keyring
+
+_Requirement: we can list the keys in a keyring._
+
+~~~scenario
+given an installed sq
+when I run sq key generate --userid Alice --export alice.pgp
+when I run sq key generate --userid Bob --export bob.pgp
+when I run sq keyring join alice.pgp bob.pgp -o ring.pgp
+when I run sq keyring list ring.pgp
+then stdout contains "Alice"
+then stdout contains "Bob"
+~~~
+
+### List keys in a key file
+
+_Requirement: we can list the keys in a key file._
+
+~~~scenario
+given an installed sq
+when I run sq key generate --userid Alice --export alice.pgp
+when I run sq keyring list alice.pgp
+then stdout contains "Alice"
+then stdout doesn't contain "Bob"
+~~~
+
+### List all user ids in a key file
+
+_Requirement: we can list all user ids._
+
+~~~scenario
+given an installed sq
+when I run sq key generate --userid Alice --userid Bob --export alice.pgp
+when I run sq keyring list alice.pgp --all-userids
+then stdout contains "Alice"
+then stdout contains "Bob"
+~~~
+
+### List keys in keyring read from stdin
+
+_Requirement: we can list keys in a keyring that we read from stdin._
+
+This isn't implemented yet, because Subplot needs to add support for
+redirecting stdin to come from a file first.
 
 
 # Encrypt and decrypt a file using public keys
