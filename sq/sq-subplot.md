@@ -747,7 +747,52 @@ when I run sq keyring split ring.pgp
 then the resulting files match alice,pgp and bob.pgp
 ~~~
 
-# Encrypt and decrypt a file using public keys
+# Encryption and decryption: `sq encrypt` and `sq decrypt`
+
+This chapter has scenarios for verifying that encryption and
+decryption work. The overall approach is to do round trips: we
+encrypt, then decrypt, and is the result is identical to the input,
+all good.
+
+## Encrypt to stdout as ASCII armored
+
+_Requirement: We must be able to encrypt a file using a certificate,
+with output going to stdout.
+
+We also verify that the encrypted output doesn't contain the message
+in cleartext, just in case.
+
+~~~scenario
+given an installed sq
+given file hello.txt
+when I run sq key generate --export key.pgp
+when I run sq key extract-cert -o cert.pgp key.pgp
+when I run sq encrypt --recipient-cert cert.pgp hello.txt
+then stdout contains "-----BEGIN PGP MESSAGE-----"
+then stdout doesn't contain "hello, world"
+~~~
+
+
+## Encrypt to stdout as binary
+
+_Requirement: We must be able to encrypt a file using a certificate,
+with output going to stdout.
+
+We also verify that the encrypted output doesn't contain the message
+in cleartext, just in case.
+
+~~~scenario
+given an installed sq
+given file hello.txt
+when I run sq key generate --export key.pgp
+when I run sq key extract-cert -o cert.pgp key.pgp
+when I run sq encrypt --binary --recipient-cert cert.pgp hello.txt
+then stdout doesn't contain "-----BEGIN PGP MESSAGE-----"
+then stdout doesn't contain "hello, world"
+~~~
+
+
+## Encrypt and decrypt using asymmetric encryption
 
 _Requirement: We must be able to encrypt a file using a certificate,
 and then decrypt it using the corresponding key._
@@ -761,107 +806,197 @@ files, etc).
 ~~~scenario
 given an installed sq
 given file hello.txt
-when I run sq key generate --userid Tomjon --export tomjon.pgp
-when I run sq key extract-cert -o cert.pgp tomjon.pgp
-when I run sq encrypt -o e.pgp --recipient-cert cert.pgp hello.txt
-when I run sq decrypt -o output.txt --recipient-key tomjon.pgp e.pgp
+when I run sq key generate --export key.pgp
+when I run sq key extract-cert -o cert.pgp key.pgp
+when I run sq encrypt -o x.pgp --recipient-cert cert.pgp hello.txt
+when I run sq decrypt -o output.txt --recipient-key key.pgp x.pgp
 then files hello.txt and output.txt match
 ~~~
 
-# Sign a document and verify the signature
 
-_Requirement: We must be able to sign a document, to prove it comes
-from us. We must be able to verify a signature on a document._
+## Encrypt for multiple recipients
 
-We break this into three scenarios. One that uses a binary signature,
-one with textual cleartext signature, and one with a detached
-signature.
-
-## Binary signature
-
-This scenario creates a small text file, and signs it, and checks that
-the signature is OK.
+_Requirement: We must be able to encrypt a message for multiple
+recipients at a time._
 
 ~~~scenario
 given an installed sq
 given file hello.txt
-when I run sq key generate --userid Tomjon --export tomjon.pgp
-when I run sq sign -o s.pgp --signer-key tomjon.pgp hello.txt
-then file s.pgp contains "-----BEGIN PGP MESSAGE-----"
-then file s.pgp contains "-----END PGP MESSAGE-----"
-when I run sq verify -o output.txt --signer-cert tomjon.pgp s.pgp
-then files hello.txt and output.txt match
-then file output.txt contains "hello, world"
-~~~
+when I run sq key generate --export alice.pgp
+when I run sq key extract-cert -o alice-cert.pgp alice.pgp
+when I run sq key generate --export bob.pgp
+when I run sq key extract-cert -o bob-cert.pgp bob.pgp
 
-However, if the signed file is modified, verification must fail. We
-check this by removing a line from the signed file, which is a crude
-way of making sure the signature doesn't match.
+when I run sq encrypt --recipient-cert alice-cert.pgp --recipient-cert bob-cert.pgp hello.txt -o x.pgp
 
-Further, the output must not contain the input if the verification
-fails. This is to prevent accidents where the user is shown unverified
-text, and possibly a warning that it's not to be trusted, but they
-make use of the text anyway.
+when I run sq decrypt --recipient-key alice.pgp -o alice.txt x.pgp
+then files hello.txt and alice.txt match
 
-~~~scenario
-when I run sed -i 3d s.pgp
-when I try to run sq verify --signer-cert tomjon.pgp s.pgp
-then exit code is not 0
-then stdout doesn't contain "hello, world"
+when I run sq decrypt --recipient-key bob.pgp -o bob.txt x.pgp
+then files hello.txt and bob.txt match
 ~~~
 
 
-## Cleartext signature
+# Sign a document and verify the signature: `sq sign` and `sq verify`
 
-This scenario is essentially the same, but uses a cleartext signature,
-and the way the signed file is mangled is different.
+This chapter verifies that digital signatures work in `sq`. Like with
+encryption, the verification is based on round trips: we create a
+signature, and that it matches the signed data. We break this into a
+number simple cases.
+
+## Create signature to stdout in ASCII armor
+
+_Requirement: We can create a signature and have it written to
+stdout in ASCII armor form._
 
 ~~~scenario
 given an installed sq
 given file hello.txt
-when I run sq key generate --userid Tomjon --export tomjon.pgp
-when I run sq sign --cleartext-signature -o s.pgp --signer-key tomjon.pgp hello.txt
-then file s.pgp contains "hello, world"
-when I run sq verify -o output.txt --signer-cert tomjon.pgp s.pgp
-then files hello.txt and output.txt match
-then file output.txt contains "hello, world"
+when I run sq key generate --export key.pgp
+when I run sq sign --signer-key key.pgp hello.txt
+then stdout contains "-----BEGIN PGP MESSAGE-----"
+then stdout contains "-----END PGP MESSAGE-----"
 ~~~
 
-We modify the signed file by converting the actual message embedded in
-the signed file to upper case, which is easy to do, as it's in cleartext.
+## Create signature to stdout in binary
+
+_Requirement: We can create a signature and have it written to
+stdout in binary form._
 
 ~~~scenario
-when I run sed -i 's/^hello, world/HELLO, WORLD/' s.pgp
-when I try to run sq verify --signer-cert tomjon.pgp s.pgp
+given an installed sq
+given file hello.txt
+when I run sq key generate --export key.pgp
+when I run sq sign --signer-key key.pgp hello.txt --binary
+then stdout doesn't contain "-----BEGIN PGP MESSAGE-----"
+then stdout doesn't contain "-----END PGP MESSAGE-----"
+~~~
+
+## Create signature to named file
+
+_Requirement: We can create a signature and have it written to a named
+file._
+
+~~~scenario
+given an installed sq
+given file hello.txt
+when I run sq key generate --export key.pgp
+when I run sq sign --signer-key key.pgp hello.txt -o signed.txt
+then file signed.txt contains "-----BEGIN PGP MESSAGE-----"
+then file signed.txt contains "-----END PGP MESSAGE-----"
+~~~
+
+## Signed file can be verified
+
+_Requirement: We can sign a file and verify the signature._
+
+~~~scenario
+given an installed sq
+given file hello.txt
+when I run sq key generate --export key.pgp
+when I run sq key extract-cert key.pgp -o cert.pgp
+when I run sq sign --signer-key key.pgp hello.txt -o signed.txt
+when I run sq verify --signer-cert cert.pgp signed.txt
+then stdout contains "hello, world"
+~~~
+
+## Signed file cannot be verified if it has been modified
+
+_Requirement: We can sign a file and verifying the signature fails if
+the signed file has been modified._
+
+We modify the signed file by removing the third line of it. The file
+starts with a line containing "-----BEGIN PGP MESSAGE-----" and then
+an empty line, and the third line is actual data. If we delete that,
+the file by definition can't be valid anymore.
+
+~~~scenario
+given an installed sq
+given file hello.txt
+when I run sq key generate --export key.pgp
+when I run sq key extract-cert key.pgp -o cert.pgp
+when I run sq sign --signer-key key.pgp hello.txt -o signed.txt
+when I run sed -i 3d signed.txt
+when I try to run sq verify --signer-cert cert.pgp signed.txt
+then command fails
+~~~
+
+## Create cleartext signature
+
+_Requirement: We can create a signature such that the signed data is
+included in a readable form.
+
+~~~scenario
+given an installed sq
+given file hello.txt
+when I run sq key generate --export key.pgp
+when I run sq key extract-cert key.pgp -o cert.pgp
+
+when I run sq sign --cleartext-signature --signer-key key.pgp hello.txt -o signed.txt
+then file signed.txt contains "-----BEGIN PGP SIGNED MESSAGE-----"
+then file signed.txt contains "hello, world"
+then file signed.txt contains "-----END PGP SIGNATURE-----"
+when I run sq verify --signer-cert cert.pgp signed.txt
+then stdout contains "hello, world"
+~~~
+
+
+## Cleartext signature cannot be verified if it has been modified
+
+_Requirement: If a cleartext signature is modified, it can't be
+verified._
+
+~~~scenario
+given an installed sq
+given file hello.txt
+when I run sq key generate --export key.pgp
+when I run sq key extract-cert key.pgp -o cert.pgp
+
+when I run sq sign --cleartext-signature --signer-key key.pgp hello.txt -o signed.txt
+when I run sed -i s/hello/HELLO/ signed.txt
+when I try to run sq verify --signer-cert cert.pgp signed.txt
 then exit code is 1
-then stdout doesn't contain "hello, world"
-then stdout doesn't contain "HELLO, WORLD"
 ~~~
 
-## Detached signature
+## Create a detached signature
 
-This scenario is essentially the same as the previous ones, but uses a
-detached signature.
+_Requirement: We can create a signature that is doesn't include the
+data it signs._
 
 ~~~scenario
 given an installed sq
 given file hello.txt
-when I run sq key generate --userid Tomjon --export k.pgp
-when I run sq sign --detached -o s.pgp --signer-key k.pgp hello.txt
-when I run sq verify -o o.txt --signer-cert k.pgp --detached s.pgp hello.txt
+when I run sq key generate --export key.pgp
+when I run sq key extract-cert key.pgp -o cert.pgp
+
+when I run sq sign --detached --signer-key key.pgp hello.txt -o sig.txt
+then file sig.txt contains "-----BEGIN PGP SIGNATURE-----"
+then file sig.txt contains "-----END PGP SIGNATURE-----"
+when I run sq verify --detached=sig.txt --signer-cert=cert.pgp hello.txt
+then stdout doesn't contain "hello, world"
+then exit code is 0
 ~~~
 
-We modify the original file so that the signature doesn't match.
+
+## Detached signature cannot be verified if the data has been modified
+
+_Requirement: If the file that is signed using a detached signature is
+modified, the signature can't be verified._
 
 ~~~scenario
-when I run sed -i 's/^hello, world/HELLO, WORLD/' hello.txt
-when I try to run sq verify --signer-cert k.pgp --detached s.pgp hello.txt
+given an installed sq
+given file hello.txt
+when I run sq key generate --export key.pgp
+when I run sq key extract-cert key.pgp -o cert.pgp
+
+when I run sq sign --detached --signer-key key.pgp hello.txt -o sig.txt
+when I run sed -i s/hello/HELLO/ hello.txt
+when I try to run sq verify --detached=sig.txt --signer-cert=cert.pgp hello.txt
 then exit code is 1
-then stdout doesn't contain "hello, world"
-then stdout doesn't contain "HELLO, WORLD"
 ~~~
 
-# ASCII Armor data representation: `sq armor`
+
+# ASCII Armor data representation: `sq armor` and `sq dearmor`
 
 The scenarios in this chapter verify that `sq` can convert data into
 the "ASCII Armor" representation and back.
