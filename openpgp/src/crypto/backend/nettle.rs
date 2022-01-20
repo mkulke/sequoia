@@ -4,6 +4,8 @@ use crate::types::*;
 
 use nettle::random::{Random, Yarrow};
 
+use crate::crypto::SessionKey;
+
 pub mod aead;
 pub mod asymmetric;
 pub mod ecdh;
@@ -21,6 +23,33 @@ pub mod symmetric;
 ///   [`SessionKey::new`]: crate::crypto::SessionKey::new()
 pub fn random<B: AsMut<[u8]>>(mut buf: B) {
     Yarrow::default().random(buf.as_mut());
+}
+
+/// HKDF instantiated with SHA256.
+///
+/// Used to derive message keys from session keys, and key
+/// encapsulating keys from S2K mechanisms.  In both cases, using a
+/// KDF that includes algorithm information in the given `info`
+/// provides key space separation between cipher algorithms and modes.
+///
+/// `salt`, if given, SHOULD be 32 bytes of salt matching the digest
+/// size of the hash function.  If it is not give, 32 zeros are used
+/// instead.
+///
+/// `okm` must not be larger than 255 * 32 (the size of the hash
+/// digest).
+pub fn hkdf_sha256(ikm: &SessionKey, salt: Option<&[u8]>, info: &[u8],
+                   okm: &mut SessionKey)
+{
+    use nettle::{
+        kdf::hkdf,
+        hash::Sha256,
+    };
+
+    assert!(okm.len() <= 255 * 32);
+    const NO_SALT: [u8; 32] = [0; 32];
+    let salt = salt.unwrap_or(&NO_SALT);
+    hkdf::<Sha256>(&ikm[..], salt, info, okm);
 }
 
 impl PublicKeyAlgorithm {
