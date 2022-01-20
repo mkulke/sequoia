@@ -32,6 +32,7 @@ pub(crate) mod aead;
 mod asymmetric;
 pub use self::asymmetric::{Signer, Decryptor, KeyPair};
 mod backend;
+pub use backend::hkdf_sha256;
 pub mod ecdh;
 pub mod hash;
 pub mod mem;
