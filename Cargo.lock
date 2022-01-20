@@ -2369,6 +2369,7 @@ dependencies = [
  "flate2",
  "generic-array",
  "getrandom 0.2.9",
+ "hkdf",
  "idea",
  "idna 0.3.0",
  "lalrpop",

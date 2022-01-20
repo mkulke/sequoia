@@ -2,12 +2,15 @@
 
 use crate::{
     Result,
-    crypto::mem::Protected,
+    crypto::{
+        SessionKey,
+        mem::Protected,
+    },
     types::{Curve, PublicKeyAlgorithm},
 };
 
 /// Abstracts over the cryptographic backends.
-pub trait Backend: Asymmetric {
+pub trait Backend: Asymmetric + Kdf {
     /// Returns a short, human-readable description of the backend.
     ///
     /// This starts with the name of the backend, possibly a version,
@@ -69,4 +72,24 @@ pub trait Asymmetric {
     /// Verifies an Ed25519 signature.
     fn ed25519_verify(public: &[u8; 32], digest: &[u8], signature: &[u8; 64])
                       -> Result<bool>;
+}
+
+/// Key-Derivation-Functions.
+pub trait Kdf {
+    /// HKDF instantiated with SHA256.
+    ///
+    /// Used to derive message keys from session keys, and key
+    /// encapsulating keys from S2K mechanisms.  In both cases, using
+    /// a KDF that includes algorithm information in the given `info`
+    /// provides key space separation between cipher algorithms and
+    /// modes.
+    ///
+    /// `salt`, if given, SHOULD be 32 bytes of salt matching the
+    /// digest size of the hash function.  If it is not give, 32 zeros
+    /// are used instead.
+    ///
+    /// `okm` must not be larger than 255 * 32 (the size of the hash
+    /// digest).
+    fn hkdf_sha256(ikm: &SessionKey, salt: Option<&[u8]>, info: &[u8],
+                   okm: &mut SessionKey) -> Result<()>;
 }

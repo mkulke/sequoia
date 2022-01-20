@@ -78,6 +78,7 @@ ecdsa = { version = "0.16", optional = true, features = ["hazmat", "arithmetic"]
 ed25519 = { version = "1", default-features = false, features = ["std"], optional = true }
 ed25519-dalek = { version = "1", default-features = false, features = ["rand", "u64_backend"], optional = true }
 generic-array = { version = "0.14.4", optional = true }
+hkdf = { version = "0.12", optional = true }
 idea = { version = "0.5", optional = true }
 md-5 = { version = "0.10", features = ["oid"], optional = true }
 num-bigint-dig = { version = "0.8", default-features = false, optional = true }
@@ -133,11 +134,11 @@ crypto-rust = [
     "digest", "eax", "ecb", "ed25519", "ed25519-dalek", "generic-array", "idea",
     "md-5", "num-bigint-dig", "rand", "rand07", "ripemd", "rsa", "sha-1", "sha2",
     "twofish", "typenum", "x25519-dalek-ng", "p256",
-    "rand_core", "rand_core/getrandom", "ecdsa", "aes-gcm"
+    "rand_core", "rand_core/getrandom", "ecdsa", "aes-gcm", "hkdf"
 ]
 crypto-cng = [
     "cipher", "eax", "winapi", "win-crypto-ng", "ed25519", "ed25519-dalek",
-    "num-bigint-dig", "aes-gcm"
+    "num-bigint-dig", "aes-gcm", "hkdf", "sha2"
 ]
 crypto-openssl = ["openssl", "openssl-sys"]
 crypto-botan = ["botan/botan3"]
