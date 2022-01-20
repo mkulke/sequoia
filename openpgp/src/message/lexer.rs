@@ -29,6 +29,8 @@ pub enum Token {
     SEIP,
     /// A version 1 SEIP packet.
     SEIPv1,
+    /// A version 2 SEIP packet.
+    SEIPv2,
     /// An MDC packet.
     MDC,
     /// An AED packet.

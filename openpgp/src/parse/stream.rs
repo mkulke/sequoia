@@ -120,6 +120,7 @@ use crate::{
         key,
         OnePassSig,
         PKESK,
+        SEIP,
         SKESK,
     },
     KeyHandle,
@@ -2366,10 +2367,10 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                 }
             }
 
-            let sym_algo_hint = if let Packet::AED(ref aed) = pp.packet {
-                Some(aed.symmetric_algo())
-            } else {
-                None
+            let sym_algo_hint = match &pp.packet {
+                Packet::SEIP(SEIP::V2(seip)) => Some(seip.symmetric_algo()),
+                Packet::AED(aed) => Some(aed.symmetric_algo()),
+                _ => None,
             };
 
             match pp.packet {

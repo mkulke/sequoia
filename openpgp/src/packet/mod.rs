@@ -464,7 +464,8 @@ impl Deref for Packet {
             Packet::PKESK(ref packet) => &packet.common,
             Packet::SKESK(SKESK::V4(ref packet)) => &packet.common,
             Packet::SKESK(SKESK::V5(ref packet)) => &packet.skesk4.common,
-            Packet::SEIP(ref packet) => &packet.common,
+            Packet::SEIP(SEIP::V1(packet)) => &packet.common,
+            Packet::SEIP(SEIP::V2(packet)) => &packet.common,
             Packet::MDC(ref packet) => &packet.common,
             Packet::AED(ref packet) => &packet.common,
             Packet::Padding(packet) => &packet.common,
@@ -491,7 +492,8 @@ impl DerefMut for Packet {
             Packet::PKESK(ref mut packet) => &mut packet.common,
             Packet::SKESK(SKESK::V4(ref mut packet)) => &mut packet.common,
             Packet::SKESK(SKESK::V5(ref mut packet)) => &mut packet.skesk4.common,
-            Packet::SEIP(ref mut packet) => &mut packet.common,
+            Packet::SEIP(SEIP::V1(packet)) => &mut packet.common,
+            Packet::SEIP(SEIP::V2(packet)) => &mut packet.common,
             Packet::MDC(ref mut packet) => &mut packet.common,
             Packet::AED(ref mut packet) => &mut packet.common,
             Packet::Padding(packet) => &mut packet.common,
@@ -1908,6 +1910,9 @@ impl<P: key::KeyParts, R: key::KeyRole> DerefMut for Key<P, R> {
 pub enum SEIP {
     /// SEIP packet version 1.
     V1(self::seip::SEIP1),
+
+    /// SEIP packet version 2.
+    V2(self::seip::SEIP2),
 }
 assert_send_and_sync!(SEIP);
 
@@ -1916,6 +1921,7 @@ impl SEIP {
     pub fn version(&self) -> u8 {
         match self {
             SEIP::V1(_) => 1,
+            SEIP::V2(_) => 2,
         }
     }
 }
@@ -1923,26 +1929,6 @@ impl SEIP {
 impl From<SEIP> for Packet {
     fn from(p: SEIP) -> Self {
         Packet::SEIP(p)
-    }
-}
-
-// Trivial forwarder for singleton enum.
-impl Deref for SEIP {
-    type Target = self::seip::SEIP1;
-
-    fn deref(&self) -> &Self::Target {
-        match self {
-            SEIP::V1(ref p) => p,
-        }
-    }
-}
-
-// Trivial forwarder for singleton enum.
-impl DerefMut for SEIP {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        match self {
-            SEIP::V1(ref mut p) => p,
-        }
     }
 }
 
