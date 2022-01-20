@@ -2885,16 +2885,16 @@ impl<'a> Encryptor<'a> {
         struct AEADParameters {
             algo: AEADAlgorithm,
             chunk_size: usize,
-            nonce: Box<[u8]>,
+            salt: [u8; 32],
         }
 
         let aead = if let Some(algo) = self.aead_algo {
-            let mut nonce = vec![0; algo.nonce_size()?];
-            crypto::random(&mut nonce);
+            let mut salt = [0u8; 32];
+            crypto::random(&mut salt);
             Some(AEADParameters {
                 algo,
                 chunk_size: Self::AEAD_CHUNK_SIZE,
-                nonce: nonce.into_boxed_slice(),
+                salt,
             })
         } else {
             None
@@ -2941,25 +2941,27 @@ impl<'a> Encryptor<'a> {
 
         if let Some(aead) = aead {
             // Write the AED packet.
-            CTB::new(Tag::AED).serialize(&mut inner)?;
+            CTB::new(Tag::SEIP).serialize(&mut inner)?;
             let mut inner = PartialBodyFilter::new(Message::from(inner),
                                                    Cookie::new(level));
-            let aed = AED1::new(self.sym_algo, aead.algo,
-                                aead.chunk_size as u64, aead.nonce)?;
-            aed.serialize_headers(&mut inner)?;
+            let seip = SEIP2::new(self.sym_algo, aead.algo,
+                                 aead.chunk_size as u64, aead.salt)?;
+            seip.serialize_headers(&mut inner)?;
 
-            use crate::crypto::aead::AEDv1Schedule;
-            let schedule = AEDv1Schedule::new(
-                aed.symmetric_algo(), aed.aead(), aead.chunk_size, aed.iv())?;
+            use crate::crypto::aead::SEIPv2Schedule;
+            let (message_key, schedule) = SEIPv2Schedule::new(
+                &sk,
+                seip.symmetric_algo(), seip.aead(), aead.chunk_size,
+                seip.salt())?;
 
             writer::AEADEncryptor::new(
                 inner,
                 Cookie::new(level),
-                aed.symmetric_algo(),
-                aed.aead(),
+                seip.symmetric_algo(),
+                seip.aead(),
                 aead.chunk_size,
                 schedule,
-                sk,
+                message_key,
             )
         } else {
             // Write the SEIP packet.
