@@ -702,6 +702,15 @@ impl PacketDumper {
 
             SEIP(ref s) => {
                 writeln!(output, "{}  Version: {}", i, s.version())?;
+                match s {
+                    openpgp::packet::SEIP::V2(s) => {
+                        writeln!(output, "{}  Symmetric algo: {}", i, s.symmetric_algo())?;
+                        writeln!(output, "{}  AEAD mode: {}", i, s.aead())?;
+                        writeln!(output, "{}  Chunk size: {}", i, s.chunk_size())?;
+                        writeln!(output, "{}  Salt: {}", i, hex::encode(s.salt()))?;
+                    },
+                    _ => (), // V1 has no fields, others we don't know.
+                }
             },
 
             MDC(ref m) => {
