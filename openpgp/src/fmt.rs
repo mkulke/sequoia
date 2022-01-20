@@ -19,6 +19,21 @@ pub mod hex {
         super::to_hex(buffer.as_ref(), true)
     }
 
+    /// XXX
+    pub fn dump_rfc<B: AsRef<[u8]>>(l: &str, s: B) {
+        eprintln!("{}:", l);
+        for (i, b) in s.as_ref().iter().enumerate() {
+            if i % 16 == 0 {
+                eprint!("\n      ");
+            } else if i > 0 {
+                eprint!(" ");
+            }
+            eprint!("{:02x}", b);
+        }
+        eprintln!();
+        eprintln!();
+    }
+
     /// Decodes the given hexadecimal number.
     pub fn decode<H: AsRef<str>>(hex: H) -> Result<Vec<u8>> {
         super::from_hex(hex.as_ref(), false)
