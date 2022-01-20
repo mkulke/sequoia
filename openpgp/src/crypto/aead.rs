@@ -18,6 +18,7 @@ use crate::crypto::SessionKey;
 use crate::seal;
 use crate::parse::Cookie;
 use crate::crypto::hkdf_sha256;
+use crate::fmt::hex::dump_rfc;
 
 /// Minimum AEAD chunk size.
 ///
@@ -137,6 +138,8 @@ pub trait Schedule: Send + Sync {
     fn final_chunk<F, R>(&self, index: u64, length: u64, fun: F) -> R
     where
         F: FnMut(&[u8], &[u8]) -> R;
+
+    fn dump_rfc<B: AsRef<[u8]>>(&self, _: &str, _: B) {}
 }
 
 const AED1AD_PREFIX_LEN: usize = 5;
@@ -255,6 +258,11 @@ impl SEIPv2Schedule {
                 format!("Invalid AEAD chunk size: {}", chunk_size)).into());
         }
 
+        eprintln!("## Sample AEAD-{:?} encryption and decryption\n\n", aead);
+
+        dump_rfc("Session key", session_key);
+        dump_rfc("Salt", salt);
+
         // Derive the message key and initialization vector.
         let key_size = sym_algo.key_size()?;
         // The IV size is NONCE_LEN - 8 bytes taken from the KDF.
@@ -268,9 +276,13 @@ impl SEIPv2Schedule {
             aead.into(),
             chunk_size.trailing_zeros() as u8 - 6,
         ];
+        dump_rfc("HKDF info", &ad);
         hkdf_sha256(session_key, Some(salt), &ad, &mut key_iv);
+        dump_rfc("HKDF output", &key_iv);
         let key = Vec::from(&key_iv[..key_size]).into();
-        let iv = Vec::from(&key_iv[key_size..]).into_boxed_slice();
+        let iv = Vec::from(&key_iv[key_size..]).into();
+        dump_rfc("Message key", &key);
+        dump_rfc("Initialization vector", &iv);
 
         Ok((key, Self {
             iv,
@@ -293,6 +305,9 @@ impl Schedule for SEIPv2Schedule {
         nonce[..self.iv.len()].copy_from_slice(&self.iv);
         nonce[self.iv.len()..].copy_from_slice(&index_be);
 
+        dump_rfc("Nonce", &nonce);
+        dump_rfc("Additional authenticated data", &self.ad);
+
         fun(nonce, &self.ad)
     }
 
@@ -313,7 +328,14 @@ impl Schedule for SEIPv2Schedule {
         nonce[..self.iv.len()].copy_from_slice(&self.iv);
         nonce[self.iv.len()..].copy_from_slice(&index_be);
 
+        dump_rfc("Final nonce", &nonce);
+        dump_rfc("Final additional authenticated data", &ad);
+
         fun(nonce, &ad)
+    }
+
+    fn dump_rfc<B: AsRef<[u8]>>(&self, l: &str, s: B) {
+        dump_rfc(l, s);
     }
 }
 
@@ -492,6 +514,7 @@ impl<'a, S: Schedule> Decryptor<'a, S> {
                     &mut plaintext[pos..pos + to_decrypt]
                 };
 
+                self.schedule.dump_rfc("Encrypted data chunk", &chunk[..to_decrypt]);
                 aead.decrypt_verify(buffer, &chunk[..to_decrypt], &chunk[to_decrypt..])?;
 
                 if double_buffer {
@@ -531,6 +554,7 @@ impl<'a, S: Schedule> Decryptor<'a, S> {
                     })??;
 
                 let final_digest = self.source.data(final_digest_size)?;
+                self.schedule.dump_rfc("Read authentication tag", final_digest);
 
                 aead.decrypt_verify(&mut [], &[], final_digest)?;
 
@@ -756,10 +780,12 @@ impl<W: io::Write, S: Schedule> Encryptor<W, S> {
                 self.chunk_index += 1;
                 crate::vec_truncate(&mut self.buffer, 0);
                 inner.write_all(&self.scratch)?;
+                self.schedule.dump_rfc("Encrypted data chunk", &self.scratch);
 
                 // Write digest.
                 aead.digest(&mut self.scratch[..self.digest_size])?;
                 inner.write_all(&self.scratch[..self.digest_size])?;
+                self.schedule.dump_rfc("Authentication tag", &self.scratch[..self.digest_size]);
             }
         }
 
@@ -784,10 +810,12 @@ impl<W: io::Write, S: Schedule> Encryptor<W, S> {
                 self.bytes_encrypted += self.scratch.len() as u64;
                 self.chunk_index += 1;
                 inner.write_all(&self.scratch)?;
+                self.schedule.dump_rfc("Encrypted data chunk", &self.scratch);
 
                 // Write digest.
                 aead.digest(&mut self.scratch[..self.digest_size])?;
                 inner.write_all(&self.scratch[..self.digest_size])?;
+                self.schedule.dump_rfc("Authentication tag", &self.scratch[..self.digest_size]);
             } else {
                 // Stash for later.
                 assert!(self.buffer.is_empty());
@@ -819,11 +847,13 @@ impl<W: io::Write, S: Schedule> Encryptor<W, S> {
                 self.chunk_index += 1;
                 crate::vec_truncate(&mut self.buffer, 0);
                 inner.write_all(&self.scratch)?;
+                self.schedule.dump_rfc("Encrypted data chunk", &self.scratch);
 
                 // Write digest.
                 unsafe { self.scratch.set_len(self.digest_size) }
                 aead.digest(&mut self.scratch[..self.digest_size])?;
                 inner.write_all(&self.scratch[..self.digest_size])?;
+                self.schedule.dump_rfc("Authentication tag", &self.scratch[..self.digest_size]);
             }
 
             // Write final digest.
@@ -839,6 +869,7 @@ impl<W: io::Write, S: Schedule> Encryptor<W, S> {
                 })??;
             aead.digest(&mut self.scratch[..self.digest_size])?;
             inner.write_all(&self.scratch[..self.digest_size])?;
+            self.schedule.dump_rfc("Final authentication tag", &self.scratch[..self.digest_size]);
 
             Ok(inner)
         } else {

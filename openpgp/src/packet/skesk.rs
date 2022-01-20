@@ -460,6 +460,15 @@ impl SKESK5 {
                 session_key.len(), payload_algo.key_size()?)).into());
         }
 
+        use crate::fmt::hex::dump_rfc;
+        eprintln!("### Sample Parameters\n");
+        eprintln!("S2K: {:?}\n", &s2k);
+        if let crate::crypto::S2K::Iterated { salt, .. } = &s2k {
+            dump_rfc("Salt", salt);
+        } else {
+            panic!();
+        }
+
         // Derive key and make a cipher.
         let ad = [0xc3, 5, esk_algo.into(), esk_aead.into()];
         let key = s2k.derive_key(password, esk_algo.key_size()?)?;
@@ -474,13 +483,20 @@ impl SKESK5 {
         // Prepare associated data.
         ctx.update(&ad)?;
 
+        eprintln!("### Starting AEAD-EAX decryption of the session key\n");
+        dump_rfc("The derived key is", &key);
+        dump_rfc("Authenticated Data", &ad);
+        dump_rfc("Nonce", &iv);
+
         // Encrypt the session key with the KEK.
         let mut esk = vec![0u8; session_key.len()];
         ctx.encrypt(&mut esk, session_key)?;
+        dump_rfc("AEAD encrypted session key", &esk);
 
         // Digest.
         let mut digest = vec![0u8; esk_aead.digest_size()?];
         ctx.digest(&mut digest)?;
+        dump_rfc("Authentication tag", &digest);
 
         SKESK5::new(esk_algo, esk_aead, s2k, iv.into_boxed_slice(), esk.into(),
                     digest.into_boxed_slice())
