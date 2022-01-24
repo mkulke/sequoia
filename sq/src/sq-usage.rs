@@ -416,12 +416,27 @@
 //!     -c, --cipher-suite <CIPHER-SUITE>
 //!             Selects the cryptographic algorithms for the key [default: cv25519]
 //!             [possible values: rsa3k, rsa4k, cv25519]
+//!         --creation-time <CREATION_TIME>
+//!             Sets the key's creation time to TIME.  TIME is interpreted as an ISO
+//!             8601
+//!             timestamp.  To set the creation time to June 9, 2011 at midnight
+//!             UTC,
+//!             you can do:
+//! 
+//!             $ sq key generate --creation-time 20110609 --export noam.pgp
+//! 
+//!             To include a time, add a T, the time and optionally the timezone
+//!             (the
+//!             default timezone is UTC):
+//! 
+//!             $ sq key generate --creation-time 20110609T1938+0200 --export
+//!             noam.pgp
 //!         --expires <TIME>
 //!             Makes the key expire at TIME (as ISO 8601). Use "never" to create
 //!             keys that do not expire.
 //!         --expires-in <DURATION>
-//!             Makes the key expire after DURATION. Either "N[ymwd]", for N years,
-//!             months, weeks, or days, or "never".
+//!             Makes the key expire after DURATION. Either "N[ymwds]", for N years,
+//!             months, weeks, days, seconds, or "never".
 //!     -e, --export <OUTFILE>
 //!             Writes the key to OUTFILE
 //!
@@ -969,8 +984,9 @@
 //!             Makes the certification expire at TIME (as ISO 8601). Use "never" to
 //!             create certifications that do not expire.
 //!         --expires-in <DURATION>
-//!             Makes the certification expire after DURATION. Either "N[ymwd]", for
-//!             N years, months, weeks, or days, or "never".  [default: 5y]
+//!             Makes the certification expire after DURATION. Either "N[ymwds]",
+//!             for N years, months, weeks, days, seconds, or "never".  [default:
+//!             5y]
 //!         --notation <NAME> <VALUE>
 //!             Adds a notation to the certification.  A user-defined notation's
 //!             name must be of the form "name@a.domain.you.control.org". If the
@@ -990,6 +1006,20 @@
 //!             all intermediate introducers, and the certified certificate.
 //!             Multiple regular expressions may be specified.  In that case, at
 //!             least one must match.
+//!         --time <TIME>
+//!             Sets the certification time to TIME.  TIME is interpreted as an ISO
+//!             8601
+//!             timestamp.  To set the certification time to June 9, 2011 at
+//!             midnight UTC,
+//!             you can do:
+//! 
+//!             $ sq certify --time 20130721 neal.pgp ada.pgp ada
+//! 
+//!             To include a time, add a T, the time and optionally the timezone
+//!             (the
+//!             default timezone is UTC):
+//! 
+//!             $ sq certify --time 20130721T0550+0200 neal.pgp ada.pgp ada
 //!
 //! ARGS:
 //!     <CERTIFIER-KEY>

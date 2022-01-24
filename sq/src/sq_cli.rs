@@ -538,6 +538,22 @@ $ sq key generate --userid \"<juliet@example.org>\" --userid \"Juliet Capulet\"
                              .long("with-password")
                              .help("Protects the key with a password"))
 
+                        .arg(Arg::with_name("creation-time")
+                             .long("creation-time").value_name("CREATION_TIME")
+                             .help("Sets the key's creation time to TIME (as ISO 8601)")
+                             .long_help("\
+Sets the key's creation time to TIME.  TIME is interpreted as an ISO 8601
+timestamp.  To set the creation time to June 9, 2011 at midnight UTC,
+you can do:
+
+$ sq key generate --creation-time 20110609 --export noam.pgp
+
+To include a time, add a T, the time and optionally the timezone (the
+default timezone is UTC):
+
+$ sq key generate --creation-time 20110609T1938+0200 --export noam.pgp
+"))
+
                         .group(ArgGroup::with_name("expiration-group")
                                .args(&["expires", "expires-in"]))
 
@@ -553,11 +569,11 @@ $ sq key generate --userid \"<juliet@example.org>\" --userid \"Juliet Capulet\"
                              // Catch negative numbers.
                              .allow_hyphen_values(true)
                              .help("Makes the key expire after DURATION \
-                                    (as N[ymwd]) [default: 3y]")
+                                    (as N[ymwds]) [default: 3y]")
                              .long_help(
                                  "Makes the key expire after DURATION. \
-                                  Either \"N[ymwd]\", for N years, months, \
-                                  weeks, or days, or \"never\"."))
+                                  Either \"N[ymwds]\", for N years, months, \
+                                  weeks, days, seconds, or \"never\"."))
 
                         .group(ArgGroup::with_name("cap-sign")
                                .args(&["can-sign", "cannot-sign"]))
@@ -1025,6 +1041,21 @@ $ sq certify juliet.pgp romeo.pgp \"<romeo@example.org>\"
                     .arg(Arg::with_name("binary")
                          .short("B").long("binary")
                          .help("Emits binary data"))
+                    .arg(Arg::with_name("time")
+                         .long("time").value_name("TIME")
+                         .help("Sets the certification time to TIME (as ISO 8601)")
+                         .long_help("\
+Sets the certification time to TIME.  TIME is interpreted as an ISO 8601
+timestamp.  To set the certification time to June 9, 2011 at midnight UTC,
+you can do:
+
+$ sq certify --time 20130721 neal.pgp ada.pgp ada
+
+To include a time, add a T, the time and optionally the timezone (the
+default timezone is UTC):
+
+$ sq certify --time 20130721T0550+0200 neal.pgp ada.pgp ada
+"))
                     .arg(Arg::with_name("depth")
                          .short("d").long("depth").value_name("TRUST_DEPTH")
                          .help("Sets the trust depth")
@@ -1106,11 +1137,11 @@ $ sq certify juliet.pgp romeo.pgp \"<romeo@example.org>\"
                          // Catch negative numbers.
                          .allow_hyphen_values(true)
                          .help("Makes the certification expire after DURATION \
-                                (as N[ymwd]) [default: 5y]")
+                                (as N[ymwds]) [default: 5y]")
                          .long_help(
                              "Makes the certification expire after DURATION. \
-                              Either \"N[ymwd]\", for N years, months, \
-                              weeks, or days, or \"never\".  [default: 5y]"))
+                              Either \"N[ymwds]\", for N years, months, \
+                              weeks, days, seconds, or \"never\".  [default: 5y]"))
 
                     .arg(Arg::with_name("certifier")
                          .value_name("CERTIFIER-KEY")
