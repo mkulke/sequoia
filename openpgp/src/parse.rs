@@ -1718,8 +1718,21 @@ impl Subpacket {
                     }
                 }
                 let bytes = php.parse_bytes("issuer fp", len - 1)?;
-                SubpacketValue::IssuerFingerprint(
-                    Fingerprint::from_bytes(&bytes))
+                match version {
+                    4 => {
+                        SubpacketValue::IssuerFingerprint(
+                            Fingerprint::from_bytes(&bytes))
+                        },
+                    v => {
+                        let bytes = php.parse_bytes("intended rcpt", len - 1)?;
+                        SubpacketValue::IssuerFingerprint(
+                            Fingerprint::Unknown {
+                                version: Some(v),
+                                fp: bytes.to_vec().into_boxed_slice()
+                            }
+                        )
+                    },
+                }
             },
             SubpacketTag::PreferredAEADAlgorithms =>
                 SubpacketValue::PreferredAEADAlgorithms(
@@ -1731,6 +1744,7 @@ impl Subpacket {
                         "Short intended recipient subpacket".into()).into());
                 }
                 let version = php.parse_u8("version")?;
+                // Check length of V4 and V5 subpackets
                 if let Some(expect_len) = match version {
                     4 => Some(1 + 20),
                     5 => Some(1 + 32),
@@ -1741,11 +1755,24 @@ impl Subpacket {
                             format!("Malformed intended recipient subpacket: \
                                      expected {} bytes, got {}",
                                     expect_len, len)).into());
-                    }
-                }
+                    };
+                };
                 let bytes = php.parse_bytes("intended rcpt", len - 1)?;
-                SubpacketValue::IntendedRecipient(
-                    Fingerprint::from_bytes(&bytes))
+                match version {
+                    4 => {
+                        SubpacketValue::IntendedRecipient(
+                            Fingerprint::from_bytes(&bytes))
+                        },
+                    v => {
+                        let bytes = php.parse_bytes("intended rcpt", len - 1)?;
+                        SubpacketValue::IntendedRecipient(
+                            Fingerprint::Unknown {
+                                version: Some(v),
+                                fp: bytes.to_vec().into_boxed_slice()
+                            }
+                        )
+                    },
+                }
             },
             SubpacketTag::AttestedCertifications => {
                 // If we don't know the hash algorithm, put all digest

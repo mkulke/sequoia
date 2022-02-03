@@ -2011,6 +2011,29 @@ mod test {
         }
     }
 
+    // mutate_eq_discriminates with specific inputs
+    #[test]
+    fn issue_820() {
+        let p = Packet::from_bytes(crate::tests::file("820.asc")).unwrap();
+        let i: usize = 15043077381284069473;
+        let outcome = {
+            let mut buf = p.to_vec().unwrap();
+            let bit =
+                // Avoid first two bytes so that we don't change the
+                // type and reduce the chance of changing the length.
+                i.saturating_add(16)
+                % (buf.len() * 8);
+            buf[bit / 8] ^= 1 << (bit % 8);
+            match Packet::from_bytes(&buf) {
+                Ok(q) => p != q,
+                Err(_) => true, // Packet failed to parse.
+            }
+        };
+        if !outcome {
+            panic!()
+        }
+    }
+
     /// Problem on systems with 32-bit time_t.
     #[test]
     fn issue_802() -> Result<()> {
