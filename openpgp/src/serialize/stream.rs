@@ -3400,6 +3400,11 @@ mod test {
     }
 
     #[test]
+    fn aead_ocb() -> Result<()> {
+        test_aead_messages(AEADAlgorithm::OCB)
+    }
+
+    #[test]
     fn aead_gcm() -> Result<()> {
         test_aead_messages(AEADAlgorithm::GCM)
     }

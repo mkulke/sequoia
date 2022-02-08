@@ -54,9 +54,11 @@ impl AEADAlgorithm {
         match &self {
             EAX
                 => true,
+            OCB
+                => nettle::aead::OCB_IS_SUPPORTED,
             GCM
                 => true,
-            OCB | Private(_) | Unknown(_)
+            Private(_) | Unknown(_)
                 => false,
         }
     }

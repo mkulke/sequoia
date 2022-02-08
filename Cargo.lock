@@ -1703,24 +1703,26 @@ dependencies = [
 
 [[package]]
 name = "nettle"
-version = "7.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2dbaef96ce04e0dafb03b2c5d3803975c84080f876356cb67f44cf85963cedb7"
+version = "7.1.0"
+source = "git+https://gitlab.com/sequoia-pgp/nettle-rs?branch=justus/ocb#a5fa814386025494102d4b496daeec23b1347378"
 dependencies = [
- "getrandom 0.1.16",
+ "getrandom 0.2.3",
  "libc",
  "nettle-sys",
  "thiserror",
+ "typenum",
 ]
 
 [[package]]
 name = "nettle-sys"
-version = "2.0.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b95aff9e61c8d8132e41dceae74c6e526edcac8d120072c87a300b9ab7e75226"
+version = "2.1.0"
+source = "git+https://gitlab.com/sequoia-pgp/nettle-sys?branch=justus/ocb#61e99ad29d46fe40685d99bc7c86f45f958a92ec"
 dependencies = [
  "bindgen",
+ "cc",
+ "libc",
  "pkg-config",
+ "tempfile",
  "vcpkg",
 ]
 
