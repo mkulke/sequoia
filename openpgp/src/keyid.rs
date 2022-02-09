@@ -57,7 +57,7 @@ use crate::Result;
 /// # Ok(()) }
 /// ```
 #[non_exhaustive]
-#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Hash, Debug)]
 pub enum KeyID {
     /// Lower 8 byte SHA-1 hash.
     V4([u8;8]),
@@ -70,14 +70,6 @@ assert_send_and_sync!(KeyID);
 impl fmt::Display for KeyID {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{:X}", self)
-    }
-}
-
-impl fmt::Debug for KeyID {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_tuple("KeyID")
-            .field(&self.to_string())
-            .finish()
     }
 }
 

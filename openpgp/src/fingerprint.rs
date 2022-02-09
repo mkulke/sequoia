@@ -45,7 +45,7 @@ use quickcheck::{Arbitrary, Gen};
 /// # Ok(()) }
 /// ```
 #[non_exhaustive]
-#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Hash, Debug)]
 pub enum Fingerprint {
     /// A 20 byte SHA-1 hash of the public key packet as defined in the RFC.
     V4([u8;20]),
@@ -58,14 +58,6 @@ assert_send_and_sync!(Fingerprint);
 impl fmt::Display for Fingerprint {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{:X}", self)
-    }
-}
-
-impl fmt::Debug for Fingerprint {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_tuple("Fingerprint")
-            .field(&self.to_string())
-            .finish()
     }
 }
 
