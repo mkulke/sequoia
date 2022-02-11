@@ -51,6 +51,7 @@ pub enum Fingerprint {
     V4([u8;20]),
     /// Used for holding fingerprint data that is not a V4 fingerprint, e.g. a
     /// V3 fingerprint (deprecated) or otherwise wrong-length data.
+    #[deprecated(note = "Use `Unknown`.")]
     Invalid(Box<[u8]>),
     /// Used for holding data that is not valid as a known fingerprint version,
     /// optionally with associated version number.
@@ -145,6 +146,7 @@ impl Fingerprint {
     pub fn as_bytes(&self) -> &[u8] {
         match self {
             Fingerprint::V4(ref fp) => fp,
+            #[allow(deprecated)]
             Fingerprint::Invalid(ref fp) => fp,
             Fingerprint::Unknown { fp, .. } => fp,
         }
@@ -238,6 +240,7 @@ impl Fingerprint {
     fn convert_to_string(&self, pretty: bool) -> String {
         let raw = match self {
             Fingerprint::V4(ref fp) => &fp[..],
+            #[allow(deprecated)]
             Fingerprint::Invalid(ref fp) => &fp[..],
             Fingerprint::Unknown{ fp, .. } => &fp[..],
         };

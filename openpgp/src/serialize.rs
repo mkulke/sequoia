@@ -835,8 +835,8 @@ impl seal::Sealed for KeyID {}
 impl Marshal for KeyID {
     fn serialize(&self, o: &mut dyn std::io::Write) -> Result<()> {
         let raw = match self {
-// TODO rename fp to id
             KeyID::V4(ref fp) => &fp[..],
+            #[allow(deprecated)]
             KeyID::Invalid(ref fp) => &fp[..],
             KeyID::Unknown { id, .. } => &id[..],
         };
@@ -850,6 +850,7 @@ impl MarshalInto for KeyID {
     fn serialized_len(&self) -> usize {
         match self {
             KeyID::V4(_) => 8,
+            #[allow(deprecated)]
             KeyID::Invalid(ref fp) => fp.len(),
             KeyID::Unknown { id, .. } => id.len(),
         }
@@ -874,6 +875,7 @@ impl MarshalInto for Fingerprint {
     fn serialized_len(&self) -> usize {
         match self {
             Fingerprint::V4(_) => 20,
+            #[allow(deprecated)]
             Fingerprint::Invalid(ref fp) => fp.len(),
             Fingerprint::Unknown { fp, .. } => fp.len(),
         }
@@ -1522,6 +1524,7 @@ impl MarshalInto for SubpacketValue {
                 Fingerprint::V4(_) =>
                     1 + (fp as &dyn MarshalInto).serialized_len(),
                 // Educated guess for unknown versions.
+                #[allow(deprecated)]
                 Fingerprint::Invalid(_) => 1 + fp.as_bytes().len(),
                 // Educated guess for unknown versions.
                 Fingerprint::Unknown{ .. } => 1 + fp.as_bytes().len(),
@@ -1531,6 +1534,7 @@ impl MarshalInto for SubpacketValue {
                 Fingerprint::V4(_) =>
                     1 + (fp as &dyn MarshalInto).serialized_len(),
                 // Educated guess for unknown versions.
+                #[allow(deprecated)]
                 Fingerprint::Invalid(_) => 1 + fp.as_bytes().len(),
                 // Educated guess for unknown versions.
                 Fingerprint::Unknown{ .. } => 1 + fp.as_bytes().len(),

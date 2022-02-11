@@ -331,11 +331,14 @@ impl KeyHandle {
     /// # Ok(()) }
     /// ```
     pub fn is_invalid(&self) -> bool {
-        matches!(self,
+        #[allow(deprecated)]
+        let matches_invalid = matches!(self,
                  KeyHandle::Fingerprint(Fingerprint::Invalid(_))
-                 | KeyHandle::KeyID(KeyID::Invalid(_))
+                 | KeyHandle::KeyID(KeyID::Invalid(_)));
+        let matches_unknown = matches!(self,
                  | KeyHandle::Fingerprint(Fingerprint::Unknown { .. })
-                 | KeyHandle::KeyID(KeyID::Unknown { .. }))
+                 | KeyHandle::KeyID(KeyID::Unknown { .. }));
+        matches_invalid | matches_unknown
     }
 
     /// Converts this `KeyHandle` to its canonical hexadecimal
