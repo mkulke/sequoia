@@ -63,7 +63,17 @@ pub enum KeyID {
     V4([u8;8]),
     /// Used for holding invalid keyids encountered during parsing
     /// e.g. wrong number of bytes.
+    // TODO
+    // #[deprecated]
     Invalid(Box<[u8]>),
+    /// Used for holding data that is not valid as a known keyid version,
+    /// optionally with associated version number.
+    Unknown {
+        /// The version number
+        version: Option<u8>,
+        /// The keyid
+        id: Box<[u8]>,
+    },
 }
 assert_send_and_sync!(KeyID);
 
@@ -110,6 +120,7 @@ impl From<KeyID> for Vec<u8> {
         match id {
             KeyID::V4(ref b) => r.extend_from_slice(b),
             KeyID::Invalid(ref b) => r.extend_from_slice(b),
+            KeyID::Unknown{ id, .. } => r.extend_from_slice(&id),
         }
         r
     }
@@ -134,7 +145,11 @@ impl From<&Fingerprint> for KeyID {
                 KeyID::from_bytes(&fp[fp.len() - 8..]),
             Fingerprint::Invalid(fp) => {
                 KeyID::Invalid(fp.clone())
-            }
+            },
+            Fingerprint::Unknown { version, fp } => KeyID::Unknown {
+                version: *version,
+                id: fp.clone(),
+            },
         }
     }
 }
@@ -146,6 +161,9 @@ impl From<Fingerprint> for KeyID {
                 KeyID::from_bytes(&fp[fp.len() - 8..]),
             Fingerprint::Invalid(fp) => {
                 KeyID::Invalid(fp)
+            },
+            Fingerprint::Unknown { version, fp } => {
+                KeyID::Unknown { version, id: fp }
             }
         }
     }
@@ -187,6 +205,8 @@ impl KeyID {
                 Ok(u64::from_be_bytes(*b)),
             KeyID::Invalid(_) =>
                 Err(Error::InvalidArgument("Invalid KeyID".into()).into()),
+            KeyID::Unknown{ .. } =>
+                Err(Error::InvalidArgument("Invalid KeyID".into()).into()),
         }
     }
 
@@ -211,7 +231,10 @@ impl KeyID {
             keyid.copy_from_slice(raw);
             KeyID::V4(keyid)
         } else {
-            KeyID::Invalid(raw.to_vec().into_boxed_slice())
+            KeyID::Unknown {
+                version: None,
+                id: raw.to_vec().into_boxed_slice()
+            }
         }
     }
 
@@ -234,6 +257,7 @@ impl KeyID {
         match self {
             KeyID::V4(ref id) => id,
             KeyID::Invalid(ref id) => id,
+            KeyID::Unknown{ id , .. } => id,
         }
     }
 
@@ -347,6 +371,7 @@ impl KeyID {
         let raw = match self {
             KeyID::V4(ref fp) => &fp[..],
             KeyID::Invalid(ref fp) => &fp[..],
+            KeyID::Unknown{ id, .. } => &id[..],
         };
 
         // We currently only handle V4 Key IDs, which look like:
@@ -420,8 +445,8 @@ mod test {
         "GB3751F1587DAEF1".parse::<KeyID>().unwrap_err();
         "EFB3751F1587DAEF1".parse::<KeyID>().unwrap_err();
         "%FB3751F1587DAEF1".parse::<KeyID>().unwrap_err();
-        assert_match!(KeyID::Invalid(_) = "587DAEF1".parse().unwrap());
-        assert_match!(KeyID::Invalid(_) = "0x587DAEF1".parse().unwrap());
+        assert_match!(KeyID::Unknown { .. } = "587DAEF1".parse().unwrap());
+        assert_match!(KeyID::Unknown { .. } = "0x587DAEF1".parse().unwrap());
     }
 
     #[test]

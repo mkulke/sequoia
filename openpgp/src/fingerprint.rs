@@ -52,6 +52,14 @@ pub enum Fingerprint {
     /// Used for holding fingerprint data that is not a V4 fingerprint, e.g. a
     /// V3 fingerprint (deprecated) or otherwise wrong-length data.
     Invalid(Box<[u8]>),
+    /// Used for holding data that is not valid as a known fingerprint version,
+    /// optionally with associated version number.
+    Unknown {
+        /// The version number
+        version: Option<u8>,
+        /// The fingerprint
+        fp: Box<[u8]>,
+    },
 }
 assert_send_and_sync!(Fingerprint);
 
@@ -109,7 +117,10 @@ impl Fingerprint {
             fp.copy_from_slice(raw);
             Fingerprint::V4(fp)
         } else {
-            Fingerprint::Invalid(raw.to_vec().into_boxed_slice())
+            Fingerprint::Unknown {
+                version: None,
+                fp: raw.to_vec().into_boxed_slice()
+            }
         }
     }
 
@@ -135,6 +146,7 @@ impl Fingerprint {
         match self {
             Fingerprint::V4(ref fp) => fp,
             Fingerprint::Invalid(ref fp) => fp,
+            Fingerprint::Unknown { fp, .. } => fp,
         }
     }
 
@@ -227,6 +239,7 @@ impl Fingerprint {
         let raw = match self {
             Fingerprint::V4(ref fp) => &fp[..],
             Fingerprint::Invalid(ref fp) => &fp[..],
+            Fingerprint::Unknown{ fp, .. } => &fp[..],
         };
 
         // We currently only handle V4 fingerprints, which look like:

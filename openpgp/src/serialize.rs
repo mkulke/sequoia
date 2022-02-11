@@ -835,8 +835,10 @@ impl seal::Sealed for KeyID {}
 impl Marshal for KeyID {
     fn serialize(&self, o: &mut dyn std::io::Write) -> Result<()> {
         let raw = match self {
+// TODO rename fp to id
             KeyID::V4(ref fp) => &fp[..],
             KeyID::Invalid(ref fp) => &fp[..],
+            KeyID::Unknown { id, .. } => &id[..],
         };
         o.write_all(raw)?;
         Ok(())
@@ -849,6 +851,7 @@ impl MarshalInto for KeyID {
         match self {
             KeyID::V4(_) => 8,
             KeyID::Invalid(ref fp) => fp.len(),
+            KeyID::Unknown { id, .. } => id.len(),
         }
     }
 
@@ -872,6 +875,7 @@ impl MarshalInto for Fingerprint {
         match self {
             Fingerprint::V4(_) => 20,
             Fingerprint::Invalid(ref fp) => fp.len(),
+            Fingerprint::Unknown { fp, .. } => fp.len(),
         }
     }
 
@@ -1519,6 +1523,8 @@ impl MarshalInto for SubpacketValue {
                     1 + (fp as &dyn MarshalInto).serialized_len(),
                 // Educated guess for unknown versions.
                 Fingerprint::Invalid(_) => 1 + fp.as_bytes().len(),
+                // Educated guess for unknown versions.
+                Fingerprint::Unknown{ .. } => 1 + fp.as_bytes().len(),
             },
             PreferredAEADAlgorithms(ref p) => p.len(),
             IntendedRecipient(ref fp) => match fp {
@@ -1526,6 +1532,8 @@ impl MarshalInto for SubpacketValue {
                     1 + (fp as &dyn MarshalInto).serialized_len(),
                 // Educated guess for unknown versions.
                 Fingerprint::Invalid(_) => 1 + fp.as_bytes().len(),
+                // Educated guess for unknown versions.
+                Fingerprint::Unknown{ .. } => 1 + fp.as_bytes().len(),
             },
             AttestedCertifications(digests) =>
                 digests.iter().map(|d| d.len()).sum(),
