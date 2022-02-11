@@ -373,9 +373,9 @@ impl KeyID {
     /// Common code for the above functions.
     fn convert_to_string(&self, pretty: bool) -> String {
         let raw = match self {
-            KeyID::V4(ref fp) => &fp[..],
+            KeyID::V4(ref id) => &id[..],
             #[allow(deprecated)]
-            KeyID::Invalid(ref fp) => &fp[..],
+            KeyID::Invalid(ref id) => &id[..],
             KeyID::Unknown{ id, .. } => &id[..],
         };
 

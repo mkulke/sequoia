@@ -835,9 +835,9 @@ impl seal::Sealed for KeyID {}
 impl Marshal for KeyID {
     fn serialize(&self, o: &mut dyn std::io::Write) -> Result<()> {
         let raw = match self {
-            KeyID::V4(ref fp) => &fp[..],
+            KeyID::V4(ref id) => &id[..],
             #[allow(deprecated)]
-            KeyID::Invalid(ref fp) => &fp[..],
+            KeyID::Invalid(ref id) => &id[..],
             KeyID::Unknown { id, .. } => &id[..],
         };
         o.write_all(raw)?;
@@ -851,7 +851,7 @@ impl MarshalInto for KeyID {
         match self {
             KeyID::V4(_) => 8,
             #[allow(deprecated)]
-            KeyID::Invalid(ref fp) => fp.len(),
+            KeyID::Invalid(ref id) => id.len(),
             KeyID::Unknown { id, .. } => id.len(),
         }
     }
