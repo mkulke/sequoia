@@ -17,8 +17,6 @@
 //! # }
 //! ```
 
-#![warn(missing_docs)]
-
 use std::path::{Path, PathBuf};
 
 use crate::Result;

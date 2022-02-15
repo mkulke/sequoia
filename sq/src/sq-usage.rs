@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 //! A command-line frontend for Sequoia.
 //!
 //! # Usage
