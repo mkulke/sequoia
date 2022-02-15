@@ -24,7 +24,11 @@ pub enum Token {
     /// An PK-ESK packet.
     PKESK,
     /// A SEIP packet.
+    #[deprecated(since = "1.8.0",
+                 note = "The explicitly versioned SEIPv1 is used instead.")]
     SEIP,
+    /// A version 1 SEIP packet.
+    SEIPv1,
     /// An MDC packet.
     MDC,
     /// An AED packet.
