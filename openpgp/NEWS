@@ -4,9 +4,12 @@
 
 * Changes in 1.9.0
 ** New functionality
+   - message::Token::SEIPv1
    - Packet::version
    - SignatureBuilder::set_reference_time
    - SignatureBuilder::effective_signature_creation_time
+** Deprecated functionality
+   - message::Token::SEIP
 * Changes in 1.8.0
 ** New functionality
    - crypto::Signer::acceptable_hashes
