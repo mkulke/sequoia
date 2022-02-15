@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 use std::env;
 use std::io::{self, Write, BufRead};
 use std::fs::{self, DirEntry};

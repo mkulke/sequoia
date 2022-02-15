@@ -36,7 +36,6 @@
 
 #![doc(html_favicon_url = "https://docs.sequoia-pgp.org/favicon.png")]
 #![doc(html_logo_url = "https://docs.sequoia-pgp.org/logo.svg")]
-#![warn(missing_docs)]
 
 use hyper::client::{ResponseFuture, HttpConnector};
 use hyper::header::{CONTENT_LENGTH, CONTENT_TYPE, HeaderValue};

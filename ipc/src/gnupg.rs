@@ -1,7 +1,5 @@
 //! GnuPG RPC support.
 
-#![warn(missing_docs)]
-
 use std::collections::BTreeMap;
 use std::convert::TryFrom;
 use std::ffi::OsStr;

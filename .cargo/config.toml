@@ -3,6 +3,8 @@
 # ignored.
 rustflags = [
           "-Dwarnings",
+          "-Dmissing_docs",
+          "-Drustdoc::broken_intra_doc_links",
           "-Aunused-parens",
           "-Aclippy::collapsible-else-if",
           "-Aclippy::needless-question-mark",
