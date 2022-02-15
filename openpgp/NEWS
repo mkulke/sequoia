@@ -3,6 +3,9 @@
 #+TITLE: sequoia-openpgp NEWS – history of user-visible changes
 #+STARTUP: content hidestars
 
+* Changes in 1.14.0
+** New functionality
+   - Packet::version
 * Changes in 1.13.0
 ** New cryptographic backends
    - We added a backend that uses OpenSSL.
