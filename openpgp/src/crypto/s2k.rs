@@ -6,6 +6,8 @@
 //!
 //!   [Section 3.7 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-3.7
 
+use std::convert::TryInto;
+
 use crate::Error;
 use crate::Result;
 use crate::HashAlgorithm;
@@ -35,6 +37,18 @@ use quickcheck::{Arbitrary, Gen};
 #[non_exhaustive]
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum S2K {
+    /// Argon2 Memory-Hard Password Hashing Function.
+    Argon2 {
+        /// The salt.
+        salt: [u8; 16],
+        /// Number of passes.
+        t: u8,
+        /// Degree of parallelism.
+        p: u8,
+        /// Exponent of memory size.
+        m: u8,
+    },
+
     /// Repeatently hashes the password with a public `salt` value.
     Iterated {
         /// Hash used for key derivation.
@@ -167,6 +181,31 @@ impl S2K {
     -> Result<SessionKey> {
         #[allow(deprecated)]
         match self {
+            &S2K::Argon2 { salt, t, p, m, } => {
+                let mut config = argon2::ParamsBuilder::new();
+                config.t_cost(t.into())?;
+                config.p_cost(p.into())?;
+                config.m_cost(
+                    2u32.checked_pow(m.into())
+                        .ok_or_else(|| Error::InvalidArgument(
+                            format!("Argon2 memory parameter out of bounds: {}",
+                                    m)))?)?;
+                config.output_len(
+                    key_size.try_into()
+                        .map_err(|_| Error::InvalidArgument(
+                            format!("key size parameter out of bounds: {}",
+                                    key_size)))?)?;
+                let params = config.params()?;
+                let argon2 = argon2::Argon2::new(
+                    argon2::Algorithm::Argon2id,
+                    argon2::Version::V0x13,
+                    params);
+                let mut sk: SessionKey = vec![0; key_size].into();
+                password.map(|password| {
+                    argon2.hash_password_into(password, &salt, &mut sk)
+                })?;
+                Ok(sk)
+            },
             &S2K::Simple { hash } | &S2K::Salted { hash, .. }
             | &S2K::Iterated { hash, .. } => password.map(|string| {
                 let mut hash = hash.context()?;
@@ -183,6 +222,7 @@ impl S2K {
                     hash.update(&zeros[..]);
 
                     match self {
+                        &S2K::Argon2 { .. } => unreachable!("handled above"),
                         &S2K::Simple { .. } => {
                             hash.update(string);
                         }
@@ -248,6 +288,7 @@ impl S2K {
             Simple { .. }
             | Salted { .. }
             | Iterated { .. }
+            | Argon2 { .. }
             => true,
             S2K::Private { .. }
             | S2K::Unknown { .. }
@@ -353,6 +394,11 @@ impl fmt::Display for S2K {
                     salt[4], salt[5], salt[6], salt[7],
                     hash_bytes))
             }
+            S2K::Argon2 { salt, t, p, m, } => {
+                write!(f,
+                       "Argon2id with t: {}, p: {}, m: 2^{}, salt: {}",
+                       t, p, m, crate::fmt::hex::encode(salt))
+            },
             S2K::Private { tag, parameters } =>
                 if let Some(p) = parameters.as_ref() {
                     write!(f, "Private/Experimental S2K {}:{:?}", tag, p)
