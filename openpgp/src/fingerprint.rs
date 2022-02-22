@@ -49,6 +49,10 @@ use quickcheck::{Arbitrary, Gen};
 pub enum Fingerprint {
     /// A 20 byte SHA-1 hash of the public key packet as defined in the RFC.
     V4([u8;20]),
+
+    /// A v5 OpenPGP fingerprint.
+    V5([u8; 32]),
+
     /// Used for holding fingerprint data that is not a V4 fingerprint, e.g. a
     /// V3 fingerprint (deprecated) or otherwise wrong-length data.
     Invalid(Box<[u8]>),
@@ -116,6 +120,10 @@ impl Fingerprint {
             let mut fp : [u8; 20] = Default::default();
             fp.copy_from_slice(raw);
             Fingerprint::V4(fp)
+        } else if raw.len() == 32 {
+            let mut fp: [u8; 32] = Default::default();
+            fp.copy_from_slice(raw);
+            Fingerprint::V5(fp)
         } else {
             Fingerprint::Invalid(raw.to_vec().into_boxed_slice())
         }
@@ -142,6 +150,7 @@ impl Fingerprint {
     pub fn as_bytes(&self) -> &[u8] {
         match self {
             Fingerprint::V4(ref fp) => fp,
+            Fingerprint::V5(fp) => fp,
             Fingerprint::Invalid(ref fp) => fp,
         }
     }
@@ -232,10 +241,7 @@ impl Fingerprint {
 
     /// Common code for the above functions.
     fn convert_to_string(&self, pretty: bool) -> String {
-        let raw = match self {
-            Fingerprint::V4(ref fp) => &fp[..],
-            Fingerprint::Invalid(ref fp) => &fp[..],
-        };
+        let raw = self.as_bytes();
 
         // We currently only handle V4 fingerprints, which look like:
         //
@@ -244,14 +250,17 @@ impl Fingerprint {
         // Since we have no idea how to format an invalid fingerprint,
         // just format it like a V4 fingerprint and hope for the best.
 
+        // XXX: v5 fingerprints have no human-readable formatting by
+        // choice.
+
         let mut output = Vec::with_capacity(
             // Each byte results in to hex characters.
             raw.len() * 2
             + if pretty {
                 // Every 2 bytes of output, we insert a space.
                 raw.len() / 2
-                // After 5 groups, there is another space.
-                + raw.len() / 10
+                // After half of the groups, there is another space.
+                + 1
             } else { 0 });
 
         for (i, b) in raw.iter().enumerate() {
@@ -259,7 +268,7 @@ impl Fingerprint {
                 output.push(b' ');
             }
 
-            if pretty && i > 0 && i % 10 == 0 {
+            if pretty && i > 0 && i * 2 == raw.len() {
                 output.push(b' ');
             }
 
@@ -346,9 +355,15 @@ impl Fingerprint {
 #[cfg(test)]
 impl Arbitrary for Fingerprint {
     fn arbitrary(g: &mut Gen) -> Self {
-        let mut fp = [0; 20];
-        fp.iter_mut().for_each(|p| *p = Arbitrary::arbitrary(g));
-        Fingerprint::V4(fp)
+        if Arbitrary::arbitrary(g) {
+            let mut fp = [0; 20];
+            fp.iter_mut().for_each(|p| *p = Arbitrary::arbitrary(g));
+            Fingerprint::V4(fp)
+        } else {
+            let mut fp = [0; 32];
+            fp.iter_mut().for_each(|p| *p = Arbitrary::arbitrary(g));
+            Fingerprint::V5(fp)
+        }
     }
 }
 
@@ -357,10 +372,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hex_formatting() {
+    fn v4_hex_formatting() {
         let fp = "0123 4567 89AB CDEF 0123 4567 89AB CDEF 0123 4567"
             .parse::<Fingerprint>().unwrap();
+        assert!(matches!(&fp, Fingerprint::V4(_)));
         assert_eq!(format!("{:X}", fp), "0123456789ABCDEF0123456789ABCDEF01234567");
         assert_eq!(format!("{:x}", fp), "0123456789abcdef0123456789abcdef01234567");
+    }
+
+    #[test]
+    fn v5_hex_formatting() -> crate::Result<()> {
+        let fp = "0123 4567 89AB CDEF 0123 4567 89AB CDEF \
+                  0123 4567 89AB CDEF 0123 4567 89AB CDEF"
+            .parse::<Fingerprint>()?;
+        assert!(matches!(&fp, Fingerprint::V5(_)));
+        assert_eq!(format!("{:X}", fp), "0123456789ABCDEF0123456789ABCDEF\
+                                         0123456789ABCDEF0123456789ABCDEF");
+        assert_eq!(format!("{:x}", fp), "0123456789abcdef0123456789abcdef\
+                                         0123456789abcdef0123456789abcdef");
+        Ok(())
     }
 }
