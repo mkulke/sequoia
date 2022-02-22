@@ -835,8 +835,10 @@ impl seal::Sealed for KeyID {}
 impl Marshal for KeyID {
     fn serialize(&self, o: &mut dyn std::io::Write) -> Result<()> {
         let raw = match self {
-            KeyID::V4(ref fp) => &fp[..],
-            KeyID::Invalid(ref fp) => &fp[..],
+            KeyID::V4(ref id) => &id[..],
+            #[allow(deprecated)]
+            KeyID::Invalid(ref id) => &id[..],
+            KeyID::Unknown { id, .. } => &id[..],
         };
         o.write_all(raw)?;
         Ok(())
@@ -848,7 +850,9 @@ impl MarshalInto for KeyID {
     fn serialized_len(&self) -> usize {
         match self {
             KeyID::V4(_) => 8,
-            KeyID::Invalid(ref fp) => fp.len(),
+            #[allow(deprecated)]
+            KeyID::Invalid(ref id) => id.len(),
+            KeyID::Unknown { id, .. } => id.len(),
         }
     }
 
@@ -871,7 +875,9 @@ impl MarshalInto for Fingerprint {
     fn serialized_len(&self) -> usize {
         match self {
             Fingerprint::V4(_) => 20,
+            #[allow(deprecated)]
             Fingerprint::Invalid(ref fp) => fp.len(),
+            Fingerprint::Unknown { fp, .. } => fp.len(),
         }
     }
 
@@ -1518,14 +1524,20 @@ impl MarshalInto for SubpacketValue {
                 Fingerprint::V4(_) =>
                     1 + (fp as &dyn MarshalInto).serialized_len(),
                 // Educated guess for unknown versions.
+                #[allow(deprecated)]
                 Fingerprint::Invalid(_) => 1 + fp.as_bytes().len(),
+                // Educated guess for unknown versions.
+                Fingerprint::Unknown{ .. } => 1 + fp.as_bytes().len(),
             },
             PreferredAEADAlgorithms(ref p) => p.len(),
             IntendedRecipient(ref fp) => match fp {
                 Fingerprint::V4(_) =>
                     1 + (fp as &dyn MarshalInto).serialized_len(),
                 // Educated guess for unknown versions.
+                #[allow(deprecated)]
                 Fingerprint::Invalid(_) => 1 + fp.as_bytes().len(),
+                // Educated guess for unknown versions.
+                Fingerprint::Unknown{ .. } => 1 + fp.as_bytes().len(),
             },
             AttestedCertifications(digests) =>
                 digests.iter().map(|d| d.len()).sum(),

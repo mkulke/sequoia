@@ -57,27 +57,28 @@ use crate::Result;
 /// # Ok(()) }
 /// ```
 #[non_exhaustive]
-#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Hash, Debug)]
 pub enum KeyID {
     /// Lower 8 byte SHA-1 hash.
     V4([u8;8]),
     /// Used for holding invalid keyids encountered during parsing
     /// e.g. wrong number of bytes.
+    #[deprecated(note = "Use `Unknown`.")]
     Invalid(Box<[u8]>),
+    /// Used for holding data that is not valid as a known keyid version,
+    /// optionally with associated version number.
+    Unknown {
+        /// The version number
+        version: Option<u8>,
+        /// The keyid
+        id: Box<[u8]>,
+    },
 }
 assert_send_and_sync!(KeyID);
 
 impl fmt::Display for KeyID {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{:X}", self)
-    }
-}
-
-impl fmt::Debug for KeyID {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_tuple("KeyID")
-            .field(&self.to_string())
-            .finish()
     }
 }
 
@@ -117,7 +118,9 @@ impl From<KeyID> for Vec<u8> {
         let mut r = Vec::with_capacity(8);
         match id {
             KeyID::V4(ref b) => r.extend_from_slice(b),
+            #[allow(deprecated)]
             KeyID::Invalid(ref b) => r.extend_from_slice(b),
+            KeyID::Unknown{ id, .. } => r.extend_from_slice(&id),
         }
         r
     }
@@ -140,9 +143,14 @@ impl From<&Fingerprint> for KeyID {
         match fp {
             Fingerprint::V4(fp) =>
                 KeyID::from_bytes(&fp[fp.len() - 8..]),
+            #[allow(deprecated)]
             Fingerprint::Invalid(fp) => {
                 KeyID::Invalid(fp.clone())
-            }
+            },
+            Fingerprint::Unknown { version, fp } => KeyID::Unknown {
+                version: *version,
+                id: fp.clone(),
+            },
         }
     }
 }
@@ -152,8 +160,12 @@ impl From<Fingerprint> for KeyID {
         match fp {
             Fingerprint::V4(fp) =>
                 KeyID::from_bytes(&fp[fp.len() - 8..]),
+            #[allow(deprecated)]
             Fingerprint::Invalid(fp) => {
                 KeyID::Invalid(fp)
+            },
+            Fingerprint::Unknown { version, fp } => {
+                KeyID::Unknown { version, id: fp }
             }
         }
     }
@@ -193,7 +205,10 @@ impl KeyID {
         match &self {
             KeyID::V4(ref b) =>
                 Ok(u64::from_be_bytes(*b)),
+            #[allow(deprecated)]
             KeyID::Invalid(_) =>
+                Err(Error::InvalidArgument("Invalid KeyID".into()).into()),
+            KeyID::Unknown{ .. } =>
                 Err(Error::InvalidArgument("Invalid KeyID".into()).into()),
         }
     }
@@ -219,7 +234,10 @@ impl KeyID {
             keyid.copy_from_slice(raw);
             KeyID::V4(keyid)
         } else {
-            KeyID::Invalid(raw.to_vec().into_boxed_slice())
+            KeyID::Unknown {
+                version: None,
+                id: raw.to_vec().into_boxed_slice()
+            }
         }
     }
 
@@ -241,7 +259,9 @@ impl KeyID {
     pub fn as_bytes(&self) -> &[u8] {
         match self {
             KeyID::V4(ref id) => id,
+            #[allow(deprecated)]
             KeyID::Invalid(ref id) => id,
+            KeyID::Unknown{ id , .. } => id,
         }
     }
 
@@ -353,8 +373,10 @@ impl KeyID {
     /// Common code for the above functions.
     fn convert_to_string(&self, pretty: bool) -> String {
         let raw = match self {
-            KeyID::V4(ref fp) => &fp[..],
-            KeyID::Invalid(ref fp) => &fp[..],
+            KeyID::V4(ref id) => &id[..],
+            #[allow(deprecated)]
+            KeyID::Invalid(ref id) => &id[..],
+            KeyID::Unknown{ id, .. } => &id[..],
         };
 
         // We currently only handle V4 Key IDs, which look like:
@@ -428,8 +450,8 @@ mod test {
         "GB3751F1587DAEF1".parse::<KeyID>().unwrap_err();
         "EFB3751F1587DAEF1".parse::<KeyID>().unwrap_err();
         "%FB3751F1587DAEF1".parse::<KeyID>().unwrap_err();
-        assert_match!(KeyID::Invalid(_) = "587DAEF1".parse().unwrap());
-        assert_match!(KeyID::Invalid(_) = "0x587DAEF1".parse().unwrap());
+        assert_match!(KeyID::Unknown { .. } = "587DAEF1".parse().unwrap());
+        assert_match!(KeyID::Unknown { .. } = "0x587DAEF1".parse().unwrap());
     }
 
     #[test]
