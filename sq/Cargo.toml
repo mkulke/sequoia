@@ -26,17 +26,17 @@ gitlab = { repository = "sequoia-pgp/sequoia" }
 maintenance = { status = "actively-developed" }
 
 [dependencies]
-buffered-reader = { path = "../buffered-reader", version = "1.0.0", default-features = false }
-sequoia-openpgp = { path = "../openpgp", version = "1.1", default-features = false }
+buffered-reader = { path = "../buffered-reader", version = "1.0.0", default-features = false, features = ["compression-deflate"] }
+sequoia-openpgp = { path = "../openpgp", version = "1.1", default-features = false, features = ["compression-deflate"] }
 sequoia-autocrypt = { path = "../autocrypt", version = "0.24", default-features = false, optional = true }
-sequoia-net = { path = "../net", version = "0.24", default-features = false, optional = true }
+sequoia-net = { path = "../net", version = "0.24", default-features = false }
 anyhow = "1.0.18"
 chrono = "0.4.10"
 clap = { version = "2.33", features = ["wrap_help"] }
 itertools = "0.9"
 tempfile = "3.1"
 term_size = "0.3"
-tokio = { version = "1.13.1", optional = true }
+tokio = { version = "1.13.1" }
 rpassword = "5.0"
 
 [build-dependencies]
@@ -57,15 +57,11 @@ bench = false
 
 [features]
 default = [
-    "buffered-reader/compression",
-    "sequoia-openpgp/default",
-    "net",
+    "crypto-nettle",
+    "compression-bzip2",
     "autocrypt",
 ]
 crypto-nettle = ["sequoia-openpgp/crypto-nettle"]
 crypto-cng = ["sequoia-openpgp/crypto-cng"]
-compression = ["buffered-reader/compression", "sequoia-openpgp/compression"]
-compression-deflate = ["buffered-reader/compression-deflate", "sequoia-openpgp/compression-deflate"]
 compression-bzip2 = ["buffered-reader/compression-bzip2", "sequoia-openpgp/compression-bzip2"]
-net = ["sequoia-net", "tokio"]
 autocrypt = ["sequoia-autocrypt"]
