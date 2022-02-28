@@ -973,8 +973,8 @@ impl CertBuilder<'_> {
 
     /// Adds a custom subkey.
     ///
-    /// If `expiration` is `None`, the subkey uses the same expiration
-    /// time as the primary key.
+    /// If `validity` is `None`, the subkey will be valid for the same
+    /// period as the primary key.
     ///
     /// Likewise, if `cs` is `None`, the same cipher suite is used as
     /// for the primary key.
@@ -1056,6 +1056,9 @@ impl CertBuilder<'_> {
     ///
     ///   [`SubkeyBinding`]: crate::types::SignatureType::SubkeyBinding
     ///
+    /// If `validity` is `None`, the subkey will be valid for the same
+    /// period as the primary key.
+    ///
     /// # Examples
     ///
     /// This example binds a signing subkey to a certificate,
@@ -1121,7 +1124,8 @@ impl CertBuilder<'_> {
     ///
     /// # Examples
     ///
-    /// Make the primary key certification and signing capable:
+    /// Makes the primary key signing-capable but not
+    /// certification-capable.
     ///
     /// ```
     /// use sequoia_openpgp as openpgp;
@@ -1142,7 +1146,7 @@ impl CertBuilder<'_> {
     /// // Observe that the primary key's certification capability is
     /// // set implicitly.
     /// assert_eq!(cert.with_policy(p, None)?.primary_key().key_flags(),
-    ///            Some(KeyFlags::empty().set_signing().set_certification()));
+    ///            Some(KeyFlags::empty().set_signing()));
     /// # Ok(()) }
     /// ```
     pub fn set_primary_key_flags(mut self, flags: KeyFlags) -> Self {
@@ -1279,7 +1283,7 @@ impl CertBuilder<'_> {
     ///         .generate()?;
     /// # Ok(()) }
     /// ```
-    pub fn generate(mut self) -> Result<(Cert, Signature)> {
+    pub fn generate(self) -> Result<(Cert, Signature)> {
         use crate::Packet;
         use crate::types::ReasonForRevocation;
         use std::convert::TryFrom;
@@ -1290,11 +1294,6 @@ impl CertBuilder<'_> {
                 crate::now() -
                     time::Duration::new(SIG_BACKDATE_BY, 0)
             });
-
-        // make sure the primary key can sign subkeys
-        if !self.subkeys.is_empty() {
-            self.primary.flags = self.primary.flags.set_certification();
-        }
 
         // Generate & self-sign primary key.
         let (primary, sig, mut signer) = self.primary_key(creation_time)?;
@@ -1576,14 +1575,14 @@ mod tests {
     }
 
     #[test]
-    fn always_certify() {
+    fn not_always_certify() {
         let p = &P::new();
         let (cert1, _) = CertBuilder::new()
             .set_cipher_suite(CipherSuite::Cv25519)
             .set_primary_key_flags(KeyFlags::empty())
             .add_transport_encryption_subkey()
             .generate().unwrap();
-        assert!(cert1.primary_key().with_policy(p, None).unwrap().for_certification());
+        assert!(! cert1.primary_key().with_policy(p, None).unwrap().for_certification());
         assert_eq!(cert1.keys().subkeys().count(), 1);
     }
 
