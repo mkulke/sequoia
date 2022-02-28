@@ -330,6 +330,11 @@ pub enum Error {
             .1.as_ref().map(|t| format!(" since {}", crate::fmt::time(t)))
             .unwrap_or_else(|| "".into()))]
     PolicyViolation(String, Option<std::time::SystemTime>),
+
+    /// The operation failed because the signer for the given key was
+    /// not supplied.
+    #[error("Missing signer for key {0}")]
+    MissingSigner(Fingerprint),
 }
 
 assert_send_and_sync!(Error);

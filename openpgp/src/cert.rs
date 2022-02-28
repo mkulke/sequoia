@@ -28,6 +28,7 @@
 //! # Common Operations
 //!
 //!  - *Generating a certificate*: See the [`CertBuilder`] module.
+//!  - *Modify a certificate*: Also see the [`CertBuilder#modifying-existing-certificates`] module.
 //!  - *Parsing a certificate*: See the [`Parser` implementation] for `Cert`.
 //!  - *Parsing a keyring*: See the [`CertParser`] module.
 //!  - *Serializing a certificate*: See the [`Serialize`
