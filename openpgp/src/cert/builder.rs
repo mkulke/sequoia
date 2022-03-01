@@ -1,5 +1,6 @@
 use std::time;
-use std::marker::PhantomData;
+use std::collections::BTreeMap;
+use std::convert::TryFrom;
 
 use crate::packet;
 use crate::packet::{
@@ -7,8 +8,14 @@ use crate::packet::{
     Key,
     key::Key4,
 };
-use crate::Result;
-use crate::packet::Signature;
+use crate::{
+    Fingerprint,
+    Result,
+};
+use crate::packet::{
+    Packet,
+    Signature,
+};
 use crate::packet::signature::{
     self,
     SignatureBuilder,
@@ -182,6 +189,49 @@ impl CipherSuite {
             },
         }.map(|key| key.into())
     }
+
+    /// Guesses an appropriate cipher suite for a given key.
+    fn from_key<P, R>(key: &Key<P, R>) -> Option<Self>
+    where
+        P: key::KeyParts,
+        R: key::KeyRole,
+    {
+        use crate::{
+            crypto::mpi::PublicKey::{self, *},
+            types::Curve::{self, *},
+        };
+
+        let bits = key.mpis().bits()?;
+        match key.mpis() {
+            // Map all old-school algorithms to RSA.
+            | RSA { .. }
+            | DSA { .. }
+            | ElGamal { .. } => {
+                if bits < 3072 {
+                    Some(Self::RSA2k)
+                } else if bits <= 4096 {
+                    Some(Self::RSA3k)
+                } else {
+                    Some(Self::RSA4k)
+                }
+            },
+            | EdDSA { curve, .. }
+            | ECDSA { curve, .. }
+            | ECDH { curve, .. } => {
+                match curve {
+                    NistP256 => Some(Self::P256),
+                    NistP384 => Some(Self::P384),
+                    NistP521 => Some(Self::P521),
+                    Ed25519 => Some(Self::Cv25519),
+                    Cv25519 => Some(Self::Cv25519),
+                    BrainpoolP256 => None,
+                    BrainpoolP512 => None,
+                    Curve::Unknown(_) => None,
+                }
+            },
+            PublicKey::Unknown { .. } => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -191,6 +241,8 @@ pub struct KeyBlueprint {
     // If not None, uses the specified ciphersuite.  Otherwise, uses
     // CertBuilder::ciphersuite.
     ciphersuite: Option<CipherSuite>,
+    /// An existing subkey, if any.
+    key: Option<Key<key::UnspecifiedParts, key::SubordinateRole>>,
 }
 assert_send_and_sync!(KeyBlueprint);
 
@@ -206,6 +258,15 @@ assert_send_and_sync!(KeyBlueprint);
 /// [`UserID`s]: crate::packet::UserID
 /// [`UserAttribute`s]: crate::packet::user_attribute::UserAttribute
 /// [`Key`s]: crate::packet::Key
+///
+/// # Modifying existing certificates
+///
+/// Besides generating new certificates, the `CertBuilder` can be used
+/// to modify existing certificates: new User IDs and subkeys can be
+/// added, and the expiration time of expired certificates and subkeys
+/// can be extended.
+///
+/// XXX
 ///
 /// # Security considerations
 ///
@@ -259,6 +320,7 @@ assert_send_and_sync!(KeyBlueprint);
 /// # }
 /// ```
 pub struct CertBuilder<'a> {
+    cert: Option<Cert>,
     creation_time: Option<std::time::SystemTime>,
     ciphersuite: CipherSuite,
     primary: KeyBlueprint,
@@ -267,12 +329,41 @@ pub struct CertBuilder<'a> {
     user_attributes: Vec<(Option<SignatureBuilder>, packet::UserAttribute)>,
     password: Option<Password>,
     revocation_keys: Option<Vec<RevocationKey>>,
-    phantom: PhantomData<&'a ()>,
+    signers: BTreeMap<Fingerprint, Box<dyn Signer + Send + Sync + 'a>>,
 }
 assert_send_and_sync!(CertBuilder<'_>);
 
+impl From<Cert> for CertBuilder<'_> {
+    fn from(c: Cert) -> Self {
+        // Guess a suitable cipher suite.
+        let cs =
+            c.keys()
+            .filter_map(|k| CipherSuite::from_key(&k))
+            .next()
+            .unwrap_or_default();
+
+        let mut b = CertBuilder::new()
+            .set_cipher_suite(cs);
+
+        b.cert = Some(c);
+        b
+    }
+}
+
+impl From<Key<key::PublicParts, key::PrimaryRole>> for CertBuilder<'_> {
+    fn from(k: Key<key::PublicParts, key::PrimaryRole>) -> Self {
+        Cert::try_from(Packet::from(k)).unwrap().into()
+    }
+}
+
+impl From<Key<key::SecretParts, key::PrimaryRole>> for CertBuilder<'_> {
+    fn from(k: Key<key::SecretParts, key::PrimaryRole>) -> Self {
+        Cert::try_from(Packet::from(k)).unwrap().into()
+    }
+}
+
 #[allow(clippy::new_without_default)]
-impl CertBuilder<'_> {
+impl<'a> CertBuilder<'a> {
     /// Returns a new `CertBuilder`.
     ///
     /// The returned builder is configured to generate a minimal
@@ -311,19 +402,21 @@ impl CertBuilder<'_> {
     /// ```
     pub fn new() -> Self {
         CertBuilder {
+            cert: None,
             creation_time: None,
             ciphersuite: CipherSuite::default(),
             primary: KeyBlueprint{
                 flags: KeyFlags::empty().set_certification(),
                 validity: None,
                 ciphersuite: None,
+                key: None,
             },
             subkeys: vec![],
             userids: vec![],
             user_attributes: vec![],
             password: None,
             revocation_keys: None,
-            phantom: PhantomData,
+            signers: Default::default(),
         }
     }
 
@@ -372,6 +465,104 @@ impl CertBuilder<'_> {
         }
 
         builder
+    }
+
+    /// Adds the given signer so that it can be used to generate
+    /// signatures.
+    ///
+    /// The `CertBuilder` needs to create signatures to bind the
+    /// certificate's components together.  If all the keys are
+    /// generated by the `CertBuilder`, the signers are extracted from
+    /// the freshly generated key material.  On the other hand, if the
+    /// secret key material is not available, for example because it
+    /// resides on a smart card, the signers have to be provided
+    /// explicitly.
+    ///
+    /// # Examples
+    ///
+    /// This example demonstrates how to create a certificate with
+    /// remote secret key material.
+    ///
+    /// ```
+    /// # fn main() -> sequoia_openpgp::Result<()> {
+    /// use std::time::{SystemTime, Duration};
+    /// use std::convert::TryFrom;
+    ///
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::cert::prelude::*;
+    /// # use openpgp::Result;
+    /// # use openpgp::crypto::Signer;
+    /// # use openpgp::packet::prelude::*;
+    /// use openpgp::types::KeyFlags;
+    ///
+    /// # fn make_signing_key() -> Result<(Key<key::PublicParts, key::UnspecifiedRole>,
+    /// #                                  impl Signer)>
+    /// # {
+    /// #     use openpgp::types::Curve;
+    /// #     let k = Key4::generate_ecc(true, Curve::Ed25519)?;
+    /// #     let signer = k.clone().into_keypair()?;
+    /// #     let (k, _) = k.take_secret();
+    /// #     Ok((k.into(), signer))
+    /// # }
+    /// # fn make_encryption_key() -> Result<Key<key::PublicParts, key::UnspecifiedRole>>
+    /// # {
+    /// #     use openpgp::types::Curve;
+    /// #     let k = Key4::generate_ecc(false, Curve::Cv25519)?;
+    /// #     let (k, _) = k.take_secret();
+    /// #     Ok(k.into())
+    /// # }
+    /// #
+    /// // First, create a primary key.
+    /// let (primary, primary_signer) = make_signing_key()?;
+    /// # let primary_fp = primary.fingerprint();
+    /// // Mark it as primary.
+    /// let primary = primary.role_into_primary();
+    ///
+    /// // Start building a certificate from it.
+    /// let mut builder = CertBuilder::from(primary)
+    ///     .add_signer(primary_signer)
+    ///     .add_userid("Juliett");
+    ///
+    /// // Now we create an encryption subkey.
+    /// let subkey = make_encryption_key()?;
+    /// # let encryption_fp = subkey.fingerprint();
+    /// // Mark it as subkey.
+    /// let subkey = subkey.role_into_subordinate();
+    /// builder = builder.insert_subkey(
+    ///     subkey, KeyFlags::empty().set_transport_encryption(), None)?;
+    ///
+    /// // Now we create a signing subkey.
+    /// let (subkey, subkey_signer) = make_signing_key()?;
+    /// # let signing_fp = subkey.fingerprint();
+    /// // Mark it as subkey.
+    /// let subkey = subkey.role_into_subordinate();
+    /// builder = builder.insert_subkey(
+    ///     subkey, KeyFlags::empty().set_signing(), None)?
+    /// // For signing-capable subkeys, it is necessary to pass in the
+    /// // corresponding signer so that the builder can create a
+    /// // primary key binding signature using it.
+    ///     .add_signer(subkey_signer);
+    ///
+    /// let (cert, _) = builder.generate()?;
+    /// #
+    /// # let p = &openpgp::policy::StandardPolicy::new();
+    /// # assert_eq!(cert.fingerprint(), primary_fp);
+    /// # assert_eq!(cert.userids().count(), 1);
+    /// # assert_eq!(cert.keys().count(), 3);
+    /// # assert_eq!(cert.with_policy(p, None)?.keys().for_transport_encryption()
+    /// #            .count(), 1);
+    /// # assert_eq!(cert.with_policy(p, None)?.keys().for_transport_encryption()
+    /// #            .next().unwrap().fingerprint(), encryption_fp);
+    /// # assert_eq!(cert.with_policy(p, None)?.keys().for_signing().count(), 1);
+    /// # assert_eq!(cert.with_policy(p, None)?.keys().for_signing()
+    /// #            .next().unwrap().fingerprint(), signing_fp);
+    /// # Ok(()) }
+    /// ```
+    pub fn add_signer<S>(mut self, signer: S) -> Self
+        where S: Signer + Send + Sync + 'a
+    {
+        self.signers.insert(signer.public().fingerprint(), Box::new(signer));
+        self
     }
 
     /// Sets the creation time.
@@ -1071,6 +1262,7 @@ impl CertBuilder<'_> {
             flags,
             validity: validity.into(),
             ciphersuite: cs.into(),
+            key: None,
         }));
         self
     }
@@ -1149,6 +1341,285 @@ impl CertBuilder<'_> {
                     flags,
                     validity: validity.into(),
                     ciphersuite: cs.into(),
+                    key: None,
+                }));
+                Ok(self)
+            },
+            t =>
+                Err(Error::InvalidArgument(format!(
+                    "Signature type is not a subkey binding: {}", t)).into()),
+        }
+    }
+
+    /// Adds or refreshes an existing subkey.
+    ///
+    /// If the certificate builder has been derived from an existing
+    /// cert with `key`, the latest binding signature is used as a
+    /// template for creating the new binding signature.  To supply
+    /// your own template, use [`CertBuilder::insert_subkey_with`].
+    ///
+    /// If `flags` is `None`, the certificate builder must have been
+    /// derived from an existing cert with `key`.  Then, the `flags`
+    /// are taken from the existing binding, i.e. the key will have
+    /// the same flags.
+    ///
+    /// If `validity` is `None`, the subkey will be valid for the same
+    /// period as the primary key.
+    ///
+    /// Likewise, if `cs` is `None`, the same cipher suite is used as
+    /// for the primary key.
+    ///
+    /// # Examples
+    ///
+    /// Demonstrates how to extend the validity of an certificate with
+    /// all of its subkeys:
+    ///
+    /// ```
+    /// # fn main() -> sequoia_openpgp::Result<()> {
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::cert::prelude::*;
+    /// use openpgp::policy::StandardPolicy;
+    /// use openpgp::types::KeyFlags;
+    ///
+    /// let p = &StandardPolicy::new();
+    /// let h = std::time::Duration::new(60 * 60, 0);
+    /// let now = std::time::SystemTime::now();
+    /// let past = now - 2 * h;
+    /// let future = now + 2 * h;
+    ///
+    /// // Generate an cert in the past that is still valid now, but
+    /// // will expire in an hour.
+    /// let (c, _) = CertBuilder::new()
+    ///     .set_creation_time(past)
+    ///     .set_validity_period(3 * h)
+    ///     .add_userid("Juliett")
+    ///     .add_signing_subkey()
+    ///     .generate()?;
+    /// assert_eq!(c.with_policy(p, now)?.userids().count(), 1);
+    /// assert_eq!(c.with_policy(p, now)?.keys().for_signing().count(), 1);
+    /// assert!(c.keys().subkeys().next().unwrap().with_policy(p, now)?.alive().is_ok());
+    /// assert!(c.keys().subkeys().next().unwrap().with_policy(p, future)?.alive().is_err());
+    ///
+    /// // Freshen the cert using the `CertBuilder`.
+    /// let mut b = CertBuilder::from(c.clone())
+    ///     .set_creation_time(now)
+    ///     .set_validity_period(3 * h)
+    ///     .add_userid("Julia");
+    /// // We need to re-insert all the subkeys whose expiration times
+    /// // we want to extend.
+    /// for sk in c.keys().subkeys() {
+    ///     b = b.insert_subkey(sk.key().clone(), None, None)?;
+    ///
+    ///     // For signing-capable subkeys, we also need to supply the
+    ///     // signer.
+    ///     if let Ok(signer) = sk.key().clone().parts_into_secret()
+    ///         .and_then(|k| k.into_keypair())
+    ///     {
+    ///         b = b.add_signer(signer);
+    ///     }
+    /// }
+    /// let (c, _) = b.generate()?;
+    /// assert_eq!(c.with_policy(p, now)?.userids().count(), 2);
+    /// assert_eq!(c.with_policy(p, now)?.keys().for_signing().count(), 1);
+    /// assert!(c.keys().subkeys().next().unwrap().with_policy(p, now)?.alive().is_ok());
+    /// assert!(c.keys().subkeys().next().unwrap().with_policy(p, future)?.alive().is_ok());
+    /// # Ok(()) }
+    /// ```
+    pub fn insert_subkey<P, F, T>(mut self,
+                                  key: Key<P, key::SubordinateRole>,
+                                  flags: F, validity: T)
+                                  -> Result<Self>
+    where
+        P: key::KeyParts,
+        F: Into<Option<KeyFlags>>,
+        T: Into<Option<time::Duration>>,
+    {
+        // We don't quite know what the "current" time is, so we go
+        // with the latest binding signature instead.
+        let template = self.cert.as_ref()
+            .and_then(
+                |c| c.keys().subkeys().key_handle(key.fingerprint()).next())
+            .and_then(
+                |ka| ka.self_signatures().next());
+
+        // Maybe get flags from the existing signature.
+        let mut flags = flags.into();
+        if flags.is_none() {
+            if let Some(sig) = &template {
+                if let Some(f) = sig.key_flags() {
+                    flags = Some(f);
+                } else {
+                    return Err(Error::InvalidOperation(
+                        "Existing key binding signature has no key flags"
+                            .into()).into());
+                }
+            } else {
+                return Err(Error::InvalidArgument(
+                    "Key flags are mandatory if the key was not bound before"
+                        .into()).into());
+            }
+        }
+        let flags = flags.expect("set above");
+
+        self.subkeys.push((
+            template.map(|sig| sig.clone().into()),
+            KeyBlueprint {
+                flags,
+                validity: validity.into(),
+                ciphersuite: None,
+                key: Some(key.parts_into_unspecified()),
+            }));
+        Ok(self)
+    }
+
+    /// Adds or refreshes an existing subkey with a binding signature
+    /// based on `builder`.
+    ///
+    /// Adds `key` to the certificate, creating the binding signature
+    /// using `builder`.  The `builder`s signature type must be
+    /// [`SubkeyBinding`].
+    ///
+    /// If the certificate builder has been derived from an existing
+    /// cert with `key`, you can reuse the latest binding signature as
+    /// a template for creating the new binding signature by using
+    /// [`CertBuilder::insert_subkey`].
+    ///
+    /// If `flags` is `None`, the certificate builder must have been
+    /// derived from an existing cert with `key`.  Then, the `flags`
+    /// are taken from the existing binding, i.e. the key will have
+    /// the same flags.
+    ///
+    /// The key generation step uses `builder` as a template, but adds
+    /// all subpackets that the signature needs to be a valid binding
+    /// signature.  If you need more control, or want to adopt
+    /// existing keys, consider using
+    /// [`Key::bind`](crate::packet::Key::bind).
+    ///
+    /// The following modifications are performed on `builder`:
+    ///
+    ///   - An appropriate hash algorithm is selected.
+    ///
+    ///   - The creation time is set.
+    ///
+    ///   - Key metadata is added (key flags, key validity period).
+    ///
+    ///   [`SubkeyBinding`]: crate::types::SignatureType::SubkeyBinding
+    ///
+    /// If `validity` is `None`, the subkey will be valid for the same
+    /// period as the primary key.
+    ///
+    /// # Examples
+    ///
+    /// Demonstrates how to extend the validity of an certificate with
+    /// all of its subkeys.  But, we do not simply want to use the
+    /// current binding signature as template, we need to update the
+    /// `code-signing@policy.example.org` notation data to the current
+    /// policy version.
+    ///
+    /// ```
+    /// # fn main() -> sequoia_openpgp::Result<()> {
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::cert::prelude::*;
+    /// use openpgp::packet::{prelude::*, signature::subpacket::*};
+    /// use openpgp::policy::StandardPolicy;
+    /// use openpgp::types::{KeyFlags, SignatureType};
+    ///
+    /// let p = &mut StandardPolicy::new();
+    /// p.good_critical_notations(&["code-signing@policy.example.org"]);
+    /// let h = std::time::Duration::new(60 * 60, 0);
+    /// let now = std::time::SystemTime::now();
+    /// let past = now - 2 * h;
+    /// let future = now + 2 * h;
+    ///
+    /// // Generate an cert in the past that is still valid now, but
+    /// // will expire in an hour.
+    /// let (c, _) = CertBuilder::new()
+    ///     .set_creation_time(past)
+    ///     .set_validity_period(3 * h)
+    ///     .add_userid("Juliett")
+    ///     .add_signing_subkey()
+    ///     .generate()?;
+    /// assert_eq!(c.with_policy(p, now)?.userids().count(), 1);
+    /// assert_eq!(c.with_policy(p, now)?.keys().for_signing().count(), 1);
+    /// assert!(c.keys().subkeys().next().unwrap().with_policy(p, now)?.alive().is_ok());
+    /// assert!(c.keys().subkeys().next().unwrap().with_policy(p, future)?.alive().is_err());
+    ///
+    /// // Freshen the cert using the `CertBuilder`.
+    /// let mut b = CertBuilder::from(c.clone())
+    ///     .set_creation_time(now)
+    ///     .set_validity_period(3 * h)
+    ///     .add_userid("Julia");
+    /// // We need to re-insert all the subkeys whose expiration times
+    /// // we want to extend.
+    /// for sk in c.keys().subkeys() {
+    ///     b = b.insert_subkey_with(sk.key().clone(), None, None,
+    ///         SignatureBuilder::new(SignatureType::SubkeyBinding)
+    ///             // Add a critical notation!
+    ///             .set_notation("code-signing@policy.example.org",
+    ///                           b"Signing Policy Version 2022",
+    ///                           NotationDataFlags::empty(), true)?)?;
+    ///
+    ///     // For signing-capable subkeys, we also need to supply the
+    ///     // signer.
+    ///     if let Ok(signer) = sk.key().clone().parts_into_secret()
+    ///         .and_then(|k| k.into_keypair())
+    ///     {
+    ///         b = b.add_signer(signer);
+    ///     }
+    /// }
+    /// let (c, _) = b.generate()?;
+    /// assert_eq!(c.with_policy(p, now)?.userids().count(), 2);
+    /// assert_eq!(c.with_policy(p, now)?.keys().for_signing().count(), 1);
+    /// assert!(c.keys().subkeys().next().unwrap().with_policy(p, now)?.alive().is_ok());
+    /// assert!(c.keys().subkeys().next().unwrap().with_policy(p, future)?.alive().is_ok());
+    /// # Ok(()) }
+    /// ```
+    pub fn insert_subkey_with<P, F, T, B>(mut self,
+                                          key: Key<P, key::SubordinateRole>,
+                                          flags: F,
+                                          validity: T,
+                                          builder: B) -> Result<Self>
+    where
+        P: key::KeyParts,
+        F: Into<Option<KeyFlags>>,
+        T: Into<Option<time::Duration>>,
+        B: Into<SignatureBuilder>,
+    {
+        // We don't quite know what the "current" time is, so we go
+        // with the latest binding signature instead.
+        let template = self.cert.as_ref()
+            .and_then(
+                |c| c.keys().subkeys().key_handle(key.fingerprint()).next())
+            .and_then(
+                |ka| ka.self_signatures().next());
+
+        // Maybe get flags from the existing signature.
+        let mut flags = flags.into();
+        if flags.is_none() {
+            if let Some(sig) = &template {
+                if let Some(f) = sig.key_flags() {
+                    flags = Some(f);
+                } else {
+                    return Err(Error::InvalidOperation(
+                        "Existing key binding signature has no key flags"
+                            .into()).into());
+                }
+            } else {
+                return Err(Error::InvalidArgument(
+                    "Key flags are mandatory if the key was not bound before"
+                        .into()).into());
+            }
+        }
+        let flags = flags.expect("set above");
+
+        let builder = builder.into();
+        match builder.typ() {
+            SignatureType::SubkeyBinding => {
+                self.subkeys.push((Some(builder), KeyBlueprint {
+                    flags,
+                    validity: validity.into(),
+                    ciphersuite: None,
+                    key: Some(key.parts_into_unspecified()),
                 }));
                 Ok(self)
             },
@@ -1330,31 +1801,84 @@ impl CertBuilder<'_> {
     ///         .generate()?;
     /// # Ok(()) }
     /// ```
-    pub fn generate(self) -> Result<(Cert, Signature)> {
-        use crate::Packet;
+    pub fn generate(mut self) -> Result<(Cert, Signature)> {
         use crate::types::ReasonForRevocation;
-        use std::convert::TryFrom;
+        let null = crate::policy::NullPolicy::new();
 
-        let creation_time =
-            self.creation_time.unwrap_or_else(|| {
+        let mut creation_time =
+            self.creation_time
+            .unwrap_or_else(|| {
                 use crate::packet::signature::SIG_BACKDATE_BY;
                 crate::now() -
                     time::Duration::new(SIG_BACKDATE_BY, 0)
             });
 
-        // Generate & self-sign primary key.
-        let (primary, sig, mut signer) = self.primary_key(creation_time)?;
+        // Make sure we don't create signatures pre-dating the
+        // existing primary key, if any.
+        if let Some(cert) = self.cert.as_ref() {
+            if creation_time < cert.primary_key().creation_time() {
+                creation_time = cert.primary_key().creation_time();
+            }
+        }
 
-        let mut cert = Cert::try_from(vec![
-            Packet::SecretKey({
-                let mut primary = primary.clone();
-                if let Some(ref password) = self.password {
-                    primary.secret_mut().encrypt_in_place(password)?;
+        // If we started from a certificate, and the user didn't
+        // explicitly set a validity period, compute it from the
+        // existing material.
+        if self.primary.validity.is_none() {
+            if let Some(cert) = self.cert.as_ref() {
+                // Compute an expiration time for based on the current
+                // primary key expiration information.
+                let expiration_time =
+                    cert.with_policy(&null, creation_time)
+                    .ok().and_then(
+                        |vcert| vcert.primary_key().key_expiration_time());
+
+                // If that expiration time is not passed, use it as validity
+                // period for new subkeys.
+                if let Some(v) = expiration_time
+                    .and_then(|e| e.duration_since(creation_time).ok())
+                {
+                    self.primary.validity = Some(v);
                 }
-                primary
-            }),
-            sig.into(),
-        ])?;
+            }
+        }
+
+        // From now on, we'll use an absolute expiration time, because
+        // existing keys need different validity periods from newly
+        // generated keys.
+        let expiration_time =
+            self.primary.validity.map(|duration| creation_time + duration);
+
+        // Generate & self-sign primary key.
+        let (mut cert, mut signer) =
+            self.primary_key(creation_time, expiration_time)?;
+
+        // Add any existing User IDs or Attributes to the builder,
+        // with existing binding signatures as templates.  This makes
+        // sure that we re-create all binding signatures which may
+        // carry important metadata for the primary key.
+        for ub in cert.userids() {
+            // Slightly quadratic, but there shouldn't be many.
+            if self.userids.iter().any(|(_, u)| u == ub.userid()) {
+                continue;
+            }
+
+            if let Some(sig) = ub.self_signatures().next() {
+                self.userids.push(
+                    (Some(sig.clone().into()), ub.userid().clone()));
+            }
+        }
+        for ub in cert.user_attributes() {
+            // Slightly quadratic, but there shouldn't be many.
+            if self.user_attributes.iter().any(|(_, u)| u == ub.user_attribute()) {
+                continue;
+            }
+
+            if let Some(sig) = ub.self_signatures().next() {
+                self.user_attributes.push(
+                    (Some(sig.clone().into()), ub.user_attribute().clone()));
+            }
+        }
 
         // We want to mark exactly one User ID or Attribute as primary.
         // First, figure out whether one of the binding signature
@@ -1369,12 +1893,14 @@ impl CertBuilder<'_> {
         };
         let mut emitted_primary_user_thing = false;
 
-        // Sign UserIDs.
-        for (template, uid) in self.userids.into_iter() {
+        // (Re-)Sign UserIDs.
+        for (template, uid) in std::mem::take(&mut self.userids) {
             let sig = template.unwrap_or_else(
                 || SignatureBuilder::new(SignatureType::PositiveCertification));
             let sig = Self::signature_common(sig, creation_time)?;
-            let mut sig = Self::add_primary_key_metadata(sig, &self.primary)?;
+            let mut sig = Self::add_primary_key_metadata(sig, &self.primary,
+                                                         &cert.primary_key(),
+                                                         expiration_time)?;
 
             // Make sure we mark exactly one User ID or Attribute as
             // primary.
@@ -1394,17 +1920,19 @@ impl CertBuilder<'_> {
                 emitted_primary_user_thing = true;
             }
 
-            let signature = uid.bind(&mut signer, &cert, sig)?;
+            let signature = uid.bind(signer.as_mut(), &cert, sig)?;
             cert = cert.insert_packets(
                 vec![Packet::from(uid), signature.into()])?;
         }
 
-        // Sign UserAttributes.
-        for (template, ua) in self.user_attributes.into_iter() {
+        // (Re-)Sign UserAttributes.
+        for (template, ua) in std::mem::take(&mut self.user_attributes) {
             let sig = template.unwrap_or_else(
                 || SignatureBuilder::new(SignatureType::PositiveCertification));
             let sig = Self::signature_common(sig, creation_time)?;
-            let mut sig = Self::add_primary_key_metadata(sig, &self.primary)?;
+            let mut sig = Self::add_primary_key_metadata(sig, &self.primary,
+                                                         &cert.primary_key(),
+                                                         expiration_time)?;
 
             // Make sure we mark exactly one User ID or Attribute as
             // primary.
@@ -1424,82 +1952,150 @@ impl CertBuilder<'_> {
                 emitted_primary_user_thing = true;
             }
 
-            let signature = ua.bind(&mut signer, &cert, sig)?;
+            let signature = ua.bind(signer.as_mut(), &cert, sig)?;
             cert = cert.insert_packets(
                 vec![Packet::from(ua), signature.into()])?;
         }
 
         // Sign subkeys.
-        for (template, blueprint) in self.subkeys {
+        for (template, mut blueprint) in std::mem::take(&mut self.subkeys) {
             let flags = &blueprint.flags;
-            let mut subkey = blueprint.ciphersuite
-                .unwrap_or(self.ciphersuite)
-                .generate_key(flags)?;
-            subkey.set_creation_time(creation_time)?;
+            let subkey = if let Some(k) = blueprint.key.take() {
+                k
+            } else {
+                let mut subkey = blueprint.ciphersuite
+                    .unwrap_or(self.ciphersuite)
+                    .generate_key(flags)?;
+                subkey.set_creation_time(creation_time)?;
+                subkey.parts_into_unspecified()
+            };
+
+            // Make sure the signatures we create do not pre-date the
+            // subkey.
+            let creation_time = creation_time.max(subkey.creation_time());
 
             let sig = template.unwrap_or_else(
                 || SignatureBuilder::new(SignatureType::SubkeyBinding));
             let sig = Self::signature_common(sig, creation_time)?;
             let mut builder = sig
                 .set_key_flags(flags.clone())?
-                .set_key_validity_period(blueprint.validity.or(self.primary.validity))?;
+                .set_key_expiration_time(
+                    &subkey,
+                    blueprint.validity.map(|period| creation_time + period)
+                        .or(expiration_time))?;
 
             if flags.for_certification() || flags.for_signing() {
                 // We need to create a primary key binding signature.
-                let mut subkey_signer = subkey.clone().into_keypair().unwrap();
+                let mut subkey_signer = self.get_signer(&subkey)?;
                 let backsig =
                     signature::SignatureBuilder::new(SignatureType::PrimaryKeyBinding)
                     .set_signature_creation_time(creation_time)?
                     // GnuPG wants at least a 512-bit hash for P521 keys.
                     .set_hash_algo(HashAlgorithm::SHA512)
-                    .sign_primary_key_binding(&mut subkey_signer, &primary,
+                    .sign_primary_key_binding(subkey_signer.as_mut(),
+                                              &cert.primary_key(),
                                               &subkey)?;
                 builder = builder.set_embedded_signature(backsig)?;
             }
 
-            let signature = subkey.bind(&mut signer, &cert, builder)?;
+            let signature = subkey.bind(signer.as_mut(), &cert, builder)?;
 
-            if let Some(ref password) = self.password {
-                subkey.secret_mut().encrypt_in_place(password)?;
+            let (subkey, secret) = subkey.take_secret();
+            if let Some(mut secret) = secret {
+                if let Some(ref password) = self.password {
+                    secret.encrypt_in_place(password)?;
+                }
+                let (subkey, _) = subkey.add_secret(secret);
+                cert = cert.insert_packets(vec![Packet::SecretSubkey(subkey),
+                                                signature.into()])?;
+            } else {
+                cert = cert.insert_packets(vec![Packet::PublicSubkey(subkey),
+                                                signature.into()])?;
             }
-            cert = cert.insert_packets(vec![Packet::SecretSubkey(subkey),
-                                           signature.into()])?;
         }
 
         let revocation = CertRevocationBuilder::new()
             .set_signature_creation_time(creation_time)?
             .set_reason_for_revocation(
                 ReasonForRevocation::Unspecified, b"Unspecified")?
-            .build(&mut signer, &cert, None)?;
-
-        // keys generated by the builder are never invalid
-        assert!(cert.bad.is_empty());
-        assert!(cert.unknowns.is_empty());
+            .build(signer.as_mut(), &cert, None)?;
 
         Ok((cert, revocation))
     }
 
-    /// Creates the primary key and a direct key signature.
-    fn primary_key(&self, creation_time: std::time::SystemTime)
-        -> Result<(key::SecretKey, Signature, Box<dyn Signer>)>
+    /// Gets the signer for a given key, either from the key or from
+    /// the set of supplied signers.
+    fn get_signer<P, R>(&mut self, key: &Key<P, R>)
+                        -> Result<Box<dyn Signer + Send + Sync + 'a>>
+    where
+        P: key::KeyParts,
+        R: key::KeyRole,
+        Key<P, R>: Clone,
     {
-        let mut key = self.primary.ciphersuite
-            .unwrap_or(self.ciphersuite)
-            .generate_key(KeyFlags::empty().set_certification())?;
-        key.set_creation_time(creation_time)?;
+        let fp = key.fingerprint();
+
+        (*key).clone()
+            .role_into_unspecified()
+            .parts_into_secret()
+            .and_then(|k| k.into_keypair())
+            .ok()
+            .map(|kp| -> Box<dyn Signer + Send + Sync + 'a> {
+                Box::new(kp)
+            })
+            .or_else(|| self.signers.remove(&fp))
+            .ok_or_else(|| -> anyhow::Error {
+                Error::MissingSigner(fp).into()
+            })
+    }
+
+    /// Creates the primary key and a direct key signature.
+    fn primary_key(&mut self,
+                   creation_time: std::time::SystemTime,
+                   expiration_time: Option<std::time::SystemTime>)
+        -> Result<(Cert, Box<dyn Signer + Send + Sync + 'a>)>
+    {
+        // First, see if we have a cert to edit.
+        let (cert, mut signer): (Cert, Box<dyn Signer + Send + Sync + 'a>) =
+        if let Some(cert) = self.cert.take() {
+            // We do.  Try to create a primary signer.
+            let signer = self.get_signer(cert.primary_key().key())?;
+            (cert, signer)
+        } else {
+            // Nope.  Create a new key.
+            let mut key = self.primary.ciphersuite
+                .unwrap_or(self.ciphersuite)
+                .generate_key(KeyFlags::empty().set_certification())?;
+            key.set_creation_time(creation_time)?;
+
+            let signer = key.clone().into_keypair()
+                .expect("key generated above has a secret");
+
+            let cert = Cert::try_from(vec![
+                Packet::SecretKey({
+                    if let Some(ref password) = self.password {
+                        key.secret_mut().encrypt_in_place(password)?;
+                    }
+                    key
+                }),
+            ])?;
+            (cert, Box::new(signer))
+        };
+
         let sig = SignatureBuilder::new(SignatureType::DirectKey);
         let sig = Self::signature_common(sig, creation_time)?;
-        let mut sig = Self::add_primary_key_metadata(sig, &self.primary)?;
+        let mut sig = Self::add_primary_key_metadata(sig, &self.primary,
+                                                     &cert.primary_key(),
+                                                     expiration_time)?;
 
         if let Some(ref revocation_keys) = self.revocation_keys {
             sig = sig.set_revocation_key(revocation_keys.clone())?;
         }
 
-        let mut signer = key.clone().into_keypair()
-            .expect("key generated above has a secret");
-        let sig = sig.sign_direct_key(&mut signer, key.parts_as_public())?;
+        let sig =
+            sig.sign_direct_key(signer.as_mut(), cert.primary_key().key())?;
+        let cert = cert.insert_packets(Some(Packet::from(sig)))?;
 
-        Ok((key, sig, Box::new(signer)))
+        Ok((cert, signer))
     }
 
     /// Common settings for generated signatures.
@@ -1516,13 +2112,16 @@ impl CertBuilder<'_> {
 
     /// Adds primary key metadata to the signature.
     fn add_primary_key_metadata(builder: SignatureBuilder,
-                                primary: &KeyBlueprint)
+                                primary: &KeyBlueprint,
+                                key: &Key<key::PublicParts,
+                                          key::PrimaryRole>,
+                                expiration_time: Option<std::time::SystemTime>)
                                 -> Result<SignatureBuilder>
     {
         builder
             .set_features(Features::sequoia())?
             .set_key_flags(primary.flags.clone())?
-            .set_key_validity_period(primary.validity)?
+            .set_key_expiration_time(key, expiration_time)?
             .set_preferred_hash_algorithms(vec![
                 HashAlgorithm::SHA512,
                 HashAlgorithm::SHA256,
@@ -1919,6 +2518,247 @@ mod tests {
         let vc = c.with_policy(p, None)?;
         assert_eq!(vc.primary_userid()?.value(), b"bar");
         assert_eq!(count_primary_user_things(c), 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn cert_editing() -> Result<()> {
+        let p = &P::new();
+
+        let (c, _) = CertBuilder::new().generate()?;
+        let fp = c.fingerprint();
+        assert_eq!(c.with_policy(p, None)?.userids().count(), 0);
+
+        let (c, _) = CertBuilder::from(c)
+            .add_userid("foo")
+            .generate()?;
+        assert_eq!(c.fingerprint(), fp);
+        assert_eq!(c.with_policy(p, None)?.userids().count(), 1);
+
+        // Same, but with external signer.
+        let (c, _) = CertBuilder::new().generate()?;
+        let fp = c.fingerprint();
+        assert_eq!(c.userids().count(), 0);
+        let signer =
+            c.primary_key().key().clone().parts_into_secret()?.into_keypair()?;
+
+        // Fails without external signer.
+        let err = CertBuilder::from(c.clone().strip_secret_key_material())
+            .add_userid("foo")
+            .generate()
+            .unwrap_err();
+        assert!(matches!(err.downcast(), Ok(Error::MissingSigner(_))));
+
+        // Works if we supply it.
+        let (c, _) = CertBuilder::from(c.strip_secret_key_material())
+            .add_signer(signer)
+            .add_userid("foo")
+            .generate()?;
+        assert_eq!(c.fingerprint(), fp);
+        assert_eq!(c.with_policy(p, None)?.userids().count(), 1);
+
+        // Demonstrate adding subkeys.
+        let (c, _) = CertBuilder::new().generate()?;
+        let fp = c.fingerprint();
+        assert_eq!(c.with_policy(p, None)?.keys().subkeys().count(), 0);
+
+        let (c, _) = CertBuilder::from(c)
+            .add_signing_subkey()
+            .add_transport_encryption_subkey()
+            .generate()?;
+        assert_eq!(c.fingerprint(), fp);
+        assert_eq!(c.with_policy(p, None)?.keys().subkeys().count(), 2);
+        assert_eq!(c.with_policy(p, None)?.keys().subkeys().for_signing()
+                   .count(), 1);
+        assert_eq!(c.with_policy(p, None)?.keys().subkeys().for_transport_encryption()
+                   .count(), 1);
+
+        // Same, but demonstrate that we respect the cipher suite.
+        let (c, _) = CertBuilder::new()
+            .set_cipher_suite(CipherSuite::RSA2k)
+            .generate()?;
+        let fp = c.fingerprint();
+        assert_eq!(c.with_policy(p, None)?.keys().subkeys().count(), 0);
+
+        let (c, _) = CertBuilder::from(c)
+            .add_transport_encryption_subkey()
+            .generate()?;
+        assert_eq!(c.fingerprint(), fp);
+        assert_eq!(c.with_policy(p, None)?.keys().subkeys().count(), 1);
+        assert_eq!(c.with_policy(p, None)?.keys().subkeys().for_transport_encryption()
+                   .count(), 1);
+        assert_eq!(c.with_policy(p, None)?.keys().subkeys().for_transport_encryption()
+                   .next().unwrap().pk_algo(),
+                   PublicKeyAlgorithm::RSAEncryptSign);
+        assert!(2048usize.checked_sub(
+            c.with_policy(p, None)?.keys().subkeys().for_transport_encryption()
+                .next().unwrap().mpis().bits().unwrap()).unwrap() < 32);
+
+        // ... unless overridden.
+        let (c, _) = CertBuilder::from(c)
+            .set_cipher_suite(CipherSuite::Cv25519)
+            .add_signing_subkey()
+            .generate()?;
+        assert_eq!(c.fingerprint(), fp);
+        assert_eq!(c.with_policy(p, None)?.keys().subkeys().count(), 2);
+        assert_eq!(c.with_policy(p, None)?.keys().subkeys().for_signing()
+                   .count(), 1);
+        assert_eq!(c.with_policy(p, None)?.keys().subkeys().for_signing()
+                   .next().unwrap().pk_algo(),
+                   PublicKeyAlgorithm::EdDSA);
+
+        Ok(())
+    }
+
+    /// Demonstrates how a cert can be freshened.
+    #[test]
+    fn freshen_cert() -> Result<()> {
+        let p = &P::new();
+
+        let h = std::time::Duration::new(60 * 60, 0);
+        let now = crate::now();
+        let past = now - 2 * h;
+        let future = now + 2 * h;
+
+        // Generate an cert in the past that is still valid now.
+        let (c, _) = CertBuilder::new()
+            .set_creation_time(past)
+            .set_validity_period(3 * h)
+            .add_userid("Juliett")
+            .add_transport_encryption_subkey()
+            .generate()?;
+        assert_eq!(c.with_policy(p, now)?.userids().count(), 1);
+        assert_eq!(c.with_policy(p, now)?.keys().for_transport_encryption().count(), 1);
+        assert!(c.keys().subkeys().next().unwrap().with_policy(p, now)?.alive().is_ok());
+        assert!(c.keys().subkeys().next().unwrap().with_policy(p, future)?.alive().is_err());
+
+        // This validity period isn't changed if we edit the cert.
+        let mut b = CertBuilder::from(c.clone())
+            .add_userid("Julia");
+        for sk in c.keys().subkeys() {
+            b = b.insert_subkey(sk.key().clone(), None, None)?;
+        }
+        let (c, _) = b.generate()?;
+        assert_eq!(c.with_policy(p, now)?.userids().count(), 2);
+        assert_eq!(c.with_policy(p, now)?.keys().for_transport_encryption().count(), 1);
+        assert!(c.keys().subkeys().next().unwrap().with_policy(p, now)?.alive().is_ok());
+        assert!(c.keys().subkeys().next().unwrap().with_policy(p, future)?.alive().is_err());
+
+        // Unless we explicitly give it a new validity period.
+        let (c, _) = CertBuilder::new()
+            .set_creation_time(past)
+            .set_validity_period(3 * h)
+            .add_userid("Juliett")
+            .add_transport_encryption_subkey()
+            .generate()?;
+        assert_eq!(c.with_policy(p, now)?.userids().count(), 1);
+        assert_eq!(c.with_policy(p, now)?.keys().for_transport_encryption().count(), 1);
+        assert!(c.keys().subkeys().next().unwrap().with_policy(p, now)?.alive().is_ok());
+        assert!(c.keys().subkeys().next().unwrap().with_policy(p, future)?.alive().is_err());
+
+        let mut b = CertBuilder::from(c.clone())
+            .set_validity_period(3 * h)
+            .add_userid("Julia");
+        for sk in c.keys().subkeys() {
+            b = b.insert_subkey(sk.key().clone(), None, None)?;
+        }
+        let (c, _) = b.generate()?;
+        assert_eq!(c.with_policy(p, now)?.userids().count(), 2);
+        assert_eq!(c.with_policy(p, now)?.keys().for_transport_encryption().count(), 1);
+        assert!(c.keys().subkeys().next().unwrap().with_policy(p, now)?.alive().is_ok());
+        assert!(c.keys().subkeys().next().unwrap().with_policy(p, future)?.alive().is_ok());
+
+        // Now we do the same all over again, but with an already expired cert.
+        let (c, _) = CertBuilder::new()
+            .set_creation_time(past)
+            .set_validity_period(1 * h)
+            .add_userid("Juliett")
+            .add_transport_encryption_subkey()
+            .generate()?;
+        assert_eq!(c.with_policy(p, past)?.userids().count(), 1);
+        assert_eq!(c.with_policy(p, past)?.keys().for_transport_encryption().count(), 1);
+        assert!(c.keys().subkeys().next().unwrap().with_policy(p, now)?.alive().is_err());
+        assert!(c.keys().subkeys().next().unwrap().with_policy(p, future)?.alive().is_err());
+
+        // If we edit it now, it's expiration time is implicitly refreshed.
+        let mut b = CertBuilder::from(c.clone())
+            .add_userid("Julia");
+        for sk in c.keys().subkeys() {
+            b = b.insert_subkey(sk.key().clone(), None, None)?;
+        }
+        let (c, _) = b.generate()?;
+        assert_eq!(c.with_policy(p, now)?.userids().count(), 2);
+        assert_eq!(c.with_policy(p, now)?.keys().for_transport_encryption().count(), 1);
+        assert!(c.keys().subkeys().next().unwrap().with_policy(p, now)?.alive().is_ok());
+        assert!(c.keys().subkeys().next().unwrap().with_policy(p, future)?.alive().is_ok());
+
+        Ok(())
+    }
+
+    /// Creates a cert purely with remote keys.
+    #[test]
+    fn remote_keys() -> Result<()> {
+        let p = &P::new();
+        fn make_signing_key() -> Result<(Key<key::PublicParts, key::UnspecifiedRole>,
+                                         impl Signer)>
+        {
+            use crate::types::Curve;
+            let k = Key4::generate_ecc(true, Curve::Ed25519)?;
+            let signer = k.clone().into_keypair()?;
+            let (k, _) = k.take_secret();
+            Ok((k.into(), signer))
+        }
+        fn make_encryption_key() -> Result<Key<key::PublicParts, key::UnspecifiedRole>>
+        {
+            use crate::types::Curve;
+            let k = Key4::generate_ecc(false, Curve::Cv25519)?;
+            let (k, _) = k.take_secret();
+            Ok(k.into())
+        }
+
+        // First, create a primary key.
+        let (primary, primary_signer) = make_signing_key()?;
+        let primary_fp = primary.fingerprint();
+        // Mark it as primary.
+        let primary = primary.role_into_primary();
+
+        // Start building a certificate from it.
+        let mut builder = CertBuilder::from(primary)
+            .add_signer(primary_signer)
+            .add_userid("Juliett");
+
+        // Now we create an encryption subkey.
+        let subkey = make_encryption_key()?;
+        let encryption_fp = subkey.fingerprint();
+        // Mark it as subkey.
+        let subkey = subkey.role_into_subordinate();
+        builder = builder.insert_subkey(
+            subkey, KeyFlags::empty().set_transport_encryption(), None)?;
+
+        // Now we create a signing subkey.
+        let (subkey, subkey_signer) = make_signing_key()?;
+        let signing_fp = subkey.fingerprint();
+        // Mark it as subkey.
+        let subkey = subkey.role_into_subordinate();
+        builder = builder.insert_subkey(
+            subkey, KeyFlags::empty().set_signing(), None)?
+        // For signing-capable subkeys, it is necessary to pass in the
+        // corresponding signer so that the builder can create a
+        // primary key binding signature using it.
+            .add_signer(subkey_signer);
+
+        let (cert, _) = builder.generate()?;
+        assert_eq!(cert.fingerprint(), primary_fp);
+        assert_eq!(cert.userids().count(), 1);
+        assert_eq!(cert.keys().count(), 3);
+        assert_eq!(cert.with_policy(p, None)?.keys().for_transport_encryption()
+                   .count(), 1);
+        assert_eq!(cert.with_policy(p, None)?.keys().for_transport_encryption()
+                   .next().unwrap().fingerprint(), encryption_fp);
+        assert_eq!(cert.with_policy(p, None)?.keys().for_signing().count(), 1);
+        assert_eq!(cert.with_policy(p, None)?.keys().for_signing()
+                   .next().unwrap().fingerprint(), signing_fp);
 
         Ok(())
     }

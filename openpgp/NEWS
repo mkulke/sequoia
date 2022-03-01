@@ -4,6 +4,14 @@
 
 * Changes in 1.8.0
 ** New functionality
+   - cert::CertBuilder can now edit certificates
+   - cert::CertBuilder can now use remote keys
+   - cert::CertBuilder now implements From<Cert>
+   - cert::CertBuilder now implements From<Key<PublicParts, _>>
+   - cert::CertBuilder now implements From<Key<SecretParts, _>>
+   - cert::CertBuilder::add_signer
+   - cert::CertBuilder::insert_subkey
+   - cert::CertBuilder::insert_subkey_with
    - crypto::Signer::acceptable_hashes
    - Fingerprint::V5
 * Changes in 1.7.0
