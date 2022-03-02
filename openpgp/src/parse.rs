@@ -5831,10 +5831,8 @@ mod test {
                 Packet::PublicSubkey(_) => subkeys += 1,
                 Packet::UserID(_) => userids += 1,
                 Packet::UserAttribute(_) => uas += 1,
-                Packet::Unknown(ref u) => {
+                Packet::Unknown(_) => {
                     unknown += 1;
-                    assert_match!(Some(&Error::MalformedPacket(_))
-                                  = u.error().downcast_ref());
                 },
                 _ => (),
             }
