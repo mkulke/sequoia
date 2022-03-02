@@ -205,6 +205,7 @@ impl Header {
 
                         Tag::Marker => l == 3,
                         Tag::Reserved => true,
+                        Tag::Padding => true,
                     };
 
                     if ! valid {

@@ -2911,6 +2911,19 @@ impl AED1 {
     }
 }
 
+impl Padding {
+    /// Parses the body of a padding packet.
+    fn parse<'a, T: 'a + BufferedReader<Cookie>>(mut php: PacketHeaderParser<T>)
+                                                 -> Result<PacketParser<'a>>
+    {
+        make_php_try!(php);
+        let value = php_try!(php.parse_bytes_eof("value"));
+        php.ok(Packet::Padding(Padding::from(value)))
+    }
+}
+
+impl_parse_generic_packet!(Padding);
+
 impl MPI {
     /// Parses an OpenPGP MPI.
     ///
@@ -4189,6 +4202,7 @@ impl <'a> PacketParser<'a> {
                 Err(Error::MalformedPacket("Looks like garbage".into()).into()),
 
             Tag::Marker => Marker::plausible(bio, header),
+            Tag::Padding => Ok(()),
             Tag::Signature => Signature::plausible(bio, header),
 
             Tag::SecretKey => Key::plausible(bio, header),
@@ -4448,6 +4462,7 @@ impl <'a> PacketParser<'a> {
             Tag::MDC =>                 MDC::parse(parser),
             Tag::PKESK =>               PKESK::parse(parser),
             Tag::AED =>                 AED::parse(parser),
+            Tag::Padding =>             Padding::parse(parser),
             _ => Unknown::parse(parser,
                                 Error::UnsupportedPacketType(tag).into()),
         }?;
@@ -4732,7 +4747,8 @@ impl <'a> PacketParser<'a> {
                 | Packet::UserID(_) | Packet::UserAttribute(_)
                 | Packet::Literal(_) | Packet::PKESK(_) | Packet::SKESK(_)
                 | Packet::SEIP(_) | Packet::MDC(_) | Packet::AED(_)
-                | Packet::CompressedData(_) => {
+                | Packet::CompressedData(_)
+                | Packet::Padding(_) => {
                 // Drop through.
                 t!("A {:?} packet is not a container, not recursing.",
                    self.packet.tag());
