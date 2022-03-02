@@ -2698,6 +2698,30 @@ impl MarshalInto for AED1 {
         generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
     }
 }
+
+impl seal::Sealed for Padding {}
+impl Marshal for Padding {
+    fn serialize(&self, o: &mut dyn std::io::Write) -> Result<()> {
+        o.write_all(self.value())?;
+        Ok(())
+    }
+}
+
+impl NetLength for Padding {
+    fn net_len(&self) -> usize {
+        self.value().len()
+    }
+}
+
+impl MarshalInto for Padding {
+    fn serialized_len(&self) -> usize {
+        self.net_len()
+    }
+
+    fn serialize_into(&self, buf: &mut [u8]) -> Result<usize> {
+        generic_serialize_into(self, MarshalInto::serialized_len(self), buf)
+    }
+}
 
 impl Serialize for Packet {}
 impl seal::Sealed for Packet {}
@@ -2740,6 +2764,7 @@ impl Marshal for Packet {
             Packet::SEIP(ref p) => p.serialize(o),
             Packet::MDC(ref p) => p.serialize(o),
             Packet::AED(ref p) => p.serialize(o),
+            Packet::Padding(p) => p.serialize(o),
         }
     }
 
@@ -2781,6 +2806,7 @@ impl Marshal for Packet {
             Packet::SEIP(ref p) => p.export(o),
             Packet::MDC(ref p) => p.export(o),
             Packet::AED(ref p) => p.export(o),
+            Packet::Padding(p) => p.export(o),
         }
     }
 }
@@ -2806,6 +2832,7 @@ impl NetLength for Packet {
             Packet::SEIP(ref p) => p.net_len(),
             Packet::MDC(ref p) => p.net_len(),
             Packet::AED(ref p) => p.net_len(),
+            Packet::Padding(p) => p.net_len(),
         }
     }
 }
