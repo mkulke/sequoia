@@ -208,6 +208,8 @@ pub mod pkesk;
 mod mdc;
 pub use self::mdc::MDC;
 pub mod aed;
+mod padding;
+pub use self::padding::Padding;
 
 /// Enumeration of packet types.
 ///
@@ -276,6 +278,8 @@ pub enum Packet {
     MDC(MDC),
     /// AEAD Encrypted Data Packet.
     AED(AED),
+    /// Padding packet.
+    Padding(Padding),
 }
 assert_send_and_sync!(Packet);
 
@@ -351,6 +355,7 @@ impl Packet {
             Packet::SEIP(_) => Tag::SEIP,
             Packet::MDC(_) => Tag::MDC,
             Packet::AED(_) => Tag::AED,
+            Packet::Padding(_) => Tag::Padding,
         }
     }
 
@@ -393,6 +398,7 @@ impl Packet {
             Packet::SEIP(p) => Some(p.version()),
             Packet::MDC(_) => None,
             Packet::AED(p) => Some(p.version()),
+            Packet::Padding(_) => None,
         }
     }
 
@@ -434,6 +440,7 @@ impl Packet {
             Packet::MDC(x) => Hash::hash(&x, state),
             Packet::AED(x) => Hash::hash(&x, state),
             Packet::Unknown(x) => Hash::hash(&x, state),
+            Packet::Padding(x) => Padding::hash(x, state),
         }
     }
 }
@@ -463,6 +470,7 @@ impl Deref for Packet {
             Packet::SEIP(ref packet) => &packet.common,
             Packet::MDC(ref packet) => &packet.common,
             Packet::AED(ref packet) => &packet.common,
+            Packet::Padding(packet) => &packet.common,
         }
     }
 }
@@ -489,6 +497,7 @@ impl DerefMut for Packet {
             Packet::SEIP(ref mut packet) => &mut packet.common,
             Packet::MDC(ref mut packet) => &mut packet.common,
             Packet::AED(ref mut packet) => &mut packet.common,
+            Packet::Padding(packet) => &mut packet.common,
         }
     }
 }
@@ -516,6 +525,7 @@ impl fmt::Debug for Packet {
                 SEIP(v) => write!(f, "SEIP({:?})", v),
                 MDC(v) => write!(f, "MDC({:?})", v),
                 AED(v) => write!(f, "AED({:?})", v),
+                Padding(v) => write!(f, "Padding({:?})", v),
             }
         }
 
@@ -542,7 +552,7 @@ impl Arbitrary for Packet {
     fn arbitrary(g: &mut Gen) -> Self {
         use crate::arbitrary_helper::gen_arbitrary_from_range;
 
-        match gen_arbitrary_from_range(0..15, g) {
+        match gen_arbitrary_from_range(0..16, g) {
             0 => Signature::arbitrary(g).into(),
             1 => OnePassSig::arbitrary(g).into(),
             2 => Key::<key::PublicParts, key::UnspecifiedRole>::arbitrary(g)
@@ -561,7 +571,8 @@ impl Arbitrary for Packet {
             11 => CompressedData::arbitrary(g).into(),
             12 => PKESK::arbitrary(g).into(),
             13 => SKESK::arbitrary(g).into(),
-            14 => loop {
+            14 => Padding::arbitrary(g).into(),
+            15 => loop {
                 let mut u = Unknown::new(
                     Tag::arbitrary(g), anyhow::anyhow!("Arbitrary::arbitrary"));
                 u.set_body(Arbitrary::arbitrary(g));

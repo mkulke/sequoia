@@ -22,6 +22,7 @@ use crate::packet::{
     SEIP,
     MDC,
     AED,
+    Padding,
 };
 
 /// Convenient downcasting from Packets to Packet Bodies.
@@ -136,6 +137,7 @@ impl_downcasts!(
     SEIP,
     MDC,
     AED,
+    Padding,
 );
 
 
