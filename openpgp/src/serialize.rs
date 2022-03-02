@@ -3089,7 +3089,7 @@ mod test {
 
     }
 
-    #[cfg(feature = "compression-deflate")]
+    #[cfg(feature = "compression")]
     #[test]
     fn serialize_test_2() {
         // Given a packet in serialized form:
