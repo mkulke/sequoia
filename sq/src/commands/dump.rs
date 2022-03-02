@@ -713,6 +713,12 @@ impl PacketDumper {
                 writeln!(output, "{}  IV: {}", i, hex::encode(a.iv()))?;
             },
 
+            Padding(p) => {
+                use openpgp::serialize::MarshalInto;
+                writeln!(output, "{}  Net amount: {} bytes", i,
+                         p.serialized_len())?;
+            },
+
             // openpgp::Packet is non-exhaustive.
             u => writeln!(output, "{}    Unknown variant: {:?}", i, u)?,
         }
