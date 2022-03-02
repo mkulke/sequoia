@@ -33,6 +33,7 @@ pub use crate::packet::{
     OnePassSig,
     PKESK,
     Packet,
+    Padding,
     SEIP,
     SKESK,
     Signature,
