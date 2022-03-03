@@ -4240,7 +4240,16 @@ impl <'a> PacketParser<'a> {
                 Err(Error::MalformedPacket("Looks like garbage".into()).into()),
 
             Tag::Marker => Marker::plausible(bio, header),
-            Tag::Padding => Ok(()),
+            Tag::Padding => {
+                // Even though a padding packet may occur here, it has
+                // so little structure, that we're likely better off
+                // trying to find the next packet.
+                //
+                // XXX: We could optimize that though, by using the
+                // potential padding packet's length to see if the
+                // next packet is plausible.
+                bad
+            },
             Tag::Signature => Signature::plausible(bio, header),
 
             Tag::SecretKey => Key::plausible(bio, header),
