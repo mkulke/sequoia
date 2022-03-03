@@ -464,7 +464,7 @@ impl SKESK5 {
         let ad = [0xc3, 5, esk_algo.into(), esk_aead.into()];
         ctx.update(&ad)?;
 
-        // We need to prefix the cipher specifier to the session key.
+        // Encrypt the session key with the KEK.
         let mut esk = vec![0u8; session_key.len()];
         ctx.encrypt(&mut esk, session_key)?;
 
