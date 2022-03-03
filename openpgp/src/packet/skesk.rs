@@ -12,7 +12,13 @@ use std::ops::{Deref, DerefMut};
 use quickcheck::{Arbitrary, Gen};
 
 use crate::Result;
-use crate::crypto::{self, S2K, Password, SessionKey};
+use crate::crypto::{
+    self,
+    S2K,
+    Password,
+    SessionKey,
+    hkdf_sha256,
+};
 use crate::crypto::aead::CipherOp;
 use crate::Error;
 use crate::types::{
@@ -455,13 +461,17 @@ impl SKESK5 {
         }
 
         // Derive key and make a cipher.
+        let ad = [0xc3, 5, esk_algo.into(), esk_aead.into()];
         let key = s2k.derive_key(password, esk_algo.key_size()?)?;
+
+        let mut kek: SessionKey = vec![0; esk_algo.key_size()?].into();
+        hkdf_sha256(&key, None, &ad, &mut kek);
+
         let mut iv = vec![0u8; esk_aead.nonce_size()?];
         crypto::random(&mut iv);
-        let mut ctx = esk_aead.context(esk_algo, &key, &iv, CipherOp::Encrypt)?;
+        let mut ctx = esk_aead.context(esk_algo, &kek, &iv, CipherOp::Encrypt)?;
 
         // Prepare associated data.
-        let ad = [0xc3, 5, esk_algo.into(), esk_aead.into()];
         ctx.update(&ad)?;
 
         // Encrypt the session key with the KEK.
@@ -493,12 +503,18 @@ impl SKESK5 {
                                         self.symmetric_algo().key_size()?)?;
 
         if let Some(esk) = self.esk()? {
+            let mut kek: SessionKey =
+                vec![0; self.symmetric_algo().key_size()?].into();
+            let ad = [0xc3,
+                      5 /* Version.  */,
+                      self.symmetric_algo().into(),
+                      self.aead_algo.into()];
+            hkdf_sha256(&key, None, &ad, &mut kek);
+
             // Use the derived key to decrypt the ESK.
             let mut cipher = self.aead_algo.context(
-                self.symmetric_algo(), &key, self.aead_iv()?, CipherOp::Decrypt)?;
+                self.symmetric_algo(), &kek, self.aead_iv()?, CipherOp::Decrypt)?;
 
-            let ad = [0xc3, 5 /* Version.  */, self.symmetric_algo().into(),
-                      self.aead_algo.into()];
             cipher.update(&ad)?;
             let mut plain: SessionKey = vec![0; esk.len()].into();
             cipher.decrypt_verify(&mut plain, esk, &self.aead_digest[..])?;
@@ -600,7 +616,9 @@ mod test {
         }
     }
 
-    #[test]
+    // XXX this is outdated
+    //#[test]
+    #[allow(dead_code)]
     fn sample_skesk5_packet() {
         // This sample packet is from RFC4880bis-05, section A.3.
         let password: Password = String::from("password").into();
