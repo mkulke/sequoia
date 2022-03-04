@@ -258,10 +258,9 @@ impl SEIPv2Schedule {
                 format!("Invalid AEAD chunk size: {}", chunk_size)).into());
         }
 
-        eprintln!("## Sample AEAD-{:?} encryption and decryption\n\n", aead);
+        eprintln!("### Decryption of data
 
-        dump_rfc("Session key", session_key);
-        dump_rfc("Salt", salt);
+Starting AEAD-{:?} decryption of data, using the session key.\n", aead);
 
         // Derive the message key and initialization vector.
         let key_size = sym_algo.key_size()?;
@@ -305,6 +304,7 @@ impl Schedule for SEIPv2Schedule {
         nonce[..self.iv.len()].copy_from_slice(&self.iv);
         nonce[self.iv.len()..].copy_from_slice(&index_be);
 
+        eprintln!("Chunk #{}:\n", index);
         dump_rfc("Nonce", &nonce);
         dump_rfc("Additional authenticated data", &self.ad);
 
@@ -328,6 +328,7 @@ impl Schedule for SEIPv2Schedule {
         nonce[..self.iv.len()].copy_from_slice(&self.iv);
         nonce[self.iv.len()..].copy_from_slice(&index_be);
 
+        eprintln!("Authenticating final tag:\n");
         dump_rfc("Final nonce", &nonce);
         dump_rfc("Final additional authenticated data", &ad);
 
@@ -514,8 +515,17 @@ impl<'a, S: Schedule> Decryptor<'a, S> {
                     &mut plaintext[pos..pos + to_decrypt]
                 };
 
+
                 self.schedule.dump_rfc("Encrypted data chunk", &chunk[..to_decrypt]);
                 aead.decrypt_verify(buffer, &chunk[..to_decrypt], &chunk[to_decrypt..])?;
+
+                if buffer.len() == 0x25 {
+                    eprintln!("Decrypted chunk #0.\n");
+                    self.schedule.dump_rfc("Literal data packet with the string contents `Hello, world!`",
+                                           &buffer[..0x15]);
+                    self.schedule.dump_rfc("Padding packet",
+                                           &buffer[0x15..]);
+                }
 
                 if double_buffer {
                     let to_copy = plaintext.len() - pos;
