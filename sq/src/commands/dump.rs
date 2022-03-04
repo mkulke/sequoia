@@ -683,16 +683,10 @@ impl PacketDumper {
                                  s.aead_algo())?;
                         write!(output, "{}  S2K: ", i)?;
                         self.dump_s2k(output, i, s.s2k())?;
-                        if let Ok(iv) = s.aead_iv() {
-                            writeln!(output, "{}  IV: {}", i,
-                                     hex::encode(iv))?;
-                        }
-                        if let Ok(Some(esk)) = s.esk() {
-                            writeln!(output, "{}  ESK: {}", i,
-                                     hex::encode(esk))?;
-                        }
-                        writeln!(output, "{}  Digest: {}", i,
-                                 hex::encode(s.aead_digest()))?;
+                        writeln!(output, "{}  IV: {}", i,
+                                 hex::encode(s.aead_iv()))?;
+                        writeln!(output, "{}  ESK: {}", i,
+                                 hex::encode(s.esk()))?;
                     },
 
                     // SKESK is non-exhaustive.
