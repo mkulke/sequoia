@@ -2366,15 +2366,22 @@ impl MarshalInto for SKESK4 {
 impl seal::Sealed for SKESK5 {}
 impl Marshal for SKESK5 {
     fn serialize(&self, o: &mut dyn std::io::Write) -> Result<()> {
+        let s2k_len = self.s2k().serialized_len();
+
         write_byte(o, 5)?; // Version.
+        // Parameter octet count.
+        write_byte(o, (1   // Symmetric algorithm.
+                       + 1 // AEAD mode.
+                       + 1 // S2K octet count.
+                       + s2k_len
+                       + self.aead_iv().len()) as u8)?;
         write_byte(o, self.symmetric_algo().into())?;
         write_byte(o, self.aead_algo().into())?;
+        // S2K octet count.
+        write_byte(o, s2k_len as u8)?;
         self.s2k().serialize(o)?;
-        if let Ok(iv) = self.aead_iv() {
-            o.write_all(iv)?;
-        }
-        o.write_all(self.raw_esk())?;
-        o.write_all(self.aead_digest())?;
+        o.write_all(self.aead_iv())?;
+        o.write_all(self.esk())?;
 
         Ok(())
     }
@@ -2383,12 +2390,13 @@ impl Marshal for SKESK5 {
 impl NetLength for SKESK5 {
     fn net_len(&self) -> usize {
         1 // Version.
+            + 1 // Parameter octet count.
             + 1 // Cipher algo.
             + 1 // AEAD algo.
+            + 1 // S2K octet count.
             + self.s2k().serialized_len()
-            + self.aead_iv().map(|iv| iv.len()).unwrap_or(0)
-            + self.raw_esk().len()
-            + self.aead_digest().len()
+            + self.aead_iv().len()
+            + self.esk().len()
     }
 }
 
