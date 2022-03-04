@@ -27,6 +27,7 @@ use crate::types::{
 };
 use crate::packet::{self, SKESK};
 use crate::Packet;
+use crate::fmt::hex::dump_rfc;
 
 impl SKESK {
     /// Derives the key inside this SKESK from `password`. Returns a
@@ -388,7 +389,6 @@ impl SKESK5 {
                 session_key.len(), payload_algo.key_size()?)).into());
         }
 
-        use crate::fmt::hex::dump_rfc;
         eprintln!("### Sample Parameters\n");
         eprintln!("S2K: {:?}\n", &s2k);
         if let crate::crypto::S2K::Iterated { salt, .. } = &s2k {
@@ -446,6 +446,7 @@ impl SKESK5 {
                    -> Result<(SymmetricAlgorithm, SessionKey)> {
         let key = self.s2k().derive_key(password,
                                         self.symmetric_algo().key_size()?)?;
+        dump_rfc("The derived key is", &key);
 
         let mut kek: SessionKey =
             vec![0; self.symmetric_algo().key_size()?].into();
@@ -453,12 +454,17 @@ impl SKESK5 {
                   5 /* Version.  */,
                   self.symmetric_algo().into(),
                   self.aead_algo.into()];
+        dump_rfc("HKDF info", &ad);
         hkdf_sha256(&key, None, &ad, &mut kek);
+
+        dump_rfc("HKDF output", &kek);
 
         // Use the derived key to decrypt the ESK.
         let mut cipher = self.aead_algo.context(
             self.symmetric_algo(), &kek, self.aead_iv(),
             CipherOp::Decrypt)?;
+        dump_rfc("Authenticated Data", &ad);
+        dump_rfc("Nonce", self.aead_iv());
 
         // Split off the authentication tag.
         let digest_len = self.aead_algo.digest_size()?;
@@ -473,6 +479,7 @@ impl SKESK5 {
         cipher.digest(&mut digest);
 
         if &digest[..] == stored_digest {
+            dump_rfc("Decrypted session key", &plain);
             Ok((SymmetricAlgorithm::Unencrypted, plain))
         } else {
             Err(Error::ManipulatedMessage.into())
