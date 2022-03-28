@@ -13,6 +13,8 @@ pub(crate) type LexerItem<Tok, Loc, Error>
 /// extensions.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[deprecated(since = "1.9.0",
+             note = "Not covered by SemVer guarantees, DO NOT match on it.")]
 pub enum Token {
     /// A Literal data packet.
     Literal,
@@ -23,8 +25,8 @@ pub enum Token {
     SKESK,
     /// An PK-ESK packet.
     PKESK,
-    /// A SEIP packet.
-    SEIP,
+    /// A version 1 SEIP packet.
+    SEIPv1,
     /// An MDC packet.
     MDC,
     /// An AED packet.

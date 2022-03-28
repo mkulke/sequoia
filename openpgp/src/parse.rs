@@ -4592,7 +4592,9 @@ impl <'a> PacketParser<'a> {
                 },
                 ParserResult::Success(mut pp) => {
                     let path = pp.path().to_vec();
-                    pp.state.message_validator.push(pp.packet.tag(), &path);
+                    pp.state.message_validator.push(
+                        pp.packet.tag(), pp.packet.version(),
+                        &path);
                     pp.state.keyring_validator.push(pp.packet.tag());
                     pp.state.cert_validator.push(pp.packet.tag());
 
@@ -4680,7 +4682,9 @@ impl <'a> PacketParser<'a> {
                                self.packet.tag(), pp.packet.tag());
 
                             pp.state.message_validator.push(
-                                pp.packet.tag(), &path);
+                                pp.packet.tag(),
+                                pp.packet.version(),
+                                &path);
                             pp.state.keyring_validator.push(pp.packet.tag());
                             pp.state.cert_validator.push(pp.packet.tag());
 
@@ -4878,6 +4882,7 @@ impl <'a> PacketParser<'a> {
                     // this as opaque content to the message validator.
                     let mut path = self.path().to_vec();
                     path.push(0);
+                    #[allow(deprecated)]
                     self.state.message_validator.push_token(
                         message::Token::OpaqueContent, &path);
                 }
