@@ -74,21 +74,6 @@ pub use crate::core::{Config, Context, IPCPolicy};
 #[cfg(test)]
 mod tests;
 
-macro_rules! platform {
-    { unix => { $($unix:tt)* }, windows => { $($windows:tt)* } } => {
-        if cfg!(unix) {
-            #[cfg(unix)] { $($unix)* }
-            #[cfg(not(unix))] { unreachable!() }
-        } else if cfg!(windows) {
-            #[cfg(windows)] { $($windows)* }
-            #[cfg(not(windows))] { unreachable!() }
-        } else {
-            #[cfg(not(any(unix, windows)))] compile_error!("Unsupported platform");
-            unreachable!()
-        }
-    }
-}
-
 /// Servers need to implement this trait.
 pub trait Handler {
     /// Called on every connection.
@@ -349,7 +334,7 @@ impl Server {
     /// of the Windows Sockets API `SOCKET` value.
     pub fn serve(&mut self) -> Result<()> {
         let listener = platform! {
-            unix => { unsafe { TcpListener::from_raw_fd(0) } },
+            unix => unsafe { TcpListener::from_raw_fd(0) },
             windows => {
                 let socket = std::env::var("SOCKET")?.parse()?;
                 unsafe { TcpListener::from_raw_socket(socket) }
