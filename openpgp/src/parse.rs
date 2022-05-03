@@ -4166,7 +4166,7 @@ impl <'a> PacketParser<'a> {
         }
     }
 
-    /// Returns Ok if the data appears to be a legal packet.
+    /// Tests whether the data appears to be a legal cert packet.
     ///
     /// This is just a heuristic.  It can be used for recovering from
     /// garbage.
@@ -4183,7 +4183,7 @@ impl <'a> PacketParser<'a> {
     ///
     /// Currently, we only try to recover the most interesting
     /// packets.
-    fn plausible<T: BufferedReader<Cookie>>(
+    fn plausible_cert<T: BufferedReader<Cookie>>(
         bio: &mut buffered_reader::Dup<T, Cookie>, header: &Header)
                  -> Result<()> {
         let bad = Err(
@@ -4278,7 +4278,7 @@ impl <'a> PacketParser<'a> {
                         break;
                     }
 
-                    match Self::plausible(&mut bio, &header_) {
+                    match Self::plausible_cert(&mut bio, &header_) {
                         Ok(()) => {
                             header = header_;
                             break;
@@ -5229,12 +5229,26 @@ impl<'a> PacketParser<'a> {
     ///
     /// This functions returns rich errors in case the decryption
     /// fails.  In combination with certain asymmetric algorithms
-    /// (RSA), this may lead to compromise of secret key material.
-    /// See [Section 14 of RFC 4880].  Do not relay these errors in
-    /// situations where an attacker can request decryption of
-    /// messages in an automated fashion.
+    /// (RSA), this may lead to compromise of secret key material or
+    /// (partial) recovery of the message's plain text.  See [Section
+    /// 14 of RFC 4880].
     ///
     ///   [Section 14 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-14
+    ///
+    /// DO NOT relay these errors in situations where an attacker can
+    /// request decryption of messages in an automated fashion.  The
+    /// API of the streaming [`Decryptor`] prevents leaking rich
+    /// decryption errors.
+    ///
+    ///   [`Decryptor`]: stream::Decryptor
+    ///
+    /// Nevertheless, decrypting messages that do not use an
+    /// authenticated encryption mode in an automated fashion that
+    /// relays or leaks information to a third party is NEVER SAFE due
+    /// to unavoidable format oracles, see [Format Oracles on
+    /// OpenPGP].
+    ///
+    ///   [Format Oracles on OpenPGP]: https://www.ssi.gouv.fr/uploads/2015/05/format-Oracles-on-OpenPGP.pdf
     pub fn decrypt(&mut self, algo: SymmetricAlgorithm, key: &SessionKey)
         -> Result<()>
     {
@@ -5272,10 +5286,7 @@ impl<'a> PacketParser<'a> {
                     if !(header[bl - 2] == header[bl]
                          && header[bl - 1] == header[bl + 1]) {
                         return Err(Error::InvalidSessionKey(
-                            format!(
-                                "Last two 16-bit quantities don't match: {}",
-                                crate::fmt::to_hex(&header[..], false)))
-                                   .into());
+                            "Decryption failed".into()).into());
                     }
                 }
 
