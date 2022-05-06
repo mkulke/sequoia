@@ -24,7 +24,7 @@
 //! use openpgp::armor::{Reader, ReaderMode, Kind};
 //!
 //! let mut file = File::open("somefile.asc")?;
-//! let mut r = Reader::new(&mut file, ReaderMode::Tolerant(Some(Kind::File)));
+//! let mut r = Reader::from_reader(&mut file, ReaderMode::Tolerant(Some(Kind::File)));
 //! # Ok(()) }
 //! ```
 
@@ -607,6 +607,21 @@ impl Default for CSFTransformer {
 impl<'a> Reader<'a> {
     /// Constructs a new filter for the given type of data.
     ///
+    /// This function is deprecated and will be removed in version
+    /// 2.0. Please use [`Reader::from_reader`][].
+    #[deprecated = "Use Reader::from_reader. `new` will be removed in version 2.0"]
+    pub fn new<R, M>(inner: R, mode: M) -> Self
+        where R: 'a + Read + Send + Sync,
+              M: Into<Option<ReaderMode>>
+    {
+        Self::from_buffered_reader(
+            Box::new(buffered_reader::Generic::with_cookie(inner, None,
+                                                           Default::default())),
+            mode, Default::default())
+    }
+
+    /// Constructs a new `Reader` from the given `io::Read`er.
+    ///
     /// [ASCII Armor], designed to protect OpenPGP data in transit,
     /// has been a source of problems if the armor structure is
     /// damaged.  For example, copying data manually from one program
@@ -636,7 +651,7 @@ impl<'a> Reader<'a> {
     /// let data = "yxJiAAAAAABIZWxsbyB3b3JsZCE="; // base64 over literal data packet
     ///
     /// let mut cursor = io::Cursor::new(&data);
-    /// let mut reader = Reader::new(&mut cursor, ReaderMode::VeryTolerant);
+    /// let mut reader = Reader::from_reader(&mut cursor, ReaderMode::VeryTolerant);
     ///
     /// let mut buf = Vec::new();
     /// reader.read_to_end(&mut buf)?;
@@ -664,7 +679,7 @@ impl<'a> Reader<'a> {
     ///      -----END PGP ARMORED FILE-----";
     ///
     /// let mut cursor = io::Cursor::new(&data);
-    /// let mut reader = Reader::new(&mut cursor, ReaderMode::Tolerant(Some(Kind::File)));
+    /// let mut reader = Reader::from_reader(&mut cursor, ReaderMode::Tolerant(Some(Kind::File)));
     ///
     /// let mut content = String::new();
     /// reader.read_to_string(&mut content)?;
@@ -673,17 +688,6 @@ impl<'a> Reader<'a> {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn new<R, M>(inner: R, mode: M) -> Self
-        where R: 'a + Read + Send + Sync,
-              M: Into<Option<ReaderMode>>
-    {
-        Self::from_buffered_reader(
-            Box::new(buffered_reader::Generic::with_cookie(inner, None,
-                                                           Default::default())),
-            mode, Default::default())
-    }
-
-    /// Creates a `Reader` from an `io::Read`er.
     pub fn from_reader<R, M>(reader: R, mode: M) -> Self
         where R: 'a + Read + Send + Sync,
               M: Into<Option<ReaderMode>>
@@ -791,7 +795,7 @@ impl<'a> Reader<'a> {
     ///      -----END PGP ARMORED FILE-----";
     ///
     /// let mut cursor = io::Cursor::new(&data);
-    /// let mut reader = Reader::new(&mut cursor, ReaderMode::Tolerant(Some(Kind::File)));
+    /// let mut reader = Reader::from_reader(&mut cursor, ReaderMode::Tolerant(Some(Kind::File)));
     ///
     /// let mut content = String::new();
     /// reader.read_to_string(&mut content)?;
@@ -1170,8 +1174,8 @@ impl<'a> Reader<'a> {
             //     of data.
             //
             //     Note: this happens if the caller does `for c in
-            //     Reader::new(...).bytes() ...`.  Then it reads one
-            //     byte of decoded data at a time.
+            //     Reader::from_reader(...).bytes() ...`.  Then it
+            //     reads one byte of decoded data at a time.
             //
             //   - Small: if the caller only requests a few bytes at a
             //     time, we may as well double buffer to reduce
@@ -1868,7 +1872,7 @@ mod test {
                           LITERAL_NO_HEADER_WITH_CHKSUM_ASC[i],
                           LITERAL_NO_HEADER_ASC[i],
                           LITERAL_NO_NEWLINES_ASC[i]] {
-                let mut r = Reader::new(Cursor::new(test),
+                let mut r = Reader::from_reader(Cursor::new(test),
                                         ReaderMode::VeryTolerant);
                 let mut dearmored = Vec::<u8>::new();
                 r.read_to_end(&mut dearmored).unwrap();
@@ -1881,7 +1885,7 @@ mod test {
     #[test]
     fn dearmor_binary() {
         for bin in TEST_BIN.iter() {
-            let mut r = Reader::new(
+            let mut r = Reader::from_reader(
                 Cursor::new(bin), ReaderMode::Tolerant(Some(Kind::Message)));
             let mut buf = [0; 5];
             let e = r.read(&mut buf);
@@ -1891,7 +1895,7 @@ mod test {
 
     #[test]
     fn dearmor_wrong_kind() {
-        let mut r = Reader::new(
+        let mut r = Reader::from_reader(
             Cursor::new(&include_bytes!("../tests/data/armor/test-0.asc")[..]),
             ReaderMode::Tolerant(Some(Kind::Message)));
         let mut buf = [0; 5];
@@ -1901,7 +1905,7 @@ mod test {
 
     #[test]
     fn dearmor_wrong_crc() {
-        let mut r = Reader::new(
+        let mut r = Reader::from_reader(
             Cursor::new(
                 &include_bytes!("../tests/data/armor/test-0.bad-crc.asc")[..]),
             ReaderMode::Tolerant(Some(Kind::File)));
@@ -1917,7 +1921,7 @@ mod test {
 
     #[test]
     fn dearmor_wrong_footer() {
-        let mut r = Reader::new(
+        let mut r = Reader::from_reader(
             Cursor::new(
                 &include_bytes!("../tests/data/armor/test-2.bad-footer.asc")[..]
             ),
@@ -1936,7 +1940,7 @@ mod test {
 
     #[test]
     fn dearmor_no_crc() {
-        let mut r = Reader::new(
+        let mut r = Reader::from_reader(
             Cursor::new(
                 &include_bytes!("../tests/data/armor/test-1.no-crc.asc")[..]),
             ReaderMode::Tolerant(Some(Kind::File)));
@@ -1947,7 +1951,7 @@ mod test {
 
     #[test]
     fn dearmor_with_header() {
-        let mut r = Reader::new(
+        let mut r = Reader::from_reader(
             Cursor::new(
                 &include_bytes!("../tests/data/armor/test-3.with-headers.asc")[..]
             ),
@@ -1964,7 +1968,7 @@ mod test {
 
     #[test]
     fn dearmor_any() {
-        let mut r = Reader::new(
+        let mut r = Reader::from_reader(
             Cursor::new(
                 &include_bytes!("../tests/data/armor/test-3.with-headers.asc")[..]
             ),
@@ -1984,7 +1988,7 @@ mod test {
         // Slap some garbage in front and make sure it still reads ok.
         let mut b: Vec<u8> = "Some\ngarbage\nlines\n\t\r  ".into();
         b.extend_from_slice(armored);
-        let mut r = Reader::new(Cursor::new(b), ReaderMode::VeryTolerant);
+        let mut r = Reader::from_reader(Cursor::new(b), ReaderMode::VeryTolerant);
         let mut buf = [0; 5];
         let e = r.read(&mut buf);
         assert_eq!(r.kind(), Some(Kind::File));
@@ -1996,7 +2000,7 @@ mod test {
         // line of the header.
         let mut b: Vec<u8> = "Some\ngarbage\nlines\n\t.\r  ".into();
         b.extend_from_slice(armored);
-        let mut r = Reader::new(Cursor::new(b), ReaderMode::VeryTolerant);
+        let mut r = Reader::from_reader(Cursor::new(b), ReaderMode::VeryTolerant);
         let mut buf = [0; 5];
         let e = r.read(&mut buf);
         assert!(e.is_err());
@@ -2005,7 +2009,7 @@ mod test {
     #[test]
     fn dearmor() {
         for (bin, asc) in TEST_BIN.iter().zip(TEST_ASC.iter()) {
-            let mut r = Reader::new(
+            let mut r = Reader::from_reader(
                 Cursor::new(asc),
                 ReaderMode::Tolerant(Some(Kind::File)));
             let mut dearmored = Vec::<u8>::new();
@@ -2018,7 +2022,7 @@ mod test {
     #[test]
     fn dearmor_bytewise() {
         for (bin, asc) in TEST_BIN.iter().zip(TEST_ASC.iter()) {
-            let r = Reader::new(
+            let r = Reader::from_reader(
                 Cursor::new(asc),
                 ReaderMode::Tolerant(Some(Kind::File)));
             let mut dearmored = Vec::<u8>::new();
@@ -2033,12 +2037,12 @@ mod test {
     #[test]
     fn dearmor_yuge() {
         let yuge_key = crate::tests::key("yuge-key-so-yuge-the-yugest.asc");
-        let mut r = Reader::new(Cursor::new(yuge_key),
+        let mut r = Reader::from_reader(Cursor::new(yuge_key),
                                 ReaderMode::VeryTolerant);
         let mut dearmored = Vec::<u8>::new();
         r.read_to_end(&mut dearmored).unwrap();
 
-        let r = Reader::new(Cursor::new(yuge_key),
+        let r = Reader::from_reader(Cursor::new(yuge_key),
                             ReaderMode::VeryTolerant);
         let mut dearmored = Vec::<u8>::new();
         for c in r.bytes() {
@@ -2048,7 +2052,7 @@ mod test {
 
     #[test]
     fn dearmor_quoted() {
-        let mut r = Reader::new(
+        let mut r = Reader::from_reader(
             Cursor::new(
                 &include_bytes!("../tests/data/armor/test-3.with-headers-quoted.asc")[..]
             ),
@@ -2063,7 +2067,7 @@ mod test {
 
     #[test]
     fn dearmor_quoted_stripped() {
-        let mut r = Reader::new(
+        let mut r = Reader::from_reader(
             Cursor::new(
                 &include_bytes!("../tests/data/armor/test-3.with-headers-quoted-stripped.asc")[..]
             ),
@@ -2078,7 +2082,7 @@ mod test {
 
     #[test]
     fn dearmor_quoted_a_lot() {
-        let mut r = Reader::new(
+        let mut r = Reader::from_reader(
             Cursor::new(
                 &include_bytes!("../tests/data/armor/test-3.with-headers-quoted-a-lot.asc")[..]
             ),
@@ -2093,7 +2097,7 @@ mod test {
 
     #[test]
     fn dearmor_quoted_badly() {
-        let mut r = Reader::new(
+        let mut r = Reader::from_reader(
             Cursor::new(
                 &include_bytes!("../tests/data/armor/test-3.with-headers-quoted-badly.asc")[..]
             ),
@@ -2117,13 +2121,13 @@ mod test {
             let encoded = w.finalize().unwrap();
 
             let mut recovered = Vec::new();
-            Reader::new(Cursor::new(&encoded),
+            Reader::from_reader(Cursor::new(&encoded),
                         ReaderMode::Tolerant(Some(kind)))
                 .read_to_end(&mut recovered)
                 .unwrap();
 
             let mut recovered_any = Vec::new();
-            Reader::new(Cursor::new(&encoded), ReaderMode::VeryTolerant)
+            Reader::from_reader(Cursor::new(&encoded), ReaderMode::VeryTolerant)
                 .read_to_end(&mut recovered_any)
                 .unwrap();
 
