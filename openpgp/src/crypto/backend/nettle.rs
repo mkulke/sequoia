@@ -10,17 +10,16 @@ pub mod ecdh;
 pub mod hash;
 pub mod symmetric;
 
+/// Returns a short, human-readable description of the backend.
+pub fn backend() -> String {
+    // XXX: Once we depend on nettle-rs 7.1, add cv448 feature
+    // XXX: Once we depend on nettle-rs 7.2, add nettle::version
+    "Nettle".to_string()
+}
+
 /// Fills the given buffer with random data.
-///
-/// Fills the given buffer with random data produced by a
-/// cryptographically secure pseudorandom number generator (CSPRNG).
-/// The output may be used as session keys or to derive long-term
-/// cryptographic keys from.  However, to create session keys,
-/// consider using [`SessionKey::new`].
-///
-///   [`SessionKey::new`]: crate::crypto::SessionKey::new()
-pub fn random<B: AsMut<[u8]>>(mut buf: B) {
-    Yarrow::default().random(buf.as_mut());
+pub fn random(buf: &mut [u8]) {
+    Yarrow::default().random(buf);
 }
 
 impl PublicKeyAlgorithm {
