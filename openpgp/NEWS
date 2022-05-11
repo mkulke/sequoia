@@ -4,10 +4,12 @@
 
 * Changes in 1.9.0
 ** New functionality
+   - packet::Any
    - Packet::version
    - SignatureBuilder::set_reference_time
    - SignatureBuilder::effective_signature_creation_time
 ** Deprecated functionality
+   - armor::Reader::new, use armor::Reader::from_reader instead
    - message::Token is not covered by SemVer guarantees, DO NOT match on it
 * Changes in 1.8.0
 ** New functionality
