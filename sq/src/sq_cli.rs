@@ -1,6 +1,7 @@
 /// Command-line parser for sq.
 
 use clap::{Command, Arg, ArgGroup};
+use clap::{Parser, CommandFactory};
 
 pub fn build() -> Command<'static> {
     configure(Command::new("sq"),
@@ -1923,7 +1924,27 @@ $ sq autocrypt encode-sender --prefer-encrypt mutual juliet.pgp
                                          attribute"))
                 )
         )
-    };
+    }
+    .subcommand(FooCommand::command())
+    .subcommand(BazCommand::command());
 
     app
+}
+
+#[derive(Parser, Debug)]
+#[clap(name = "foo")]
+#[clap(about="foo help text")]
+pub struct FooCommand {
+    /// bar flag
+    #[clap(short, long)]
+    bar: bool,
+}
+
+#[derive(Parser, Debug)]
+#[clap(name = "baz")]
+#[clap(about="baz help text")]
+pub struct BazCommand {
+    /// quux argument
+    #[clap(short, long)]
+    quux: String,
 }

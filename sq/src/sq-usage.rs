@@ -66,6 +66,10 @@
 //!             Low-level packet manipulation
 //!     revoke
 //!             Generates revocation certificates
+//!     baz
+//!             baz help text
+//!     foo
+//!             foo help text
 //!     help
 //!             Print this message or the help of the given subcommand(s)
 //! ```
@@ -2037,6 +2041,32 @@
 //!     sq revoke <SUBCOMMAND>
 //!
 //! For more information try --help
+//! ```
+//!
+//! ## Subcommand baz
+//!
+//! ```text
+//! baz help text
+//!
+//! USAGE:
+//!     sq baz --quux <QUUX>
+//!
+//! OPTIONS:
+//!     -h, --help           Print help information
+//!     -q, --quux <QUUX>    quux argument
+//! ```
+//!
+//! ## Subcommand foo
+//!
+//! ```text
+//! foo help text
+//!
+//! USAGE:
+//!     sq foo [OPTIONS]
+//!
+//! OPTIONS:
+//!     -b, --bar     bar flag
+//!     -h, --help    Print help information
 //! ```
 
 #![doc(html_favicon_url = "https://docs.sequoia-pgp.org/favicon.png")]

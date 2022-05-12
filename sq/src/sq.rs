@@ -706,6 +706,14 @@ fn main() -> Result<()> {
             commands::certify::certify(config, m)?;
         },
 
+        Some(("foo",  m)) => {
+            use clap::FromArgMatches;
+            let fc = sq_cli::FooCommand::from_arg_matches(m)?;
+            println!("hello foo :), {:?}", fc)
+        }
+        Some((_,  m)) => {
+            println!("hello :), {:?}", m)
+        }
         _ => unreachable!(),
     }
 
