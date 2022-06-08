@@ -390,6 +390,8 @@ impl Config<'_> {
     }
 }
 
+// TODO: Use `derive`d command structs. No more values_of
+// TODO: Handling (and cli position) of global arguments
 fn main() -> Result<()> {
     let policy = &mut P::new();
 
@@ -486,18 +488,20 @@ fn main() -> Result<()> {
             })?;
         },
         Some(("sign",  m)) => {
-            let mut input = open_or_stdin(m.value_of("input"))?;
-            let output = m.value_of("output");
-            let detached = m.is_present("detached");
-            let binary = m.is_present("binary");
-            let append = m.is_present("append");
-            let notarize = m.is_present("notarize");
-            let private_key_store = m.value_of("private-key-store");
-            let secrets = m.values_of("secret-key-file")
-                .map(load_certs)
-                .unwrap_or_else(|| Ok(vec![]))?;
-            let time = if let Some(time) = m.value_of("time") {
-                Some(parse_iso8601(time, chrono::NaiveTime::from_hms(0, 0, 0))
+            use clap::FromArgMatches;
+            let command = sq_cli::SignCommand::from_arg_matches(m)?;
+
+            let mut input = open_or_stdin(command.io.input.as_deref())?;
+            let output = command.io.output.as_deref();
+            let detached = command.detached;
+            let binary = command.binary;
+            let append = command.append;
+            let notarize = command.notarize;
+            let private_key_store = command.private_key_store.as_deref();
+            let secrets =
+                load_certs(command.secret_key_file.iter().map(|s| s.as_ref()))?;
+            let time = if let Some(time) = command.time {
+                Some(parse_iso8601(&time, chrono::NaiveTime::from_hms(0, 0, 0))
                          .context(format!("Bad value passed to --time: {:?}",
                                           time))?.into())
             } else {
@@ -506,7 +510,8 @@ fn main() -> Result<()> {
             // Each --notation takes two values.  The iterator
             // returns them one at a time, however.
             let mut notations: Vec<(bool, NotationData)> = Vec::new();
-            if let Some(mut n) = m.values_of("notation") {
+            if let Some(n) = command.notation {
+                let mut n = n.iter();
                 while let Some(name) = n.next() {
                     let value = n.next().unwrap();
 
@@ -514,7 +519,7 @@ fn main() -> Result<()> {
                         if let Some(name) = name.strip_prefix('!') {
                             (true, name)
                         } else {
-                            (false, name)
+                            (false, name.as_str())
                         };
 
                     notations.push(
@@ -525,12 +530,12 @@ fn main() -> Result<()> {
                 }
             }
 
-            if let Some(merge) = m.value_of("merge") {
+            if let Some(merge) = command.merge {
                 let output = config.create_or_stdout_pgp(output, binary,
                                                          armor::Kind::Message)?;
-                let mut input2 = open_or_stdin(Some(merge))?;
+                let mut input2 = open_or_stdin(Some(&merge))?;
                 commands::merge_signatures(&mut input, &mut input2, output)?;
-            } else if m.is_present("clearsign") {
+            } else if command.clearsign {
                 let output = config.create_or_stdout_safe(output)?;
                 commands::sign::clearsign(config, private_key_store, input, output, secrets,
                                           time, &notations)?;
@@ -551,27 +556,33 @@ fn main() -> Result<()> {
             }
         },
         Some(("verify",  m)) => {
-            let mut input = open_or_stdin(m.value_of("input"))?;
+            use clap::FromArgMatches;
+            let command = sq_cli::VerifyCommand::from_arg_matches(m)?;
+
+            // TODO: Fix interface of open_or_stdin, create_or_stdout_safe, etc.
+            let mut input = open_or_stdin(command.io.input.as_deref())?;
             let mut output =
-                config.create_or_stdout_safe(m.value_of("output"))?;
-            let mut detached = if let Some(f) = m.value_of("detached") {
+                config.create_or_stdout_safe(command.io.output.as_deref())?;
+            let mut detached = if let Some(f) = command.detached {
                 Some(File::open(f)?)
             } else {
                 None
             };
-            let signatures: usize =
-                m.value_of("signatures").expect("has a default").parse()?;
-            let certs = m.values_of("sender-cert-file")
-                .map(load_certs)
-                .unwrap_or_else(|| Ok(vec![]))?;
+            let signatures = command.signatures;
+            // TODO ugly adaptation to load_certs' signature, fix later
+            let certs = load_certs(command.sender_cert_file.iter().map(|s| s.as_ref()))?;
             commands::verify(config, &mut input,
                              detached.as_mut().map(|r| r as &mut (dyn io::Read + Sync + Send)),
                              &mut output, signatures, certs)?;
         },
 
+        // TODO: Extract body to commands/armor.rs
         Some(("armor", m)) => {
-            let input = open_or_stdin(m.value_of("input"))?;
-            let mut want_kind = parse_armor_kind(m.value_of("kind"));
+            use clap::FromArgMatches;
+            let command = sq_cli::ArmorCommand::from_arg_matches(m)?;
+
+            let input = open_or_stdin(command.input.as_deref())?;
+            let mut want_kind: Option<armor::Kind> = command.kind.into();
 
             // Peek at the data.  If it looks like it is armored
             // data, avoid armoring it again.
@@ -590,7 +601,7 @@ fn main() -> Result<()> {
             {
                 // It is already armored and has the correct kind.
                 let mut output =
-                    config.create_or_stdout_safe(m.value_of("output"))?;
+                    config.create_or_stdout_safe(command.output.as_deref())?;
                 io::copy(&mut input, &mut output)?;
                 return Ok(());
             }
@@ -605,7 +616,7 @@ fn main() -> Result<()> {
             let want_kind = want_kind.expect("given or detected");
 
             let mut output =
-                config.create_or_stdout_pgp(m.value_of("output"),
+                config.create_or_stdout_pgp(command.output.as_deref(),
                                             false, want_kind)?;
 
             if already_armored {
@@ -620,15 +631,21 @@ fn main() -> Result<()> {
             output.finalize()?;
         },
         Some(("dearmor",  m)) => {
-            let mut input = open_or_stdin(m.value_of("input"))?;
+            use clap::FromArgMatches;
+            let command = sq_cli::DearmorCommand::from_arg_matches(m)?;
+
+            let mut input = open_or_stdin(command.io.input.as_deref())?;
             let mut output =
-                config.create_or_stdout_safe(m.value_of("output"))?;
+                config.create_or_stdout_safe(command.io.output.as_deref())?;
             let mut filter = armor::Reader::from_reader(&mut input, None);
             io::copy(&mut filter, &mut output)?;
         },
         #[cfg(feature = "autocrypt")]
-        Some(("autocrypt", m)) => commands::autocrypt::dispatch(config, m)?,
-
+        Some(("autocrypt", m)) => {
+            use clap::FromArgMatches;
+            let command = sq_cli::autocrypt::AutocryptCommand::from_arg_matches(m)?;
+            commands::autocrypt::dispatch(config, &command)?;
+        },
         Some(("inspect",  m)) => {
             // sq inspect does not have --output, but commands::inspect does.
             // Work around this mismatch by always creating a stdout output.
