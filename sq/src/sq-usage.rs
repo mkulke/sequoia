@@ -617,7 +617,6 @@
 //! ### Subcommand key adopt
 //!
 //! ```text
-//!
 //! Binds keys from one certificate to another
 //!
 //! This command allows one to transfer primary keys and subkeys into an
@@ -916,7 +915,6 @@
 //! ## Subcommand certify
 //!
 //! ```text
-//!
 //! Certifies a User ID for a Certificate
 //!
 //! Using a certification a keyholder may vouch for the fact that another
@@ -1479,7 +1477,6 @@
 //! ### Subcommand packet decrypt
 //!
 //! ```text
-//!
 //! Unwraps an encryption container
 //!
 //! Decrypts a message, dumping the content of the encryption container
@@ -1521,7 +1518,6 @@
 //! ### Subcommand packet split
 //!
 //! ```text
-//!
 //! Splits a message into packets
 //!
 //! Splitting a packet sequence into individual packets, then recombining
@@ -1554,7 +1550,6 @@
 //! ### Subcommand packet join
 //!
 //! ```text
-//!
 //! Joins packets split across files
 //!
 //! Splitting a packet sequence into individual packets, then recombining
@@ -1598,7 +1593,6 @@
 //! ## Subcommand revoke
 //!
 //! ```text
-//!
 //! Generates revocation certificates.
 //!
 //! A revocation certificate indicates that a certificate, a subkey, a
@@ -1670,19 +1664,17 @@
 //!
 //! ARGS:
 //!     <REASON>
-//! 
 //!             The reason for the revocation.  This must be either: compromised,
 //!             superseded, retired, or unspecified:
 //! 
 //!               - compromised means that the secret key material may have been
 //!                 compromised.  Prefer this value if you suspect that the secret
-//!             key
-//!                 has been leaked.
+//!                 key has been leaked.
 //! 
 //!               - superseded means that the owner of the certificate has replaced
-//!             it
-//!                 with a new certificate.  Prefer "compromised" if the secret key
-//!                 material has been compromised even if the certificate is also
+//!                 it with a new certificate.  Prefer "compromised" if the secret
+//!                 key material has been compromised even if the certificate is
+//!             also
 //!                 being replaced!  You should include the fingerprint of the new
 //!                 certificate in the message.
 //! 
@@ -1695,8 +1687,7 @@
 //! 
 //!               - unspecified means that none of the three other three reasons
 //!                 apply.  OpenPGP implementations conservatively treat this type
-//!             of
-//!                 revocation similar to a compromised key.
+//!                 of revocation similar to a compromised key.
 //! 
 //!             If the reason happened in the past, you should specify that using
 //!             the
@@ -1708,25 +1699,20 @@
 //!             [possible values: compromised, superseded, retired, unspecified]
 //!
 //!     <MESSAGE>
-//! 
 //!             A short, explanatory text that is shown to a viewer of the
-//!             revocation
-//!             certificate.  It explains why the certificate has been revoked.  For
-//!             instance, if Alice has created a new key, she would generate a
-//!             'superseded' revocation certificate for her old key, and might
-//!             include
-//!             the message "I've created a new certificate, FINGERPRINT, please use
-//!             that in the future."
+//!             revocation certificate.  It explains why the certificate has been
+//!             revoked.  For instance, if Alice has created a new key, she would
+//!             generate a 'superseded' revocation certificate for her old key, and
+//!             might include the message "I've created a new certificate,
+//!             FINGERPRINT, please use that in the future."
 //!
 //! OPTIONS:
 //!     -B, --binary
 //!             Emits binary data
 //!
 //!         --certificate <FILE>
-//! 
 //!             Reads the certificate to revoke from FILE or stdin, if omitted.  It
-//!             is
-//!             an error for the file to contain more than one certificate.
+//!             is an error for the file to contain more than one certificate.
 //!
 //!     -h, --help
 //!             Print help information
@@ -1743,13 +1729,10 @@
 //!             Provides parameters for private key store
 //!
 //!         --revocation-key <KEY>
-//! 
 //!             Signs the revocation certificate using KEY.  If the key is different
 //!             from the certificate, this creates a third-party revocation.  If
-//!             this
-//!             option is not provided, and the certificate includes secret key
-//!             material,
-//!             then that key is used to sign the revocation certificate.
+//!             this option is not provided, and the certificate includes secret key
+//!             material, then that key is used to sign the revocation certificate.
 //!
 //!     -t, --time <TIME>
 //!             Chooses keys valid at the specified time and sets the revocation
@@ -1763,14 +1746,13 @@
 //!
 //! Creates a revocation certificate for a subkey.
 //!
-//! If "--revocation-key" is provided, then that key is used to create
-//! the signature.  If that key is different from the certificate being
-//! revoked, this creates a third-party revocation.  This is normally only
-//! useful if the owner of the certificate designated the key to be a
-//! designated revoker.
+//! If "--revocation-key" is provided, then that key is used to create the
+//! signature.  If that key is different from the certificate being revoked, this
+//! creates a third-party revocation.  This is normally only useful if the owner of
+//! the certificate designated the key to be a designated revoker.
 //!
-//! If "--revocation-key" is not provided, then the certificate must
-//! include a certification-capable key.
+//! If "--revocation-key" is not provided, then the certificate must include a
+//! certification-capable key.
 //!
 //! USAGE:
 //!     sq revoke subkey [OPTIONS] <SUBKEY> <REASON> <MESSAGE>
@@ -1778,25 +1760,21 @@
 //! ARGS:
 //!     <SUBKEY>
 //!             The subkey to revoke.  This must either be the subkey's Key ID or
-//!             its
-//!             fingerprint.
+//!             its fingerprint.
 //!
 //!     <REASON>
-//! 
 //!             The reason for the revocation.  This must be either: compromised,
 //!             superseded, retired, or unspecified:
 //! 
 //!               - compromised means that the secret key material may have been
 //!                 compromised.  Prefer this value if you suspect that the secret
-//!             key
-//!                 has been leaked.
+//!                 key has been leaked.
 //! 
 //!               - superseded means that the owner of the certificate has replaced
-//!             it
-//!                 with a new certificate.  Prefer "compromised" if the secret key
-//!                 material has been compromised even if the certificate is also
-//!                 being replaced!  You should include the fingerprint of the new
-//!                 certificate in the message.
+//!                 it with a new certificate.  Prefer "compromised" if the secret
+//!                 key material has been compromised even if the certificate is
+//!                 also being replaced!  You should include the fingerprint of the
+//!                 new certificate in the message.
 //! 
 //!               - retired means that this certificate should not be used anymore,
 //!                 and there is no replacement.  This is appropriate when someone
@@ -1807,28 +1785,22 @@
 //! 
 //!               - unspecified means that none of the three other three reasons
 //!                 apply.  OpenPGP implementations conservatively treat this type
-//!             of
-//!                 revocation similar to a compromised key.
+//!                 of revocation similar to a compromised key.
 //! 
 //!             If the reason happened in the past, you should specify that using
-//!             the
-//!             --time argument.  This allows OpenPGP implementations to more
+//!             the --time argument.  This allows OpenPGP implementations to more
 //!             accurately reason about objects whose validity depends on the
-//!             validity
-//!             of the certificate.
+//!             validity of the certificate.
 //! 
 //!             [possible values: compromised, superseded, retired, unspecified]
 //!
 //!     <MESSAGE>
-//! 
 //!             A short, explanatory text that is shown to a viewer of the
-//!             revocation
-//!             certificate.  It explains why the subkey has been revoked.  For
-//!             instance, if Alice has created a new key, she would generate a
-//!             'superseded' revocation certificate for her old key, and might
-//!             include
-//!             the message "I've created a new subkey, please use
-//!             that in the future."
+//!             revocation certificate.  It explains why the subkey has been
+//!             revoked.  For instance, if Alice has created a new key, she would
+//!             generate a 'superseded' revocation certificate for her old key, and
+//!             might include the message "I've created a new subkey, please refresh
+//!             the certificate.
 //!
 //! OPTIONS:
 //!     -B, --binary
@@ -1836,9 +1808,8 @@
 //!
 //!         --certificate <FILE>
 //!             Reads the certificate containing the subkey to revoke from FILE or
-//!             stdin,
-//!             if omitted.  It is an error for the file to contain more than one
-//!             certificate.
+//!             stdin, if omitted.  It is an error for the file to contain more than
+//!             one certificate.
 //!
 //!     -h, --help
 //!             Print help information
@@ -1855,13 +1826,10 @@
 //!             Provides parameters for private key store
 //!
 //!         --revocation-key <KEY>
-//! 
 //!             Signs the revocation certificate using KEY.  If the key is different
 //!             from the certificate, this creates a third-party revocation.  If
-//!             this
-//!             option is not provided, and the certificate includes secret key
-//!             material,
-//!             then that key is used to sign the revocation certificate.
+//!             this option is not provided, and the certificate includes secret key
+//!             material, then that key is used to sign the revocation certificate.
 //!
 //!     -t, --time <TIME>
 //!             Chooses keys valid at the specified time and sets the revocation
@@ -1871,19 +1839,17 @@
 //! ### Subcommand revoke userid
 //!
 //! ```text
-//!
 //! Revokes a User ID
 //!
 //! Creates a revocation certificate for a User ID.
 //!
-//! If "--revocation-key" is provided, then that key is used to create
-//! the signature.  If that key is different from the certificate being
-//! revoked, this creates a third-party revocation.  This is normally only
-//! useful if the owner of the certificate designated the key to be a
-//! designated revoker.
+//! If "--revocation-key" is provided, then that key is used to create the
+//! signature.  If that key is different from the certificate being revoked, this
+//! creates a third-party revocation.  This is normally only useful if the owner of
+//! the certificate designated the key to be a designated revoker.
 //!
-//! If "--revocation-key" is not provided, then the certificate must
-//! include a certification-capable key.
+//! If "--revocation-key" is not provided, then the certificate must include a
+//! certification-capable key.
 //!
 //! USAGE:
 //!     sq revoke userid [OPTIONS] <USERID> <REASON> <MESSAGE>
@@ -1892,8 +1858,7 @@
 //!     <USERID>
 //!             The User ID to revoke.  By default, this must exactly match a
 //!             self-signed User ID.  Use --force to generate a revocation
-//!             certificate
-//!             for a User ID, which is not self signed.
+//!             certificate for a User ID, which is not self signed.
 //!
 //!     <REASON>
 //!             The reason for the revocation.  This must be either: retired, or
@@ -1909,33 +1874,27 @@
 //!               - unspecified means that a different reason applies.
 //! 
 //!             If the reason happened in the past, you should specify that using
-//!             the
-//!             --time argument.  This allows OpenPGP implementations to more
+//!             the --time argument.  This allows OpenPGP implementations to more
 //!             accurately reason about objects whose validity depends on the
-//!             validity
-//!             of a User ID.
+//!             validity of a User ID.
 //! 
 //!             [possible values: retired, unspecified]
 //!
 //!     <MESSAGE>
-//! 
 //!             A short, explanatory text that is shown to a viewer of the
-//!             revocation
-//!             certificate.  It explains why the certificate has been revoked.  For
-//!             instance, if Alice has created a new key, she would generate a
-//!             'superseded' revocation certificate for her old key, and might
-//!             include
-//!             the message "I've created a new certificate, FINGERPRINT, please use
-//!             that in the future."
+//!             revocation certificate.  It explains why the certificate has been
+//!             revoked.  For instance, if Alice has created a new key, she would
+//!             generate a 'superseded' revocation certificate for her old key, and
+//!             might include the message "I've created a new certificate,
+//!             FINGERPRINT, please use that in the future."
 //!
 //! OPTIONS:
 //!     -B, --binary
 //!             Emits binary data
 //!
 //!         --certificate <FILE>
-//!             Reads the certificate to revoke from FILE or stdin,
-//!             if omitted.  It is an error for the file to contain more than one
-//!             certificate.
+//!             Reads the certificate to revoke from FILE or stdin, if omitted.  It
+//!             is an error for the file to contain more than one certificate.
 //!
 //!     -h, --help
 //!             Print help information
@@ -1952,13 +1911,10 @@
 //!             Provides parameters for private key store
 //!
 //!         --revocation-key <KEY>
-//! 
 //!             Signs the revocation certificate using KEY.  If the key is different
 //!             from the certificate, this creates a third-party revocation.  If
-//!             this
-//!             option is not provided, and the certificate includes secret key
-//!             material,
-//!             then that key is used to sign the revocation certificate.
+//!             this option is not provided, and the certificate includes secret key
+//!             material, then that key is used to sign the revocation certificate.
 //!
 //!     -t, --time <TIME>
 //!             Chooses keys valid at the specified time and sets the revocation
