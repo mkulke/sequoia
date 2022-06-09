@@ -44,8 +44,6 @@ use std::path::PathBuf;
 use anyhow::anyhow;
 use fs2::FileExt;
 
-use tokio_util::compat::Compat;
-
 use capnp_rpc::{RpcSystem, twoparty};
 use capnp_rpc::rpc_twoparty_capnp::Side;
 
@@ -78,7 +76,7 @@ mod tests;
 pub trait Handler {
     /// Called on every connection.
     fn handle(&self,
-              network: twoparty::VatNetwork<Compat<tokio::net::tcp::OwnedReadHalf>>)
+              network: capnp_rpc::twoparty::VatNetwork<tokio_util::compat::Compat<tokio::net::tcp::OwnedReadHalf>>)
               -> RpcSystem<Side>;
 }
 
@@ -143,6 +141,7 @@ impl Descriptor {
             cookie.send(&mut s)?;
 
             /* Tokioize.  */
+            s.set_nonblocking(true)?;
             let stream = tokio::net::TcpStream::from_std(s)?;
             stream.set_nodelay(true)?;
 
