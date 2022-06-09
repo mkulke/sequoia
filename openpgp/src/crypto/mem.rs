@@ -317,7 +317,7 @@ mod has_access_to_prekey {
             let mut plaintext = Vec::new();
 
             let mut decryptor =
-                aead::Decryptor::from_buffered_reader(
+                aead::Decryptor::from_cookie_reader(
                                      SYMMETRIC_ALGO,
                                      AEAD_ALGO,
                                      4096,

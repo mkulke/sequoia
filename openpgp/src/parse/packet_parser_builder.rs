@@ -102,7 +102,7 @@ impl<'a> Parse<'a, PacketParserBuilder<'a>> for PacketParserBuilder<'a> {
     /// Creates a `PacketParserBuilder` for an OpenPGP message stored
     /// in a `std::io::Read` object.
     fn from_reader<R: io::Read + 'a + Send + Sync>(reader: R) -> Result<Self> {
-        PacketParserBuilder::from_buffered_reader(
+        PacketParserBuilder::from_cookie_reader(
             Box::new(buffered_reader::Generic::with_cookie(
                 reader, None, Cookie::default())))
     }
@@ -110,14 +110,14 @@ impl<'a> Parse<'a, PacketParserBuilder<'a>> for PacketParserBuilder<'a> {
     /// Creates a `PacketParserBuilder` for an OpenPGP message stored
     /// in the file named `path`.
     fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
-        PacketParserBuilder::from_buffered_reader(
+        PacketParserBuilder::from_cookie_reader(
             Box::new(buffered_reader::File::with_cookie(path, Cookie::default())?))
     }
 
     /// Creates a `PacketParserBuilder` for an OpenPGP message stored
     /// in the specified buffer.
     fn from_bytes<D: AsRef<[u8]> + ?Sized>(data: &'a D) -> Result<PacketParserBuilder<'a>> {
-        PacketParserBuilder::from_buffered_reader(
+        PacketParserBuilder::from_cookie_reader(
             Box::new(buffered_reader::Memory::with_cookie(
                 data.as_ref(), Cookie::default())))
     }
@@ -129,7 +129,7 @@ impl<'a> PacketParserBuilder<'a> {
     //
     // Note: this clears the `level` field of the
     // `Cookie` cookie.
-    pub(crate) fn from_buffered_reader(mut bio: Box<dyn BufferedReader<Cookie> + 'a>)
+    pub(crate) fn from_cookie_reader(mut bio: Box<dyn BufferedReader<Cookie> + 'a>)
             -> Result<Self> {
         bio.cookie_mut().level = None;
         Ok(PacketParserBuilder {
@@ -435,7 +435,7 @@ impl<'a> PacketParserBuilder<'a> {
             // Add a top-level filter so that it is peeled off when
             // the packet parser is finished.  We use level -2 for that.
             self.bio =
-                armor::Reader::from_buffered_reader_csft(self.bio, Some(mode),
+                armor::Reader::from_cookie_reader_csft(self.bio, Some(mode),
                     Cookie::new(ARMOR_READER_LEVEL), self.csf_transformation)
                 .as_boxed();
         }

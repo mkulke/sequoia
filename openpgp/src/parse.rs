@@ -3823,9 +3823,9 @@ impl <'a> PacketParser<'a> {
     ///
     /// This function returns a `PacketParser` for the first packet in
     /// the stream.
-    pub(crate) fn from_buffered_reader(bio: Box<dyn BufferedReader<Cookie> + 'a>)
+    pub(crate) fn from_cookie_reader(bio: Box<dyn BufferedReader<Cookie> + 'a>)
             -> Result<PacketParserResult<'a>> {
-        PacketParserBuilder::from_buffered_reader(bio)?.build()
+        PacketParserBuilder::from_cookie_reader(bio)?.build()
     }
 
     /// Returns the reader stack, replacing it with a

@@ -268,13 +268,13 @@ impl<'a, S: Schedule> Decryptor<'a, S> {
         -> Result<Self>
         where R: io::Read + Send + Sync + 'a
     {
-        Self::from_buffered_reader(
+        Self::from_cookie_reader(
             sym_algo, aead, chunk_size, schedule, key,
             Box::new(buffered_reader::Generic::with_cookie(
                 source, None, Default::default())))
     }
 
-    pub fn from_buffered_reader(sym_algo: SymmetricAlgorithm,
+    pub fn from_cookie_reader(sym_algo: SymmetricAlgorithm,
                             aead: AEADAlgorithm, chunk_size: usize,
                             schedule: S, key: SessionKey,
                             source: Box<dyn 'a + BufferedReader<Cookie>>)
@@ -521,7 +521,7 @@ impl<'a, S: Schedule> BufferedReaderDecryptor<'a, S> {
     {
         Ok(BufferedReaderDecryptor {
             reader: buffered_reader::Generic::with_cookie(
-                Decryptor::from_buffered_reader(
+                Decryptor::from_cookie_reader(
                     sym_algo, aead, chunk_size, schedule, key, source)?,
                 None, cookie),
         })

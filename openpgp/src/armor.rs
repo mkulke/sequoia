@@ -614,7 +614,7 @@ impl<'a> Reader<'a> {
         where R: 'a + Read + Send + Sync,
               M: Into<Option<ReaderMode>>
     {
-        Self::from_buffered_reader(
+        Self::from_cookie_reader(
             Box::new(buffered_reader::Generic::with_cookie(inner, None,
                                                            Default::default())),
             mode, Default::default())
@@ -696,7 +696,7 @@ impl<'a> Reader<'a> {
         where R: 'a + Read + Send + Sync,
               M: Into<Option<ReaderMode>>
     {
-        Self::from_buffered_reader(
+        Self::from_cookie_reader(
             Box::new(buffered_reader::Generic::with_cookie(reader, None,
                                                            Default::default())),
             mode, Default::default())
@@ -707,7 +707,7 @@ impl<'a> Reader<'a> {
         where P: AsRef<Path>,
               M: Into<Option<ReaderMode>>
     {
-        Ok(Self::from_buffered_reader(
+        Ok(Self::from_cookie_reader(
             Box::new(buffered_reader::File::with_cookie(path,
                                                         Default::default())?),
             mode, Default::default()))
@@ -717,21 +717,21 @@ impl<'a> Reader<'a> {
     pub fn from_bytes<M>(bytes: &'a [u8], mode: M) -> Self
         where M: Into<Option<ReaderMode>>
     {
-        Self::from_buffered_reader(
+        Self::from_cookie_reader(
             Box::new(buffered_reader::Memory::with_cookie(bytes,
                                                           Default::default())),
             mode, Default::default())
     }
 
-    pub(crate) fn from_buffered_reader<M>(
+    pub(crate) fn from_cookie_reader<M>(
         inner: Box<dyn BufferedReader<Cookie> + 'a>, mode: M, cookie: Cookie)
         -> Self
         where M: Into<Option<ReaderMode>>
     {
-        Self::from_buffered_reader_csft(inner, mode.into(), cookie, false)
+        Self::from_cookie_reader_csft(inner, mode.into(), cookie, false)
     }
 
-    pub(crate) fn from_buffered_reader_csft(
+    pub(crate) fn from_cookie_reader_csft(
         inner: Box<dyn BufferedReader<Cookie> + 'a>,
         mode: Option<ReaderMode>,
         cookie: Cookie,
@@ -2263,7 +2263,7 @@ mod test {
         fn f<R>(clearsig: &[u8], reference: R) -> crate::Result<()>
         where R: AsRef<[u8]>
         {
-            let mut reader = Reader::from_buffered_reader_csft(
+            let mut reader = Reader::from_cookie_reader_csft(
                 Box::new(buffered_reader::Memory::with_cookie(
                     clearsig, Default::default())),
                 None, Default::default(), true);
@@ -2293,7 +2293,7 @@ mod test {
 
             // If we parse it without enabling the CSF transformation,
             // we should only find the signature.
-            let mut reader = Reader::from_buffered_reader_csft(
+            let mut reader = Reader::from_cookie_reader_csft(
                 Box::new(buffered_reader::Memory::with_cookie(
                     clearsig, Default::default())),
                 None, Default::default(), false);

@@ -1223,7 +1223,7 @@ impl<'a> VerifierBuilder<'a> {
         // Do not eagerly map `t` to the current time.
         let t = time.into();
         Ok(Verifier {
-            decryptor: Decryptor::from_buffered_reader(
+            decryptor: Decryptor::from_cookie_reader(
                 policy,
                 self.message,
                 NoDecryptionHelper { v: helper, },
@@ -1569,7 +1569,7 @@ impl<'a> DetachedVerifierBuilder<'a> {
         // Do not eagerly map `t` to the current time.
         let t = time.into();
         Ok(DetachedVerifier {
-            decryptor: Decryptor::from_buffered_reader(
+            decryptor: Decryptor::from_cookie_reader(
                 policy,
                 self.signatures,
                 NoDecryptionHelper { v: helper, },
@@ -2011,7 +2011,7 @@ impl<'a> DecryptorBuilder<'a> {
     {
         // Do not eagerly map `t` to the current time.
         let t = time.into();
-        Decryptor::from_buffered_reader(
+        Decryptor::from_cookie_reader(
             policy,
             self.message,
             helper,
@@ -2286,7 +2286,7 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
 
     /// Creates the `Decryptor`, and buffers the data up to `buffer_size`.
     #[allow(clippy::redundant_pattern_matching)]
-    fn from_buffered_reader<T>(
+    fn from_cookie_reader<T>(
         policy: &'a dyn Policy,
         bio: Box<dyn BufferedReader<Cookie> + 'a>,
         helper: H, time: T,
@@ -2298,7 +2298,7 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
         -> Result<Decryptor<'a, H>>
         where T: Into<Option<time::SystemTime>>
     {
-        tracer!(TRACE, "Decryptor::from_buffered_reader", TRACE_INDENT);
+        tracer!(TRACE, "Decryptor::from_cookie_reader", TRACE_INDENT);
 
         let time = time.into();
         let tolerance = time
@@ -2307,7 +2307,7 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                 *crate::packet::signature::subpacket::CLOCK_SKEW_TOLERANCE);
         let time = time.unwrap_or_else(crate::now);
 
-        let mut ppr = PacketParserBuilder::from_buffered_reader(bio)?
+        let mut ppr = PacketParserBuilder::from_cookie_reader(bio)?
             .map(mapping)
             .csf_transformation(csf_transformation)
             .build()?;

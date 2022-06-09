@@ -506,7 +506,7 @@ impl<'a> From<PacketParserResult<'a>> for CertParser<'a>
                 Box::new(std::iter::from_fn(move || {
                     if let Some(reader) = retry_with_reader.take() {
                         // Try to find the next (armored) blob.
-                        match PacketParser::from_buffered_reader(reader) {
+                        match PacketParser::from_cookie_reader(reader) {
                             Ok(PacketParserResult::Some(pp)) => {
                                 // We read at least one packet.  Try
                                 // to parse the next cert.

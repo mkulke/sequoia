@@ -60,14 +60,14 @@ impl<'a> Decryptor<'a> {
     where
         R: io::Read + Send + Sync + 'a,
     {
-        Self::from_buffered_reader(
+        Self::from_cookie_reader(
             algo, key,
             Box::new(buffered_reader::Generic::with_cookie(
                 source, None, Default::default())))
     }
 
     /// Instantiate a new symmetric decryptor.
-    fn from_buffered_reader(algo: SymmetricAlgorithm, key: &[u8],
+    fn from_cookie_reader(algo: SymmetricAlgorithm, key: &[u8],
                             source: Box<dyn BufferedReader<Cookie> + 'a>)
                             -> Result<Self>
     {
@@ -182,7 +182,7 @@ impl<'a> BufferedReaderDecryptor<'a> {
     {
         Ok(BufferedReaderDecryptor {
             reader: buffered_reader::Generic::with_cookie(
-                Decryptor::from_buffered_reader(algo, key, reader)?,
+                Decryptor::from_cookie_reader(algo, key, reader)?,
                 None, cookie),
         })
     }
