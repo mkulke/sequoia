@@ -871,6 +871,17 @@ pub trait BufferedReader<C> : io::Read + fmt::Debug + fmt::Display + Send + Sync
     fn into_inner<'a>(self: Box<Self>) -> Option<Box<dyn BufferedReader<C> + 'a>>
         where Self: 'a;
 
+    /// Returns a mutable reference.
+    ///
+    /// Returns a [`Mut`] that holds a mutable reference to this
+    /// [`BufferedReader`].
+    fn as_mut_reader<'a>(&'a mut self) -> Mut<'a, dyn BufferedReader<C> + 'a, C>
+    where
+        Self: Sized,
+    {
+        Mut::new(self)
+    }
+
     /// Returns a mutable reference to the inner `BufferedReader`, if
     /// any.
     ///

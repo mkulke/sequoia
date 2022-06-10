@@ -11,11 +11,11 @@ use crate::BufferedReader;
 #[derive(Debug)]
 pub struct Mut<'a, T, C>
 where
-    T: BufferedReader<C>,
-    C: fmt::Debug + Sync + Send,
+    T: BufferedReader<C> + ?Sized,
+    C: fmt::Debug + Send + Sync,
 {
-    cookie: C,
     reader: &'a mut T,
+    _ghostly_cookie: std::marker::PhantomData<C>,
 }
 
 // There is a bug in assert_send_and_sync that prevents us from
@@ -32,8 +32,8 @@ mod appease_macro {
 
 impl<'a, T, C> fmt::Display for Mut<'a, T, C>
 where
-    T: BufferedReader<C>,
-    C: fmt::Debug + Sync + Send,
+    T: BufferedReader<C> + ?Sized,
+    C: fmt::Debug + Send + Sync,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("Mut")
@@ -41,38 +41,26 @@ where
     }
 }
 
-impl<'a, T: BufferedReader<()>> Mut<'a, T, ()> {
+impl<'a, T, C> Mut<'a, T, C>
+where
+    T: BufferedReader<C> + ?Sized,
+    C: fmt::Debug + Send + Sync,
+{
     /// Makes a new mutable reference.
     ///
     /// `reader` is the source to reference.
     pub fn new(reader: &'a mut T) -> Self {
-        Self::with_cookie(reader, ())
-    }
-}
-
-impl<'a, T, C> Mut<'a, T, C>
-where
-    T: BufferedReader<C>,
-    C: fmt::Debug + Sync + Send,
-{
-    /// Like [`Mut::new`], but sets a cookie.
-    ///
-    /// The cookie can be retrieved using the [`Mut::cookie_ref`] and
-    /// [`Mut::cookie_mut`] methods, and set using the
-    /// [`Mut::cookie_set`] method.
-    pub fn with_cookie(reader: &'a mut T, cookie: C)
-            -> Mut<T, C> {
         Mut {
             reader,
-            cookie,
+            _ghostly_cookie: Default::default(),
         }
     }
 }
 
 impl<'a, T, C> io::Read for Mut<'a, T, C>
 where
-    T: BufferedReader<C>,
-    C: fmt::Debug + Sync + Send,
+    T: BufferedReader<C> + ?Sized,
+    C: fmt::Debug + Send + Sync,
 {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
         self.reader.read(buf)
@@ -81,8 +69,8 @@ where
 
 impl<'a, T, C> BufferedReader<C> for Mut<'a, T, C>
 where
-    T: BufferedReader<C>,
-    C: fmt::Debug + Sync + Send,
+    T: BufferedReader<C> + ?Sized,
+    C: fmt::Debug + Send + Sync,
 {
     fn buffer(&self) -> &[u8] {
         self.reader.buffer()
@@ -117,17 +105,15 @@ where
     }
 
     fn cookie_set(&mut self, cookie: C) -> C {
-        use std::mem;
-
-        mem::replace(&mut self.cookie, cookie)
+        self.reader.cookie_set(cookie)
     }
 
     fn cookie_ref(&self) -> &C {
-        &self.cookie
+        self.reader.cookie_ref()
     }
 
     fn cookie_mut(&mut self) -> &mut C {
-        &mut self.cookie
+        self.reader.cookie_mut()
     }
 }
 
@@ -150,7 +136,7 @@ mod test {
         }
 
         parse_ten_bytes(Mut::new(&mut mem));
-        parse_ten_bytes(Mut::new(&mut mem));
+        parse_ten_bytes(mem.as_mut_reader());
         let suffix = mem.data_eof().unwrap();
         assert_eq!(suffix, b"suffix");
     }
