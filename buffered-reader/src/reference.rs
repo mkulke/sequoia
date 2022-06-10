@@ -12,7 +12,7 @@ use crate::BufferedReader;
 pub struct Mut<'a, T, C>
 where
     T: BufferedReader<C>,
-    C: Default + fmt::Debug + Sync + Send,
+    C: fmt::Debug + Sync + Send,
 {
     cookie: C,
     reader: &'a mut T,
@@ -33,7 +33,7 @@ mod appease_macro {
 impl<'a, T, C> fmt::Display for Mut<'a, T, C>
 where
     T: BufferedReader<C>,
-    C: Default + fmt::Debug + Sync + Send,
+    C: fmt::Debug + Sync + Send,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("Mut")
@@ -53,7 +53,7 @@ impl<'a, T: BufferedReader<()>> Mut<'a, T, ()> {
 impl<'a, T, C> Mut<'a, T, C>
 where
     T: BufferedReader<C>,
-    C: Default + fmt::Debug + Sync + Send,
+    C: fmt::Debug + Sync + Send,
 {
     /// Like [`Mut::new`], but sets a cookie.
     ///
@@ -72,7 +72,7 @@ where
 impl<'a, T, C> io::Read for Mut<'a, T, C>
 where
     T: BufferedReader<C>,
-    C: Default + fmt::Debug + Sync + Send,
+    C: fmt::Debug + Sync + Send,
 {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
         self.reader.read(buf)
@@ -82,7 +82,7 @@ where
 impl<'a, T, C> BufferedReader<C> for Mut<'a, T, C>
 where
     T: BufferedReader<C>,
-    C: Default + fmt::Debug + Sync + Send,
+    C: fmt::Debug + Sync + Send,
 {
     fn buffer(&self) -> &[u8] {
         self.reader.buffer()
@@ -104,15 +104,10 @@ where
         self.reader.get_ref()
     }
 
-    /// This will always return a newly constructed [`EOF`](crate::EOF) here.
-    ///
-    /// This method cannot fail, therefore we return a dummy.
     fn as_boxed<'b>(self) -> Box<dyn BufferedReader<C> + 'b>
         where Self: 'b
     {
-        // We construct an EOF here, because this operation is not
-        // fallible.
-        Box::new(crate::EOF::with_cookie(C::default()))
+        Box::new(self)
     }
 
     /// This will always return `None`.
