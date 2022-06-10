@@ -239,11 +239,29 @@ impl From<PublicKeyAlgorithm> for u8 {
     }
 }
 
+/// Formats the public key algorithm name.
+///
+/// There are two ways the public key algorithm name can be formatted.
+/// By default the short name is used.  The alternate format uses the
+/// full public key algorithm name.
+///
+/// # Examples
+///
+/// ```
+/// use sequoia_openpgp as openpgp;
+/// use openpgp::types::PublicKeyAlgorithm;
+///
+/// // default, short format
+/// assert_eq!("ECDH", format!("{}", PublicKeyAlgorithm::ECDH));
+///
+/// // alternate, long format
+/// assert_eq!("ECDH public key algorithm", format!("{:#}", PublicKeyAlgorithm::ECDH));
+/// ```
 impl fmt::Display for PublicKeyAlgorithm {
+    #[allow(deprecated)]
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         use crate::PublicKeyAlgorithm::*;
         if f.alternate() {
-            #[allow(deprecated)]
             match *self {
                 RSAEncryptSign => f.write_str("RSA (Encrypt or Sign)"),
                 RSAEncrypt => f.write_str("RSA Encrypt-Only"),
@@ -260,7 +278,6 @@ impl fmt::Display for PublicKeyAlgorithm {
                     f.write_fmt(format_args!("Unknown public key algorithm {}", u)),
             }
         } else {
-            #[allow(deprecated)]
             match *self {
                 RSAEncryptSign => f.write_str("RSA"),
                 RSAEncrypt => f.write_str("RSA"),
@@ -390,21 +407,55 @@ impl Curve {
     }
 }
 
+/// Formats the elliptic curve name.
+///
+/// There are two ways the elliptic curve name can be formatted.  By
+/// default the short name is used.  The alternate format uses the
+/// full curve name.
+///
+/// # Examples
+///
+/// ```
+/// use sequoia_openpgp as openpgp;
+/// use openpgp::types::Curve;
+///
+/// // default, short format
+/// assert_eq!("NIST P-256", format!("{}", Curve::NistP256));
+///
+/// // alternate, long format
+/// assert_eq!("NIST curve P-256", format!("{:#}", Curve::NistP256));
+/// ```
 impl fmt::Display for Curve {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         use self::Curve::*;
-        match *self {
-            NistP256 => f.write_str("NIST curve P-256"),
-            NistP384 => f.write_str("NIST curve P-384"),
-            NistP521 => f.write_str("NIST curve P-521"),
-            BrainpoolP256 => f.write_str("brainpoolP256r1"),
-            BrainpoolP512 => f.write_str("brainpoolP512r1"),
-            Ed25519
-                => f.write_str("D.J. Bernstein's \"Twisted\" Edwards curve Ed25519"),
-            Cv25519
-                => f.write_str("Elliptic curve Diffie-Hellman using D.J. Bernstein's Curve25519"),
-            Unknown(ref oid)
-             => write!(f, "Unknown curve (OID: {:?})", oid),
+        if f.alternate() {
+            match *self {
+                NistP256 => f.write_str("NIST curve P-256"),
+                NistP384 => f.write_str("NIST curve P-384"),
+                NistP521 => f.write_str("NIST curve P-521"),
+                BrainpoolP256 => f.write_str("brainpoolP256r1"),
+                BrainpoolP512 => f.write_str("brainpoolP512r1"),
+                Ed25519
+                    => f.write_str("D.J. Bernstein's \"Twisted\" Edwards curve Ed25519"),
+                Cv25519
+                    => f.write_str("Elliptic curve Diffie-Hellman using D.J. Bernstein's Curve25519"),
+                Unknown(ref oid)
+                    => write!(f, "Unknown curve (OID: {:?})", oid),
+            }
+        } else {
+            match *self {
+                NistP256 => f.write_str("NIST P-256"),
+                NistP384 => f.write_str("NIST P-384"),
+                NistP521 => f.write_str("NIST P-521"),
+                BrainpoolP256 => f.write_str("brainpoolP256r1"),
+                BrainpoolP512 => f.write_str("brainpoolP512r1"),
+                Ed25519
+                    => f.write_str("Ed25519"),
+                Cv25519
+                    => f.write_str("Curve25519"),
+                Unknown(ref oid)
+                    => write!(f, "Unknown curve {:?}", oid),
+            }
         }
     }
 }
@@ -655,37 +706,89 @@ impl From<SymmetricAlgorithm> for u8 {
     }
 }
 
+
+/// Formats the symmetric algorithm name.
+///
+/// There are two ways the symmetric algorithm name can be formatted.
+/// By default the short name is used.  The alternate format uses the
+/// full algorithm name.
+///
+/// # Examples
+///
+/// ```
+/// use sequoia_openpgp as openpgp;
+/// use openpgp::types::SymmetricAlgorithm;
+///
+/// // default, short format
+/// assert_eq!("AES-128", format!("{}", SymmetricAlgorithm::AES128));
+///
+/// // alternate, long format
+/// assert_eq!("AES with 128-bit key", format!("{:#}", SymmetricAlgorithm::AES128));
+/// ```
 impl fmt::Display for SymmetricAlgorithm {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            SymmetricAlgorithm::Unencrypted =>
-                f.write_str("Unencrypted"),
-            SymmetricAlgorithm::IDEA =>
-                f.write_str("IDEA"),
-            SymmetricAlgorithm::TripleDES =>
-                f.write_str("TripleDES (EDE-DES, 168 bit key derived from 192))"),
-            SymmetricAlgorithm::CAST5 =>
-                f.write_str("CAST5 (128 bit key, 16 rounds)"),
-            SymmetricAlgorithm::Blowfish =>
-                f.write_str("Blowfish (128 bit key, 16 rounds)"),
-            SymmetricAlgorithm::AES128 =>
-                f.write_str("AES with 128-bit key"),
-            SymmetricAlgorithm::AES192 =>
-                f.write_str("AES with 192-bit key"),
-            SymmetricAlgorithm::AES256 =>
-                f.write_str("AES with 256-bit key"),
-            SymmetricAlgorithm::Twofish =>
-                f.write_str("Twofish with 256-bit key"),
-            SymmetricAlgorithm::Camellia128 =>
-                f.write_str("Camellia with 128-bit key"),
-            SymmetricAlgorithm::Camellia192 =>
-                f.write_str("Camellia with 192-bit key"),
-            SymmetricAlgorithm::Camellia256 =>
-                f.write_str("Camellia with 256-bit key"),
-            SymmetricAlgorithm::Private(u) =>
-                f.write_fmt(format_args!("Private/Experimental symmetric key algorithm {}", u)),
-            SymmetricAlgorithm::Unknown(u) =>
-                f.write_fmt(format_args!("Unknown symmetric key algorithm {}", u)),
+        if f.alternate() {
+            match *self {
+                SymmetricAlgorithm::Unencrypted =>
+                    f.write_str("Unencrypted"),
+                SymmetricAlgorithm::IDEA =>
+                    f.write_str("IDEA"),
+                SymmetricAlgorithm::TripleDES =>
+                    f.write_str("TripleDES (EDE-DES, 168 bit key derived from 192))"),
+                SymmetricAlgorithm::CAST5 =>
+                    f.write_str("CAST5 (128 bit key, 16 rounds)"),
+                SymmetricAlgorithm::Blowfish =>
+                    f.write_str("Blowfish (128 bit key, 16 rounds)"),
+                SymmetricAlgorithm::AES128 =>
+                    f.write_str("AES with 128-bit key"),
+                SymmetricAlgorithm::AES192 =>
+                    f.write_str("AES with 192-bit key"),
+                SymmetricAlgorithm::AES256 =>
+                    f.write_str("AES with 256-bit key"),
+                SymmetricAlgorithm::Twofish =>
+                    f.write_str("Twofish with 256-bit key"),
+                SymmetricAlgorithm::Camellia128 =>
+                    f.write_str("Camellia with 128-bit key"),
+                SymmetricAlgorithm::Camellia192 =>
+                    f.write_str("Camellia with 192-bit key"),
+                SymmetricAlgorithm::Camellia256 =>
+                    f.write_str("Camellia with 256-bit key"),
+                SymmetricAlgorithm::Private(u) =>
+                    f.write_fmt(format_args!("Private/Experimental symmetric key algorithm {}", u)),
+                SymmetricAlgorithm::Unknown(u) =>
+                    f.write_fmt(format_args!("Unknown symmetric key algorithm {}", u)),
+            }
+        } else {
+            match *self {
+                SymmetricAlgorithm::Unencrypted =>
+                    f.write_str("Unencrypted"),
+                SymmetricAlgorithm::IDEA =>
+                    f.write_str("IDEA"),
+                SymmetricAlgorithm::TripleDES =>
+                    f.write_str("3DES"),
+                SymmetricAlgorithm::CAST5 =>
+                    f.write_str("CAST5"),
+                SymmetricAlgorithm::Blowfish =>
+                    f.write_str("Blowfish"),
+                SymmetricAlgorithm::AES128 =>
+                    f.write_str("AES-128"),
+                SymmetricAlgorithm::AES192 =>
+                    f.write_str("AES-192"),
+                SymmetricAlgorithm::AES256 =>
+                    f.write_str("AES-256"),
+                SymmetricAlgorithm::Twofish =>
+                    f.write_str("Twofish"),
+                SymmetricAlgorithm::Camellia128 =>
+                    f.write_str("Camellia-128"),
+                SymmetricAlgorithm::Camellia192 =>
+                    f.write_str("Camellia-192"),
+                SymmetricAlgorithm::Camellia256 =>
+                    f.write_str("Camellia-256"),
+                SymmetricAlgorithm::Private(u) =>
+                    f.write_fmt(format_args!("Private symmetric key algo {}", u)),
+                SymmetricAlgorithm::Unknown(u) =>
+                    f.write_fmt(format_args!("Unknown symmetric key algo {}", u)),
+            }
         }
     }
 }
@@ -782,17 +885,48 @@ impl From<AEADAlgorithm> for u8 {
     }
 }
 
+/// Formats the AEAD algorithm name.
+///
+/// There are two ways the AEAD algorithm name can be formatted.  By
+/// default the short name is used.  The alternate format uses the
+/// full algorithm name.
+///
+/// # Examples
+///
+/// ```
+/// use sequoia_openpgp as openpgp;
+/// use openpgp::types::AEADAlgorithm;
+///
+/// // default, short format
+/// assert_eq!("EAX", format!("{}", AEADAlgorithm::EAX));
+///
+/// // alternate, long format
+/// assert_eq!("EAX mode", format!("{:#}", AEADAlgorithm::EAX));
+/// ```
 impl fmt::Display for AEADAlgorithm {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            AEADAlgorithm::EAX =>
-                f.write_str("EAX mode"),
-            AEADAlgorithm::OCB =>
-                f.write_str("OCB mode"),
-            AEADAlgorithm::Private(u) =>
-                f.write_fmt(format_args!("Private/Experimental AEAD algorithm {}", u)),
-            AEADAlgorithm::Unknown(u) =>
-                f.write_fmt(format_args!("Unknown AEAD algorithm {}", u)),
+        if f.alternate() {
+            match *self {
+                AEADAlgorithm::EAX =>
+                    f.write_str("EAX mode"),
+                AEADAlgorithm::OCB =>
+                    f.write_str("OCB mode"),
+                AEADAlgorithm::Private(u) =>
+                    f.write_fmt(format_args!("Private/Experimental AEAD algorithm {}", u)),
+                AEADAlgorithm::Unknown(u) =>
+                    f.write_fmt(format_args!("Unknown AEAD algorithm {}", u)),
+            }
+        } else {
+            match *self {
+                AEADAlgorithm::EAX =>
+                    f.write_str("EAX"),
+                AEADAlgorithm::OCB =>
+                    f.write_str("OCB"),
+                AEADAlgorithm::Private(u) =>
+                    f.write_fmt(format_args!("Private AEAD algo {}", u)),
+                AEADAlgorithm::Unknown(u) =>
+                    f.write_fmt(format_args!("Unknown AEAD algo {}", u)),
+            }
         }
     }
 }
