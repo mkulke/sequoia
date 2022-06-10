@@ -749,9 +749,9 @@
 //!     -h, --help
 //!             Print help information
 //!
-//!     -p, --prefix <FILE>
-//!             Writes to files with prefix FILE [defaults to the input filename
-//!             with a dash, or "output" if keyring is read from stdin]
+//!     -p, --prefix <PREFIX>
+//!             Writes to files with PREFIX [defaults: "FILE-" if FILE is set, or
+//!             "output-" if read from stdin]
 //!
 //! EXAMPLES:
 //!
@@ -1205,8 +1205,6 @@
 //!
 //! SUBCOMMANDS:
 //!     generate    Generates a Web Key Directory for the given domain and keys.
-//!                     If the WKD exists, the new keys will be inserted and it is
-//!                     updated and existing ones will be updated.
 //!     get         Queries for certs using Web Key Directory
 //!     help        Print this message or the help of the given subcommand(s)
 //!     url         Prints the Web Key Directory URL of an email address.
@@ -1538,8 +1536,8 @@
 //!             Print help information
 //!
 //!     -p, --prefix <PREFIX>
-//!             Writes to files with PREFIX [defaults: FILE a dash, or "output" if
-//!             read from stdin)
+//!             Writes to files with PREFIX [defaults: "FILE-" if FILE is set, or
+//!             "output-" if read from stdin]
 //!
 //! EXAMPLES:
 //!
