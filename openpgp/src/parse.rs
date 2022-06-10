@@ -3044,9 +3044,9 @@ fn parse_mpis() -> Result<()> {
     zero.serialize(&mut buf)?;
     one.serialize(&mut buf)?;
     let mut reader = Memory::new(&buf);
-    let parsed = MPI::from_buffered_reader(Mut::new(&mut reader))?;
+    let parsed = MPI::from_buffered_reader(reader.as_mut_reader())?;
     assert_eq!(parsed, zero);
-    let parsed = MPI::from_buffered_reader(Mut::new(&mut reader))?;
+    let parsed = MPI::from_buffered_reader(reader.as_mut_reader())?;
     assert_eq!(parsed, one);
     assert!(reader.eof());
     Ok(())
