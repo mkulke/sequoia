@@ -92,54 +92,8 @@ where
         self.reader.data(amount)
     }
 
-    fn data_hard(&mut self, amount: usize) -> Result<&[u8], io::Error> {
-        self.reader.data_hard(amount)
-    }
-
-    fn data_eof(&mut self) -> Result<&[u8], io::Error> {
-        self.reader.data_eof()
-    }
-
     fn consume(&mut self, amount: usize) -> &[u8] {
         self.reader.consume(amount)
-    }
-
-    fn data_consume(&mut self, amount: usize)
-                    -> Result<&[u8], std::io::Error> {
-        self.reader.data_consume(amount)
-    }
-
-    fn data_consume_hard(&mut self, amount: usize) -> Result<&[u8], io::Error> {
-        self.reader.data_consume_hard(amount)
-    }
-
-    fn consummated(&mut self) -> bool {
-        self.reader.consummated()
-    }
-
-    fn read_be_u16(&mut self) -> Result<u16, std::io::Error> {
-        self.reader.read_be_u16()
-    }
-
-    fn read_be_u32(&mut self) -> Result<u32, std::io::Error> {
-        self.reader.read_be_u32()
-    }
-
-    fn read_to(&mut self, terminal: u8) -> Result<&[u8], std::io::Error>
-    {
-        self.reader.read_to(terminal)
-    }
-
-    fn steal(&mut self, amount: usize) -> Result<Vec<u8>, std::io::Error> {
-        self.reader.steal(amount)
-    }
-
-    fn steal_eof(&mut self) -> Result<Vec<u8>, std::io::Error> {
-        self.reader.steal_eof()
-    }
-
-    fn drop_eof(&mut self) -> Result<bool, std::io::Error> {
-        self.reader.drop_eof()
     }
 
     fn get_mut(&mut self) -> Option<&mut dyn BufferedReader<C>> {
