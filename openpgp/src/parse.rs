@@ -3036,7 +3036,7 @@ impl<'a> Parse<'a, MPI> for MPI {
 
 #[test]
 fn parse_mpis() -> Result<()> {
-    use buffered_reader::{Memory, Mut};
+    use buffered_reader::Memory;
     use crate::serialize::Marshal;
     let zero = MPI::zero();
     let one = MPI::new(&[1]);
