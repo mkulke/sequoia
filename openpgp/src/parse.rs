@@ -271,6 +271,19 @@ pub(crate) const RECOVERY_THRESHOLD: usize = 32 * 1024;
 /// This is a uniform interface to parse packets, messages, keys, and
 /// related data structures.
 pub trait Parse<'a, T> {
+    /// Reads from the given buffered reader.
+    fn from_buffered_reader<R>(_reader: R) -> Result<T>
+    where
+        R: BufferedReader<()> + 'a,
+    {
+        unimplemented!("XXX: First, implement this for all of our types, \
+                        then express it here over Self::from_reader. \
+                        While the default implementation doesn't reap \
+                        the improvements, it is no worse than using \
+                        from_reader directly.  In 2.x, make this function \
+                        the mandatory one instead of from_reader.")
+    }
+
     /// Reads from the given reader.
     fn from_reader<R: 'a + Read + Send + Sync>(reader: R) -> Result<T>;
 
@@ -3005,13 +3018,38 @@ impl MPI {
 }
 
 impl<'a> Parse<'a, MPI> for MPI {
-    // Reads an MPI from `reader`.
-    fn from_reader<R: io::Read + Send + Sync>(reader: R) -> Result<Self> {
-        let bio = buffered_reader::Generic::with_cookie(
-            reader, None, Cookie::default());
-        let mut parser = PacketHeaderParser::new_naked(bio);
-        Self::parse("(none_len)", "(none)", &mut parser)
+    fn from_buffered_reader<R>(reader: R) -> Result<Self>
+    where
+        R: BufferedReader<()> + 'a,
+    {
+        let mut parser = PacketHeaderParser::new_naked(
+            Adapter::with_cookie(reader, Cookie::default()));
+        let r = Self::parse("(none_len)", "(none)", &mut parser)?;
+        parser.commit()?;
+        Ok(r)
     }
+
+    fn from_reader<R: io::Read + Send + Sync>(reader: R) -> Result<Self> {
+        Self::from_buffered_reader(buffered_reader::Generic::new(reader, None))
+    }
+}
+
+#[test]
+fn parse_mpis() -> Result<()> {
+    use buffered_reader::{Memory, Mut};
+    use crate::serialize::Marshal;
+    let zero = MPI::zero();
+    let one = MPI::new(&[1]);
+    let mut buf = Vec::new();
+    zero.serialize(&mut buf)?;
+    one.serialize(&mut buf)?;
+    let mut reader = Memory::new(&buf);
+    let parsed = MPI::from_buffered_reader(Mut::new(&mut reader))?;
+    assert_eq!(parsed, zero);
+    let parsed = MPI::from_buffered_reader(Mut::new(&mut reader))?;
+    assert_eq!(parsed, one);
+    assert!(reader.eof());
+    Ok(())
 }
 
 impl PKESK {
