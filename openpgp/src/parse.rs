@@ -538,6 +538,17 @@ impl<'a, T: 'a + BufferedReader<Cookie>> PacketHeaderParser<T> {
         })
     }
 
+    /// Consumes the bytes belonging to the parsed structures.
+    ///
+    /// Like [`PacketHeaderParser::ok`], but for use with
+    /// [`PacketHeaderParser::new_naked`].
+    fn commit(self) -> Result<Box<dyn BufferedReader<Cookie> + 'a>> {
+        let total_out = self.reader.total_out();
+        let mut reader = Box::new(self.reader).into_inner().unwrap();
+        reader.data_consume_hard(total_out)?;
+        Ok(reader)
+    }
+
     // Something went wrong while parsing the packet's header.  Aborts
     // and returns an Unknown packet instead.
     fn fail(self, reason: &'static str) -> Result<PacketParser<'a>> {
