@@ -1089,6 +1089,58 @@ where
     }
 }
 
+// XXX: This doesn't work:
+/// Make a `&mut T where T: BufferedReader` look like a BufferedReader.
+impl<'a, T, C> BufferedReader<C> for &mut T
+where
+    T: BufferedReader<C>,
+    C: Default + fmt::Debug + Send + Sync, // XXX: Note the additional constraint
+{
+    fn buffer(&self) -> &[u8] {
+        (**self).buffer()
+    }
+
+    fn data(&mut self, amount: usize) -> Result<&[u8], io::Error> {
+        (**self).data(amount)
+    }
+
+    fn consume(&mut self, amount: usize) -> &[u8] {
+        (**self).consume(amount)
+    }
+
+    fn get_mut(&mut self) -> Option<&mut dyn BufferedReader<C>> {
+        (**self).get_mut()
+    }
+
+    fn get_ref(&self) -> Option<&dyn BufferedReader<C>> {
+        (**self).get_ref()
+    }
+
+    fn as_boxed<'b>(self) -> Box<dyn BufferedReader<C> + 'b>
+        where Self: 'b
+    {
+        Box::new(self)
+    }
+
+    /// This will always return `None`.
+    fn into_inner<'b>(self: Box<Self>) -> Option<Box<dyn BufferedReader<C> + 'b>>
+            where Self: 'b {
+        None
+    }
+
+    fn cookie_set(&mut self, cookie: C) -> C {
+        (**self).cookie_set(cookie)
+    }
+
+    fn cookie_ref(&self) -> &C {
+        (**self).cookie_ref()
+    }
+
+    fn cookie_mut(&mut self) -> &mut C {
+        (**self).cookie_mut()
+    }
+}
+
 // The file was created as follows:
 //
 //   for i in $(seq 0 9999); do printf "%04d\n" $i; done > buffered-reader-test.txt
