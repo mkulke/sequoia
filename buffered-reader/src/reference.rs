@@ -135,7 +135,7 @@ mod test {
             drop(r); // We consumed the reader.
         }
 
-        parse_ten_bytes(Mut::new(&mut mem));
+        parse_ten_bytes(&mut mem as &mut dyn BufferedReader<()>);  // not as ergonomic as i wished tho
         parse_ten_bytes(mem.as_mut_reader());
         let suffix = mem.data_eof().unwrap();
         assert_eq!(suffix, b"suffix");
