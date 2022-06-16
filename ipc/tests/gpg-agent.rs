@@ -69,7 +69,13 @@ fn gpg_import(ctx: &Context, what: &[u8]) -> openpgp::Result<()> {
     use std::process::{Command, Stdio};
 
     let mut import_me = tempfile::NamedTempFile::new()?;
-    import_me.write_all(what)?;
+    {
+        use openpgp::armor;
+        let mut w =
+            armor::Writer::new(&mut import_me, armor::Kind::SecretKey)?;
+        w.write_all(what)?;
+        w.finalize()?;
+    }
     let import_me = import_me.into_temp_path();
 
     let gpg = Command::new("gpg")
