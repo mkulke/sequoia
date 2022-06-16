@@ -94,6 +94,13 @@ fn gpg_import(ctx: &Context, what: &[u8]) -> openpgp::Result<()> {
     if status.success() {
         Ok(())
     } else {
+        use openpgp::armor;
+        let mut w =
+            armor::Writer::new(Vec::new(), armor::Kind::SecretKey)?;
+        w.write_all(what)?;
+        let buf = w.finalize()?;
+        eprintln!("Failed to import the following key:\n\n\n{}\n\n",
+                  String::from_utf8_lossy(&buf));
         Err(anyhow::anyhow!("gpg --import failed"))
     }
 }
@@ -107,6 +114,7 @@ fn sign() -> openpgp::Result<()> {
     let ctx = make_context!();
 
     for cs in &[RSA2k, Cv25519, P521] {
+        dbg!(cs);
         let (cert, _) = CertBuilder::new()
             .set_cipher_suite(*cs)
             .add_userid("someone@example.org")
@@ -216,6 +224,7 @@ fn decrypt() -> openpgp::Result<()> {
     let ctx = make_context!();
 
     for cs in &[RSA2k, Cv25519, P521] {
+        dbg!(cs);
         let (cert, _) = CertBuilder::new()
             .set_cipher_suite(*cs)
             .add_userid("someone@example.org")
