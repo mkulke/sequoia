@@ -26,7 +26,7 @@ macro_rules! make_context {
             Err(e) => {
                 eprintln!("SKIP: Failed to create GnuPG context: {}\n\
                            SKIP: Is GnuPG installed?", e);
-                return Ok(());
+                panic!("{}", e);
             },
         };
         match ctx.start("gpg-agent") {
@@ -34,7 +34,7 @@ macro_rules! make_context {
             Err(e) => {
                 eprintln!("SKIP: Failed to create GnuPG context: {}\n\
                            SKIP: Is the GnuPG agent installed?", e);
-                return Ok(());
+                panic!("{}", e);
             },
         }
         ctx
