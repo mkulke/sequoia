@@ -75,9 +75,10 @@ windows-gnu:
       # do not use the docker executor, so disable the windows jobs for forks.
       - $CI_PROJECT_NAMESPACE == "sequoia-pgp"
   script:
+    - cargo run -p sequoia-openpgp --example supported-algorithms
     - cargo test -p sequoia-ipc
     # https://github.com/rust-lang/cargo/issues/5015
-    - cargo test --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-cng,compression
+    - cargo test --manifest-path ipc/Cargo.toml --no-default-features --features crypto-cng,compression
   after_script: []
   variables:
     CFLAGS: "" # Silence some C warnings when compiling under Windows
@@ -101,7 +102,7 @@ windows-msvc:
   script:
     # https://github.com/rust-lang/cargo/issues/5015
     - cargo run --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-cng,compression --example supported-algorithms
-    - cargo test --manifest-path sequoia-ipc/Cargo.toml --no-default-features --features crypto-cng,compression
+    - cargo test --manifest-path ipc/Cargo.toml --no-default-features --features crypto-cng,compression
   after_script: []
   variables:
     CFLAGS: "" # Silence some C warnings when compiling with MSVC
@@ -135,7 +136,8 @@ windows-msvc-32:
     - cargo --version
   script:
     # https://github.com/rust-lang/cargo/issues/5015
-    - cargo test --manifest-path sequoia-ipc/Cargo.toml --no-default-features --features crypto-cng,compression --target i686-pc-windows-msvc
+    - cargo run --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-cng,compression --example supported-algorithms
+    - cargo test --manifest-path ipc/Cargo.toml --no-default-features --features crypto-cng,compression --target i686-pc-windows-msvc
   after_script: []
   variables:
     CFLAGS: "" # Silence some C warnings when compiling with MSVC
