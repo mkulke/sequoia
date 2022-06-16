@@ -243,6 +243,25 @@ y0KLnG75ZUMA/RcO6tgrtzHBGpXwHN2U9S+z4qtdqN6sPHBJ9rhVRLwD
 ";
 
 #[test]
+fn bad_sign_key_0() -> openpgp::Result<()> {
+    bad_sign_key()
+}
+
+#[test]
+fn bad_sign_key_1() -> openpgp::Result<()> {
+    bad_sign_key()
+}
+
+#[test]
+fn bad_sign_key_2() -> openpgp::Result<()> {
+    bad_sign_key()
+}
+
+#[test]
+fn bad_sign_key_3() -> openpgp::Result<()> {
+    bad_sign_key()
+}
+
 fn bad_sign_key() -> openpgp::Result<()> {
     use openpgp::policy::StandardPolicy as P;
 
