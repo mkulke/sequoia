@@ -52,7 +52,7 @@ windows-gnu:
     - win
     - win2019
   stage: build
-  image: registry.gitlab.com/sequoia-pgp/build-docker-image/windows-gnu:2022-05-15
+  image: registry.gitlab.com/sequoia-pgp/build-docker-image/windows-gnu
   # This job takes ~20 minutes to run, let's only execute it manually or for
   # scheduled builds, otherwise this will stall MRs often not related to Windows
   only:
