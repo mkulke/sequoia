@@ -25,6 +25,7 @@ stages:
 
 .before_script_start: &before_script_start
   - 'if test "x${RUSTFLAGS+SET}" = xSET; then echo "\$RUSTFLAGS is set ($RUSTFLAGS)"; exit 1; fi'
+  - gpg --version || true
 
 .before_script_end: &before_script_end
   - 'if test "x${RUSTFLAGS+SET}" = xSET; then echo "WARNING: before_script set \$RUSTFLAGS ($RUSTFLAGS)"; fi'
