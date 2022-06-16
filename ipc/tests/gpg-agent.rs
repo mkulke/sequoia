@@ -68,15 +68,18 @@ const MESSAGE: &str = "дружба";
 fn gpg_import(ctx: &Context, what: &[u8]) -> openpgp::Result<()> {
     use std::process::{Command, Stdio};
 
-    let mut gpg = Command::new("gpg")
-        .stdin(Stdio::piped())
+    let mut import_me = tempfile::NamedTempFile::new()?;
+    import_me.write_all(what)?;
+    let import_me = import_me.into_temp_path();
+
+    let gpg = Command::new("gpg")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .arg("--homedir").arg(ctx.homedir().unwrap())
         .arg("--import")
+        .arg(&import_me)
         .spawn()
         .context("failed to start gpg")?;
-    gpg.stdin.as_mut().unwrap().write_all(what)?;
     let output = gpg.wait_with_output()?;
 
     // We capture stdout and stderr, and use eprintln! so that the
