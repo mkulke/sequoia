@@ -1517,6 +1517,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "k256"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c3e8e491ed22bc161583a1c77e42313672c483eba6bd9d7afec0f1131d0b9ce"
+dependencies = [
+ "cfg-if",
+ "ecdsa",
+ "elliptic-curve",
+ "sha2",
+]
+
+[[package]]
 name = "lalrpop"
 version = "0.19.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2661,6 +2673,7 @@ dependencies = [
  "getrandom 0.2.6",
  "idea",
  "idna",
+ "k256",
  "lalrpop",
  "lalrpop-util",
  "lazy_static",

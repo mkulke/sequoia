@@ -125,6 +125,38 @@ impl Signer for KeyPair {
                         s: MPI::new(&sig.s().to_bytes()),
                     })
                 },
+                Curve::Secp256k1 => {
+                    use k256::{
+                        elliptic_curve::{
+                            generic_array::GenericArray as GA,
+                        },
+                        Scalar,
+                    };
+                    use ecdsa::{
+                        hazmat::SignPrimitive,
+                    };
+
+                    const LEN: usize = 32;
+                    let key = Scalar::from_bytes_reduced(
+                        GA::from_slice(&scalar.value_padded(LEN)));
+                    let dig = Scalar::from_bytes_reduced(
+                        GA::from_slice(&pad_truncating(digest, LEN)));
+
+                    let sig = loop {
+                        let mut k: Protected = vec![0; LEN].into();
+                        crate::crypto::random(&mut k);
+                        let k = Scalar::from_bytes_reduced(
+                            GA::from_slice(&k));
+                        if let Ok(s) = key.try_sign_prehashed(&k, &dig) {
+                            break s;
+                        }
+                    };
+
+                    Ok(mpi::Signature::ECDSA {
+                        r: MPI::new(&sig.r().to_bytes()),
+                        s: MPI::new(&sig.s().to_bytes()),
+                    })
+                },
                 _ => Err(Error::UnsupportedEllipticCurve(curve.clone()).into()),
             },
 
@@ -271,6 +303,36 @@ impl<P: key::KeyParts, R: key::KeyRole> Key<P, R> {
             {
                 Curve::NistP256 => {
                     use p256::{
+                        AffinePoint,
+                        ecdsa::Signature,
+                        elliptic_curve::{
+                            generic_array::GenericArray as GA,
+                            sec1::FromEncodedPoint,
+                        },
+                        Scalar,
+                    };
+                    use ecdsa::{
+                        EncodedPoint,
+                        hazmat::VerifyPrimitive,
+                    };
+                    const LEN: usize = 32;
+
+                    let key = AffinePoint::from_encoded_point(
+                        &EncodedPoint::from_bytes(q.value())?)
+                        .ok_or_else(|| Error::InvalidKey(
+                            "Point is not on the curve".into()))?;
+                    let sig = Signature::from_scalars(
+                        Scalar::from_bytes_reduced(
+                            GA::from_slice(&r.value_padded(LEN).map_err(bad)?)),
+                        Scalar::from_bytes_reduced(
+                            GA::from_slice(&s.value_padded(LEN).map_err(bad)?)))
+                        .map_err(bad)?;
+                    let dig = Scalar::from_bytes_reduced(
+                        GA::from_slice(&pad_truncating(digest, LEN)));
+                    key.verify_prehashed(&dig, &sig).map_err(bad)
+                },
+                Curve::Secp256k1 => {
+                    use k256::{
                         AffinePoint,
                         ecdsa::Signature,
                         elliptic_curve::{
@@ -567,6 +629,44 @@ impl<R> Key4<SecretParts, R>
 
                 let secret = SecretKey::random(
                     &mut p256::elliptic_curve::rand_core::OsRng);
+                let public = EncodedPoint::from(secret.public_key());
+
+                let public_mpis = mpi::PublicKey::ECDH {
+                    curve,
+                    q: MPI::new(public.as_bytes()),
+                    hash,
+                    sym,
+                };
+                let private_mpis = mpi::SecretKeyMaterial::ECDH {
+                    scalar: Vec::from(secret.to_bytes().as_slice()).into(),
+                };
+
+                (PublicKeyAlgorithm::ECDH, public_mpis, private_mpis)
+            },
+
+            (Curve::Secp256k1, true) => {
+                use k256::{EncodedPoint, SecretKey};
+
+                let secret = SecretKey::random(
+                    &mut k256::elliptic_curve::rand_core::OsRng);
+                let public = EncodedPoint::from(secret.public_key());
+
+                let public_mpis = mpi::PublicKey::ECDSA {
+                    curve,
+                    q: MPI::new(public.as_bytes()),
+                };
+                let private_mpis = mpi::SecretKeyMaterial::ECDSA {
+                    scalar: Vec::from(secret.to_bytes().as_slice()).into(),
+                };
+
+                (PublicKeyAlgorithm::ECDSA, public_mpis, private_mpis)
+            },
+
+            (Curve::Secp256k1, false) => {
+                use k256::{EncodedPoint, SecretKey};
+
+                let secret = SecretKey::random(
+                    &mut k256::elliptic_curve::rand_core::OsRng);
                 let public = EncodedPoint::from(secret.public_key());
 
                 let public_mpis = mpi::PublicKey::ECDH {
