@@ -206,6 +206,7 @@ impl MPI {
                 | NistP521
                 | BrainpoolP256
                 | BrainpoolP512
+                | Secp256k1
                 =>
             {
                 // Length of one coordinate in bytes, rounded up.

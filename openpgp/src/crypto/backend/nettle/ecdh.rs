@@ -103,7 +103,7 @@ pub fn encrypt<R>(recipient: &Key<key::PublicParts, R>,
             }
 
             // Not implemented in Nettle
-            Curve::BrainpoolP256 | Curve::BrainpoolP512 =>
+            Curve::BrainpoolP256 | Curve::BrainpoolP512 | Curve::Secp256k1 =>
                 Err(Error::UnsupportedEllipticCurve(curve.clone()).into()),
 
             // N/A
@@ -203,7 +203,7 @@ pub fn decrypt<R>(recipient: &Key<key::PublicParts, R>,
                 }
 
                 // Not implemented in Nettle
-                Curve::BrainpoolP256 | Curve::BrainpoolP512 =>
+                Curve::BrainpoolP256 | Curve::BrainpoolP512 | Curve::Secp256k1 =>
                     return
                     Err(Error::UnsupportedEllipticCurve(curve.clone()).into()),
 

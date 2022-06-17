@@ -42,6 +42,7 @@ fn main() {
         Curve::BrainpoolP512,
         Curve::Ed25519,
         Curve::Cv25519,
+        Curve::Secp256k1,
     ] {
         println!(" - {:70} {:?}", a.to_string(), a.is_supported());
     }
