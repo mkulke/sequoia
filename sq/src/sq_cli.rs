@@ -2,6 +2,11 @@
 use clap::{Arg, ArgGroup, Command, ArgEnum, Args, Subcommand};
 use clap::{CommandFactory, Parser};
 
+use sequoia_openpgp as openpgp;
+use openpgp::crypto::SessionKey;
+use openpgp::types::SymmetricAlgorithm;
+use openpgp::fmt::hex;
+
 pub fn build() -> Command<'static> {
     configure(Command::new("sq"))
 }
@@ -461,7 +466,7 @@ pub struct PacketDumpCommand {
         value_name = "SESSION-KEY",
         help = "Decrypts an encrypted message using SESSION-KEY",
     )]
-    pub session_key: Option<String>,
+    pub session_key: Option<CliSessionKey>,
     #[clap(
         long = "mpis",
         help = "Prints cryptographic artifacts",
@@ -513,6 +518,12 @@ pub struct PacketDecryptCommand {
         help = "Provides parameters for private key store",
     )]
     pub private_key_store: Option<String>,
+    #[clap(
+        long = "session-key",
+        value_name = "SESSION-KEY",
+        help = "Decrypts an encrypted message using SESSION-KEY",
+    )]
+    pub session_key: Vec<CliSessionKey>,
     #[clap(
             long = "dump-session-key",
             help = "Prints the session key to stderr",
@@ -2441,7 +2452,7 @@ pub struct DecryptCommand {
             [default: 1 if at least one signer cert file \
                               is given, 0 otherwise]",
     )]
-    pub signatures: Option<String>,
+    pub signatures: Option<usize>,
     #[clap(
         long = "signer-cert",
         value_name = "CERT",
@@ -2466,6 +2477,12 @@ pub struct DecryptCommand {
     )]
     pub dump_session_key: bool,
     #[clap(
+        long = "session-key",
+        value_name = "SESSION-KEY",
+        help = "Decrypts an encrypted message using SESSION-KEY",
+    )]
+    pub session_key: Vec<CliSessionKey>,
+    #[clap(
         long = "dump",
         help = "Prints a packet dump to stderr",
     )]
@@ -2476,6 +2493,74 @@ pub struct DecryptCommand {
         help = "Prints a hexdump (implies --dump)",
     )]
     pub hex: bool,
+}
+
+/// Holds a session key as parsed from the command line, with an optional
+/// algorithm specifier.
+///
+/// This struct does not implement [`Display`] to prevent accidental leaking
+/// of key material. If you are sure you want to print a session key, use
+/// [`display_sensitive`].
+///
+/// [`Display`]: std::fmt::Display
+/// [`display_sensitive`]: CliSessionKey::display_sensitive
+#[derive(Debug, Clone)]
+pub struct CliSessionKey {
+    pub session_key: SessionKey,
+    pub symmetric_algo: Option<SymmetricAlgorithm>,
+}
+
+impl std::str::FromStr for CliSessionKey {
+    type Err = anyhow::Error;
+
+    /// Parse a session key. The format is: an optional prefix specifying the
+    /// symmetric algorithm as a number, followed by a colon, followed by the
+    /// session key in hexadecimal representation.
+    fn from_str(sk: &str) -> anyhow::Result<Self> {
+        let result = if let Some((algo, sk)) = sk.split_once(':') {
+            let algo = SymmetricAlgorithm::from(algo.parse::<u8>()?);
+            let dsk = hex::decode_pretty(sk)?.into();
+            CliSessionKey {
+                session_key: dsk,
+                symmetric_algo: Some(algo),
+            }
+        } else {
+            let dsk = hex::decode_pretty(sk)?.into();
+            CliSessionKey {
+                session_key: dsk,
+                symmetric_algo: None,
+            }
+        };
+        Ok(result)
+    }
+}
+
+impl CliSessionKey {
+
+    /// Returns an object that implements Display for explicitly opting into
+    /// printing a `SessionKey`.
+    pub fn display_sensitive(&self) -> CliSessionKeyDisplay {
+        CliSessionKeyDisplay { csk: self }
+    }
+}
+
+/// Helper struct for intentionally printing session keys with format! and {}.
+///
+/// This struct implements the `Display` trait to print the session key. This
+/// construct requires the user to explicitly call
+/// [`CliSessionKey::display_sensitive`]. By requiring the user to opt-in, this
+/// will hopefully reduce that the chance that the session key is inadvertently
+/// leaked, e.g., in a log that may be publicly posted.
+pub struct CliSessionKeyDisplay<'a> {
+    csk: &'a CliSessionKey,
+}
+
+/// Print the session key without prefix in hexadecimal representation.
+impl<'a> std::fmt::Display for CliSessionKeyDisplay<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let sk = self.csk;
+        write!(f, "{}", hex::encode(&sk.session_key))
+    }
 }
 
 #[cfg(feature = "autocrypt")]

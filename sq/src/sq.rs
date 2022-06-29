@@ -15,9 +15,8 @@ use openpgp::{
     Result,
 };
 use crate::openpgp::{armor, Cert};
-use crate::openpgp::crypto::{Password, SessionKey};
-use crate::openpgp::fmt::hex;
-use crate::openpgp::types::{KeyFlags, SymmetricAlgorithm};
+use crate::openpgp::crypto::Password;
+use crate::openpgp::types::KeyFlags;
 use crate::openpgp::packet::prelude::*;
 use crate::openpgp::parse::{Parse, PacketParser, PacketParserResult};
 use crate::openpgp::packet::signature::subpacket::NotationData;
@@ -412,18 +411,20 @@ fn main() -> Result<()> {
 
     match matches.subcommand() {
         Some(("decrypt",  m)) => {
-            let mut input = open_or_stdin(m.value_of("input"))?;
+            use clap::FromArgMatches;
+            let command = sq_cli::DecryptCommand::from_arg_matches(m)?;
+
+            let mut input = open_or_stdin(command.io.input.as_deref())?;
             let mut output =
-                config.create_or_stdout_safe(m.value_of("output"))?;
-            let certs = m.values_of("sender-cert-file")
-                .map(load_certs)
-                .unwrap_or_else(|| Ok(vec![]))?;
+                config.create_or_stdout_safe(command.io.output.as_deref())?;
+
+            let certs = load_certs(
+                command.sender_cert_file.iter().map(|s| s.as_ref()),
+            )?;
             // Fancy default for --signatures.  If you change this,
             // also change the description in the CLI definition.
-            let signatures: usize =
-                if let Some(n) = m.value_of("signatures") {
-                    n.parse()?
-                } else if certs.is_empty() {
+            let signatures = command.signatures.unwrap_or_else(|| {
+                if certs.is_empty() {
                     // No certs are given for verification, use 0 as
                     // threshold so we handle only-encrypted messages
                     // gracefully.
@@ -432,16 +433,19 @@ fn main() -> Result<()> {
                     // At least one cert given, expect at least one
                     // valid signature.
                     1
-                };
-            let secrets = m.values_of("secret-key-file")
-                .map(load_certs)
-                .unwrap_or_else(|| Ok(vec![]))?;
-            let private_key_store = m.value_of("private-key-store");
-            commands::decrypt(config, private_key_store,
+                }
+            });
+            // TODO: should this be load_keys?
+            let secrets =
+                load_certs(command.secret_key_file.iter().map(|s| s.as_ref()))?;
+            let private_key_store = command.private_key_store;
+            let session_keys = command.session_key;
+            commands::decrypt(config, private_key_store.as_deref(),
                               &mut input, &mut output,
                               signatures, certs, secrets,
-                              m.is_present("dump-session-key"),
-                              m.is_present("dump"), m.is_present("hex"))?;
+                              command.dump_session_key,
+                              session_keys,
+                              command.dump, command.hex)?;
         },
         Some(("encrypt",  m)) => {
             let recipients = m.values_of("recipients-cert-file")
@@ -657,52 +661,41 @@ fn main() -> Result<()> {
 
         Some(("packet", m)) => match m.subcommand() {
             Some(("dump",  m)) => {
-                let mut input = open_or_stdin(m.value_of("input"))?;
-                let mut output =
-                    config.create_or_stdout_unsafe(m.value_of("output"))?;
+                use clap::FromArgMatches;
+                let command = sq_cli::PacketDumpCommand::from_arg_matches(m)?;
 
-                fn decode_session_key(
-                    sk: &str,
-                ) -> Result<(Option<SessionKey>, Option<SymmetricAlgorithm>)> {
-                    if let Some((algo, sk)) = sk.split_once(':') {
-                        let algo = SymmetricAlgorithm::from(algo.parse::<u8>()?);
-                        let dsk = hex::decode_pretty(sk)?.into();
-                        Ok((Some(dsk), Some(algo)))
-                    } else {
-                        let dsk = hex::decode_pretty(sk)?.into();
-                        Ok((Some(dsk), None))
-                    }
-                }
+                let mut input = open_or_stdin(command.io.input.as_deref())?;
+                let mut output = config.create_or_stdout_unsafe(
+                    command.io.output.as_deref(),
+                )?;
 
-                let (session_key, algo_hint) =
-                    if let Some(sk) = m.value_of("session-key") {
-                    decode_session_key(sk)
-                        .with_context(|| format!(
-                            "Bad value passed to --session-key: {:?}",
-                            sk
-                        ))?
-                    } else {
-                        (None, None)
-                    };
+                let session_key = command.session_key;
                 let width = term_size::dimensions_stdout().map(|(w, _)| w);
                 commands::dump(&mut input, &mut output,
-                               m.is_present("mpis"), m.is_present("hex"),
-                               session_key.as_ref(), algo_hint, width)?;
+                               command.mpis, command.hex,
+                               session_key.as_ref(), width)?;
             },
 
             Some(("decrypt",  m)) => {
-                let mut input = open_or_stdin(m.value_of("input"))?;
-                let mut output =
-                    config.create_or_stdout_pgp(m.value_of("output"),
-                                                m.is_present("binary"),
-                                                armor::Kind::Message)?;
-                let secrets = m.values_of("secret-key-file")
-                    .map(load_keys)
-                    .unwrap_or_else(|| Ok(vec![]))?;
+                use clap::FromArgMatches;
+                let command = sq_cli::PacketDecryptCommand::from_arg_matches(m)?;
+
+                let mut input = open_or_stdin(command.io.input.as_deref())?;
+                let mut output = config.create_or_stdout_pgp(
+                    command.io.output.as_deref(),
+                    command.binary,
+                    armor::Kind::Message,
+                )?;
+
+                let secrets =
+                    load_keys(command.secret_key_file.iter().map(|s| s.as_ref()))?;
+                let session_keys = command.session_key;
                 commands::decrypt::decrypt_unwrap(
                     config,
                     &mut input, &mut output,
-                    secrets, m.is_present("dump-session-key"))?;
+                    secrets,
+                    session_keys,
+                    command.dump_session_key)?;
                 output.finalize()?;
             },
 
