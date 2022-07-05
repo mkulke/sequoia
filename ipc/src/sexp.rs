@@ -396,17 +396,22 @@ impl String_ {
     /// Creates a Protected memory region from this String.
     ///
     /// Securely erases the contents of the original String.
-    pub fn into_protected(mut self) -> Protected {
+    pub fn into_protected(self) -> Protected {
         let r = Protected::from(&self.0[..]);
+        drop(self); // Securely erases this string.
+        r
+    }
+}
+
+impl Drop for String_ {
+    fn drop(&mut self) {
         unsafe {
             memsec::memzero(self.0.as_mut_ptr(), self.0.len());
             if let Some(p) = self.1.as_mut() {
                 memsec::memzero(p.as_mut_ptr(), p.len());
             }
         }
-        r
     }
-
 }
 
 impl From<&str> for String_ {
@@ -426,6 +431,18 @@ impl Deref for String_ {
 
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+impl From<String_> for Sexp {
+    fn from(v: String_) -> Sexp {
+        Sexp::String(v)
+    }
+}
+
+impl From<Vec<Sexp>> for Sexp {
+    fn from(v: Vec<Sexp>) -> Sexp {
+        Sexp::List(v)
     }
 }
 
