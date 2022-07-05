@@ -24,6 +24,11 @@ build-release:
 install: build-release
 	$(INSTALL) -d $(DESTDIR)$(PREFIX)/bin
 	$(INSTALL) -t $(DESTDIR)$(PREFIX)/bin $(CARGO_TARGET_DIR)/release/sq
+	$(INSTALL) -d $(DESTDIR)$(PREFIX)/share/man/man1
+	$(INSTALL) -t $(DESTDIR)$(PREFIX)/share/man/man1 man-sq/*.1
+	$(INSTALL) -t $(DESTDIR)$(PREFIX)/share/man/man1 man-sq-autocrypt/*.1
+	$(INSTALL) -t $(DESTDIR)$(PREFIX)/share/man/man1 man-sq-net/*.1
+	$(INSTALL) -t $(DESTDIR)$(PREFIX)/share/man/man1 man-sq-net-autocrypt/*.1
 	$(INSTALL) -d $(DESTDIR)$(PREFIX)/share/zsh/site-functions
 	$(INSTALL) -t $(DESTDIR)$(PREFIX)/share/zsh/site-functions \
 	    $(CARGO_TARGET_DIR)/_sq
