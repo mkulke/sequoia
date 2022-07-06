@@ -16,7 +16,6 @@ use openpgp::{
 };
 use crate::openpgp::{armor, Cert};
 use crate::openpgp::crypto::Password;
-use crate::openpgp::types::KeyFlags;
 use crate::openpgp::packet::prelude::*;
 use crate::openpgp::parse::{Parse, PacketParser, PacketParserResult};
 use crate::openpgp::packet::signature::subpacket::NotationData;
@@ -24,6 +23,10 @@ use crate::openpgp::packet::signature::subpacket::NotationDataFlags;
 use crate::openpgp::serialize::{Serialize, stream::{Message, Armorer}};
 use crate::openpgp::cert::prelude::*;
 use crate::openpgp::policy::StandardPolicy as P;
+
+use clap::FromArgMatches;
+use crate::sq_cli::PacketSubcommands;
+use sq_cli::SqSubcommands;
 
 mod sq_cli;
 mod commands;
@@ -197,18 +200,6 @@ fn serialize_keyring(mut output: &mut dyn io::Write, certs: &[Cert], binary: boo
     }
     output.finalize()?;
     Ok(())
-}
-
-fn parse_armor_kind(kind: Option<&str>) -> Option<armor::Kind> {
-    match kind.expect("has default value") {
-        "auto" =>    None,
-        "message" => Some(armor::Kind::Message),
-        "cert" =>    Some(armor::Kind::PublicKey),
-        "key" =>     Some(armor::Kind::SecretKey),
-        "sig" =>     Some(armor::Kind::Signature),
-        "file" =>    Some(armor::Kind::File),
-        _ => unreachable!(),
-    }
 }
 
 /// How much data to look at when detecting armor kinds.
@@ -394,14 +385,15 @@ impl Config<'_> {
 fn main() -> Result<()> {
     let policy = &mut P::new();
 
-    let matches = sq_cli::build().get_matches();
+    let c = sq_cli::SqCommand::from_arg_matches(&sq_cli::build().get_matches())?;
 
-    let known_notations: Vec<&str> = matches.values_of("known-notation")
-        .unwrap_or_default()
-        .collect();
+    let known_notations = c.known_notation
+        .iter()
+        .map(|n| n.as_str())
+        .collect::<Vec<&str>>();
     policy.good_critical_notations(&known_notations);
 
-    let force = matches.is_present("force");
+    let force = c.force;
 
     let mut config = Config {
         force,
@@ -409,10 +401,8 @@ fn main() -> Result<()> {
         unstable_cli_warning_emitted: false,
     };
 
-    match matches.subcommand() {
-        Some(("decrypt",  m)) => {
-            use clap::FromArgMatches;
-            let command = sq_cli::DecryptCommand::from_arg_matches(m)?;
+    match c.subcommand {
+        SqSubcommands::Decrypt(command) => {
 
             let mut input = open_or_stdin(command.io.input.as_deref())?;
             let mut output =
@@ -447,54 +437,38 @@ fn main() -> Result<()> {
                               session_keys,
                               command.dump, command.hex)?;
         },
-        Some(("encrypt",  m)) => {
-            let recipients = m.values_of("recipients-cert-file")
-                .map(load_certs)
-                .unwrap_or_else(|| Ok(vec![]))?;
-            let mut input = open_or_stdin(m.value_of("input"))?;
-            let output =
-                config.create_or_stdout_pgp(m.value_of("output"),
-                                            m.is_present("binary"),
-                                            armor::Kind::Message)?;
-            let additional_secrets = m.values_of("signer-key-file")
-                .map(load_certs)
-                .unwrap_or_else(|| Ok(vec![]))?;
-            let mode = match m.value_of("mode").expect("has default") {
-                "rest" => KeyFlags::empty()
-                    .set_storage_encryption(),
-                "transport" => KeyFlags::empty()
-                    .set_transport_encryption(),
-                "all" => KeyFlags::empty()
-                    .set_storage_encryption()
-                    .set_transport_encryption(),
-                _ => unreachable!("uses possible_values"),
-            };
-            let time = if let Some(time) = m.value_of("time") {
-                Some(parse_iso8601(time, chrono::NaiveTime::from_hms(0, 0, 0))
-                         .context(format!("Bad value passed to --time: {:?}",
-                                          time))?.into())
-            } else {
-                None
-            };
-            let private_key_store = m.value_of("private-key-store");
+        SqSubcommands::Encrypt(command) => {
+            let recipients = load_certs(
+                command.recipients_cert_file.iter().map(|s| s.as_ref()),
+            )?;
+            let mut input = open_or_stdin(command.io.input.as_deref())?;
+
+            let output = config.create_or_stdout_pgp(
+                command.io.output.as_deref(),
+                command.binary,
+                armor::Kind::Message,
+            )?;
+
+            let additional_secrets =
+                load_certs(command.signer_key_file.iter().map(|s| s.as_ref()))?;
+
+            let time = command.time.map(|t| t.time.into());
+            let private_key_store = command.private_key_store.as_deref();
             commands::encrypt(commands::EncryptOpts {
                 policy,
                 private_key_store,
                 input: &mut input,
                 message: output,
-                npasswords: m.occurrences_of("symmetric") as usize,
+                npasswords: command.symmetric,
                 recipients: &recipients,
                 signers: additional_secrets,
-                mode,
-                compression: m.value_of("compression").expect("has default"),
+                mode: command.mode,
+                compression: command.compression,
                 time,
-                use_expired_subkey: m.is_present("use-expired-subkey"),
+                use_expired_subkey: command.use_expired_subkey,
             })?;
         },
-        Some(("sign",  m)) => {
-            use clap::FromArgMatches;
-            let command = sq_cli::SignCommand::from_arg_matches(m)?;
-
+        SqSubcommands::Sign(command) => {
             let mut input = open_or_stdin(command.io.input.as_deref())?;
             let output = command.io.output.as_deref();
             let detached = command.detached;
@@ -504,35 +478,9 @@ fn main() -> Result<()> {
             let private_key_store = command.private_key_store.as_deref();
             let secrets =
                 load_certs(command.secret_key_file.iter().map(|s| s.as_ref()))?;
-            let time = if let Some(time) = command.time {
-                Some(parse_iso8601(&time, chrono::NaiveTime::from_hms(0, 0, 0))
-                         .context(format!("Bad value passed to --time: {:?}",
-                                          time))?.into())
-            } else {
-                None
-            };
-            // Each --notation takes two values.  The iterator
-            // returns them one at a time, however.
-            let mut notations: Vec<(bool, NotationData)> = Vec::new();
-            if let Some(n) = command.notation {
-                let mut n = n.iter();
-                while let Some(name) = n.next() {
-                    let value = n.next().unwrap();
+            let time = command.time.map(|t| t.time.into());
 
-                    let (critical, name) =
-                        if let Some(name) = name.strip_prefix('!') {
-                            (true, name)
-                        } else {
-                            (false, name.as_str())
-                        };
-
-                    notations.push(
-                        (critical,
-                         NotationData::new(
-                             name, value,
-                             NotationDataFlags::empty().set_human_readable())));
-                }
-            }
+            let notations = parse_notations(command.notation.unwrap_or_default())?;
 
             if let Some(merge) = command.merge {
                 let output = config.create_or_stdout_pgp(output, binary,
@@ -559,10 +507,7 @@ fn main() -> Result<()> {
                 })?;
             }
         },
-        Some(("verify",  m)) => {
-            use clap::FromArgMatches;
-            let command = sq_cli::VerifyCommand::from_arg_matches(m)?;
-
+        SqSubcommands::Verify(command) => {
             // TODO: Fix interface of open_or_stdin, create_or_stdout_safe, etc.
             let mut input = open_or_stdin(command.io.input.as_deref())?;
             let mut output =
@@ -581,11 +526,8 @@ fn main() -> Result<()> {
         },
 
         // TODO: Extract body to commands/armor.rs
-        Some(("armor", m)) => {
-            use clap::FromArgMatches;
-            let command = sq_cli::ArmorCommand::from_arg_matches(m)?;
-
-            let input = open_or_stdin(command.input.as_deref())?;
+        SqSubcommands::Armor(command) => {
+            let input = open_or_stdin(command.io.input.as_deref())?;
             let mut want_kind: Option<armor::Kind> = command.kind.into();
 
             // Peek at the data.  If it looks like it is armored
@@ -605,7 +547,7 @@ fn main() -> Result<()> {
             {
                 // It is already armored and has the correct kind.
                 let mut output =
-                    config.create_or_stdout_safe(command.output.as_deref())?;
+                    config.create_or_stdout_safe(command.io.output.as_deref())?;
                 io::copy(&mut input, &mut output)?;
                 return Ok(());
             }
@@ -620,7 +562,7 @@ fn main() -> Result<()> {
             let want_kind = want_kind.expect("given or detected");
 
             let mut output =
-                config.create_or_stdout_pgp(command.output.as_deref(),
+                config.create_or_stdout_pgp(command.io.output.as_deref(),
                                             false, want_kind)?;
 
             if already_armored {
@@ -634,10 +576,7 @@ fn main() -> Result<()> {
             }
             output.finalize()?;
         },
-        Some(("dearmor",  m)) => {
-            use clap::FromArgMatches;
-            let command = sq_cli::DearmorCommand::from_arg_matches(m)?;
-
+        SqSubcommands::Dearmor(command) => {
             let mut input = open_or_stdin(command.io.input.as_deref())?;
             let mut output =
                 config.create_or_stdout_safe(command.io.output.as_deref())?;
@@ -645,25 +584,22 @@ fn main() -> Result<()> {
             io::copy(&mut filter, &mut output)?;
         },
         #[cfg(feature = "autocrypt")]
-        Some(("autocrypt", m)) => {
-            use clap::FromArgMatches;
-            let command = sq_cli::autocrypt::AutocryptCommand::from_arg_matches(m)?;
+        SqSubcommands::Autocrypt(command) => {
             commands::autocrypt::dispatch(config, &command)?;
         },
-        Some(("inspect",  m)) => {
+        SqSubcommands::Inspect(command) => {
             // sq inspect does not have --output, but commands::inspect does.
             // Work around this mismatch by always creating a stdout output.
             let mut output = config.create_or_stdout_unsafe(None)?;
-            commands::inspect(m, policy, &mut output)?;
+            commands::inspect(command, policy, &mut output)?;
         },
 
-        Some(("keyring", m)) => commands::keyring::dispatch(config, m)?,
+        SqSubcommands::Keyring(command) => {
+            commands::keyring::dispatch(config, command)?
+        },
 
-        Some(("packet", m)) => match m.subcommand() {
-            Some(("dump",  m)) => {
-                use clap::FromArgMatches;
-                let command = sq_cli::PacketDumpCommand::from_arg_matches(m)?;
-
+        SqSubcommands::Packet(command) => match command.subcommand {
+            PacketSubcommands::Dump(command) => {
                 let mut input = open_or_stdin(command.io.input.as_deref())?;
                 let mut output = config.create_or_stdout_unsafe(
                     command.io.output.as_deref(),
@@ -676,10 +612,7 @@ fn main() -> Result<()> {
                                session_key.as_ref(), width)?;
             },
 
-            Some(("decrypt",  m)) => {
-                use clap::FromArgMatches;
-                let command = sq_cli::PacketDecryptCommand::from_arg_matches(m)?;
-
+            PacketSubcommands::Decrypt(command) => {
                 let mut input = open_or_stdin(command.io.input.as_deref())?;
                 let mut output = config.create_or_stdout_pgp(
                     command.io.output.as_deref(),
@@ -699,14 +632,13 @@ fn main() -> Result<()> {
                 output.finalize()?;
             },
 
-            Some(("split", m)) => {
-                let mut input = open_or_stdin(m.value_of("input"))?;
+            PacketSubcommands::Split(command) => {
+                let mut input = open_or_stdin(command.input.as_deref())?;
                 let prefix =
                 // The prefix is either specified explicitly...
-                    m.value_of("prefix").map(|p| p.to_owned())
-                    .unwrap_or(
+                    command.prefix.unwrap_or(
                         // ... or we derive it from the input file...
-                        m.value_of("input").and_then(|i| {
+                        command.input.and_then(|i| {
                             let p = PathBuf::from(i);
                             // (but only use the filename)
                             p.file_name().map(|f| String::from(f.to_string_lossy()))
@@ -717,29 +649,65 @@ fn main() -> Result<()> {
                             + "-");
                 commands::split(&mut input, &prefix)?;
             },
-            Some(("join",  m)) => commands::join(config, m)?,
-            _ => unreachable!(),
+            PacketSubcommands::Join(command) => commands::join(config, command)?,
         },
 
-        Some(("keyserver",  m)) =>
-            commands::net::dispatch_keyserver(config, m)?,
+        SqSubcommands::Keyserver(command) => {
+            commands::net::dispatch_keyserver(config, command)?
+        }
 
-        Some(("key", m)) => commands::key::dispatch(config, m)?,
+        SqSubcommands::Key(command) => {
+            commands::key::dispatch(config, command)?
+        }
 
-        Some(("revoke",  m)) => commands::revoke::dispatch(config, m)?,
+        SqSubcommands::Revoke(command) => {
+            commands::revoke::dispatch(config, command)?
+        }
 
-        Some(("wkd",  m)) => commands::net::dispatch_wkd(config, m)?,
+        SqSubcommands::Wkd(command) => {
+            commands::net::dispatch_wkd(config, command)?
+        }
 
-        Some(("certify",  m)) => {
-            commands::certify::certify(config, m)?;
-        },
-
-        _ => unreachable!(),
+        SqSubcommands::Certify(command) => {
+            commands::certify::certify(config, command)?
+        }
     }
 
     Ok(())
 }
 
+fn parse_notations(n: Vec<String>) -> Result<Vec<(bool, NotationData)>> {
+
+    // TODO I'm not sure what to do about this requirement.  Setting
+    // number_of_values = 2 for the argument already makes clap bail if the
+    // length of the vec is odd.
+    assert_eq!(n.len() % 2, 0);
+
+    // Each --notation takes two values.  Iterate over them in chunks of 2.
+    let notations: Vec<(bool, NotationData)> = n
+        .chunks(2)
+        .map(|arg_pair| {
+            let name = &arg_pair[0];
+            let value = &arg_pair[1];
+
+            let (critical, name) = match name.strip_prefix('!') {
+                Some(name) => (true, name),
+                None => (false, name.as_str()),
+            };
+
+            let notation_data = NotationData::new(
+                name,
+                value,
+                NotationDataFlags::empty().set_human_readable(),
+            );
+            (critical, notation_data)
+        })
+        .collect();
+
+    Ok(notations)
+}
+
+// TODO: Replace all uses with CliTime argument type
 /// Parses the given string depicting a ISO 8601 timestamp.
 fn parse_iso8601(s: &str, pad_date_with: chrono::NaiveTime)
                  -> Result<DateTime<Utc>>

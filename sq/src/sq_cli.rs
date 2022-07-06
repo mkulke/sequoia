@@ -1,5 +1,5 @@
 /// Command-line parser for sq.
-use clap::{Arg, ArgGroup, Command, ArgEnum, Args, Subcommand};
+use clap::{ArgGroup, Command, ArgEnum, Args, Subcommand};
 use clap::{CommandFactory, Parser};
 
 use sequoia_openpgp as openpgp;
@@ -8,10 +8,18 @@ use openpgp::types::SymmetricAlgorithm;
 use openpgp::fmt::hex;
 
 pub fn build() -> Command<'static> {
-    configure(Command::new("sq"))
+    let sq_version = Box::leak(
+        format!(
+            "{} (sequoia-openpgp {}, using {})",
+            env!("CARGO_PKG_VERSION"),
+            sequoia_openpgp::VERSION,
+            sequoia_openpgp::crypto::backend()
+        )
+        .into_boxed_str(),
+    ) as &str;
+    SqCommand::command().version(sq_version)
 }
 
-// TODO: use clap_derive for the whole CLI
 /// Defines the CLI.
 ///
 /// The order of top-level subcommands is:
@@ -22,22 +30,11 @@ pub fn build() -> Command<'static> {
 ///   - Key discovery & networking          (4xx)
 ///   - Armor                               (5xx)
 ///   - Inspection & packet manipulation    (6xx)
-pub fn configure(
-    app: Command<'static>
-) -> Command<'static> {
-    let version = Box::leak(
-        format!("{} (sequoia-openpgp {}, using {})",
-                env!("CARGO_PKG_VERSION"),
-                sequoia_openpgp::VERSION,
-                sequoia_openpgp::crypto::backend())
-            .into_boxed_str()) as &str;
-
-    let app = app
-        .version(version)
-        .about("A command-line frontend for Sequoia, \
-                an implementation of OpenPGP")
-        .long_about(
-"A command-line frontend for Sequoia, an implementation of OpenPGP
+#[derive(Parser, Debug)]
+#[clap(
+    name = "sq",
+    about = "A command-line frontend for Sequoia, an implementation of OpenPGP",
+    long_about = "A command-line frontend for Sequoia, an implementation of OpenPGP
 
 Functionality is grouped and available using subcommands.  Currently,
 this interface is completely stateless.  Therefore, you need to supply
@@ -50,42 +47,115 @@ by default.
 We use the term \"certificate\", or cert for short, to refer to OpenPGP
 keys that do not contain secrets.  Conversely, we use the term \"key\"
 to refer to OpenPGP keys that do contain secrets.
-")
-        .subcommand_required(true)
-        .arg_required_else_help(true)
-        .disable_colored_help(true)
-        .arg(Arg::new("force")
-             .short('f').long("force")
-             .help("Overwrites existing files"))
-        .arg(Arg::new("known-notation")
-             .long("known-notation").value_name("NOTATION")
-             .multiple_occurrences(true)
-             .help("Adds NOTATION to the list of known notations")
-             .long_help("Adds NOTATION to the list of known notations. \
-               This is used when validating signatures. \
-               Signatures that have unknown notations with the \
-               critical bit set are considered invalid."));
+",
+    subcommand_required = true,
+    arg_required_else_help = true,
+    disable_colored_help = true,
+)]
+pub struct SqCommand {
+    #[clap(
+        short = 'f',
+        long = "force",
+        help = "Overwrites existing files",
+    )]
+    pub force: bool,
+    #[clap(
+        long = "known-notation",
+        value_name = "NOTATION",
+        multiple_occurrences = true,
+        help = "Adds NOTATION to the list of known notations",
+        long_help = "Adds NOTATION to the list of known notations. \
+            This is used when validating signatures. \
+            Signatures that have unknown notations with the \
+            critical bit set are considered invalid."
+    )]
+    // TODO is this the right type?
+    pub known_notation: Vec<String>,
+    #[clap(subcommand)]
+    pub subcommand: SqSubcommands,
+}
 
-    cfg_if::cfg_if! {
-        if #[cfg(feature = "autocrypt")] {
-            let app = app.subcommand(autocrypt::AutocryptCommand::command());
+#[derive(Debug, Subcommand)]
+pub enum SqSubcommands {
+    Armor(ArmorCommand),
+    Dearmor(DearmorCommand),
+    Sign(SignCommand),
+    Verify(VerifyCommand),
+    Wkd(WkdCommand),
+    Keyserver(KeyserverCommand),
+    Revoke(RevokeCommand),
+    Packet(PacketCommand),
+    Certify(CertifyCommand),
+    Keyring(KeyringCommand),
+    Key(KeyCommand),
+    Inspect(InspectCommand),
+    Encrypt(EncryptCommand),
+    Decrypt(DecryptCommand),
+    #[cfg(feature = "autocrypt")]
+    Autocrypt(autocrypt::AutocryptCommand),
+}
+
+use chrono::{offset::Utc, DateTime};
+#[derive(Debug)]
+pub struct CliTime {
+    pub time: DateTime<Utc>,
+}
+
+impl std::str::FromStr for CliTime {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<CliTime> {
+        let time =
+            CliTime::parse_iso8601(s, chrono::NaiveTime::from_hms(0, 0, 0))?;
+        Ok(CliTime { time })
+    }
+}
+
+impl CliTime {
+    /// Parses the given string depicting a ISO 8601 timestamp.
+    fn parse_iso8601(
+        s: &str,
+        pad_date_with: chrono::NaiveTime,
+    ) -> anyhow::Result<DateTime<Utc>> {
+        // If you modify this function this function, synchronize the
+        // changes with the copy in sqv.rs!
+        for f in &[
+            "%Y-%m-%dT%H:%M:%S%#z",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%dT%H:%M%#z",
+            "%Y-%m-%dT%H:%M",
+            "%Y-%m-%dT%H%#z",
+            "%Y-%m-%dT%H",
+            "%Y%m%dT%H%M%S%#z",
+            "%Y%m%dT%H%M%S",
+            "%Y%m%dT%H%M%#z",
+            "%Y%m%dT%H%M",
+            "%Y%m%dT%H%#z",
+            "%Y%m%dT%H",
+        ] {
+            if f.ends_with("%#z") {
+                if let Ok(d) = DateTime::parse_from_str(s, *f) {
+                    return Ok(d.into());
+                }
+            } else if let Ok(d) = chrono::NaiveDateTime::parse_from_str(s, *f) {
+                return Ok(DateTime::from_utc(d, Utc));
+            }
         }
-    };
-
-    app.subcommand(ArmorCommand::command())
-        .subcommand(DearmorCommand::command())
-        .subcommand(SignCommand::command())
-        .subcommand(VerifyCommand::command())
-        .subcommand(WkdCommand::command())
-        .subcommand(KeyserverCommand::command())
-        .subcommand(RevokeCommand::command())
-        .subcommand(PacketCommand::command())
-        .subcommand(CertifyCommand::command())
-        .subcommand(KeyringCommand::command())
-        .subcommand(KeyCommand::command())
-        .subcommand(InspectCommand::command())
-        .subcommand(EncryptCommand::command())
-        .subcommand(DecryptCommand::command())
+        for f in &[
+            "%Y-%m-%d",
+            "%Y-%m",
+            "%Y-%j",
+            "%Y%m%d",
+            "%Y%m",
+            "%Y%j",
+            "%Y",
+        ] {
+            if let Ok(d) = chrono::NaiveDate::parse_from_str(s, *f) {
+                return Ok(DateTime::from_utc(d.and_time(pad_date_with), Utc));
+            }
+        }
+        Err(anyhow::anyhow!("Malformed ISO8601 timestamp: {}", s))
+    }
 }
 
 #[derive(Debug, Args)]
@@ -130,15 +200,8 @@ $ sq armor binary-message.pgp
 "
     )]
 pub struct ArmorCommand {
-    #[clap(value_name = "FILE", help = "Reads from FILE or stdin if omitted")]
-    pub input: Option<String>,
-    #[clap(
-        short,
-        long,
-        value_name = "FILE",
-        help = "Writes to FILE or stdout if omitted"
-    )]
-    pub output: Option<String>,
+    #[clap(flatten)]
+    pub io: IoArgs,
     #[clap(
         long = "label",
         value_name = "LABEL",
@@ -374,8 +437,7 @@ pub struct SignCommand {
         help = "Chooses keys valid at the specified time and sets the \
             signature's creation time",
     )]
-    //TODO: Fix type & parsing
-    pub time: Option<String>,
+    pub time: Option<CliTime>,
     #[clap(
         long,
         value_names = &["NAME", "VALUE"],
@@ -622,6 +684,22 @@ pub enum PacketKind {
     File
 }
 
+impl From<PacketKind> for Option<openpgp::armor::Kind> {
+
+    fn from(pk: PacketKind) -> Self {
+        use openpgp::armor::Kind as OpenpgpArmorKind;
+
+        match pk {
+            PacketKind::Auto => None,
+            PacketKind::Message => Some(OpenpgpArmorKind::Message),
+            PacketKind::Cert => Some(OpenpgpArmorKind::PublicKey),
+            PacketKind::Key => Some(OpenpgpArmorKind::SecretKey),
+            PacketKind::Sig => Some(OpenpgpArmorKind::Signature),
+            PacketKind::File => Some(OpenpgpArmorKind::File),
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 #[clap(
     name = "revoke",
@@ -780,7 +858,7 @@ that in the future.\"",
 "Chooses keys valid at the specified time and sets the revocation \
 certificate's creation time",
     )]
-    pub time: Option<String>,
+    pub time: Option<CliTime>,
     #[clap(
         long,
         value_names = &["NAME", "VALUE"],
@@ -809,6 +887,18 @@ pub enum RevocationReason {
     Superseded,
     Retired,
     Unspecified
+}
+
+use openpgp::types::ReasonForRevocation as OpenPGPRevocationReason;
+impl From<RevocationReason> for OpenPGPRevocationReason {
+    fn from(rr: RevocationReason) -> Self {
+        match rr {
+            RevocationReason::Compromised => OpenPGPRevocationReason::KeyCompromised,
+            RevocationReason::Superseded => OpenPGPRevocationReason::KeySuperseded,
+            RevocationReason::Retired => OpenPGPRevocationReason::KeyRetired,
+            RevocationReason::Unspecified => OpenPGPRevocationReason::Unspecified,
+        }
+    }
 }
 
 #[derive(Debug, Args)]
@@ -922,7 +1012,7 @@ the message \"I've created a new subkey, please refresh the certificate."
 "Chooses keys valid at the specified time and sets the revocation \
 certificate's creation time",
     )]
-    pub time: Option<String>,
+    pub time: Option<CliTime>,
     #[clap(
         long,
         value_names = &["NAME", "VALUE"],
@@ -1044,7 +1134,7 @@ that in the future.\"",
 "Chooses keys valid at the specified time and sets the revocation \
 certificate's creation time",
     )]
-    pub time: Option<String>,
+    pub time: Option<CliTime>,
     #[clap(
         long,
         value_names = &["NAME", "VALUE"],
@@ -1071,6 +1161,15 @@ certificate's creation time",
 pub enum UseridRevocationReason {
     Retired,
     Unspecified
+}
+
+impl From<UseridRevocationReason> for OpenPGPRevocationReason {
+    fn from(rr: UseridRevocationReason) -> Self {
+        match rr {
+            UseridRevocationReason::Retired => OpenPGPRevocationReason::UIDRetired,
+            UseridRevocationReason::Unspecified => OpenPGPRevocationReason::Unspecified,
+        }
+    }
 }
 
 #[derive(Parser, Debug)]
@@ -1136,28 +1235,28 @@ $ sq certify --time 20130721T0550+0200 neal.pgp ada.pgp ada
         short = 'd',
         long = "depth",
         value_name = "TRUST_DEPTH",
+        default_value = "0",
         help = "Sets the trust depth",
         long_help =
             "Sets the trust depth (sometimes referred to as the trust level).  \
             0 means a normal certification of <CERTIFICATE, USERID>.  \
             1 means CERTIFICATE is also a trusted introducer, 2 means \
-            CERTIFICATE is a meta-trusted introducer, etc.  The default is 0.",
+            CERTIFICATE is a meta-trusted introducer, etc.",
     )]
-    //TODO: use usize, not String
-    pub depth: Option<String>,
+    pub depth: u8,
     #[clap(
         short = 'a',
         long = "amount",
         value_name = "TRUST_AMOUNT",
+        default_value = "120",
         help = "Sets the amount of trust",
         long_help =
             "Sets the amount of trust.  Values between 1 and 120 are meaningful. \
             120 means fully trusted.  Values less than 120 indicate the degree \
-            of trust.  60 is usually used for partially \
-            trusted.  The default is 120.",
+            of trust.  60 is usually used for partially trusted.",
     )]
     //TODO: use usize, not String
-    pub amount: Option<String>,
+    pub amount: u8,
     #[clap(
         short = 'r',
         long = "regex",
@@ -1705,7 +1804,7 @@ default timezone is UTC):
 $ sq key generate --creation-time 20110609T1938+0200 --export noam.pgp
 ",
     )]
-    pub creation_time: Option<String>,
+    pub creation_time: Option<CliTime>,
     #[clap(
         long = "expires",
         value_name = "TIME",
@@ -1714,6 +1813,7 @@ $ sq key generate --creation-time 20110609T1938+0200 --export noam.pgp
             "Makes the key expire at TIME (as ISO 8601). \
             Use \"never\" to create keys that do not expire.",
     )]
+    // TODO: Use a wrapper type for CliTime
     pub expires: Option<String>,
     #[clap(
         long = "expires-in",
@@ -1772,7 +1872,8 @@ $ sq key generate --creation-time 20110609T1938+0200 --export noam.pgp
         value_name = "OUTFILE",
         help = "Writes the key to OUTFILE",
     )]
-    pub export: String,
+    // TODO this represents a filename, so it should be a Path
+    pub export: Option<String>,
     #[clap(
         long = "rev-cert",
         value_name = "FILE or -",
@@ -1783,6 +1884,7 @@ $ sq key generate --creation-time 20110609T1938+0200 --export noam.pgp
             mandatory if OUTFILE is \"-\". \
             [default: <OUTFILE>.rev]",
     )]
+    // TODO this represents a filename, so it should be a Path
     pub rev_cert: Option<String>
 }
 
@@ -1913,6 +2015,7 @@ pub struct KeyAdoptCommand {
         required(true),
         help = "Adds the key or subkey KEY to the TARGET-KEY",
     )]
+    // TODO Type should be KeyHandle, improve help
     pub key: Vec<String>,
     #[clap(
         long = "allow-broken-crypto",
@@ -1986,7 +2089,7 @@ pub struct KeyAttestCertificationsCommand {
         value_name = "KEY",
         help = "Changes attestations on KEY",
     )]
-    key: Option<String>,
+    pub key: Option<String>,
     #[clap(
         short,
         long,
@@ -2013,24 +2116,16 @@ pub struct KeyAttestCertificationsCommand {
 )]
 pub struct WkdCommand {
     #[clap(
-        short = 'p',
-        long = "policy",
+        short,
+        long,
         value_name = "NETWORK-POLICY",
-        default_value_t = WkdNetworkPolicy::Encrypted,
+        default_value_t = NetworkPolicy::Encrypted,
         arg_enum,
         help = "Sets the network policy to use",
     )]
-    pub policy: WkdNetworkPolicy,
+    pub network_policy: NetworkPolicy,
     #[clap(subcommand)]
     pub subcommand: WkdSubcommands,
-}
-
-#[derive(ArgEnum, Clone, Debug)]
-pub enum WkdNetworkPolicy {
-    Offline,
-    Anonymized,
-    Encrypted,
-    Insecure,
 }
 
 #[derive(Debug, Subcommand)]
@@ -2050,7 +2145,7 @@ pub struct WkdUrlCommand {
         value_name = "ADDRESS",
         help = "Queries for ADDRESS",
     )]
-    pub input: String,
+    pub email_address: String,
 }
 
 #[derive(Debug, Args)]
@@ -2062,7 +2157,7 @@ pub struct WkdDirectUrlCommand {
         value_name = "ADDRESS",
         help = "Queries for ADDRESS",
     )]
-    pub input: String,
+    pub email_address: String,
 }
 
 #[derive(Debug, Args)]
@@ -2074,13 +2169,20 @@ pub struct WkdGetCommand {
         value_name = "ADDRESS",
         help = "Queries a cert for ADDRESS",
     )]
-    pub input: String,
+    pub email_address: String,
     #[clap(
         short = 'B',
         long,
         help = "Emits binary data",
     )]
     pub binary: bool,
+    #[clap(
+        short,
+        long,
+        value_name = "FILE",
+        help = "Writes to FILE or stdout if omitted"
+    )]
+    pub output: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -2152,14 +2254,14 @@ pub struct WkdGenerateCommand {
 )]
 pub struct KeyserverCommand {
     #[clap(
-        short,
-        long,
+        short = 'p',
+        long = "policy",
         value_name = "NETWORK-POLICY",
-        default_value_t = KeyserverPolicy::Encrypted,
+        default_value_t = NetworkPolicy::Encrypted,
         help = "Sets the network policy to use",
         arg_enum,
     )]
-    pub policy: KeyserverPolicy,
+    pub network_policy: NetworkPolicy,
     #[clap(
         short,
         long,
@@ -2172,11 +2274,22 @@ pub struct KeyserverCommand {
 }
 
 #[derive(ArgEnum, Clone, Debug)]
-pub enum KeyserverPolicy {
+pub enum NetworkPolicy {
     Offline,
     Anonymized,
     Encrypted,
     Insecure,
+}
+
+impl From<NetworkPolicy> for sequoia_net::Policy {
+    fn from(kp: NetworkPolicy) -> Self {
+        match kp {
+            NetworkPolicy::Offline => sequoia_net::Policy::Offline,
+            NetworkPolicy::Anonymized => sequoia_net::Policy::Anonymized,
+            NetworkPolicy::Encrypted => sequoia_net::Policy::Encrypted,
+            NetworkPolicy::Insecure => sequoia_net::Policy::Insecure,
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -2250,7 +2363,7 @@ $ sq inspect message.pgp
 $ sq inspect message.sig
 ",
 )]
-struct InspectCommand {
+pub struct InspectCommand {
     #[clap(
         value_name = "FILE",
         help = "Reads from FILE or stdin if omitted",
@@ -2326,8 +2439,9 @@ pub struct EncryptCommand {
         long_help = "Adds a password to encrypt with.  \
             The message can be decrypted with \
             either one of the recipient's keys, or any password.",
+        parse(from_occurrences)
     )]
-    pub symmetric: bool,
+    pub symmetric: usize,
     #[clap(
         long = "mode",
         value_name = "MODE",
@@ -2358,7 +2472,7 @@ pub struct EncryptCommand {
         help = "Chooses keys valid at the specified time and \
             sets the signature's creation time",
     )]
-    pub time: Option<String>,
+    pub time: Option<CliTime>,
     #[clap(
         long = "use-expired-subkey",
         help = "Falls back to expired encryption subkeys",
@@ -2681,5 +2795,37 @@ $ sq autocrypt encode-sender --prefer-encrypt mutual juliet.pgp
                 PreferEncryptArgs::NoPreference => write!(f, "nopreference"),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_parse_iso8601() -> anyhow::Result<()> {
+        let z = chrono::NaiveTime::from_hms(0, 0, 0);
+        CliTime::parse_iso8601("2017-03-04T13:25:35Z", z)?;
+        CliTime::parse_iso8601("2017-03-04T13:25:35+08:30", z)?;
+        CliTime::parse_iso8601("2017-03-04T13:25:35", z)?;
+        CliTime::parse_iso8601("2017-03-04T13:25Z", z)?;
+        CliTime::parse_iso8601("2017-03-04T13:25", z)?;
+        // CliTime::parse_iso8601("2017-03-04T13Z", z)?; // XXX: chrono doesn't like
+        // CliTime::parse_iso8601("2017-03-04T13", z)?; // ditto
+        CliTime::parse_iso8601("2017-03-04", z)?;
+        // CliTime::parse_iso8601("2017-03", z)?; // ditto
+        CliTime::parse_iso8601("2017-031", z)?;
+        CliTime::parse_iso8601("20170304T132535Z", z)?;
+        CliTime::parse_iso8601("20170304T132535+0830", z)?;
+        CliTime::parse_iso8601("20170304T132535", z)?;
+        CliTime::parse_iso8601("20170304T1325Z", z)?;
+        CliTime::parse_iso8601("20170304T1325", z)?;
+        // CliTime::parse_iso8601("20170304T13Z", z)?; // ditto
+        // CliTime::parse_iso8601("20170304T13", z)?; // ditto
+        CliTime::parse_iso8601("20170304", z)?;
+        // CliTime::parse_iso8601("201703", z)?; // ditto
+        CliTime::parse_iso8601("2017031", z)?;
+        // CliTime::parse_iso8601("2017", z)?; // ditto
+        Ok(())
     }
 }
