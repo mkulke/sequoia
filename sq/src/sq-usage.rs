@@ -375,6 +375,8 @@
 //!             Generates a new key
 //!     password
 //!             Changes password protecting secrets
+//!     userid
+//!             Manages User IDs
 //!     extract-cert
 //!             Converts a key to a cert
 //!     attest-certifications
@@ -531,6 +533,142 @@
 //!
 //! # And remove the password again.
 //! $ sq key password --clear < juliet.encrypted_key.pgp > juliet.decrypted_key.pgp
+//! ```
+//!
+//! ### Subcommand key userid
+//!
+//! ```text
+//! Manages User IDs
+//!
+//! Add User IDs to, or strip User IDs from a key.
+//!
+//! USAGE:
+//!     sq key userid <SUBCOMMAND>
+//!
+//! OPTIONS:
+//!     -h, --help
+//!             Print help information
+//!
+//! SUBCOMMANDS:
+//!     add
+//!             Adds a User ID
+//!     strip
+//!             Strips a User ID
+//!     help
+//!             Print this message or the help of the given subcommand(s)
+//! ```
+//!
+//! #### Subcommand key userid add
+//!
+//! ```text
+//! Adds a User ID
+//!
+//! A User ID can contain a name, like "Juliet" or an email address, like
+//! "<juliet@example.org>".  Historically, a name and email address were often
+//! combined as a single User ID, like "Juliet <juliet@example.org>".
+//!
+//! USAGE:
+//!     sq key userid add [OPTIONS] [FILE]
+//!
+//! ARGS:
+//!     <FILE>
+//!             Reads from FILE or stdin if omitted
+//!
+//! OPTIONS:
+//!     -B, --binary
+//!             Emits binary data
+//!
+//!         --creation-time <CREATION_TIME>
+//!             Sets the creation time of this User ID's binding signature to TIME.
+//!             TIME is interpreted as an ISO 8601 timestamp.  To set the creation
+//!             time to June 28, 2022 at midnight UTC, you can do:
+//! 
+//!             $ sq key userid add --userid "Juliet" --creation-time 20210628 \
+//!                juliet.key.pgp --output juliet-new.key.pgp
+//! 
+//!             To include a time, add a T, the time and optionally the timezone
+//!             (the
+//!             default timezone is UTC):
+//! 
+//!             $ sq key userid add --userid "Juliet" --creation-time
+//!             20210628T1137+0200 \
+//!                juliet.key.pgp --output juliet-new.key.pgp
+//!
+//!     -h, --help
+//!             Print help information
+//!
+//!     -o, --output <FILE>
+//!             Writes to FILE or stdout if omitted
+//!
+//!         --private-key-store <KEY_STORE>
+//!             Provides parameters for private key store
+//!
+//!     -u, --userid <USERID>
+//!             User ID to add
+//!
+//! EXAMPLES:
+//!
+//! # First, this generates a key
+//! $ sq key generate --userid "<juliet@example.org>" --export juliet.key.pgp
+//!
+//! # Then, this adds a User ID
+//! $ sq key userid add --userid "Juliet" juliet.key.pgp \
+//!   --output juliet-new.key.pgp
+//! ```
+//!
+//! #### Subcommand key userid strip
+//!
+//! ```text
+//! Strips a User ID
+//!
+//! Note that this operation does not reliably remove User IDs from a
+//! certificate that has already been disseminated! (OpenPGP software
+//! typically appends new information it receives about a certificate
+//! to its local copy of that certificate.  Systems that have obtained
+//! a copy of your certificate with the User ID that you are trying to
+//! strip will not drop that User ID from their copy.)
+//!
+//! In most cases, you will want to use the 'sq revoke userid' operation
+//! instead.  That issues a revocation for a User ID, which can be used to mark
+//! the User ID as invalidated.
+//!
+//! However, this operation can be useful in very specific cases, in particular:
+//! to remove a mistakenly added User ID before it has been uploaded to key
+//! servers or otherwise shared.
+//!
+//! Stripping a User ID may change how a certificate is interpreted.  This
+//! is because information about the certificate like algorithm preferences,
+//! the primary key's key flags, etc. is stored in the User ID's binding
+//! signature.
+//!
+//! USAGE:
+//!     sq key userid strip [OPTIONS] [FILE]
+//!
+//! ARGS:
+//!     <FILE>
+//!             Reads from FILE or stdin if omitted
+//!
+//! OPTIONS:
+//!     -B, --binary
+//!             Emits binary data
+//!
+//!     -h, --help
+//!             Print help information
+//!
+//!     -o, --output <FILE>
+//!             Writes to FILE or stdout if omitted
+//!
+//!     -u, --userid <USERID>
+//!             The User IDs to strip.  Values must exactly match a User ID.
+//!
+//! EXAMPLES:
+//!
+//! # First, this generates a key
+//! $ sq key generate --userid "<juliet@example.org>" --export juliet.key.pgp
+//!
+//! # Then, this strips a User ID
+//! $ sq key userid strip --userid "<juliet@example.org>" \
+//!   --output juliet-new.key.pgp juliet.key.pgp
 //! ```
 //!
 //! ### Subcommand key extract-cert
