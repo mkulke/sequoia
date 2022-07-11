@@ -122,7 +122,9 @@ fn dump_manpage(cmd: &clap::Command, outdir: &OsStr, prefix: Option<&str>) -> Re
         // Add build date in the form "Month Year" to the bottom of the manpage
         .date(chrono::Utc::today().format("%B %Y").to_string())
         // The manual's title, akin to git's "Git Manual"
-        .manual("Sequoia Manual");
+        .manual("Sequoia Manual")
+        // The source for all (sub)commands is sq, with version
+        .source(&format!("sq {}", env!("CARGO_PKG_VERSION")));
     let mut buffer: Vec<u8> = Default::default();
     man.render(&mut buffer)?;
 
