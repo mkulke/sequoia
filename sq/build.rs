@@ -117,14 +117,16 @@ fn dump_manpage(cmd: &clap::Command, outdir: &OsStr, prefix: Option<&str>) -> Re
         Some(p) => p.to_owned() + "-" + cmd.get_name(),
         None => cmd.get_name().to_owned(),
     };
+
+    let man = clap_mangen::Man::new(cmd.clone().name(&command_name))
+        // Add build date in the form "Month Year" to the bottom of the manpage
+        .date(chrono::Utc::today().format("%B %Y").to_string());
+    let mut buffer: Vec<u8> = Default::default();
+    man.render(&mut buffer)?;
+
     let mut path = PathBuf::from(outdir);
     path.push(&command_name);
     path.set_extension("1");
-
-    let cmd_with_full_name = cmd.clone().name(&command_name);
-    let man = clap_mangen::Man::new(cmd_with_full_name);
-    let mut buffer: Vec<u8> = Default::default();
-    man.render(&mut buffer)?;
 
     println!("cargo:warning=generated manpages: {:?}", path);
     std::fs::write(path, buffer)?;
