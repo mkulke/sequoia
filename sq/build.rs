@@ -1,5 +1,4 @@
 use std::env;
-use std::ffi::OsString;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Write};
