@@ -1,8 +1,11 @@
 use std::env;
+use std::ffi::OsString;
+use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use clap_complete::Shell;
+use anyhow::Result;
 
 pub mod sq_cli {
     include!("src/sq_cli.rs");
@@ -29,6 +32,11 @@ fn main() {
         .unwrap();
     writeln!(main, "\ninclude!(\"sq.rs\");").unwrap();
 
+    fs::create_dir_all("manpages").unwrap();
+    let _ = dump_manpage(&sq, std::ffi::OsStr::new("manpages"), None);
+
+    // TODO: CARGO_TARGET_DIR is not always set, I think currently only by Makefile. So this is
+    // janky
     let outdir = match env::var_os("CARGO_TARGET_DIR") {
         None => return,
         Some(outdir) => outdir,
@@ -102,5 +110,27 @@ fn dump_help(sink: &mut dyn io::Write,
         dump_help(sink, sq, c, &format!("{}#", heading))?;
     }
 
+    Ok(())
+}
+
+fn dump_manpage(cmd: &clap::Command, outdir: &OsStr, prefix: Option<&str>) -> Result<()> {
+    let command_name = match prefix {
+        Some(p) => p.to_owned() + "-" + cmd.get_name(),
+        None => cmd.get_name().to_owned(),
+    };
+    let mut path = PathBuf::from(outdir);
+    path.push(&command_name);
+    path.set_extension("1");
+
+    let man = clap_mangen::Man::new(cmd.clone());
+    let mut buffer: Vec<u8> = Default::default();
+    man.render(&mut buffer)?;
+
+    println!("cargo:warning=generated manpages: {:?}", path);
+    std::fs::write(path, buffer)?;
+
+    for subcmd in cmd.get_subcommands() {
+        dump_manpage(subcmd, outdir, Some(&command_name))?
+    }
     Ok(())
 }
