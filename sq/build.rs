@@ -122,7 +122,8 @@ fn dump_manpage(cmd: &clap::Command, outdir: &OsStr, prefix: Option<&str>) -> Re
     path.push(&command_name);
     path.set_extension("1");
 
-    let man = clap_mangen::Man::new(cmd.clone());
+    let cmd_with_full_name = cmd.clone().name(&command_name);
+    let man = clap_mangen::Man::new(cmd_with_full_name);
     let mut buffer: Vec<u8> = Default::default();
     man.render(&mut buffer)?;
 
