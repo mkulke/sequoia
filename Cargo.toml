@@ -11,3 +11,9 @@ members = [
 
 [profile.release]
 debug = true
+
+[patch.crates-io]
+#clap = { path = "../clap" }
+#clap_mangen = { path = "../clap/clap_mangen" }
+clap = { git = "https://gitlab.com/sequoia-pgp/clap", branch = "for_sequoia" }
+clap_mangen = { git = "https://gitlab.com/sequoia-pgp/clap", branch = "for_sequoia" }

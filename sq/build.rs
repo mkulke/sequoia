@@ -5,6 +5,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use clap_complete::Shell;
 use anyhow::Result;
+use clap_mangen::Man;
 
 pub mod sq_cli {
     include!("src/sq_cli.rs");
@@ -32,7 +33,11 @@ fn main() {
     writeln!(main, "\ninclude!(\"sq.rs\");").unwrap();
 
     fs::create_dir_all("manpages").unwrap();
-    let _ = dump_manpage(&sq, std::ffi::OsStr::new("manpages"), None);
+    let _ = dump_manpage(
+        &sq,
+        std::ffi::OsStr::new("manpages"),
+        Vec::from([sq.get_name().to_owned()]),
+    );
 
     // TODO: CARGO_TARGET_DIR is not always set, I think currently only by Makefile. So this is
     // janky
@@ -112,31 +117,64 @@ fn dump_help(sink: &mut dyn io::Write,
     Ok(())
 }
 
-fn dump_manpage(cmd: &clap::Command, outdir: &OsStr, prefix: Option<&str>) -> Result<()> {
-    let command_name = match prefix {
-        Some(p) => p.to_owned() + "-" + cmd.get_name(),
-        None => cmd.get_name().to_owned(),
-    };
+fn dump_manpage(
+    cmd: &clap::Command,
+    outdir: &OsStr,
+    up_to_same_level: Vec<String>,
+) -> Result<()> {
+    //let command_name = match prefix {
+    //    Some(p) => p.to_owned() + "-" + cmd.get_name(),
+    //    None => cmd.get_name().to_owned(),
+    //};
 
-    let man = clap_mangen::Man::new(cmd.clone().name(&command_name))
+    // add subcommands to see_also
+    let mut see_also = up_to_same_level.clone();
+    see_also.extend(
+        cmd.get_subcommands()
+            .map(|sc| sc.get_display_name().unwrap_or_else(|| sc.get_name()))
+            .map(|s| s.to_owned())
+    );
+
+    let mut man = clap_mangen::Man::new(cmd.clone())
         // Add build date in the form "Month Year" to the bottom of the manpage
         .date(chrono::Utc::today().format("%B %Y").to_string())
         // The manual's title, akin to git's "Git Manual"
         .manual("Sequoia Manual")
         // The source for all (sub)commands is sq, with version
         .source(&format!("sq {}", env!("CARGO_PKG_VERSION")));
+
+    man = add_relevant_see_also(
+        man,
+        see_also.clone(),
+        cmd.get_display_name().unwrap_or_else(|| cmd.get_name()),
+    );
     let mut buffer: Vec<u8> = Default::default();
     man.render(&mut buffer)?;
 
     let mut path = PathBuf::from(outdir);
-    path.push(&command_name);
+    path.push(cmd.get_display_name().unwrap_or_else(|| cmd.get_name()));
     path.set_extension("1");
 
     println!("cargo:warning=generated manpages: {:?}", path);
     std::fs::write(path, buffer)?;
 
-    for subcmd in cmd.get_subcommands() {
-        dump_manpage(subcmd, outdir, Some(&command_name))?
+    for subcmd in cmd.get_subcommands().filter(|s| !s.get_name().contains("help")) {
+        dump_manpage(subcmd, outdir, see_also.clone())?
     }
     Ok(())
+}
+
+fn add_relevant_see_also<'a>(
+    mut man: Man<'a>,
+    subcommands: Vec<String>,
+    own_name: &str,
+) -> Man<'a> {
+    for s in subcommands
+        .into_iter()
+        .filter(|sc| sc != &own_name)
+        .filter(|sc| !sc.contains("help"))
+    {
+        man = man.see_also(format!("{}(1)", s));
+    }
+    man
 }

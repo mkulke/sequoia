@@ -422,9 +422,8 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "3.2.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "190814073e85d238f31ff738fcb0bf6910cedeb73376c87cd69291028966fd83"
+version = "3.2.10"
+source = "git+https://gitlab.com/sequoia-pgp/clap?branch=for_sequoia#904ae174f6bc61494d07a68bf57d16794a981b6b"
 dependencies = [
  "atty",
  "bitflags",
@@ -444,14 +443,13 @@ version = "3.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da92e6facd8d73c22745a5d3cbb59bdf8e46e3235c923e516527d8e81eec14a4"
 dependencies = [
- "clap 3.2.8",
+ "clap 3.2.10",
 ]
 
 [[package]]
 name = "clap_derive"
 version = "3.2.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "759bf187376e1afa7b85b959e6a664a3e7a95203415dba952ad19139e798f902"
+source = "git+https://gitlab.com/sequoia-pgp/clap?branch=for_sequoia#904ae174f6bc61494d07a68bf57d16794a981b6b"
 dependencies = [
  "heck 0.4.0",
  "proc-macro-error",
@@ -463,8 +461,7 @@ dependencies = [
 [[package]]
 name = "clap_lex"
 version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2850f2f5a82cbf437dd5af4d49848fbdfc27c157c3d010345776f952765261c5"
+source = "git+https://gitlab.com/sequoia-pgp/clap?branch=for_sequoia#904ae174f6bc61494d07a68bf57d16794a981b6b"
 dependencies = [
  "os_str_bytes",
 ]
@@ -472,10 +469,9 @@ dependencies = [
 [[package]]
 name = "clap_mangen"
 version = "0.1.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "937efe4451c32be4ccb3e19549cbb1ea5cb85197f39b87a9662ca1d7b1765d1d"
+source = "git+https://gitlab.com/sequoia-pgp/clap?branch=for_sequoia#904ae174f6bc61494d07a68bf57d16794a981b6b"
 dependencies = [
- "clap 3.2.8",
+ "clap 3.2.10",
  "roff",
 ]
 
@@ -2716,7 +2712,7 @@ dependencies = [
  "buffered-reader",
  "cfg-if",
  "chrono",
- "clap 3.2.8",
+ "clap 3.2.10",
  "clap_complete",
  "clap_mangen",
  "fehler",
