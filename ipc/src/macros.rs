@@ -85,7 +85,7 @@ macro_rules! platform {
 /// displays the output on stderr.  The output is prefixed with label,
 /// if it is provided.
 ///
-/// ```
+/// ```ignore
 /// let result = time_it!("Some code", 10, {
 ///     // Some code.
 ///     5
@@ -131,14 +131,14 @@ macro_rules! time_it {
 ///
 /// For most types just call it after defining the type:
 ///
-/// ```
+/// ```ignore
 /// pub struct MyStruct {}
 /// assert_send_and_sync!(MyStruct);
 /// ```
 ///
 /// For types with lifetimes, use the anonymous lifetime:
 ///
-/// ```
+/// ```ignore
 /// pub struct WithLifetime<'a> {}
 /// assert_send_and_sync!(MyStruct<'_>);
 /// ```
@@ -147,7 +147,7 @@ macro_rules! time_it {
 /// pass the type `W` as a where clause
 /// including a trait bound when needed:
 ///
-/// ```
+/// ```ignore
 /// pub struct MyWriter<W: io::Write> {}
 /// assert_send_and_sync!(MyWriterStruct<W> where W: io::Write);
 /// ```
@@ -159,7 +159,7 @@ macro_rules! time_it {
 /// Just make sure to list all the types - even those without additional
 /// trait bounds:
 ///
-/// ```
+/// ```ignore
 /// pub struct MyWriterWithLifetime<'a, C, W: io::Write> {}
 /// assert_send_and_sync!(MyWriterStruct<'_, C, W> where C, W: io::Write);
 /// ```
