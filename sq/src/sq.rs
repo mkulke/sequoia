@@ -4,6 +4,7 @@ use anyhow::Context as _;
 use std::fs::OpenOptions;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::time::Duration;
 use chrono::{DateTime, offset::Utc};
 use itertools::Itertools;
@@ -30,6 +31,8 @@ use sq_cli::SqSubcommands;
 
 mod sq_cli;
 mod commands;
+mod output;
+use output::{OutputFormat, OutputVersion};
 
 fn open_or_stdin(f: Option<&str>)
                  -> Result<Box<dyn BufferedReader<()>>> {
@@ -334,6 +337,8 @@ fn emit_unstable_cli_warning() {
 #[derive(Clone)]
 pub struct Config<'a> {
     force: bool,
+    output_format: OutputFormat,
+    output_version: Option<OutputVersion>,
     policy: P<'a>,
     /// Have we emitted the warning yet?
     unstable_cli_warning_emitted: bool,
@@ -394,9 +399,17 @@ fn main() -> Result<()> {
     policy.good_critical_notations(&known_notations);
 
     let force = c.force;
+    let output_format = OutputFormat::from_str(&c.output_format)?;
+    let output_version = if let Some(v) = c.output_version {
+        Some(OutputVersion::from_str(&v)?)
+    } else {
+        None
+    };
 
     let mut config = Config {
         force,
+        output_format,
+        output_version,
         policy: policy.clone(),
         unstable_cli_warning_emitted: false,
     };
