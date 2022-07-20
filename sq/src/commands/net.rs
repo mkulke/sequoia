@@ -24,8 +24,10 @@ use net::{
 
 use crate::{
     Config,
+    Model,
     open_or_stdin,
     serialize_keyring,
+    output::WkdUrlVariant,
 };
 
 use crate::sq_cli::KeyserverCommand;
@@ -99,16 +101,20 @@ pub fn dispatch_wkd(config: Config, c: WkdCommand) -> Result<()> {
 
     match c.subcommand {
         WkdSubcommands::Url(c) => {
-            let email_address = c.email_address;
-            let wkd_url = wkd::Url::from(email_address)?;
-            let url = wkd_url.to_url(None)?;
-            println!("{}", url);
+            let wkd_url = wkd::Url::from(&c.email_address)?;
+            let advanced = wkd_url.to_url(None)?.to_string();
+            let direct = wkd_url.to_url(wkd::Variant::Direct)?.to_string();
+            let output = Model::wkd_url(config.output_version,
+                                       WkdUrlVariant::Advanced, advanced, direct)?;
+            output.write(config.output_format, &mut std::io::stdout())?;
         },
         WkdSubcommands::DirectUrl(c) => {
-            let email_address = c.email_address;
-            let wkd_url = wkd::Url::from(email_address)?;
-            let url = wkd_url.to_url(wkd::Variant::Direct)?;
-            println!("{}", url);
+            let wkd_url = wkd::Url::from(&c.email_address)?;
+            let advanced = wkd_url.to_url(None)?.to_string();
+            let direct = wkd_url.to_url(wkd::Variant::Direct)?.to_string();
+            let output = Model::wkd_url(config.output_version,
+                                       WkdUrlVariant::Direct, advanced, direct)?;
+            output.write(config.output_format, &mut std::io::stdout())?;
         },
         WkdSubcommands::Get(c) => {
             // Check that the policy allows https.
