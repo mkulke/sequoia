@@ -21,15 +21,6 @@ pub fn build() -> Command<'static> {
 }
 
 /// Defines the CLI.
-///
-/// The order of top-level subcommands is:
-///
-///   - Encryption & decryption             (1xx)
-///   - Signing & verification              (2xx)
-///   - Key & cert-ring management          (3xx)
-///   - Key discovery & networking          (4xx)
-///   - Armor                               (5xx)
-///   - Inspection & packet manipulation    (6xx)
 #[derive(Parser, Debug)]
 #[clap(
     name = "sq",
@@ -51,6 +42,7 @@ to refer to OpenPGP keys that do contain secrets.
     subcommand_required = true,
     arg_required_else_help = true,
     disable_colored_help = true,
+    setting(clap::AppSettings::DeriveDisplayOrder),
 )]
 pub struct SqCommand {
     #[clap(
@@ -91,24 +83,40 @@ pub struct SqCommand {
     pub subcommand: SqSubcommands,
 }
 
+/// The order of top-level subcommands is:
+///
+///   - Encryption & decryption
+///   - Signing & verification
+///   - Key & cert-ring management
+///   - Key discovery & networking
+///   - Armor
+///   - Inspection & packet manipulation
+///
+/// The order is derived from the order of variants in this enum.
 #[derive(Debug, Subcommand)]
 pub enum SqSubcommands {
-    Armor(ArmorCommand),
-    Dearmor(DearmorCommand),
-    Sign(SignCommand),
-    Verify(VerifyCommand),
-    Wkd(WkdCommand),
-    Keyserver(KeyserverCommand),
-    Revoke(RevokeCommand),
-    Packet(PacketCommand),
-    Certify(CertifyCommand),
-    Keyring(KeyringCommand),
-    Key(KeyCommand),
-    Inspect(InspectCommand),
     Encrypt(EncryptCommand),
     Decrypt(DecryptCommand),
+
+    Sign(SignCommand),
+    Verify(VerifyCommand),
+
+    Key(KeyCommand),
+    Keyring(KeyringCommand),
+    Certify(CertifyCommand),
+
     #[cfg(feature = "autocrypt")]
     Autocrypt(autocrypt::AutocryptCommand),
+    Keyserver(KeyserverCommand),
+    Wkd(WkdCommand),
+
+    Armor(ArmorCommand),
+    Dearmor(DearmorCommand),
+
+    Inspect(InspectCommand),
+    Packet(PacketCommand),
+
+    Revoke(RevokeCommand),
 }
 
 use chrono::{offset::Utc, DateTime};
@@ -193,7 +201,6 @@ pub struct IoArgs {
 #[derive(Parser, Debug)]
 #[clap(
     name = "armor",
-    display_order = 500,
     about = "Converts binary to ASCII",
     long_about =
 "Converts binary to ASCII
@@ -257,8 +264,8 @@ impl From<CliArmorKind> for Option<OpenPGPArmorKind> {
 }
 
 #[derive(Parser, Debug)]
-#[clap(name = "dearmor", display_order(510))]
 #[clap(
+    name = "dearmor",
     about = "Converts ASCII to binary",
     long_about =
 "Converts ASCII to binary
@@ -289,7 +296,6 @@ pub struct DearmorCommand {
 #[derive(Parser, Debug)]
 #[clap(
     name = "verify",
-    display_order(210),
     about = "Verifies signed messages or detached signatures",
     long_about = "Verifies signed messages or detached signatures
 
@@ -360,7 +366,6 @@ pub struct VerifyCommand {
 #[derive(Parser, Debug)]
 #[clap(
     name = "sign",
-    display_order(200),
     about = "Signs messages or data files",
     long_about =
 "Signs messages or data files
@@ -477,7 +482,6 @@ pub struct SignCommand {
 #[derive(Parser, Debug)]
 #[clap(
     name = "packet",
-    display_order = 610,
     about = "Low-level packet manipulation",
     long_about =
 "Low-level packet manipulation
@@ -490,6 +494,7 @@ as a learning tool.
 ",
     subcommand_required = true,
     arg_required_else_help = true,
+    setting(clap::AppSettings::DeriveDisplayOrder),
     )]
 pub struct PacketCommand {
     #[clap(subcommand)]
@@ -506,11 +511,9 @@ pub enum PacketSubcommands {
 
 #[derive(Debug, Args)]
 #[clap(
-    display_order = 100,
     about = "Lists packets",
     long_about =
-"
-Lists packets
+"Lists packets
 
 Creates a human-readable description of the packet sequence.
 Additionally, it can print cryptographic artifacts, and print the raw
@@ -560,7 +563,6 @@ pub struct PacketDumpCommand {
 
 #[derive(Debug, Args)]
 #[clap(
-    display_order = 200,
     about = "Unwraps an encryption container",
     long_about = "Unwraps an encryption container
 
@@ -611,7 +613,6 @@ pub struct PacketDecryptCommand {
 
 #[derive(Debug, Args)]
 #[clap(
-    display_order = 300,
     about = "Splits a message into packets",
     long_about = "Splits a message into packets
 
@@ -643,7 +644,6 @@ pub struct PacketSplitCommand {
 
 #[derive(Debug, Args)]
 #[clap(
-    display_order = 310,
     about = "Joins packets split across files",
     long_about = "Joins packets split across files
 
@@ -719,7 +719,6 @@ impl From<PacketKind> for Option<openpgp::armor::Kind> {
 #[derive(Parser, Debug)]
 #[clap(
     name = "revoke",
-    display_order = 700,
     about = "Generates revocation certificates",
     long_about = "Generates revocation certificates.
 
@@ -756,6 +755,7 @@ $ sq revoke userid --time 20220101 --certificate juliet.pgp \\
 ",
     subcommand_required = true,
     arg_required_else_help = true,
+    setting(clap::AppSettings::DeriveDisplayOrder),
 )]
 pub struct RevokeCommand {
     #[clap(subcommand)]
@@ -771,7 +771,6 @@ pub enum RevokeSubcommands {
 
 #[derive(Debug, Args)]
 #[clap(
-    display_order = 100,
     about = "Revoke a certificate",
     long_about =
 "Revokes a certificate
@@ -919,7 +918,6 @@ impl From<RevocationReason> for OpenPGPRevocationReason {
 
 #[derive(Debug, Args)]
 #[clap(
-    display_order = 105,
     about = "Revoke a subkey",
     long_about =
 "Revokes a subkey
@@ -1053,7 +1051,6 @@ certificate's creation time",
 
 #[derive(Debug, Args)]
 #[clap(
-    display_order = 110,
     about = "Revoke a User ID",
     long_about =
 "Revokes a User ID
@@ -1191,7 +1188,6 @@ impl From<UseridRevocationReason> for OpenPGPRevocationReason {
 #[derive(Parser, Debug)]
 #[clap(
     name = "certify",
-    display_order = 320,
     about = "Certifies a User ID for a Certificate",
     long_about =
 "Certifies a User ID for a Certificate
@@ -1234,13 +1230,13 @@ pub struct CertifyCommand {
         value_name = "TIME",
         help = "Sets the certification time to TIME (as ISO 8601)",
         long_help = "\
-Sets the certification time to TIME.  TIME is interpreted as an ISO 8601
-timestamp.  To set the certification time to June 9, 2011 at midnight UTC,
+Sets the certification time to TIME.  TIME is interpreted as an ISO 8601 \
+timestamp.  To set the certification time to June 9, 2011 at midnight UTC, \
 you can do:
 
 $ sq certify --time 20130721 neal.pgp ada.pgp ada
 
-To include a time, add a T, the time and optionally the timezone (the
+To include a time, add a T, the time and optionally the timezone (the \
 default timezone is UTC):
 
 $ sq certify --time 20130721T0550+0200 neal.pgp ada.pgp ada
@@ -1396,7 +1392,6 @@ $ sq certify --time 20130721T0550+0200 neal.pgp ada.pgp ada
 #[derive(Parser, Debug)]
 #[clap(
     name = "keyring",
-    display_order = 310,
     about = "Manages collections of keys or certs",
     long_about =
 "Manages collections of keys or certs
@@ -1411,6 +1406,7 @@ terms keys and certs interchangeably.
 ",
     subcommand_required = true,
     arg_required_else_help = true,
+    setting(clap::AppSettings::DeriveDisplayOrder),
 )]
 pub struct KeyringCommand {
     #[clap(subcommand)]
@@ -1419,16 +1415,15 @@ pub struct KeyringCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum KeyringSubcommands {
-    Filter(KeyringFilterCommand),
-    Join(KeyringJoinCommand),
-    Merge(KeyringMergeCommand),
     List(KeyringListCommand),
     Split(KeyringSplitCommand),
+    Join(KeyringJoinCommand),
+    Merge(KeyringMergeCommand),
+    Filter(KeyringFilterCommand),
 }
 
 #[derive(Debug, Args)]
 #[clap(
-    display_order = 600,
     about = "Joins keys into a keyring applying a filter",
     long_about =
 "Joins keys into a keyring applying a filter
@@ -1553,7 +1548,6 @@ pub struct KeyringFilterCommand {
 
 #[derive(Debug, Args)]
 #[clap(
-    display_order = 300,
     about = "Joins keys or keyrings into a single keyring",
     long_about =
 "Joins keys or keyrings into a single keyring
@@ -1590,7 +1584,6 @@ pub struct KeyringJoinCommand {
 
 #[derive(Debug, Args)]
 #[clap(
-    display_order = 350,
     about = "Merges keys or keyrings into a single keyring",
     long_about =
 "Merges keys or keyrings into a single keyring
@@ -1631,7 +1624,6 @@ pub struct KeyringMergeCommand {
 #[derive(Debug, Args)]
 #[clap(
     about = "Lists keys in a keyring",
-    display_order = 100,
     long_about =
 "Lists keys in a keyring
 
@@ -1666,7 +1658,6 @@ pub struct KeyringListCommand {
 
 #[derive(Debug, Args)]
 #[clap(
-    display_order = 200,
     about = "Splits a keyring into individual keys",
     long_about =
 "Splits a keyring into individual keys
@@ -1711,7 +1702,6 @@ pub struct KeyringSplitCommand {
 #[derive(Parser, Debug)]
 #[clap(
     name = "key",
-    display_order = 300,
     about = "Manages keys",
     long_about =
 "Manages keys
@@ -1726,6 +1716,7 @@ operations on certificates.
 ",
     subcommand_required = true,
     arg_required_else_help = true,
+    setting(clap::AppSettings::DeriveDisplayOrder),
 )]
 pub struct KeyCommand {
     #[clap(subcommand)]
@@ -1739,13 +1730,12 @@ pub enum KeySubcommands {
     #[clap(subcommand)]
     Userid(KeyUseridCommand),
     ExtractCert(KeyExtractCertCommand),
-    Adopt(KeyAdoptCommand),
     AttestCertifications(KeyAttestCertificationsCommand),
+    Adopt(KeyAdoptCommand),
 }
 
 #[derive(Debug, Args)]
 #[clap(
-    display_order = 100,
     about = "Generates a new key",
     long_about =
 "Generates a new key
@@ -1810,13 +1800,13 @@ pub struct KeyGenerateCommand {
         value_name = "CREATION_TIME",
         help = "Sets the key's creation time to TIME (as ISO 8601)",
         long_help = "\
-Sets the key's creation time to TIME.  TIME is interpreted as an ISO 8601
-timestamp.  To set the creation time to June 9, 2011 at midnight UTC,
+Sets the key's creation time to TIME.  TIME is interpreted as an ISO 8601 \
+timestamp.  To set the creation time to June 9, 2011 at midnight UTC, \
 you can do:
 
 $ sq key generate --creation-time 20110609 --export noam.pgp
 
-To include a time, add a T, the time and optionally the timezone (the
+To include a time, add a T, the time and optionally the timezone (the \
 default timezone is UTC):
 
 $ sq key generate --creation-time 20110609T1938+0200 --export noam.pgp
@@ -1923,7 +1913,6 @@ pub enum KeyEncryptPurpose {
 #[derive(Debug, Args)]
 #[clap(
     name = "password",
-    display_order = 105,
     about = "Changes password protecting secrets",
     long_about = 
 "Changes password protecting secrets
@@ -1966,7 +1955,6 @@ pub struct KeyPasswordCommand {
 #[derive(Debug, Args)]
 #[clap(
     name = "extract-cert",
-    display_order = 110,
     about = "Converts a key to a cert",
     long_about =
 "Converts a key to a cert
@@ -1999,7 +1987,6 @@ pub struct KeyExtractCertCommand {
 #[derive(Debug, Subcommand)]
 #[clap(
     name = "userid",
-    display_order = 105,
     about = "Manages User IDs",
     long_about =
 "Manages User IDs
@@ -2008,6 +1995,7 @@ Add User IDs to, or strip User IDs from a key.
 ",
     subcommand_required = true,
     arg_required_else_help = true,
+    setting(clap::AppSettings::DeriveDisplayOrder),
 )]
 pub enum KeyUseridCommand {
     Add(KeyUseridAddCommand),
@@ -2016,7 +2004,6 @@ pub enum KeyUseridCommand {
 
 #[derive(Debug, Args)]
 #[clap(
-    display_order = 10,
     about = "Adds a User ID",
     long_about =
 "Adds a User ID
@@ -2051,14 +2038,14 @@ pub struct KeyUseridAddCommand {
         value_name = "CREATION_TIME",
         help = "Sets the binding signature creation time to TIME (as ISO 8601)",
         long_help = "\
-Sets the creation time of this User ID's binding signature to TIME.
-TIME is interpreted as an ISO 8601 timestamp.  To set the creation
+Sets the creation time of this User ID's binding signature to TIME. \
+TIME is interpreted as an ISO 8601 timestamp.  To set the creation \
 time to June 28, 2022 at midnight UTC, you can do:
 
 $ sq key userid add --userid \"Juliet\" --creation-time 20210628 \\
    juliet.key.pgp --output juliet-new.key.pgp
 
-To include a time, add a T, the time and optionally the timezone (the
+To include a time, add a T, the time and optionally the timezone (the \
 default timezone is UTC):
 
 $ sq key userid add --userid \"Juliet\" --creation-time 20210628T1137+0200 \\
@@ -2083,7 +2070,6 @@ $ sq key userid add --userid \"Juliet\" --creation-time 20210628T1137+0200 \\
 
 #[derive(Debug, Args)]
 #[clap(
-    display_order = 20,
     about = "Strips a User ID",
     long_about =
 "Strips a User ID
@@ -2142,7 +2128,6 @@ User ID."
 #[derive(Debug, Args)]
 #[clap(
     name = "adopt",
-    display_order = 800,
     about = "Binds keys from one certificate to another",
     long_about =
 "Binds keys from one certificate to another
@@ -2207,11 +2192,9 @@ pub struct KeyAdoptCommand {
 #[derive(Debug, Args)]
 #[clap(
     name = "attest-certifications",
-    display_order = 200,
     about = "Attests to third-party certifications",
     long_about =
-"
-Attests to third-party certifications allowing for their distribution
+"Attests to third-party certifications allowing for their distribution
 
 To prevent certificate flooding attacks, modern key servers prevent
 uncontrolled distribution of third-party certifications on
@@ -2270,10 +2253,10 @@ pub struct KeyAttestCertificationsCommand {
 #[derive(Parser, Debug)]
 #[clap(
     name = "wkd",
-    display_order = 420,
     about = "Interacts with Web Key Directories",
     subcommand_required = true,
     arg_required_else_help = true,
+    setting(clap::AppSettings::DeriveDisplayOrder),
 )]
 pub struct WkdCommand {
     #[clap(
@@ -2291,10 +2274,10 @@ pub struct WkdCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum WkdSubcommands {
-    Url(WkdUrlCommand),
-    DirectUrl(WkdDirectUrlCommand),
-    Get(WkdGetCommand),
     Generate(WkdGenerateCommand),
+    Get(WkdGetCommand),
+    DirectUrl(WkdDirectUrlCommand),
+    Url(WkdUrlCommand),
 }
 
 #[derive(Debug, Args)]
@@ -2349,23 +2332,23 @@ pub struct WkdGetCommand {
 #[derive(Debug, Args)]
 #[clap(
     about = "Generates a Web Key Directory for the given domain and keys.",
-    long_about = "Generates a Web Key Directory for the given domain and keys.  \
-        If the WKD exists, the new keys will be inserted and it \
-        is updated and existing ones will be updated. \
-        \n
-        \n
-        A WKD is per domain, and can be queried using the advanced or the \
-        direct method. The advanced method uses a URL with a subdomain \
-        'openpgpkey'. As per the specification, the advanced method is to be \
-        preferred. The direct method may only be used if the subdomain \
-        doesn't exist. The advanced method allows web key directories for \
-        several domains on one web server. \
-        \n
-        \n
-        The contents of the generated WKD must be copied to a web server so that \
-        they are accessible under https://openpgpkey.example.com/.well-known/openpgp/... \
-        for the advanced version, and https://example.com/.well-known/openpgp/... \
-        for the direct version. sq does not copy files to the web server.",
+    long_about =
+"Generates a Web Key Directory for the given domain and keys
+
+If the WKD exists, the new keys will be inserted and it \
+is updated and existing ones will be updated.
+
+A WKD is per domain, and can be queried using the advanced or the \
+direct method. The advanced method uses a URL with a subdomain \
+'openpgpkey'. As per the specification, the advanced method is to be \
+preferred. The direct method may only be used if the subdomain \
+doesn't exist. The advanced method allows web key directories for \
+several domains on one web server.
+
+The contents of the generated WKD must be copied to a web server so that \
+they are accessible under https://openpgpkey.example.com/.well-known/openpgp/... \
+for the advanced version, and https://example.com/.well-known/openpgp/... \
+for the direct version. sq does not copy files to the web server.",
     after_help =
 "EXAMPLES:
 
@@ -2408,7 +2391,6 @@ pub struct WkdGenerateCommand {
 #[derive(Parser, Debug)]
 #[clap(
     name = "keyserver",
-    display_order = 410,
     about = "Interacts with keyservers",
     subcommand_required = true,
     arg_required_else_help = true,
@@ -2498,7 +2480,6 @@ pub struct KeyserverSendCommand {
 #[derive(Parser, Debug)]
 #[clap(
     name = "inspect",
-    display_order(600),
     about = "Inspects data, like file(1)",
     long_about =
 "Inspects data, like file(1)
@@ -2541,7 +2522,6 @@ pub struct InspectCommand {
 #[derive(Parser, Debug)]
 #[clap(
     name = "encrypt",
-    display_order = 100,
     about = "Encrypts a message",
     long_about =
 "Encrypts a message
@@ -2665,7 +2645,6 @@ pub enum EncryptCompressionMode {
 #[derive(Parser, Debug)]
 #[clap(
     name = "decrypt",
-    display_order = 110,
     about = "Decrypts a message",
     long_about =
 "Decrypts a message
@@ -2835,7 +2814,6 @@ pub mod autocrypt {
     #[derive(Parser, Debug)]
     #[clap(
         name = "autocrypt",
-        display_order(400),
         about = "Communicates certificates using Autocrypt",
         long_about =
 "Communicates certificates using Autocrypt
