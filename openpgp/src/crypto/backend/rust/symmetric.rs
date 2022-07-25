@@ -157,14 +157,14 @@ impl SymmetricAlgorithm {
     pub(crate) fn make_encrypt_cfb(self, key: &[u8], iv: Vec<u8>) -> Result<Box<dyn Mode>> {
         use SymmetricAlgorithm::*;
         match self {
-            IDEA => Ok(Box::new(Cfb::<idea::Idea, ZeroPadding>::new_var(key, &iv)?)),
-            TripleDES => Ok(Box::new(Cfb::<des::TdesEde2, ZeroPadding>::new_var(key, &iv)?)),
-            CAST5 => Ok(Box::new(Cfb::<cast5::Cast5, ZeroPadding>::new_var(key, &iv)?)),
-            Blowfish => Ok(Box::new(Cfb::<blowfish::Blowfish, ZeroPadding>::new_var(key, &iv)?)),
-            AES128 => Ok(Box::new(Cfb::<aes::Aes128, ZeroPadding>::new_var(key, &iv)?)),
-            AES192 => Ok(Box::new(Cfb::<aes::Aes192, ZeroPadding>::new_var(key, &iv)?)),
-            AES256 => Ok(Box::new(Cfb::<aes::Aes256, ZeroPadding>::new_var(key, &iv)?)),
-            Twofish => Ok(Box::new(Cfb::<twofish::Twofish, ZeroPadding>::new_var(key, &iv)?)),
+            IDEA => Ok(Box::new(Cfb::<idea::Idea, ZeroPadding>::new_from_slices(key, &iv)?)),
+            TripleDES => Ok(Box::new(Cfb::<des::TdesEde2, ZeroPadding>::new_from_slices(key, &iv)?)),
+            CAST5 => Ok(Box::new(Cfb::<cast5::Cast5, ZeroPadding>::new_from_slices(key, &iv)?)),
+            Blowfish => Ok(Box::new(Cfb::<blowfish::Blowfish, ZeroPadding>::new_from_slices(key, &iv)?)),
+            AES128 => Ok(Box::new(Cfb::<aes::Aes128, ZeroPadding>::new_from_slices(key, &iv)?)),
+            AES192 => Ok(Box::new(Cfb::<aes::Aes192, ZeroPadding>::new_from_slices(key, &iv)?)),
+            AES256 => Ok(Box::new(Cfb::<aes::Aes256, ZeroPadding>::new_from_slices(key, &iv)?)),
+            Twofish => Ok(Box::new(Cfb::<twofish::Twofish, ZeroPadding>::new_from_slices(key, &iv)?)),
             Camellia128 | Camellia192 | Camellia256 | Private(_) | Unknown(_) | Unencrypted =>
                 Err(Error::UnsupportedSymmetricAlgorithm(self).into()),
         }
@@ -179,14 +179,14 @@ impl SymmetricAlgorithm {
     pub(crate) fn make_encrypt_ecb(self, key: &[u8]) -> Result<Box<dyn Mode>> {
         use SymmetricAlgorithm::*;
         match self {
-            IDEA => Ok(Box::new(Ecb::<idea::Idea, ZeroPadding>::new_var(key, &[])?)),
-            TripleDES => Ok(Box::new(Ecb::<des::TdesEde2, ZeroPadding>::new_var(key, &[])?)),
-            CAST5 => Ok(Box::new(Ecb::<cast5::Cast5, ZeroPadding>::new_var(key, &[])?)),
-            Blowfish => Ok(Box::new(Ecb::<blowfish::Blowfish, ZeroPadding>::new_var(key, &[])?)),
-            AES128 => Ok(Box::new(Ecb::<aes::Aes128, ZeroPadding>::new_var(key, &[])?)),
-            AES192 => Ok(Box::new(Ecb::<aes::Aes192, ZeroPadding>::new_var(key, &[])?)),
-            AES256 => Ok(Box::new(Ecb::<aes::Aes256, ZeroPadding>::new_var(key, &[])?)),
-            Twofish => Ok(Box::new(Ecb::<twofish::Twofish, ZeroPadding>::new_var(key, &[])?)),
+            IDEA => Ok(Box::new(Ecb::<idea::Idea, ZeroPadding>::new_from_slices(key, &[])?)),
+            TripleDES => Ok(Box::new(Ecb::<des::TdesEde2, ZeroPadding>::new_from_slices(key, &[])?)),
+            CAST5 => Ok(Box::new(Ecb::<cast5::Cast5, ZeroPadding>::new_from_slices(key, &[])?)),
+            Blowfish => Ok(Box::new(Ecb::<blowfish::Blowfish, ZeroPadding>::new_from_slices(key, &[])?)),
+            AES128 => Ok(Box::new(Ecb::<aes::Aes128, ZeroPadding>::new_from_slices(key, &[])?)),
+            AES192 => Ok(Box::new(Ecb::<aes::Aes192, ZeroPadding>::new_from_slices(key, &[])?)),
+            AES256 => Ok(Box::new(Ecb::<aes::Aes256, ZeroPadding>::new_from_slices(key, &[])?)),
+            Twofish => Ok(Box::new(Ecb::<twofish::Twofish, ZeroPadding>::new_from_slices(key, &[])?)),
             Camellia128 | Camellia192 | Camellia256 | Private(_) | Unknown(_) | Unencrypted =>
                 Err(Error::UnsupportedSymmetricAlgorithm(self).into()),
         }
