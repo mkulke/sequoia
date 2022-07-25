@@ -42,7 +42,8 @@ where
     }
 
     fn digest_size(&self) -> usize {
-        eax::Tag::LEN
+        <eax::Tag<U16> as GenericArrayExt<_, U16>>::LEN
+        //eax::Tag::LEN
     }
 
     fn digest(&mut self, digest: &mut [u8]) {
@@ -71,7 +72,7 @@ where
     }
 
     fn digest_size(&self) -> usize {
-        eax::Tag::LEN
+        <eax::Tag<U16> as GenericArrayExt<_, U16>>::LEN
     }
 
     fn digest(&mut self, digest: &mut [u8]) {
