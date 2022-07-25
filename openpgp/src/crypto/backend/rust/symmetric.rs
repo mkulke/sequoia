@@ -2,7 +2,7 @@ use std::slice;
 
 use block_modes::{BlockMode, Cfb, Ecb};
 use block_padding::ZeroPadding;
-use cipher::{BlockCipher, NewBlockCipher};
+use cipher::{BlockCipher, BlockDecrypt, BlockEncrypt, NewBlockCipher};
 use generic_array::{ArrayLength, GenericArray};
 use typenum::Unsigned;
 
@@ -14,7 +14,7 @@ macro_rules! impl_mode {
     ($mode:ident) => {
         impl<C> Mode for $mode<C, ZeroPadding>
         where
-            C: BlockCipher + NewBlockCipher + Send + Sync,
+            C: BlockCipher + NewBlockCipher + BlockDecrypt + BlockEncrypt + Send + Sync,
         {
             fn block_size(&self) -> usize {
                 C::BlockSize::to_usize()

@@ -2,8 +2,7 @@
 
 use std::cmp;
 
-use cipher::{BlockCipher, NewBlockCipher};
-use cipher::block::Block;
+use cipher::{Block, BlockCipher, BlockEncrypt, NewBlockCipher};
 use cipher::consts::U16;
 use eax::online::{Eax, Encrypt, Decrypt};
 use generic_array::{ArrayLength, GenericArray};
@@ -34,7 +33,7 @@ impl<T, N: ArrayLength<T>> GenericArrayExt<T, N> for GenericArray<T, N> {
 
 impl<Cipher> Aead for Eax<Cipher, Encrypt>
 where
-    Cipher: BlockCipher<BlockSize = U16> + NewBlockCipher + Clone,
+    Cipher: BlockCipher<BlockSize = U16> + NewBlockCipher + BlockEncrypt + Clone,
     Cipher::ParBlocks: ArrayLength<Block<Cipher>>,
 {
     fn update(&mut self, ad: &[u8]) {
@@ -64,7 +63,7 @@ where
 
 impl<Cipher> Aead for Eax<Cipher, Decrypt>
 where
-    Cipher: BlockCipher<BlockSize = U16> + NewBlockCipher + Clone,
+    Cipher: BlockCipher<BlockSize = U16> + NewBlockCipher + BlockEncrypt + Clone,
     Cipher::ParBlocks: ArrayLength<Block<Cipher>>,
 {
     fn update(&mut self, ad: &[u8]) {
@@ -93,7 +92,7 @@ where
 
 impl<Cipher, Op> seal::Sealed for Eax<Cipher, Op>
 where
-    Cipher: BlockCipher<BlockSize = U16> + NewBlockCipher + Clone,
+    Cipher: BlockCipher<BlockSize = U16> + NewBlockCipher + BlockEncrypt + Clone,
     Cipher::ParBlocks: ArrayLength<Block<Cipher>>,
     Op: eax::online::CipherOp,
 {}
