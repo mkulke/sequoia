@@ -4,7 +4,7 @@ use std::cmp;
 
 use cipher::{Block, BlockCipher, BlockEncrypt, NewBlockCipher};
 use cipher::consts::U16;
-use eax::online::{Eax, Encrypt, Decrypt};
+use eax::online::{EaxOnline, Encrypt, Decrypt};
 use generic_array::{ArrayLength, GenericArray};
 
 use crate::{Error, Result};
@@ -31,7 +31,7 @@ impl<T, N: ArrayLength<T>> GenericArrayExt<T, N> for GenericArray<T, N> {
     const LEN: usize = N::USIZE;
 }
 
-impl<Cipher> Aead for Eax<Cipher, Encrypt>
+impl<Cipher> Aead for EaxOnline<Cipher, Encrypt>
 where
     Cipher: BlockCipher<BlockSize = U16> + NewBlockCipher + BlockEncrypt + Clone,
     Cipher::ParBlocks: ArrayLength<Block<Cipher>>,
@@ -61,7 +61,7 @@ where
     }
 }
 
-impl<Cipher> Aead for Eax<Cipher, Decrypt>
+impl<Cipher> Aead for EaxOnline<Cipher, Decrypt>
 where
     Cipher: BlockCipher<BlockSize = U16> + NewBlockCipher + BlockEncrypt + Clone,
     Cipher::ParBlocks: ArrayLength<Block<Cipher>>,
@@ -90,7 +90,7 @@ where
     }
 }
 
-impl<Cipher, Op> seal::Sealed for Eax<Cipher, Op>
+impl<Cipher, Op> seal::Sealed for EaxOnline<Cipher, Op>
 where
     Cipher: BlockCipher<BlockSize = U16> + NewBlockCipher + BlockEncrypt + Clone,
     Cipher::ParBlocks: ArrayLength<Block<Cipher>>,
@@ -109,31 +109,31 @@ impl AEADAlgorithm {
             AEADAlgorithm::EAX => match sym_algo {
                 SymmetricAlgorithm::AES128 => match op {
                     CipherOp::Encrypt => Ok(Box::new(
-                        Eax::<aes::Aes128, Encrypt>::with_key_and_nonce(
+                        EaxOnline::<aes::Aes128, Encrypt>::with_key_and_nonce(
                             GenericArray::try_from_slice(key)?,
                             GenericArray::try_from_slice(nonce)?))),
                     CipherOp::Decrypt => Ok(Box::new(
-                        Eax::<aes::Aes128, Decrypt>::with_key_and_nonce(
+                        EaxOnline::<aes::Aes128, Decrypt>::with_key_and_nonce(
                             GenericArray::try_from_slice(key)?,
                             GenericArray::try_from_slice(nonce)?))),
                 }
                 SymmetricAlgorithm::AES192 => match op {
                     CipherOp::Encrypt => Ok(Box::new(
-                        Eax::<aes::Aes192, Encrypt>::with_key_and_nonce(
+                        EaxOnline::<aes::Aes192, Encrypt>::with_key_and_nonce(
                             GenericArray::try_from_slice(key)?,
                             GenericArray::try_from_slice(nonce)?))),
                     CipherOp::Decrypt => Ok(Box::new(
-                        Eax::<aes::Aes192, Decrypt>::with_key_and_nonce(
+                        EaxOnline::<aes::Aes192, Decrypt>::with_key_and_nonce(
                             GenericArray::try_from_slice(key)?,
                             GenericArray::try_from_slice(nonce)?))),
                 }
                 SymmetricAlgorithm::AES256 => match op {
                     CipherOp::Encrypt => Ok(Box::new(
-                        Eax::<aes::Aes256, Encrypt>::with_key_and_nonce(
+                        EaxOnline::<aes::Aes256, Encrypt>::with_key_and_nonce(
                             GenericArray::try_from_slice(key)?,
                             GenericArray::try_from_slice(nonce)?))),
                     CipherOp::Decrypt => Ok(Box::new(
-                        Eax::<aes::Aes256, Decrypt>::with_key_and_nonce(
+                        EaxOnline::<aes::Aes256, Decrypt>::with_key_and_nonce(
                             GenericArray::try_from_slice(key)?,
                             GenericArray::try_from_slice(nonce)?))),
                 }
