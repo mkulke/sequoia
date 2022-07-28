@@ -2980,10 +2980,10 @@ impl MPI {
 
         let first_used_bit = 8 - unused_bits;
         if value[0] & (1 << (first_used_bit - 1)) == 0 {
-            return Err(Error::MalformedMPI(
-                    format!("leading bit is not set: \
+            trace!(TRACE, "Ignoring MalformedMPI for compatibility: \
+                             leading bit is not set: \
                              expected bit {} to be set in {:8b} ({:x})",
-                             first_used_bit, value[0], value[0])).into());
+                             first_used_bit, value[0], value[0]);
         }
 
         // Now consume the data.
