@@ -17,8 +17,8 @@ pub fn backend() -> String {
 
 /// Fills the given buffer with random data.
 pub fn random(buf: &mut [u8]) {
-    use rand07::rngs::OsRng;
-    use rand07::RngCore;
+    use rand::rngs::OsRng;
+    use rand::RngCore;
 
     OsRng.fill_bytes(buf)
 }
