@@ -18,15 +18,15 @@ use sequoia_openpgp as openpgp;
 use openpgp::{
     Result,
 };
-use crate::openpgp::{armor, Cert};
-use crate::openpgp::crypto::Password;
-use crate::openpgp::packet::prelude::*;
-use crate::openpgp::parse::{Parse, PacketParser, PacketParserResult};
-use crate::openpgp::packet::signature::subpacket::NotationData;
-use crate::openpgp::packet::signature::subpacket::NotationDataFlags;
-use crate::openpgp::serialize::{Serialize, stream::{Message, Armorer}};
-use crate::openpgp::cert::prelude::*;
-use crate::openpgp::policy::StandardPolicy as P;
+use openpgp::{armor, Cert};
+use openpgp::crypto::Password;
+use openpgp::packet::prelude::*;
+use openpgp::parse::{Parse, PacketParser, PacketParserResult};
+use openpgp::packet::signature::subpacket::NotationData;
+use openpgp::packet::signature::subpacket::NotationDataFlags;
+use openpgp::serialize::{Serialize, stream::{Message, Armorer}};
+use openpgp::cert::prelude::*;
+use openpgp::policy::StandardPolicy as P;
 
 use clap::FromArgMatches;
 use crate::sq_cli::packet;
@@ -43,30 +43,6 @@ fn open_or_stdin(f: Option<&str>)
         Some(f) => Ok(Box::new(File::open(f)
                                .context("Failed to open input file")?)),
         None => Ok(Box::new(Generic::new(io::stdin(), None))),
-    }
-}
-
-#[deprecated(note = "Use the appropriate function on Config instead")]
-fn create_or_stdout(f: Option<&str>, force: bool)
-    -> Result<Box<dyn io::Write + Sync + Send>> {
-    match f {
-        None => Ok(Box::new(io::stdout())),
-        Some(p) if p == "-" => Ok(Box::new(io::stdout())),
-        Some(f) => {
-            let p = Path::new(f);
-            if !p.exists() || force {
-                Ok(Box::new(OpenOptions::new()
-                            .write(true)
-                            .truncate(true)
-                            .create(true)
-                            .open(f)
-                            .context("Failed to create output file")?))
-            } else {
-                Err(anyhow::anyhow!(
-                    format!("File {:?} exists, use \"sq --force ...\" to \
-                             overwrite", p)))
-            }
-        }
     }
 }
 
@@ -215,29 +191,21 @@ const ARMOR_DETECTION_LIMIT: u64 = 1 << 24;
 ///
 /// Returns the given reader unchanged.  If the detection fails,
 /// armor::Kind::File is returned as safe default.
-#[allow(clippy::never_loop)]
-fn detect_armor_kind(input: Box<dyn BufferedReader<()>>)
-                     -> (Box<dyn BufferedReader<()>>, armor::Kind) {
-    let mut dup = Limitor::new(Dup::new(input), ARMOR_DETECTION_LIMIT).as_boxed();
-    let kind = 'detection: loop {
-        if let Ok(PacketParserResult::Some(pp)) =
-            PacketParser::from_reader(&mut dup)
-        {
-            let (packet, _) = match pp.next() {
-                Ok(v) => v,
-                Err(_) => break 'detection armor::Kind::File,
-            };
-
-            break 'detection match packet {
-                Packet::Signature(_) => armor::Kind::Signature,
-                Packet::SecretKey(_) => armor::Kind::SecretKey,
-                Packet::PublicKey(_) => armor::Kind::PublicKey,
-                Packet::PKESK(_) | Packet::SKESK(_) =>
-                    armor::Kind::Message,
-                _ => armor::Kind::File,
-            };
-        }
-        break 'detection armor::Kind::File;
+fn detect_armor_kind(
+    input: Box<dyn BufferedReader<()>>,
+) -> (Box<dyn BufferedReader<()>>, armor::Kind) {
+    let mut dup =
+        Limitor::new(Dup::new(input), ARMOR_DETECTION_LIMIT).as_boxed();
+    let kind = match PacketParser::from_reader(&mut dup) {
+        Ok(PacketParserResult::Some(pp)) => match pp.next() {
+            Ok((Packet::Signature(_), _)) => armor::Kind::Signature,
+            Ok((Packet::SecretKey(_), _)) => armor::Kind::SecretKey,
+            Ok((Packet::PublicKey(_), _)) => armor::Kind::PublicKey,
+            Ok((Packet::PKESK(_), _)) => armor::Kind::Message,
+            Ok((Packet::SKESK(_), _)) => armor::Kind::Message,
+            _ => armor::Kind::File,
+        },
+        _ => armor::Kind::File,
     };
     (dup.into_inner().unwrap().into_inner().unwrap(), kind)
 }
@@ -355,8 +323,7 @@ impl Config<'_> {
     /// authenticated payloads.
     fn create_or_stdout_safe(&self, f: Option<&str>)
                              -> Result<Box<dyn io::Write + Sync + Send>> {
-        #[allow(deprecated)]
-        create_or_stdout(f, self.force)
+        Config::create_or_stdout(f, self.force)
     }
 
     /// Opens the file (or stdout) for writing data that is NOT safe
@@ -370,8 +337,7 @@ impl Config<'_> {
             emit_unstable_cli_warning();
             self.unstable_cli_warning_emitted = true;
         }
-        #[allow(deprecated)]
-        create_or_stdout(f, self.force)
+        Config::create_or_stdout(f, self.force)
     }
 
     /// Opens the file (or stdout) for writing data that is safe for
@@ -385,6 +351,37 @@ impl Config<'_> {
             message = Armorer::new(message).kind(kind).build()?;
         }
         Ok(message)
+    }
+
+    /// Helper function, do not use directly. Instead, use create_or_stdout_safe
+    /// or create_or_stdout_unsafe.
+    fn create_or_stdout(
+        f: Option<&str>,
+        force: bool,
+    ) -> Result<Box<dyn io::Write + Sync + Send>> {
+        match f {
+            None => Ok(Box::new(io::stdout())),
+            Some(p) if p == "-" => Ok(Box::new(io::stdout())),
+            Some(f) => {
+                let p = Path::new(f);
+                if !p.exists() || force {
+                    Ok(Box::new(
+                        OpenOptions::new()
+                            .write(true)
+                            .truncate(true)
+                            .create(true)
+                            .open(f)
+                            .context("Failed to create output file")?,
+                    ))
+                } else {
+                    Err(anyhow::anyhow!(format!(
+                        "File {:?} exists, use \"sq --force ...\" to \
+                                overwrite",
+                        p
+                    )))
+                }
+            }
+        }
     }
 }
 
