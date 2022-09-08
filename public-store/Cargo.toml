@@ -1,0 +1,26 @@
+[package]
+name = "sequoia-public-store"
+version = "0.1.0"
+authors = ["Nora Widdecke <nora@sequoia-pgp.org"]
+edition = "2018"
+publish = false
+
+[dependencies]
+anyhow = "1.0.41"
+dirs = "4"
+predicates = "2.1.0"
+sequoia-openpgp = { path = "../openpgp", version = "1", default-features = false, features = ["compression-deflate"] }
+openpgp-cert-d = "0.1.0"
+thiserror = "1.0.25"
+
+[dev-dependencies]
+assert_fs = "1.0.2"
+
+[features]
+default = [
+    "crypto-nettle",
+    "compression-bzip2",
+]
+crypto-nettle = ["sequoia-openpgp/crypto-nettle"]
+crypto-cng = ["sequoia-openpgp/crypto-cng"]
+compression-bzip2 = ["sequoia-openpgp/compression-bzip2"]
