@@ -83,6 +83,8 @@ SUBCOMMANDS:
             Low-level packet manipulation
     revoke
             Generates revocation certificates
+    store
+            Access sequoia's public certificate store.
     help
             Print this message or the help of the given subcommand(s)
     output-versions
@@ -100,7 +102,7 @@ passwords, optionally signing the message in the process.
 The converse operation is "sq decrypt".
 
 USAGE:
-    sq encrypt [OPTIONS] [FILE]
+    sq encrypt [OPTIONS] [--] [FILE]
 
 ARGS:
     <FILE>
@@ -137,12 +139,18 @@ OPTIONS:
         --recipient-file <CERT_RING_FILE>
             Encrypts to all certificates in CERT_RING_FILE
 
+        --recipient-fingerprint <RECIPIENT_FINGERPRINT>...
+
+
     -s, --symmetric
             Adds a password to encrypt with.  The message can be decrypted with
             either one of the recipient's keys, or any password.
 
         --signer-file <KEY_FILE>
             Signs the message using the key in KEY_FILE
+
+        --store <STORE>
+            The path of the store
 
     -t, --time <TIME>
             Chooses keys valid at the specified time and sets the signature's
@@ -2214,4 +2222,146 @@ OPTIONS:
 
     -h, --help
             Print help information
+```
+
+## Subcommand sq store
+
+```text
+Access sequoia's public certificate store.
+
+USAGE:
+    sq store <SUBCOMMAND>
+
+OPTIONS:
+    -h, --help
+            Print help information
+
+SUBCOMMANDS:
+    get
+            Look up a certificate by its fingerprint
+    insert
+            Insert or update a certificate
+    import
+            Import certificates into the store
+    export
+            Export all certificates in the store
+    setup
+            Setup a new store
+    search
+            Look for a certificates in the store
+    help
+            Print this message or the help of the given subcommand(s)
+```
+
+### Subcommand sq store get
+
+```text
+Look up a certificate by its fingerprint. If found, write the cert to stdout.
+
+USAGE:
+    sq store get [OPTIONS] <FINGERPRINT>
+
+ARGS:
+    <FINGERPRINT>
+            The fingerprint
+
+OPTIONS:
+    -h, --help
+            Print help information
+
+    -s, --store <STORE>
+            The path of the store
+```
+
+### Subcommand sq store insert
+
+```text
+Insert or update a certificate. Read the cert from stdin
+
+USAGE:
+    sq store insert [OPTIONS]
+
+OPTIONS:
+    -h, --help
+            Print help information
+
+    -s, --store <STORE>
+            The path of the store
+```
+
+### Subcommand sq store import
+
+```text
+Import certificates into the store from stdin.
+
+USAGE:
+    sq store import [OPTIONS]
+
+OPTIONS:
+    -h, --help
+            Print help information
+
+    -s, --store <STORE>
+            The path of the store
+```
+
+### Subcommand sq store export
+
+```text
+Export all certificates in the store to stdout.
+
+USAGE:
+    sq store export [OPTIONS]
+
+OPTIONS:
+    -h, --help
+            Print help information
+
+    -s, --store <STORE>
+            The path of the store
+```
+
+### Subcommand sq store setup
+
+```text
+Setup a new store. Import the trust-root or create a new one.
+
+USAGE:
+    sq store setup [OPTIONS]
+
+OPTIONS:
+    -h, --help
+            Print help information
+
+        --import-from-stdin
+            Import from stdin
+
+    -s, --store <STORE>
+            The path of the store
+
+        --with-password
+            Ask for a password
+```
+
+### Subcommand sq store search
+
+```text
+Look for a certificates in the store and output their fingerprints. Use sq store
+get to get the full certificates.
+
+USAGE:
+    sq store search [OPTIONS]
+
+OPTIONS:
+    -f, --fingerprint <FINGERPRINT>
+            Search by (subkey) fingerprint
+
+    -h, --help
+            Print help information
+
+    -s, --store <STORE>
+            The path of the store
+
+    -u, --userid <USERID>
+            Search by userid
 ```

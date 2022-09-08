@@ -2933,6 +2933,7 @@ dependencies = [
  "sequoia-autocrypt",
  "sequoia-net",
  "sequoia-openpgp",
+ "sequoia-public-store",
  "serde",
  "serde_json",
  "subplot-build",

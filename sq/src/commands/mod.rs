@@ -57,6 +57,7 @@ pub use self::merge_signatures::merge_signatures;
 pub mod keyring;
 pub mod net;
 pub mod certify;
+pub mod store;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GetKeysOptions {

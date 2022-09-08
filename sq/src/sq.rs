@@ -28,6 +28,8 @@ use openpgp::serialize::{Serialize, stream::{Message, Armorer}};
 use openpgp::cert::prelude::*;
 use openpgp::policy::StandardPolicy as P;
 
+use sequoia_public_store::Store;
+
 use clap::FromArgMatches;
 use crate::sq_cli::packet;
 use sq_cli::SqSubcommands;
@@ -473,9 +475,15 @@ fn main() -> Result<()> {
                               command.dump, command.hex)?;
         },
         SqSubcommands::Encrypt(command) => {
-            let recipients = load_certs(
+            let mut recipients = load_certs(
                 command.recipients_cert_file.iter().map(|s| s.as_ref()),
             )?;
+            if !command.recipient_fingerprint.is_empty() {
+                let store = Store::new(command.store)?;
+                for fp in command.recipient_fingerprint {
+                    recipients.push(store.get(&fp)?);
+                };
+            }
             let mut input = open_or_stdin(command.io.input.as_deref())?;
 
             let output = config.create_or_stdout_pgp(
@@ -709,6 +717,10 @@ fn main() -> Result<()> {
 
         SqSubcommands::Certify(command) => {
             commands::certify::certify(config, command)?
+        }
+
+        SqSubcommands::Store(command) => {
+            commands::store::store(command)?
         }
     }
 

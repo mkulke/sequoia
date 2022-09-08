@@ -17,6 +17,7 @@ pub mod keyserver;
 mod output_versions;
 pub mod packet;
 pub mod revoke;
+pub mod store;
 mod sign;
 mod verify;
 pub mod wkd;
@@ -141,4 +142,6 @@ pub enum SqSubcommands {
     Revoke(revoke::Command),
 
     OutputVersions(output_versions::Command),
+
+    Store(store::Command)
 }

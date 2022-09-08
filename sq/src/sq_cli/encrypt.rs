@@ -2,6 +2,8 @@ use clap::{ArgEnum, Parser};
 
 use crate::sq_cli::types::{IoArgs, Time};
 
+use sequoia_openpgp::Fingerprint;
+
 #[derive(Parser, Debug)]
 #[clap(
     name = "encrypt",
@@ -43,6 +45,19 @@ pub struct Command {
         help = "Encrypts to all certificates in CERT_RING_FILE",
     )]
     pub recipients_cert_file: Vec<String>,
+    #[clap(
+        long = "recipient-fingerprint",
+        multiple_occurrences = true,
+        multiple_values = true,
+        help = "",
+    )]
+    pub recipient_fingerprint: Vec<Fingerprint>,
+    #[clap(
+        help = "The path of the store",
+        long,
+        // short collides with --symmetric
+    )]
+    pub store: Option<std::path::PathBuf>,
     #[clap(
         long = "signer-file",
         value_name = "KEY_FILE",
