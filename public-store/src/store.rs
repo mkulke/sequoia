@@ -1,6 +1,6 @@
 use anyhow::Context;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use openpgp_cert_d::{CertD, Data, TRUST_ROOT};
 
@@ -19,7 +19,7 @@ use crate::{Error, Result};
 
 static TRUST_ROOT_USERID: &str = "trust-root";
 
-const POLICY: StandardPolicy = StandardPolicy::new();
+const TRUST_ROOT_POLICY: StandardPolicy = StandardPolicy::new();
 
 pub struct Store {
     certd: CertD,
@@ -37,6 +37,14 @@ impl Store {
             Some(path) => CertD::with_base_dir(path).map(|x| x.into())?,
             None => CertD::new().map(|x| x.into())?,
         })
+    }
+
+    /// Get the path to the certificate store directory.
+    ///
+    /// Useful for debugging.
+    pub fn path(&self) -> PathBuf {
+        //TODO requires implementation in openpgp-cert-d.
+        todo!()
     }
 
     /// Query the store for a certificate by fingerprint.
@@ -65,6 +73,14 @@ impl Store {
         }
     }
 
+    /// Query the store for a certificate's path by fingerprint.
+    pub fn get_path(&self, _fingerprint: &Fingerprint) -> Result<PathBuf> {
+        //TODO requires implementation in openpgp-cert-d.
+        todo!()
+    }
+
+    /// Insert or update a certificate in the store.
+    // TODO: Should this rather take a Cert?
     pub fn insert<R: std::io::Read + Send + Sync>(&self, src: R) -> Result<()> {
         let new = Cert::from_reader(src)?;
 
@@ -84,6 +100,8 @@ impl Store {
         Ok(())
     }
 
+    /// Insert or update multiple certificates in the store.
+    // TODO: Should this rather take an Iter<Item=Cert>?
     pub fn import<R: std::io::Read + Send + Sync>(&self, src: R) -> Result<()> {
         for cert in CertParser::from_reader(src)? {
             let new = cert.context("Malformed certificate in keyring")?;
@@ -106,6 +124,7 @@ impl Store {
         Ok(())
     }
 
+    /// Export all certs in the store.
     pub fn export(&self, out: &mut dyn std::io::Write) -> Result<()> {
         for (_fp, _tag, cert) in self.certd.iter()? {
             let cert = Cert::from_bytes(&cert)?;
@@ -115,6 +134,7 @@ impl Store {
         Ok(())
     }
 
+    /// Setup a new certificate store and create a trust-root.
     // Setup a new certificate directory and create a trust-root.
     //
     // The created trust-root
@@ -151,10 +171,14 @@ impl Store {
         Ok(())
     }
 
+    /// Setup a new certificate store and import the trust-root.
+    ///
+    /// The trust-root must be valid according to the cert-d specification.
+    // TODO: add link.
     // Import the trust-root
     //
     // Check that
-    // a) the imported Key is valid, according to our POLICY
+    // a) the imported Key is valid, according to our TRUST_ROOT_POLICY
     // b) the primary key is certification-capable
     pub fn setup_import_stdin<R: std::io::Read + Send + Sync>(
         &self,
@@ -163,7 +187,7 @@ impl Store {
         let trust_root = Cert::from_reader(src)?;
 
         if !trust_root
-            .with_policy(&POLICY, None)
+            .with_policy(&TRUST_ROOT_POLICY, None)
             .context("The imported trust-root must be valid.")?
             .primary_key()
             .for_certification()
@@ -179,48 +203,42 @@ impl Store {
         Ok(())
     }
 
-    fn trust_root(&self) -> Result<Cert> {
-        if let Some((_tag, cert)) = self.certd.get(TRUST_ROOT)? {
-            Cert::from_bytes(&cert).map_err(Into::into)
-        } else {
-            Err(TrustRootError::TrustRootNotFound.into())
-        }
+    /// Look for a cert by (subkey) fingerprint.
+    ///
+    /// If no cert is found the resulting vector is empty.
+    /// Err is only returned if a problem occurs.
+    pub fn search_by_fp(&self, fp: &Fingerprint) -> Result<Vec<Cert>> {
+        let certs = self
+            .certd
+            .iter()?
+            .map(|(_fp, _tag, data)| data)
+            // TODO don't hide parsing errors?
+            .flat_map(|data| Cert::from_bytes(&data))
+            .filter(|cert| cert.keys().any(|key| &key.fingerprint() == fp))
+            .collect::<Vec<Cert>>();
+
+        Ok(certs)
     }
 
-    pub fn add_label<P>(
-        &self,
-        fingerprint: &Fingerprint,
-        label: &str,
-        pw_callback: P,
-    ) -> Result<()>
-    where
-        P: FnOnce() -> Result<Password>,
-    {
-        let cert = self.get(fingerprint)?;
-        let userid = openpgp::packet::UserID::from(label);
+    /// Look for a cert by userid
+    ///
+    /// If no cert is found the resulting vector is empty.
+    /// Err is only returned if a problem occurs.
+    pub fn search_by_userid(&self, userid: &str) -> Result<Vec<Cert>> {
+        let userid = openpgp::packet::UserID::from(userid);
+        let certs = self
+            .certd
+            .iter()?
+            .map(|(_fp, _tag, data)| data)
+            // TODO don't hide parsing errors?
+            .flat_map(|data| Cert::from_bytes(&data))
+            // TODO this only does exact matches.
+            // At least name or email only should work.
+            // Substring of fuzzy matching should be discussed.
+            .filter(|cert| cert.userids().any(|u| u.userid() == &userid))
+            .collect::<Vec<Cert>>();
 
-        let mut tr_key = self
-            .trust_root()?
-            .with_policy(&POLICY, None)?
-            .primary_key()
-            .key()
-            .clone()
-            .parts_into_secret()?;
-
-        if !tr_key.has_unencrypted_secret() {
-            tr_key = tr_key.decrypt_secret(&pw_callback()?)?;
-        }
-
-        let mut tr_keypair = tr_key.into_keypair()?;
-        let sb = SignatureBuilder::new(SignatureType::GenericCertification)
-            .set_exportable_certification(false)?;
-        let binding = userid.bind(&mut tr_keypair, &cert, sb)?;
-        let cert = cert.insert_packets(vec![
-            openpgp::Packet::from(userid),
-            binding.into(),
-        ])?;
-
-        self.insert(cert.to_vec()?.as_slice())
+        Ok(certs)
     }
 }
 
@@ -603,43 +621,6 @@ mod tests {
     }
 
     #[test]
-    fn label() -> Result<()> {
-        // Setup new store with one cert
-        let data = include_bytes!("../testdata/testy-new.pgp");
-        let base = test_base();
-        base.child("39/d100ab67d5bd8c04010205fb3751f1587daef1")
-            .write_binary(data)?;
-        let certd = Store::new(Some(base.path()))?;
-
-        let pw = Password::from("password");
-        let fp =
-            Fingerprint::from_hex("39d100ab67d5bd8c04010205fb3751f1587daef1")?;
-
-        let label = "label";
-
-        certd.setup_create(Some(pw.clone()))?;
-
-        let cert_before = certd.get(&fp)?;
-        let mut names_before = cert_before
-            .userids()
-            .flat_map(|ca| ca.userid().name())
-            .flatten();
-
-        assert!(names_before.all(|x| x != label));
-
-        certd.add_label(&fp, label, || Ok(pw))?;
-
-        let cert_after = certd.get(&fp)?;
-        let mut names_after = cert_after
-            .userids()
-            .flat_map(|ca| ca.userid().name())
-            .flatten();
-
-        assert!(names_after.any(|x| x == label));
-        Ok(())
-    }
-
-    #[test]
     fn trust_root() -> Result<()> {
         // Setup new store with one cert
         let data = include_bytes!("../testdata/testy-new.pgp");
@@ -656,6 +637,59 @@ mod tests {
         let trust_root = certd.trust_root()?;
 
         assert_eq!(trust_root, trust_root_from_file);
+        Ok(())
+    }
+
+    #[test]
+    fn search_fp_primary() -> Result<()> {
+        // Setup new store with one cert
+        let data = include_bytes!("../testdata/testy-new.pgp");
+        let base = test_base();
+        base.child("39/d100ab67d5bd8c04010205fb3751f1587daef1")
+            .write_binary(data)?;
+        let certd = Store::new(Some(base.path())).unwrap();
+
+        let fp =
+            Fingerprint::from_hex("39d100ab67d5bd8c04010205fb3751f1587daef1")?;
+
+        let result = certd.search_by_fp(&fp).unwrap();
+        assert!(result.len() == 1);
+        assert_eq!(result[0], Cert::from_bytes(data)?);
+        Ok(())
+    }
+
+    #[test]
+    fn search_fp_subkey() -> Result<()> {
+        // Setup new store with one cert
+        let data = include_bytes!("../testdata/testy-new.pgp");
+        let base = test_base();
+        base.child("39/d100ab67d5bd8c04010205fb3751f1587daef1")
+            .write_binary(data)?;
+        let certd = Store::new(Some(base.path())).unwrap();
+
+        let subkey_fp =
+            Fingerprint::from_hex("f4d1450b041f622fcefbfdb18bd88e94c0d20333")?;
+
+        let result = certd.search_by_fp(&subkey_fp).unwrap();
+        assert!(result.len() == 1);
+        assert_eq!(result[0], Cert::from_bytes(data)?);
+        Ok(())
+    }
+
+    #[test]
+    fn search_fp_no_match() -> Result<()> {
+        // Setup new store with one cert
+        let data = include_bytes!("../testdata/testy-new.pgp");
+        let base = test_base();
+        base.child("39/d100ab67d5bd8c04010205fb3751f1587daef1")
+            .write_binary(data)?;
+        let certd = Store::new(Some(base.path())).unwrap();
+
+        let subkey_fp =
+            Fingerprint::from_hex("ffffffffffffffffffffffffffffffffffffffff")?;
+
+        let result = certd.search_by_fp(&subkey_fp).unwrap();
+        assert!(result.len() == 0);
         Ok(())
     }
 }
