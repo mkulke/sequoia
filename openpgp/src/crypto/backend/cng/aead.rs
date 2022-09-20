@@ -1,7 +1,9 @@
 //! Implementation of AEAD using Windows CNG API.
+use std::cmp::Ordering;
 
 use crate::{Error, Result};
 use crate::crypto::aead::{Aead, CipherOp};
+use crate::crypto::mem::secure_cmp;
 use crate::seal;
 use crate::types::{AEADAlgorithm, SymmetricAlgorithm};
 
@@ -9,6 +11,12 @@ use eax::online::{EaxOnline, Encrypt, Decrypt};
 use win_crypto_ng::symmetric::{BlockCipherKey, Aes};
 use win_crypto_ng::symmetric::block_cipher::generic_array::{GenericArray, ArrayLength};
 use win_crypto_ng::symmetric::block_cipher::generic_array::typenum::{U128, U192, U256};
+
+/// Disables authentication checks.
+///
+/// This is DANGEROUS, and is only useful for debugging problems with
+/// malformed AEAD-encrypted messages.
+const DANGER_DISABLE_AUTHENTICATION: bool = false;
 
 trait GenericArrayExt<T, N: ArrayLength<T>> {
     const LEN: usize;
@@ -81,20 +89,25 @@ macro_rules! impl_aead {
     ($($type: ty),*) => {
         $(
         impl Aead for EaxOnline<$type, Encrypt> {
-            fn update(&mut self, ad: &[u8]) { self.update_assoc(ad) }
+            fn update(&mut self, ad: &[u8]) -> Result<()> {
+                self.update_assoc(ad);
+                Ok(())
+            }
             fn digest_size(&self) -> usize {
                 <eax::Tag as GenericArrayExt<_, _>>::LEN
             }
-            fn digest(&mut self, digest: &mut [u8]) {
+            fn digest(&mut self, digest: &mut [u8]) -> Result<()> {
                 let tag = self.tag_clone();
                 digest[..tag.len()].copy_from_slice(&tag[..]);
+                Ok(())
             }
-            fn encrypt(&mut self, dst: &mut [u8], src: &[u8]) {
+            fn encrypt(&mut self, dst: &mut [u8], src: &[u8]) -> Result<()> {
                 let len = core::cmp::min(dst.len(), src.len());
                 dst[..len].copy_from_slice(&src[..len]);
-                EaxOnline::<$type, Encrypt>::encrypt(self, &mut dst[..len])
+                EaxOnline::<$type, Encrypt>::encrypt(self, &mut dst[..len]);
+                Ok(())
             }
-            fn decrypt(&mut self, _dst: &mut [u8], _src: &[u8]) {
+            fn decrypt_verify(&mut self, _dst: &mut [u8], _src: &[u8], _valid_digest: &[u8]) -> Result<()> {
                 panic!("AEAD decryption called in the encryption context")
             }
         }
@@ -102,21 +115,34 @@ macro_rules! impl_aead {
         )*
         $(
         impl Aead for EaxOnline<$type, Decrypt> {
-            fn update(&mut self, ad: &[u8]) { self.update_assoc(ad) }
+            fn update(&mut self, ad: &[u8]) -> Result<()> {
+                self.update_assoc(ad);
+                Ok(())
+            }
             fn digest_size(&self) -> usize {
                 <eax::Tag as GenericArrayExt<_, _>>::LEN
             }
-            fn digest(&mut self, digest: &mut [u8]) {
+            fn digest(&mut self, digest: &mut [u8]) -> Result<()> {
                 let tag = self.tag_clone();
                 digest[..tag.len()].copy_from_slice(&tag[..]);
+                Ok(())
             }
-            fn encrypt(&mut self, _dst: &mut [u8], _src: &[u8]) {
+            fn encrypt(&mut self, _dst: &mut [u8], _src: &[u8]) -> Result<()> {
                 panic!("AEAD encryption called in the decryption context")
             }
-            fn decrypt(&mut self, dst: &mut [u8], src: &[u8]) {
+            fn decrypt_verify(&mut self, dst: &mut [u8], src: &[u8], valid_digest: &[u8]) -> Result<()> {
                 let len = core::cmp::min(dst.len(), src.len());
                 dst[..len].copy_from_slice(&src[..len]);
-                self.decrypt_unauthenticated_hazmat(&mut dst[..len])
+                self.decrypt_unauthenticated_hazmat(&mut dst[..len]);
+                let mut digest = vec![0u8; self.digest_size()];
+
+                self.digest(&mut digest)?;
+                if secure_cmp(&digest[..], valid_digest)
+                    != Ordering::Equal && ! DANGER_DISABLE_AUTHENTICATION
+                {
+                    return Err(Error::ManipulatedMessage.into());
+                }
+                Ok(())
             }
         }
         impl seal::Sealed for EaxOnline<$type, Decrypt> {}

@@ -15,7 +15,6 @@ use crate::utils::{
 use crate::Error;
 use crate::Result;
 use crate::crypto::SessionKey;
-use crate::crypto::mem::secure_cmp;
 use crate::seal;
 use crate::parse::Cookie;
 
@@ -31,12 +30,6 @@ const MAX_CHUNK_SIZE: usize = 1 << 22; // 4MiB
 
 /// Maximum size of any Nonce used by an AEAD mode.
 pub const MAX_NONCE_LEN: usize = 16;
-
-/// Disables authentication checks.
-///
-/// This is DANGEROUS, and is only useful for debugging problems with
-/// malformed AEAD-encrypted messages.
-const DANGER_DISABLE_AUTHENTICATION: bool = false;
 
 /// Converts a chunk size to a usize.
 pub(crate) fn chunk_size_usize(chunk_size: u64) -> Result<usize> {
@@ -58,18 +51,20 @@ pub(crate) fn chunk_size_usize(chunk_size: u64) -> Result<usize> {
 /// [sealed]: https://rust-lang.github.io/api-guidelines/future-proofing.html#sealed-traits-protect-against-downstream-implementations-c-sealed
 pub trait Aead : seal::Sealed {
     /// Adds associated data `ad`.
-    fn update(&mut self, ad: &[u8]);
+    fn update(&mut self, ad: &[u8]) -> Result<()>;
 
     /// Encrypts one block `src` to `dst`.
-    fn encrypt(&mut self, dst: &mut [u8], src: &[u8]);
-    /// Decrypts one block `src` to `dst`.
-    fn decrypt(&mut self, dst: &mut [u8], src: &[u8]);
+    fn encrypt(&mut self, dst: &mut [u8], src: &[u8]) -> Result<()>;
 
     /// Produce the digest.
-    fn digest(&mut self, digest: &mut [u8]);
+    fn digest(&mut self, digest: &mut [u8]) -> Result<()>;
 
     /// Length of the digest in bytes.
     fn digest_size(&self) -> usize;
+
+    /// Decrypt one block `src` to `dst` and verify if the digest
+    /// matches `valid_digest`.
+    fn decrypt_verify(&mut self, dst: &mut [u8], src: &[u8], valid_digest: &[u8]) -> Result<()>;
 }
 
 /// Whether AEAD cipher is used for data encryption or decryption.
@@ -299,12 +294,7 @@ impl<'a, S: Schedule> Decryptor<'a, S> {
     // is less than `plaintext.len()`, then it is either because we
     // reached the end of the input or an error occurred.
     fn read_helper(&mut self, plaintext: &mut [u8]) -> Result<usize> {
-        use std::cmp::Ordering;
-
         let mut pos = 0;
-
-        // Buffer to hold a digest.
-        let mut digest = vec![0u8; self.digest_size];
 
         // 1. Copy any buffered data.
         if !self.buffer.is_empty() {
@@ -400,10 +390,10 @@ impl<'a, S: Schedule> Decryptor<'a, S> {
                         self.aead.context(self.sym_algo, &self.key, iv,
                                           CipherOp::Decrypt)
                             .map(|mut aead| {
-                                aead.update(ad);
-                                aead
+                                aead.update(ad)?;
+                                Ok::<Box<dyn Aead>, anyhow::Error>(aead)
                             })
-                    })?;
+                    })??;
 
                 // Decrypt the chunk and check the tag.
                 let to_decrypt = chunk.len() - self.digest_size;
@@ -418,15 +408,7 @@ impl<'a, S: Schedule> Decryptor<'a, S> {
                     &mut plaintext[pos..pos + to_decrypt]
                 };
 
-                aead.decrypt(buffer, &chunk[..to_decrypt]);
-
-                // Check digest.
-                aead.digest(&mut digest);
-                if secure_cmp(&digest[..], &chunk[to_decrypt..])
-                    != Ordering::Equal && ! DANGER_DISABLE_AUTHENTICATION
-                {
-                    return Err(Error::ManipulatedMessage.into());
-                }
+                aead.decrypt_verify(buffer, &chunk[..to_decrypt], &chunk[to_decrypt..])?;
 
                 if double_buffer {
                     let to_copy = plaintext.len() - pos;
@@ -459,20 +441,14 @@ impl<'a, S: Schedule> Decryptor<'a, S> {
                         self.aead.context(self.sym_algo, &self.key, iv,
                                           CipherOp::Decrypt)
                             .map(|mut aead| {
-                                aead.update(ad);
-                                aead
+                                aead.update(ad)?;
+                                Ok::<Box<dyn Aead>, anyhow::Error>(aead)
                             })
-                    })?;
-
-                aead.digest(&mut digest);
+                    })??;
 
                 let final_digest = self.source.data(final_digest_size)?;
-                if final_digest.len() != final_digest_size
-                    || secure_cmp(&digest[..], final_digest) != Ordering::Equal
-                    && ! DANGER_DISABLE_AUTHENTICATION
-                {
-                    return Err(Error::ManipulatedMessage.into());
-                }
+
+                aead.decrypt_verify(&mut [], &[], final_digest)?;
 
                 // Consume the data only on success so that we keep
                 // returning the error.
@@ -683,22 +659,22 @@ impl<W: io::Write, S: Schedule> Encryptor<W, S> {
                         self.aead.context(self.sym_algo, &self.key, iv,
                                           CipherOp::Encrypt)
                             .map(|mut aead| {
-                                aead.update(ad);
-                                aead
+                                aead.update(ad)?;
+                                Ok::<Box<dyn Aead>, anyhow::Error>(aead)
                             })
-                    })?;
+                    })??;
 
                 let inner = self.inner.as_mut().unwrap();
 
                 // Encrypt the chunk.
-                aead.encrypt(&mut self.scratch, &self.buffer);
+                aead.encrypt(&mut self.scratch, &self.buffer)?;
                 self.bytes_encrypted += self.scratch.len() as u64;
                 self.chunk_index += 1;
                 crate::vec_truncate(&mut self.buffer, 0);
                 inner.write_all(&self.scratch)?;
 
                 // Write digest.
-                aead.digest(&mut self.scratch[..self.digest_size]);
+                aead.digest(&mut self.scratch[..self.digest_size])?;
                 inner.write_all(&self.scratch[..self.digest_size])?;
             }
         }
@@ -712,21 +688,21 @@ impl<W: io::Write, S: Schedule> Encryptor<W, S> {
                         self.aead.context(self.sym_algo, &self.key, iv,
                                           CipherOp::Encrypt)
                             .map(|mut aead| {
-                                aead.update(ad);
-                                aead
+                                aead.update(ad)?;
+                                Ok::<Box<dyn Aead>, anyhow::Error>(aead)
                             })
-                    })?;
+                    })??;
 
                 let inner = self.inner.as_mut().unwrap();
 
                 // Encrypt the chunk.
-                aead.encrypt(&mut self.scratch, chunk);
+                aead.encrypt(&mut self.scratch, chunk)?;
                 self.bytes_encrypted += self.scratch.len() as u64;
                 self.chunk_index += 1;
                 inner.write_all(&self.scratch)?;
 
                 // Write digest.
-                aead.digest(&mut self.scratch[..self.digest_size]);
+                aead.digest(&mut self.scratch[..self.digest_size])?;
                 inner.write_all(&self.scratch[..self.digest_size])?;
             } else {
                 // Stash for later.
@@ -747,14 +723,14 @@ impl<W: io::Write, S: Schedule> Encryptor<W, S> {
                         self.aead.context(self.sym_algo, &self.key, iv,
                                           CipherOp::Encrypt)
                             .map(|mut aead| {
-                                aead.update(ad);
-                                aead
+                                aead.update(ad)?;
+                                Ok::<Box<dyn Aead>, anyhow::Error>(aead)
                             })
-                    })?;
+                    })??;
 
                 // Encrypt the chunk.
                 unsafe { self.scratch.set_len(self.buffer.len()) }
-                aead.encrypt(&mut self.scratch, &self.buffer);
+                aead.encrypt(&mut self.scratch, &self.buffer)?;
                 self.bytes_encrypted += self.scratch.len() as u64;
                 self.chunk_index += 1;
                 crate::vec_truncate(&mut self.buffer, 0);
@@ -762,7 +738,7 @@ impl<W: io::Write, S: Schedule> Encryptor<W, S> {
 
                 // Write digest.
                 unsafe { self.scratch.set_len(self.digest_size) }
-                aead.digest(&mut self.scratch[..self.digest_size]);
+                aead.digest(&mut self.scratch[..self.digest_size])?;
                 inner.write_all(&self.scratch[..self.digest_size])?;
             }
 
@@ -773,11 +749,11 @@ impl<W: io::Write, S: Schedule> Encryptor<W, S> {
                     self.aead.context(self.sym_algo, &self.key, iv,
                                       CipherOp::Encrypt)
                         .map(|mut aead| {
-                            aead.update(ad);
-                            aead
+                            aead.update(ad)?;
+                            Ok::<Box<dyn Aead>, anyhow::Error>(aead)
                         })
-                })?;
-            aead.digest(&mut self.scratch[..self.digest_size]);
+                })??;
+            aead.digest(&mut self.scratch[..self.digest_size])?;
             inner.write_all(&self.scratch[..self.digest_size])?;
 
             Ok(inner)
