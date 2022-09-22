@@ -19,7 +19,6 @@ pub struct Command {
 pub enum Subcommands {
     Get(GetCommand),
     Insert(InsertCommand),
-    Import(ImportCommand),
     Export(ExportCommand),
     Setup(SetupCommand),
     Search(SearchCommand),

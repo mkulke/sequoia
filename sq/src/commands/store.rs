@@ -11,7 +11,6 @@ pub fn store(c: store::Command) -> Result<()> {
     match c.subcommand {
         store::Subcommands::Get(c) => get(c.store, c.fingerprint),
         store::Subcommands::Insert(c) => insert(c.store),
-        store::Subcommands::Import(c) => import(c.store),
         store::Subcommands::Export(c) => export(c.store),
         store::Subcommands::Search(c) => search(c),
         store::Subcommands::Setup(c) => {
@@ -36,12 +35,6 @@ fn insert(store: Option<PathBuf>) -> Result<()> {
     let certd = Store::new(store)?;
 
     certd.insert(std::io::stdin())
-}
-
-fn import(store: Option<PathBuf>) -> Result<()> {
-    let certd = Store::new(store)?;
-
-    certd.import(std::io::stdin())
 }
 
 fn export(store: Option<PathBuf>) -> Result<()> {

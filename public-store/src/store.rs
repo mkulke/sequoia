@@ -100,30 +100,6 @@ impl Store {
         Ok(())
     }
 
-    /// Insert or update multiple certificates in the store.
-    // TODO: Should this rather take an Iter<Item=Cert>?
-    pub fn import<R: std::io::Read + Send + Sync>(&self, src: R) -> Result<()> {
-        for cert in CertParser::from_reader(src)? {
-            let new = cert.context("Malformed certificate in keyring")?;
-
-            let f = |new: Data, old: Option<Data>| {
-                let merged = match old {
-                    Some(old) => {
-                        let old = Cert::from_bytes(&old)?;
-                        let new = Cert::from_bytes(&new)?;
-                        old.merge_public(new)?.to_vec()?.into_boxed_slice()
-                    }
-                    None => new,
-                };
-                Ok(merged)
-            };
-
-            self.certd.insert(new.to_vec()?.into_boxed_slice(), f)?;
-        }
-
-        Ok(())
-    }
-
     /// Export all certs in the store.
     pub fn export(&self, out: &mut dyn std::io::Write) -> Result<()> {
         for (_fp, _tag, cert) in self.certd.iter()? {
@@ -428,68 +404,6 @@ mod tests {
         certd.export(&mut out)?;
 
         assert!(out.is_empty());
-        Ok(())
-    }
-
-    #[test]
-    fn import() -> anyhow::Result<()> {
-        // 1. Load bytes of several binary certs, just append them
-        // 2. Import
-        // 3. Assert each cert is in the store
-        // 4. Assert not more is in the store
-        let testy = include_bytes!("../testdata/testy-new.pgp");
-        let alice = include_bytes!("../testdata/alice.pgp");
-        let bob = include_bytes!("../testdata/bob.pgp");
-
-        let certring = [testy.as_ref(), alice.as_ref(), bob.as_ref()].concat();
-
-        let base = test_base();
-        let certd = Store::new(Some(base.path()))?;
-
-        // Import the keyring.
-        certd.import(&certring[..])?;
-
-        let read_cert = Cert::from_bytes(&std::fs::read(
-            base.child("39/d100ab67d5bd8c04010205fb3751f1587daef1"),
-        )?)?;
-        assert_eq!(Cert::from_bytes(testy)?, read_cert);
-
-        let read_cert = Cert::from_bytes(&std::fs::read(
-            base.child("eb/85bb5fa33a75e15e944e63f231550c4f47e38e"),
-        )?)?;
-        assert_eq!(Cert::from_bytes(alice)?, read_cert);
-
-        let read_cert = Cert::from_bytes(&std::fs::read(
-            base.child("d1/a66e1a23b182c9980f788cfbfcc82a015e7330"),
-        )?)?;
-        assert_eq!(Cert::from_bytes(bob)?, read_cert);
-
-        // Check that nothing else is in the store
-        let certd = Store::new(Some(base.path()))?;
-        assert_eq!(certd.certd.iter_fingerprints()?.count(), 3);
-
-        // Import the keyring again, no files should be added or changed.
-        certd.import(&certring[..])?;
-
-        let read_cert = Cert::from_bytes(&std::fs::read(
-            base.child("39/d100ab67d5bd8c04010205fb3751f1587daef1"),
-        )?)?;
-        assert_eq!(Cert::from_bytes(testy)?, read_cert);
-
-        let read_cert = Cert::from_bytes(&std::fs::read(
-            base.child("eb/85bb5fa33a75e15e944e63f231550c4f47e38e"),
-        )?)?;
-        assert_eq!(Cert::from_bytes(alice)?, read_cert);
-
-        let read_cert = Cert::from_bytes(&std::fs::read(
-            base.child("d1/a66e1a23b182c9980f788cfbfcc82a015e7330"),
-        )?)?;
-        assert_eq!(Cert::from_bytes(bob)?, read_cert);
-
-        // Check that nothing else is in the store
-        let certd = Store::new(Some(base.path()))?;
-        assert_eq!(certd.certd.iter_fingerprints()?.count(), 3);
-
         Ok(())
     }
 

@@ -2241,8 +2241,6 @@ SUBCOMMANDS:
             Look up a certificate by its fingerprint
     insert
             Insert or update a certificate
-    import
-            Import certificates into the store
     export
             Export all certificates in the store
     setup
@@ -2280,22 +2278,6 @@ Insert or update a certificate. Read the cert from stdin
 
 USAGE:
     sq store insert [OPTIONS]
-
-OPTIONS:
-    -h, --help
-            Print help information
-
-    -s, --store <STORE>
-            The path of the store
-```
-
-### Subcommand sq store import
-
-```text
-Import certificates into the store from stdin.
-
-USAGE:
-    sq store import [OPTIONS]
 
 OPTIONS:
     -h, --help
