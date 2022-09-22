@@ -1,7 +1,7 @@
 use anyhow::Context as _;
 use std::io;
 
-extern crate sequoia_openpgp as openpgp;
+use sequoia_openpgp as openpgp;
 use openpgp::packet::Literal;
 use openpgp::packet::Tag;
 use openpgp::parse::{PacketParser, PacketParserResult, Parse};
