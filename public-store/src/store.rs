@@ -2,11 +2,9 @@ use std::path::{Path, PathBuf};
 
 use openpgp_cert_d::{CertD, Data, TRUST_ROOT};
 
-use openpgp::crypto::Password;
-use openpgp::packet::signature::SignatureBuilder;
 use openpgp::parse::Parse;
 use openpgp::serialize::{Serialize, SerializeInto};
-use openpgp::{Cert, Fingerprint};
+use openpgp::{Cert, KeyHandle};
 use sequoia_openpgp as openpgp;
 
 use crate::{Error, Result};
@@ -40,18 +38,18 @@ impl Store {
     /// Query the store for a certificate by fingerprint.
     ///
     /// Returns the certificate as a [`sequoia_openpgp::Cert`].
-    pub fn get(&self, fingerprint: &Fingerprint) -> Result<Cert> {
-        if let Some((_tag, cert)) = self.certd.get(&fingerprint.to_hex())? {
+    pub fn get(&self, kh: &KeyHandle) -> Result<Cert> {
+        if let Some((_tag, cert)) = self.certd.get(&kh.to_hex())? {
             Cert::from_bytes(&cert).map_err(Into::into)
         } else {
             Err(Error::CertNotFound {
-                fingerprint: fingerprint.clone(),
+                keyhandle: kh.clone(),
             })
         }
     }
 
     /// Query the store for a certificate's path by fingerprint.
-    pub fn get_path(&self, _fingerprint: &Fingerprint) -> Result<PathBuf> {
+    pub fn get_path(&self, _kh: &KeyHandle) -> Result<PathBuf> {
         //TODO requires implementation in openpgp-cert-d.
         todo!()
     }
@@ -102,14 +100,14 @@ impl Store {
     ///
     /// If no cert is found the resulting vector is empty.
     /// Err is only returned if a problem occurs.
-    pub fn search_by_fp(&self, fp: &Fingerprint) -> Result<Vec<Cert>> {
+    pub fn search_by_kh(&self, kh: &KeyHandle) -> Result<Vec<Cert>> {
         let certs = self
             .certd
             .iter()?
             .map(|(_fp, _tag, data)| data)
             // TODO don't hide parsing errors?
             .flat_map(|data| Cert::from_bytes(&data))
-            .filter(|cert| cert.keys().any(|key| &key.fingerprint() == fp))
+            .filter(|cert| cert.keys().any(|key| key.key_handle().aliases(kh)))
             .collect::<Vec<Cert>>();
 
         Ok(certs)
@@ -143,6 +141,8 @@ mod tests {
     use anyhow::Result;
     use assert_fs::prelude::*;
 
+    use openpgp::Fingerprint;
+
     fn test_base() -> assert_fs::TempDir {
         let base = assert_fs::TempDir::new().unwrap();
         match std::env::var_os("CERTD_TEST_PERSIST") {
@@ -162,7 +162,7 @@ mod tests {
             Fingerprint::from_hex("39d100ab67d5bd8c04010205fb3751f1587daef1")
                 .unwrap();
 
-        let res = certd.get(&fp);
+        let res = certd.get(&fp.into());
 
         assert!(res.is_err())
     }
@@ -175,16 +175,17 @@ mod tests {
         base.child("39/d100ab67d5bd8c04010205fb3751f1587daef1")
             .write_binary(data)?;
         let certd = Store::new(Some(base.path())).unwrap();
-        let fp =
-            Fingerprint::from_hex("39d100ab67d5bd8c04010205fb3751f1587daef1")?;
+        let kh: KeyHandle =
+            Fingerprint::from_hex("39d100ab67d5bd8c04010205fb3751f1587daef1")?
+                .into();
 
         // Get the cert.
-        let output_cert = certd.get(&fp)?;
+        let output_cert = certd.get(&kh)?;
 
         assert_eq!(output_cert, Cert::from_bytes(data)?);
 
         // Get the cert again, to check that it does not change.
-        let output_cert2 = certd.get(&fp)?;
+        let output_cert2 = certd.get(&kh)?;
 
         assert_eq!(output_cert2, Cert::from_bytes(data)?);
         Ok(())
@@ -201,7 +202,7 @@ mod tests {
         let fp =
             Fingerprint::from_hex("39d100ab67d5bd8c04010205fb3751f1587daef1")?;
 
-        let output_cert = certd.get(&fp)?;
+        let output_cert = certd.get(&fp.into())?;
 
         assert_eq!(output_cert, Cert::from_bytes(data)?);
         Ok(())
@@ -332,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn search_fp_primary() -> Result<()> {
+    fn search_by_kh_primary() -> Result<()> {
         // Setup new store with one cert
         let data = include_bytes!("../testdata/testy-new.pgp");
         let base = test_base();
@@ -342,15 +343,20 @@ mod tests {
 
         let fp =
             Fingerprint::from_hex("39d100ab67d5bd8c04010205fb3751f1587daef1")?;
+        let kid = openpgp::KeyID::from(&fp);
 
-        let result = certd.search_by_fp(&fp).unwrap();
+        let result = certd.search_by_kh(&fp.into()).unwrap();
+        assert!(result.len() == 1);
+        assert_eq!(result[0], Cert::from_bytes(data)?);
+
+        let result = certd.search_by_kh(&kid.into()).unwrap();
         assert!(result.len() == 1);
         assert_eq!(result[0], Cert::from_bytes(data)?);
         Ok(())
     }
 
     #[test]
-    fn search_fp_subkey() -> Result<()> {
+    fn search_by_kh_subkey() -> Result<()> {
         // Setup new store with one cert
         let data = include_bytes!("../testdata/testy-new.pgp");
         let base = test_base();
@@ -360,15 +366,20 @@ mod tests {
 
         let subkey_fp =
             Fingerprint::from_hex("f4d1450b041f622fcefbfdb18bd88e94c0d20333")?;
+        let subkey_kid = openpgp::KeyID::from(&subkey_fp);
 
-        let result = certd.search_by_fp(&subkey_fp).unwrap();
+        let result = certd.search_by_kh(&subkey_fp.into()).unwrap();
+        assert!(result.len() == 1);
+        assert_eq!(result[0], Cert::from_bytes(data)?);
+
+        let result = certd.search_by_kh(&subkey_kid.into()).unwrap();
         assert!(result.len() == 1);
         assert_eq!(result[0], Cert::from_bytes(data)?);
         Ok(())
     }
 
     #[test]
-    fn search_fp_no_match() -> Result<()> {
+    fn search_by_kh_no_match() -> Result<()> {
         // Setup new store with one cert
         let data = include_bytes!("../testdata/testy-new.pgp");
         let base = test_base();
@@ -378,8 +389,11 @@ mod tests {
 
         let subkey_fp =
             Fingerprint::from_hex("ffffffffffffffffffffffffffffffffffffffff")?;
+        let subkey_kid = openpgp::KeyID::from(&subkey_fp);
 
-        let result = certd.search_by_fp(&subkey_fp).unwrap();
+        let result = certd.search_by_kh(&subkey_fp.into()).unwrap();
+        assert!(result.len() == 0);
+        let result = certd.search_by_kh(&subkey_kid.into()).unwrap();
         assert!(result.len() == 0);
         Ok(())
     }

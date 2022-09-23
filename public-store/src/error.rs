@@ -1,4 +1,4 @@
-use openpgp::Fingerprint;
+use openpgp::KeyHandle;
 use sequoia_openpgp as openpgp;
 
 /// Result specialization
@@ -7,8 +7,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     /// The certificate was not found in the store
-    #[error("Certificate not in store: {fingerprint}")]
-    CertNotFound { fingerprint: Fingerprint },
+    #[error("Certificate not in store: {keyhandle}")]
+    CertNotFound { keyhandle: KeyHandle },
     /// A CertD error occurred
     #[error("CertD error")]
     CertDError(#[from] openpgp_cert_d::Error),

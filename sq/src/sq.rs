@@ -481,7 +481,7 @@ fn main() -> Result<()> {
             if !command.recipient_fingerprint.is_empty() {
                 let store = Store::new(command.store)?;
                 for fp in command.recipient_fingerprint {
-                    recipients.push(store.get(&fp)?);
+                    recipients.push(store.get(&fp.into())?);
                 };
             }
             let mut input = open_or_stdin(command.io.input.as_deref())?;

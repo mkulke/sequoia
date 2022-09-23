@@ -22,9 +22,9 @@ pub fn store(c: store::Command) -> Result<()> {
 fn get(store: Option<PathBuf>, fingerprint: String) -> Result<()> {
     let certd = Store::new(store)?;
 
-    let fingerprint = Fingerprint::from_hex(&fingerprint)?;
+    let fp = Fingerprint::from_hex(&fingerprint)?;
 
-    let cert = certd.get(&fingerprint)?;
+    let cert = certd.get(&fp.into())?;
     cert.export(&mut std::io::stdout())?;
     Ok(())
 }
@@ -44,11 +44,12 @@ fn export(store: Option<PathBuf>) -> Result<()> {
 }
 
 // TODO: use common IO arguments
+// TODO: allos keyhandles on cli
 fn search(c: store::SearchCommand) -> Result<()> {
     let certd = Store::new(c.store)?;
 
     if let Some(fp) = c.fingerprint {
-        let certs = certd.search_by_fp(&fp)?;
+        let certs = certd.search_by_kh(&fp.into())?;
         for cert in certs {
             println!("{}", cert.fingerprint())
         }
