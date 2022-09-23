@@ -1,25 +1,15 @@
-use anyhow::Context;
-
 use std::path::{Path, PathBuf};
 
 use openpgp_cert_d::{CertD, Data, TRUST_ROOT};
 
-use openpgp::cert::{CertBuilder, CertParser};
 use openpgp::crypto::Password;
 use openpgp::packet::signature::SignatureBuilder;
 use openpgp::parse::Parse;
-use openpgp::policy::StandardPolicy;
 use openpgp::serialize::{Serialize, SerializeInto};
-use openpgp::types::{KeyFlags, SignatureType};
 use openpgp::{Cert, Fingerprint};
 use sequoia_openpgp as openpgp;
 
-use crate::error::TrustRootError;
 use crate::{Error, Result};
-
-static TRUST_ROOT_USERID: &str = "trust-root";
-
-const TRUST_ROOT_POLICY: StandardPolicy = StandardPolicy::new();
 
 pub struct Store {
     certd: CertD,
@@ -110,12 +100,15 @@ impl Store {
         Ok(())
     }
 
-    fn trust_root(&self) -> Result<Cert> {
-        if let Some((_tag, cert)) = self.certd.get(TRUST_ROOT)? {
-            Cert::from_bytes(&cert).map_err(Into::into)
-        } else {
-            Err(TrustRootError::TrustRootNotFound.into())
-        }
+    /// Get the trust-root
+    /// The trust-root certificate's existence is not mandatory
+    // TODO: Explain, add link to spec
+    pub fn trust_root(&self) -> Result<Option<Cert>> {
+        self.certd
+            .get(TRUST_ROOT)?
+            .map(|(_tag, data)| Cert::from_bytes(&data))
+            .transpose()
+            .map_err(|e| crate::Error::from(e))
     }
 
     /// Look for a cert by (subkey) fingerprint.
@@ -377,21 +370,17 @@ mod tests {
 
     #[test]
     fn trust_root() -> Result<()> {
-        // Setup new store with one cert
-        let data = include_bytes!("../testdata/testy-new.pgp");
+        let data = include_bytes!("../testdata/sender.pgp");
+
         let base = test_base();
         let certd = Store::new(Some(base.path()))?;
 
-        certd.setup_create(None)?;
+        base.child(TRUST_ROOT).write_binary(data)?;
 
-        base.child("39/d100ab67d5bd8c04010205fb3751f1587daef1")
-            .write_binary(data)?;
-
-        let trust_root_from_file =
-            Cert::from_bytes(&std::fs::read(base.child("trust-root"))?)?;
         let trust_root = certd.trust_root()?;
+        println!("{:?}", trust_root);
 
-        assert_eq!(trust_root, trust_root_from_file);
+        assert!(trust_root.is_some());
         Ok(())
     }
 
