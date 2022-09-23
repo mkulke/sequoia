@@ -2243,8 +2243,6 @@ SUBCOMMANDS:
             Insert or update a certificate
     export
             Export all certificates in the store
-    setup
-            Setup a new store
     search
             Look for a certificates in the store
     help
@@ -2301,28 +2299,6 @@ OPTIONS:
 
     -s, --store <STORE>
             The path of the store
-```
-
-### Subcommand sq store setup
-
-```text
-Setup a new store. Import the trust-root or create a new one.
-
-USAGE:
-    sq store setup [OPTIONS]
-
-OPTIONS:
-    -h, --help
-            Print help information
-
-        --import-from-stdin
-            Import from stdin
-
-    -s, --store <STORE>
-            The path of the store
-
-        --with-password
-            Ask for a password
 ```
 
 ### Subcommand sq store search

@@ -110,73 +110,12 @@ impl Store {
         Ok(())
     }
 
-    /// Setup a new certificate store and create a trust-root.
-    // Setup a new certificate directory and create a trust-root.
-    //
-    // The created trust-root
-    // - has a userid "trust-root", for compatibility
-    // - optionally a password
-    // - certification capable primary key
-    // - no subkeys
-    // - the direct key signature and the primary userid's binding signature are
-    //   marked non-exportable.
-    //
-    // See 3.5.1 for the trust-root's specification.
-    pub fn setup_create(&self, password: Option<Password>) -> Result<()> {
-        let cert_builder = CertBuilder::new()
-            .set_primary_key_flags(KeyFlags::empty().set_certification())
-            .add_userid_with(
-                TRUST_ROOT_USERID,
-                SignatureBuilder::new(SignatureType::GenericCertification)
-                    .set_exportable_certification(false)?,
-            )?
-            .set_password(password.clone());
-
-        let (tr_cert, _) = cert_builder.generate()?;
-
-        let tr_cert_fixed =
-            mark_dks_non_exportable(tr_cert, password.as_ref())?;
-        let tr_tsk = tr_cert_fixed.as_tsk();
-
-        self.certd.insert_special(
-            TRUST_ROOT,
-            tr_tsk.to_vec()?.into_boxed_slice(),
-            |ours, _theirs| Ok(ours),
-        )?;
-
-        Ok(())
-    }
-
-    /// Setup a new certificate store and import the trust-root.
-    ///
-    /// The trust-root must be valid according to the cert-d specification.
-    // TODO: add link.
-    // Import the trust-root
-    //
-    // Check that
-    // a) the imported Key is valid, according to our TRUST_ROOT_POLICY
-    // b) the primary key is certification-capable
-    pub fn setup_import_stdin<R: std::io::Read + Send + Sync>(
-        &self,
-        src: R,
-    ) -> Result<()> {
-        let trust_root = Cert::from_reader(src)?;
-
-        if !trust_root
-            .with_policy(&TRUST_ROOT_POLICY, None)
-            .context("The imported trust-root must be valid.")?
-            .primary_key()
-            .for_certification()
-        {
-            return Err(TrustRootError::NotCertificationCapable.into());
+    fn trust_root(&self) -> Result<Cert> {
+        if let Some((_tag, cert)) = self.certd.get(TRUST_ROOT)? {
+            Cert::from_bytes(&cert).map_err(Into::into)
+        } else {
+            Err(TrustRootError::TrustRootNotFound.into())
         }
-
-        self.certd.insert_special(
-            TRUST_ROOT,
-            trust_root.as_tsk().to_vec()?.into_boxed_slice(),
-            |ours, _theirs| Ok(ours),
-        )?;
-        Ok(())
     }
 
     /// Look for a cert by (subkey) fingerprint.
@@ -433,104 +372,6 @@ mod tests {
         )?)?;
         assert_eq!(cert, read_cert);
 
-        Ok(())
-    }
-
-    #[test]
-    fn setup_create_simple() -> anyhow::Result<()> {
-        let base = test_base();
-
-        let certd = Store::new(Some(base.path()))?;
-
-        certd.setup_create(None)?;
-
-        let trust_root =
-            Cert::from_bytes(&std::fs::read(base.child("trust-root"))?)?;
-
-        let p = &openpgp::policy::StandardPolicy::new();
-        let valid_trust_root = trust_root.with_policy(p, None)?;
-
-        // Check the primary userid
-        let userid = "trust-root";
-        assert_eq!(
-            userid,
-            valid_trust_root.primary_userid().unwrap().name()?.unwrap()
-        );
-        // And that there is unecrypted secret key material.
-        assert!(valid_trust_root
-            .primary_key()
-            .key()
-            .has_unencrypted_secret());
-
-        assert_created_trust_root_props(valid_trust_root)
-    }
-
-    #[test]
-    fn setup_create_password() -> Result<()> {
-        let base = test_base();
-
-        let certd = Store::new(Some(base.path()))?;
-
-        let pw = Password::from("password");
-        certd.setup_create(Some(pw))?;
-
-        let trust_root =
-            Cert::from_bytes(&std::fs::read(base.child("trust-root"))?)?;
-
-        let p = &openpgp::policy::StandardPolicy::new();
-        let valid_trust_root = trust_root.with_policy(p, None)?;
-
-        // Check the primary userid
-        let userid = "trust-root";
-        assert_eq!(
-            userid,
-            valid_trust_root.primary_userid().unwrap().name()?.unwrap()
-        );
-        // And that there is ecrypted secret key material.
-        assert!(!valid_trust_root
-            .primary_key()
-            .key()
-            .has_unencrypted_secret());
-
-        assert_created_trust_root_props(valid_trust_root)
-    }
-
-    // Helper, assert the properties a trust-root should have
-    fn assert_created_trust_root_props(
-        vc: openpgp::cert::ValidCert,
-    ) -> anyhow::Result<()> {
-        //There's only one userid
-        assert_eq!(1, vc.userids().count());
-
-        // The primary key is certification capable
-        assert!(vc.primary_key().for_certification());
-        // and it has secret key material.
-        assert!(vc.primary_key().key().has_secret());
-
-        // There are no subkeys
-        assert_eq!(1, vc.keys().count());
-
-        // The Direct Key Signature must be non-exportable
-        let dks = vc.direct_key_signature()?;
-        assert!(matches!(dks, openpgp::packet::Signature::V4(_)));
-        match dks {
-            openpgp::packet::Signature::V4(sig) => {
-                assert!(sig.exportable().is_err())
-            }
-            &_ => unreachable!(),
-        }
-
-        // Assert that the primary userid's binding signature is non-exportable
-        let p = &openpgp::policy::StandardPolicy::new();
-        let pu = vc.primary_userid()?;
-        let bs = pu.binding_signature(p, None)?;
-        assert!(matches!(bs, openpgp::packet::Signature::V4(_)));
-        match bs {
-            openpgp::packet::Signature::V4(sig) => {
-                assert!(sig.exportable().is_err())
-            }
-            &_ => unreachable!(),
-        }
         Ok(())
     }
 

@@ -20,7 +20,6 @@ pub enum Subcommands {
     Get(GetCommand),
     Insert(InsertCommand),
     Export(ExportCommand),
-    Setup(SetupCommand),
     Search(SearchCommand),
 }
 
@@ -77,25 +76,6 @@ pub struct ExportCommand {
     /// The path of the store
     #[clap(short, long)]
     pub store: Option<PathBuf>,
-}
-
-#[derive(Debug, Args)]
-#[clap(
-    about = "Setup a new store",
-    long_about = "Setup a new store. \
-        Import the trust-root or create a new one.",
-    name = setup,
-    )]
-pub struct SetupCommand {
-    /// The path of the store
-    #[clap(short, long, global(true))]
-    pub store: Option<PathBuf>,
-    /// Ask for a password
-    #[clap(long = "with-password", conflicts_with("import-from-stdin"))]
-    pub with_password: bool,
-    /// Import from stdin
-    #[clap(long = "import-from-stdin", conflicts_with("with-password"))]
-    pub import_from_stdin: bool,
 }
 
 #[derive(Debug, Args)]
