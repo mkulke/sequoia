@@ -5,6 +5,7 @@ use sequoia_public_store::{Result, Store};
 
 use openpgp::crypto::Password;
 use openpgp::Fingerprint;
+use openpgp::serialize::Serialize;
 use sequoia_openpgp as openpgp;
 
 pub fn store(c: store::Command) -> Result<()> {
@@ -16,26 +17,33 @@ pub fn store(c: store::Command) -> Result<()> {
     }
 }
 
+// TODO: use common IO arguments
+// TODO: use Fingerprint type for cli parsing
 fn get(store: Option<PathBuf>, fingerprint: String) -> Result<()> {
     let certd = Store::new(store)?;
 
     let fingerprint = Fingerprint::from_hex(&fingerprint)?;
 
-    certd.get_raw(&fingerprint, &mut std::io::stdout())
+    let cert = certd.get(&fingerprint)?;
+    cert.export(&mut std::io::stdout())?;
+    Ok(())
 }
 
+// TODO: use common IO arguments
 fn insert(store: Option<PathBuf>) -> Result<()> {
     let certd = Store::new(store)?;
 
     certd.insert(std::io::stdin())
 }
 
+// TODO: use common IO arguments
 fn export(store: Option<PathBuf>) -> Result<()> {
     let certd = Store::new(store)?;
 
     certd.export(&mut std::io::stdout())
 }
 
+// TODO: use common IO arguments
 fn search(c: store::SearchCommand) -> Result<()> {
     let certd = Store::new(c.store)?;
 

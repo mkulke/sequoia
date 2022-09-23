@@ -39,19 +39,6 @@ impl Store {
 
     /// Query the store for a certificate by fingerprint.
     ///
-    /// Writes the raw bytes into `out`.
-    pub fn get_raw(
-        &self,
-        fingerprint: &Fingerprint,
-        out: &mut dyn std::io::Write,
-    ) -> Result<()> {
-        let cert = self.get(fingerprint)?;
-        cert.export(out)?;
-        Ok(())
-    }
-
-    /// Query the store for a certificate by fingerprint.
-    ///
     /// Returns the certificate as a [`sequoia_openpgp::Cert`].
     pub fn get(&self, fingerprint: &Fingerprint) -> Result<Cert> {
         if let Some((_tag, cert)) = self.certd.get(&fingerprint.to_hex())? {
@@ -111,7 +98,7 @@ impl Store {
             .map_err(|e| crate::Error::from(e))
     }
 
-    /// Look for a cert by (subkey) fingerprint.
+    /// Look for a cert by (subkey) KeyHandle (i.e. fingerprint or keyid).
     ///
     /// If no cert is found the resulting vector is empty.
     /// Err is only returned if a problem occurs.
@@ -148,46 +135,6 @@ impl Store {
 
         Ok(certs)
     }
-}
-
-// Mark the cert's Direct Key Signature non-exportable
-// Sequoia does not expose the Direct Key Signature's SignatureBuilder,
-// so disassemble the Cert into packets, replace the DKS and reassble the Cert.
-//
-// XXX: This is absolutely not a nice thing to do. Once sequoia's CertBuilder
-// offers an interface to customize the primary key signature, use that and
-// remove this function.
-fn mark_dks_non_exportable(
-    cert: Cert,
-    pass: Option<&Password>,
-) -> Result<Cert> {
-    use openpgp::packet::Packet;
-    use openpgp::types::SignatureType::DirectKey;
-
-    let primary_key = cert.primary_key().key().parts_as_secret()?.clone();
-
-    let mut signer = match pass {
-        Some(pw) => primary_key.decrypt_secret(pw)?.into_keypair()?,
-        None => primary_key.into_keypair()?,
-    };
-
-    let modified_cert = Cert::from_packets(cert.into_packets().map(|p| {
-        if let Packet::Signature(sig) = p {
-            if sig.typ() == DirectKey {
-                let sb = SignatureBuilder::from(sig);
-                let new_sig = sb
-                    .set_exportable_certification(false)
-                    .and_then(|sb| sb.sign_direct_key(&mut signer, None))
-                    .unwrap();
-                Packet::Signature(new_sig)
-            } else {
-                Packet::Signature(sig)
-            }
-        } else {
-            p
-        }
-    }))?;
-    Ok(modified_cert)
 }
 
 #[cfg(test)]
