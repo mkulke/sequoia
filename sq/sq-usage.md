@@ -142,7 +142,10 @@ OPTIONS:
             either one of the recipient's keys, or any password.
 
         --signer-file <KEY_FILE>
-            Signs the message using the key in KEY_FILE
+            Signs the message with key in the file KEY_FILE
+
+        --signer-keystore <KEYID>
+            Signs the message with the key KEYID
 
     -t, --time <TIME>
             Chooses keys valid at the specified time and sets the signature's
@@ -216,7 +219,10 @@ OPTIONS:
             Provides parameters for private key store
 
         --recipient-file <KEY_FILE>
-            Decrypts the message using the key in KEY_FILE
+            Decrypts the message with the key in KEY_FILE
+
+        --recipient-keystore <KEYID>
+            Decrypts the message with the key KEYID
 
         --session-key <SESSION-KEY>
             Decrypts an encrypted message using SESSION-KEY
@@ -293,7 +299,10 @@ OPTIONS:
             Provides parameters for private key store
 
         --signer-file <KEY_FILE>
-            Signs the message using the key in KEY_FILE
+            Signs the message with the key in the file KEY_FILE
+
+        --signer-keystore <KEYID>
+            Signs the message with the key KEYID
 
     -t, --time <TIME>
             Chooses keys valid at the specified time and sets the signature's
@@ -1778,7 +1787,10 @@ OPTIONS:
             Provides parameters for private key store
 
         --recipient-file <KEY_FILE>
-            Decrypts the message using the key in KEY_FILE
+            Decrypts the message with the key in the file KEY_FILE
+
+        --recipient-keystore <KEYID>
+            Decrypts the message with the key KEYID
 
         --session-key <SESSION-KEY>
             Decrypts an encrypted message using SESSION-KEY

@@ -312,6 +312,7 @@ pub struct EncryptOpts<'a> {
     pub message: Message<'a>,
     pub npasswords: usize,
     pub recipients: &'a [openpgp::Cert],
+    pub keystore_keys: Vec<sequoia_keystore::Key>,
     pub signers: Vec<openpgp::Cert>,
     pub mode: EncryptionMode,
     pub compression: CompressionMode,

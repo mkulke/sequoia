@@ -1,5 +1,8 @@
 use clap::Parser;
 
+use sequoia_openpgp as openpgp;
+use openpgp::KeyHandle;
+
 use crate::sq_cli::types::{IoArgs, Time};
 
 #[derive(Parser, Debug)]
@@ -84,6 +87,12 @@ pub struct Command {
         help = "Merges signatures from the input and SIGNED-MESSAGE",
     )]
     pub merge: Option<String>,
+    #[clap(
+        long = "signer-keystore",
+        value_name = "KEYID",
+        help = "Signs the message with the key KEYID",
+    )]
+    pub secret_key: Vec<KeyHandle>,
     #[clap(
         long = "signer-file",
         value_name = "KEY_FILE",

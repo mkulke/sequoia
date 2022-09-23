@@ -28,6 +28,7 @@ pub struct SignOpts<'a> {
     pub private_key_store: Option<&'a str>,
     pub input: &'a mut (dyn io::Read + Sync + Send),
     pub output_path: Option<&'a str>,
+    pub keystore_keys: Vec<sequoia_keystore::Key>,
     pub secrets: Vec<openpgp::Cert>,
     pub detached: bool,
     pub binary: bool,
@@ -52,6 +53,7 @@ fn sign_data(opts: SignOpts) -> Result<()> {
         private_key_store,
         input,
         output_path,
+        keystore_keys,
         secrets,
         detached,
         binary,
@@ -93,6 +95,9 @@ fn sign_data(opts: SignOpts) -> Result<()> {
 
     let mut keypairs = super::get_signing_keys(
         &secrets, &config.policy, private_key_store, time, None)?;
+    for k in keystore_keys {
+        keypairs.push(Box::new(k));
+    }
     if keypairs.is_empty() {
         return Err(anyhow::anyhow!("No signing keys found"));
     }
@@ -180,6 +185,7 @@ fn sign_message_(opts: SignOpts, output: &mut (dyn io::Write + Sync + Send)) -> 
         config,
         private_key_store,
         input,
+        keystore_keys,
         secrets,
         notarize,
         time,
@@ -187,6 +193,9 @@ fn sign_message_(opts: SignOpts, output: &mut (dyn io::Write + Sync + Send)) -> 
     } = opts;
     let mut keypairs = super::get_signing_keys(
         &secrets, &config.policy, private_key_store, time, None)?;
+    for k in keystore_keys {
+        keypairs.push(Box::new(k));
+    }
     if keypairs.is_empty() {
         return Err(anyhow::anyhow!("No signing keys found"));
     }

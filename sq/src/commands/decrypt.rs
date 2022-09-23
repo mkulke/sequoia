@@ -89,6 +89,30 @@ impl PrivateKey for RemotePrivateKey {
     }
 }
 
+struct PrivateKeystoreKey {
+    handle: sequoia_keystore::Key,
+}
+
+impl PrivateKeystoreKey {
+    fn new(handle: sequoia_keystore::Key) -> Self
+    {
+        Self {
+            handle: handle,
+        }
+    }
+}
+
+impl PrivateKey for PrivateKeystoreKey {
+    fn get_unlocked(&self) -> Option<Box<dyn Decryptor>> {
+        // XXX: could be locked.
+        Some(Box::new(self.handle.clone()))
+    }
+
+    fn unlock(&mut self, _p: &Password) -> Result<Box<dyn Decryptor>> {
+        unimplemented!()
+    }
+}
+
 struct Helper<'a> {
     vhelper: VHelper<'a>,
     secret_keys: HashMap<KeyID, Box<dyn PrivateKey>>,
@@ -102,6 +126,7 @@ struct Helper<'a> {
 impl<'a> Helper<'a> {
     fn new(config: &Config<'a>, private_key_store: Option<&str>,
            signatures: usize, certs: Vec<Cert>, secrets: Vec<Cert>,
+           keystore_keys: Vec<sequoia_keystore::Key>,
            session_keys: Vec<sq_cli::types::SessionKey>,
            dump_session_key: bool, dump: bool)
            -> Self
@@ -137,6 +162,10 @@ impl<'a> Helper<'a> {
                 identities.insert(id.clone(), tsk.fingerprint());
                 hints.insert(id, hint.clone());
             }
+        }
+
+        for k in keystore_keys {
+            keys.insert(k.keyid(), Box::new(PrivateKeystoreKey::new(k)));
         }
 
         Helper {
@@ -331,6 +360,35 @@ impl<'a> DecryptionHelper for Helper<'a> {
             }
         }
 
+        // Try using the keystore.
+        //
+        // If connecting to the keystore doesn't work, don't
+        // immediately fail, but try other methods.
+        let mut keystore = || -> Result<Option<Fingerprint>> {
+            let c = sequoia_keystore::Context::new()?;
+            let mut ks = sequoia_keystore::Keystore::connect(&c)?;
+            let (_i, fpr, sym_algo, sk) = ks.decrypt(pkesks)?;
+
+            if decrypt(sym_algo, &sk) {
+                if self.dump_session_key {
+                    eprintln!("Session key: {}", hex::encode(&sk));
+                }
+                Ok(Some(fpr))
+            } else {
+                // The keystore return a session key, but we failed to
+                // decrypt the data with it.
+                Ok(None)
+            }
+        };
+        match keystore() {
+            Ok(Some(sk)) => return Ok(Some(sk)),
+            Ok(None) => (),
+            Err(err) => {
+                eprintln!("Failed to connect to keystore: {}", err);
+            }
+        }
+
+        // Last, but not least, try decrypting the SKESKs.
         if skesks.is_empty() {
             return
                 Err(anyhow::anyhow!("No key to decrypt message"));
@@ -366,12 +424,14 @@ pub fn decrypt(config: Config,
                input: &mut (dyn io::Read + Sync + Send),
                output: &mut dyn io::Write,
                signatures: usize, certs: Vec<Cert>, secrets: Vec<Cert>,
+               keystore_keys: Vec<sequoia_keystore::Key>,
                dump_session_key: bool,
                sk: Vec<sq_cli::types::SessionKey>,
                dump: bool, hex: bool)
                -> Result<()> {
     let helper = Helper::new(&config, private_key_store, signatures, certs,
-                             secrets, sk, dump_session_key, dump || hex);
+                             secrets, keystore_keys,
+                             sk, dump_session_key, dump || hex);
     let mut decryptor = DecryptorBuilder::from_reader(input)?
         .mapping(hex)
         .with_policy(&config.policy, None, helper)
@@ -391,12 +451,13 @@ pub fn decrypt_unwrap(config: Config,
                       input: &mut (dyn io::Read + Sync + Send),
                       output: &mut dyn io::Write,
                       secrets: Vec<Cert>,
+                      keystore_keys: Vec<sequoia_keystore::Key>,
                       session_keys: Vec<sq_cli::types::SessionKey>,
                       dump_session_key: bool)
                       -> Result<()>
 {
     let mut helper = Helper::new(&config, None, 0, Vec::new(), secrets,
-                                 session_keys,
+                                 keystore_keys, session_keys,
                                  dump_session_key, false);
 
     let mut ppr = PacketParser::from_reader(input)?;

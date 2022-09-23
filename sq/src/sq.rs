@@ -19,6 +19,7 @@ use openpgp::{
     Result,
 };
 use openpgp::{armor, Cert};
+use openpgp::KeyHandle;
 use openpgp::crypto::Password;
 use openpgp::packet::prelude::*;
 use openpgp::parse::{Parse, PacketParser, PacketParserResult};
@@ -27,6 +28,8 @@ use openpgp::packet::signature::subpacket::NotationDataFlags;
 use openpgp::serialize::{Serialize, stream::{Message, Armorer}};
 use openpgp::cert::prelude::*;
 use openpgp::policy::StandardPolicy as P;
+
+use sequoia_keystore as keystore;
 
 use clap::FromArgMatches;
 use crate::sq_cli::packet;
@@ -147,6 +150,28 @@ fn load_certs<'a, I>(files: I) -> openpgp::Result<Vec<Cert>>
         }
     }
     Ok(certs)
+}
+
+/// Loads one or more keys on the keystore.
+///
+/// Returns an error if any of the keys are not present on the
+/// keystore.
+fn load_keystore_keys(khs: &[KeyHandle]) -> openpgp::Result<Vec<keystore::Key>>
+{
+    if khs.is_empty() {
+        Ok(vec![])
+    } else {
+        let c = keystore::Context::new()?;
+        let mut ks = keystore::Keystore::connect(&c)?;
+
+        let (keys, missing) = ks.find_keys(khs)?;
+        if ! missing.is_empty() {
+            return Err(anyhow::anyhow!(format!(
+                "{} were specified, but are not present on the private key store",
+                missing.iter().map(|kh| kh.to_string()).join(", "))));
+        }
+        Ok(keys)
+    }
 }
 
 /// Serializes a keyring, adding descriptive headers if armored.
@@ -463,11 +488,13 @@ fn main() -> Result<()> {
             // TODO: should this be load_keys?
             let secrets =
                 load_certs(command.secret_key_file.iter().map(|s| s.as_ref()))?;
+            let keystore_keys = load_keystore_keys(&command.secret_key)?;
             let private_key_store = command.private_key_store;
             let session_keys = command.session_key;
             commands::decrypt(config, private_key_store.as_deref(),
                               &mut input, &mut output,
                               signatures, certs, secrets,
+                              keystore_keys,
                               command.dump_session_key,
                               session_keys,
                               command.dump, command.hex)?;
@@ -484,6 +511,8 @@ fn main() -> Result<()> {
                 armor::Kind::Message,
             )?;
 
+            let keystore_keys = load_keystore_keys(&command.signer)?;
+
             let additional_secrets =
                 load_certs(command.signer_key_file.iter().map(|s| s.as_ref()))?;
 
@@ -496,6 +525,7 @@ fn main() -> Result<()> {
                 message: output,
                 npasswords: command.symmetric,
                 recipients: &recipients,
+                keystore_keys,
                 signers: additional_secrets,
                 mode: command.mode,
                 compression: command.compression,
@@ -511,6 +541,8 @@ fn main() -> Result<()> {
             let append = command.append;
             let notarize = command.notarize;
             let private_key_store = command.private_key_store.as_deref();
+
+            let keystore_keys = load_keystore_keys(&command.secret_key)?;
             let secrets =
                 load_certs(command.secret_key_file.iter().map(|s| s.as_ref()))?;
             let time = command.time.map(|t| t.time.into());
@@ -532,6 +564,7 @@ fn main() -> Result<()> {
                     private_key_store,
                     input: &mut input,
                     output_path: output,
+                    keystore_keys,
                     secrets,
                     detached,
                     binary,
@@ -655,6 +688,7 @@ fn main() -> Result<()> {
                     armor::Kind::Message,
                 )?;
 
+                let keystore_keys = load_keystore_keys(&command.secret)?;
                 let secrets =
                     load_keys(command.secret_key_file.iter().map(|s| s.as_ref()))?;
                 let session_keys = command.session_key;
@@ -662,6 +696,7 @@ fn main() -> Result<()> {
                     config,
                     &mut input, &mut output,
                     secrets,
+                    keystore_keys,
                     session_keys,
                     command.dump_session_key)?;
                 output.finalize()?;

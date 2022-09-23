@@ -41,6 +41,7 @@ rpassword = "6.0"
 serde_json = "1.0.80"
 serde = { version = "1.0.137", features = ["derive"] }
 roff = "0.2.1"
+sequoia-keystore = { git="https://gitlab.com/sequoia-pgp/sequoia-keystore.git" }
 
 [build-dependencies]
 anyhow = "1.0.18"

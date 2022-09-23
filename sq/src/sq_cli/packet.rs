@@ -1,5 +1,8 @@
 use clap::{Args, Parser, Subcommand};
 
+use sequoia_openpgp as openpgp;
+use openpgp::KeyHandle;
+
 use crate::sq_cli::types::{ArmorKind, IoArgs, SessionKey};
 
 #[derive(Parser, Debug)]
@@ -109,6 +112,12 @@ pub struct DecryptCommand {
         help = "Emits binary data",
     )]
     pub binary: bool,
+    #[clap(
+        long = "recipient-keystore",
+        value_name = "KEYID",
+        help = "Decrypts the message with the key KEYID",
+    )]
+    pub secret: Vec<KeyHandle>,
     #[clap(
         long = "recipient-file",
         value_name = "KEY_FILE",

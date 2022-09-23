@@ -1,5 +1,8 @@
 use clap::Parser;
 
+use sequoia_openpgp as openpgp;
+use openpgp::KeyHandle;
+
 use crate::sq_cli::types::{IoArgs, SessionKey};
 
 #[derive(Parser, Debug)]
@@ -64,9 +67,15 @@ pub struct Command {
     )]
     pub sender_cert_file: Vec<String>,
     #[clap(
+        long = "recipient-keystore",
+        value_name = "KEYID",
+        help = "Decrypts the message with the key KEYID",
+    )]
+    pub secret_key: Vec<KeyHandle>,
+    #[clap(
         long = "recipient-file",
         value_name = "KEY_FILE",
-        help = "Decrypts the message using the key in KEY_FILE",
+        help = "Decrypts the message with the key in KEY_FILE",
     )]
     pub secret_key_file: Vec<String>,
     #[clap(
