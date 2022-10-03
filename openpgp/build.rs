@@ -6,8 +6,21 @@ use std::process::exit;
 
 fn main() {
     crypto_backends_sanity_check();
+    include_openssl_conf();
     lalrpop::process_root().unwrap();
     include_test_data().unwrap();
+}
+
+/// Optionally include configuration passed from openssl-sys build
+/// script.  This configuration is then exposed as a set of `osslconf`
+/// parameters and is used by OpenSSL backend to enable or disable
+/// algorithms available by the current environment.
+fn include_openssl_conf() {
+    if let Ok(vars) = env::var("DEP_OPENSSL_CONF") {
+        for var in vars.split(',') {
+            println!("cargo:rustc-cfg=osslconf=\"{}\"", var);
+        }
+    }
 }
 
 /// Builds the index of the test data for use with the `::tests`
@@ -67,6 +80,12 @@ fn crypto_backends_sanity_check() {
              name: "RustCrypto",
              production_ready: false,
              constant_time: false,
+         }),
+        (cfg!(feature = "crypto-openssl"),
+         Backend {
+             name: "OpenSSL",
+             production_ready: true,
+             constant_time: true,
          }),
     ].into_iter().filter_map(|(selected, backend)| {
         if selected { Some(backend) } else { None }
