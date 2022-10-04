@@ -42,7 +42,7 @@ impl Curve {
     pub(crate) fn is_supported_by_backend(&self) -> bool {
         use self::Curve::*;
         match &self {
-            NistP256
+            NistP256 | Secp256k1
                 => true,
             NistP384 | NistP521
                 => false,

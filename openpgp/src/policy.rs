@@ -686,7 +686,7 @@ a_cutoff_list!(SubpacketTagCutoffList, SubpacketTag, 38,
                    ACCEPT,                 // 37. AttestedCertifications.
                ]);
 
-a_cutoff_list!(AsymmetricAlgorithmCutoffList, AsymmetricAlgorithm, 18,
+a_cutoff_list!(AsymmetricAlgorithmCutoffList, AsymmetricAlgorithm, 19,
                [
                    Some(Timestamp::Y2014M2), // 0. RSA1024.
                    ACCEPT,                   // 1. RSA2048.
@@ -706,6 +706,7 @@ a_cutoff_list!(AsymmetricAlgorithmCutoffList, AsymmetricAlgorithm, 18,
                    ACCEPT,                   // 15. BrainpoolP256.
                    ACCEPT,                   // 16. BrainpoolP512.
                    ACCEPT,                   // 17. Cv25519.
+                   ACCEPT,                   // 18. Secp256k1.
                ]);
 
 a_cutoff_list!(SymmetricAlgorithmCutoffList, SymmetricAlgorithm, 14,
@@ -1414,6 +1415,7 @@ impl<'a> Policy for StandardPolicy<'a> {
                     Curve::BrainpoolP512 => BrainpoolP512,
                     Curve::Ed25519 => Cv25519,
                     Curve::Cv25519 => Cv25519,
+                    Curve::Secp256k1 => Secp256k1,
                     Curve::Unknown(_) => Unknown,
                 }
             },
@@ -1539,6 +1541,8 @@ pub enum AsymmetricAlgorithm {
     BrainpoolP512,
     /// D.J. Bernstein's Curve25519.
     Cv25519,
+    /// secp256k1.
+    Secp256k1,
     /// Unknown algorithm.
     Unknown,
 }
@@ -1572,6 +1576,7 @@ impl From<AsymmetricAlgorithm> for u8 {
             BrainpoolP256 => 15,
             BrainpoolP512 => 16,
             Cv25519 => 17,
+            Secp256k1 => 18,
             Unknown => 255,
         }
     }

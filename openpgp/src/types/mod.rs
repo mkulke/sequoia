@@ -341,6 +341,8 @@ pub enum Curve {
     Ed25519,
     /// Elliptic curve Diffie-Hellman using D.J. Bernstein's Curve25519.
     Cv25519,
+    /// secp256k1.
+    Secp256k1,
     /// Unknown curve.
     Unknown(Box<[u8]>),
 }
@@ -380,6 +382,7 @@ impl Curve {
             BrainpoolP512 => Some(512),
             Ed25519 => Some(256),
             Cv25519 => Some(256),
+            Secp256k1 => Some(256),
             Unknown(_) => None,
         }
     }
@@ -439,6 +442,7 @@ impl fmt::Display for Curve {
                     => f.write_str("D.J. Bernstein's \"Twisted\" Edwards curve Ed25519"),
                 Cv25519
                     => f.write_str("Elliptic curve Diffie-Hellman using D.J. Bernstein's Curve25519"),
+                Secp256k1 => f.write_str("secp256k1"),
                 Unknown(ref oid)
                     => write!(f, "Unknown curve (OID: {:?})", oid),
             }
@@ -453,6 +457,8 @@ impl fmt::Display for Curve {
                     => f.write_str("Ed25519"),
                 Cv25519
                     => f.write_str("Curve25519"),
+               Secp256k1
+                    => f.write_str("secp256k1"),
                 Unknown(ref oid)
                     => write!(f, "Unknown curve {:?}", oid),
             }
@@ -471,6 +477,8 @@ const ED25519_OID: &[u8] =
     &[0x2B, 0x06, 0x01, 0x04, 0x01, 0xDA, 0x47, 0x0F, 0x01];
 const CV25519_OID: &[u8] =
     &[0x2B, 0x06, 0x01, 0x04, 0x01, 0x97, 0x55, 0x01, 0x05, 0x01];
+const SECP256K1_OID: &[u8] =
+    &[0x2B, 0x81, 0x04, 0x00, 0x0A];
 
 #[allow(clippy::len_without_is_empty)]
 impl Curve {
@@ -495,6 +503,7 @@ impl Curve {
             BRAINPOOL_P512_OID => Curve::BrainpoolP512,
             ED25519_OID => Curve::Ed25519,
             CV25519_OID => Curve::Cv25519,
+            SECP256K1_OID => Curve::Secp256k1,
             oid => Curve::Unknown(Vec::from(oid).into_boxed_slice()),
         }
     }
@@ -519,6 +528,7 @@ impl Curve {
             Curve::BrainpoolP512 => BRAINPOOL_P512_OID,
             Curve::Ed25519 => ED25519_OID,
             Curve::Cv25519 => CV25519_OID,
+            Curve::Secp256k1 => SECP256K1_OID,
             Curve::Unknown(ref oid) => oid,
         }
     }
@@ -550,6 +560,7 @@ impl Curve {
             Curve::BrainpoolP512 => Ok(512),
             Curve::Ed25519 => Ok(256),
             Curve::Cv25519 => Ok(256),
+            Curve::Secp256k1 => Ok(256),
             Curve::Unknown(_) =>
                 Err(Error::UnsupportedEllipticCurve(self.clone())
                     .into()),
@@ -583,7 +594,8 @@ impl Arbitrary for Curve {
             4 => Curve::BrainpoolP512,
             5 => Curve::Ed25519,
             6 => Curve::Cv25519,
-            7 => Curve::Unknown({
+            7 => Curve::Secp256k1,
+            8 => Curve::Unknown({
                 let mut k = <Vec<u8>>::arbitrary(g);
                 k.truncate(255);
                 k.into_boxed_slice()
