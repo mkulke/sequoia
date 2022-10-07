@@ -211,8 +211,7 @@ where
         if let Ok(ref resp) = response {
             if resp.status().is_redirection() {
                 let url = resp.headers().get("Location")
-                    .map(|value| value.to_str().ok())
-                    .flatten()
+                    .and_then(|value| value.to_str().ok())
                     .map(|value| value.parse::<Uri>());
                 if let Some(Ok(url)) = url {
                     return get_following_redirects(client, url, depth - 1).await;
@@ -383,13 +382,8 @@ pub fn insert<P, S, V>(base_path: P, domain: S, variant: V,
     Ok(())
 }
 
+#[derive(Default)]
 struct KeyRing(HashMap<Fingerprint, Cert>);
-
-impl Default for KeyRing {
-    fn default() -> Self {
-        Self(Default::default())
-    }
-}
 
 impl KeyRing {
     fn insert(&mut self, cert: Cert) -> Result<()> {
