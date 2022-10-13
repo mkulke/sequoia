@@ -44,18 +44,18 @@ fn export(store: Option<PathBuf>) -> Result<()> {
 }
 
 // TODO: use common IO arguments
-// TODO: allos keyhandles on cli
+// TODO: allow keyhandles on cli
 fn search(c: store::SearchCommand) -> Result<()> {
     let certd = Store::new(c.store)?;
 
     if let Some(fp) = c.fingerprint {
-        let certs = certd.search_by_kh(&fp.into())?;
+        let certs = certd.search_by_kh(&fp.into());
         for cert in certs {
             println!("{}", cert.fingerprint())
         }
     } else {
         if let Some(userid) = c.userid {
-            let certs = certd.search_by_userid(&userid)?;
+            let certs = certd.search_by_userid(&userid);
             for cert in certs {
                 println!("{}", cert.fingerprint())
             }

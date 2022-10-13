@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use openpgp::policy::Policy;
 use openpgp_cert_d::{CertD, Data, TRUST_ROOT};
 
 use openpgp::parse::Parse;
@@ -7,39 +8,50 @@ use openpgp::serialize::{Serialize, SerializeInto};
 use openpgp::{Cert, KeyHandle};
 use sequoia_openpgp as openpgp;
 
+use crate::error::TrustRootError;
 use crate::{Error, Result};
 
+/// A basic store for public PGP certificates.
+///
+/// No functionality that requires a trust root, use
+/// [`into_with_trust_root`](Store::into_with_trust_root) or
+/// [`init_trust_root`](Store::init_trust_root) for that.
+// TODO link CertD spec
 pub struct Store {
     certd: CertD,
 }
 
+/// A store for public PGP certificates, with a trust-root.
+///
+/// Allows for operations that require a trust-root, like interacting with
+/// labels.
+// TODO link CertD spec, explain labels
+pub struct StoreWithTrustRoot {
+    certd: CertD,
+}
+
+// TODO do we want this?
 impl From<CertD> for Store {
     fn from(certd: CertD) -> Self {
         Self { certd }
     }
 }
 
-impl Store {
-    pub fn new<T: AsRef<Path>>(dir: Option<T>) -> Result<Self> {
-        Ok(match dir {
-            Some(path) => CertD::with_base_dir(path).map(|x| x.into())?,
-            None => CertD::new().map(|x| x.into())?,
-        })
-    }
+trait BasicStore {
+    fn certd(&self) -> &CertD;
 
     /// Get the path to the certificate store directory.
     ///
     /// Useful for debugging.
-    pub fn path(&self) -> PathBuf {
-        //TODO requires implementation in openpgp-cert-d.
-        todo!()
+    fn path(&self) -> &Path {
+        self.certd().get_base_dir()
     }
 
-    /// Query the store for a certificate by fingerprint.
+    /// Query the store for a certificate by fingerprint or KeyID.
     ///
     /// Returns the certificate as a [`sequoia_openpgp::Cert`].
-    pub fn get(&self, kh: &KeyHandle) -> Result<Cert> {
-        if let Some((_tag, cert)) = self.certd.get(&kh.to_hex())? {
+    fn get_cert(&self, kh: &KeyHandle) -> Result<Cert> {
+        if let Some((_tag, cert)) = self.certd().get(&kh.to_hex())? {
             Cert::from_bytes(&cert).map_err(Into::into)
         } else {
             Err(Error::CertNotFound {
@@ -49,16 +61,23 @@ impl Store {
     }
 
     /// Query the store for a certificate's path by fingerprint.
-    pub fn get_path(&self, _kh: &KeyHandle) -> Result<PathBuf> {
-        //TODO requires implementation in openpgp-cert-d.
-        todo!()
+    fn get_cert_path(&self, kh: &KeyHandle) -> Result<PathBuf> {
+        Ok(self.certd().get_path(&kh.to_hex())?)
+    }
+
+    /// Export all certs in the store.
+    fn export(&self, out: &mut dyn std::io::Write) -> Result<()> {
+        for item in self.certd().iter() {
+            let (_fp, _tag, cert) = item?;
+            let cert = Cert::from_bytes(&cert)?;
+            cert.export(out)?
+        }
+
+        Ok(())
     }
 
     /// Insert or update a certificate in the store.
-    // TODO: Should this rather take a Cert?
-    pub fn insert<R: std::io::Read + Send + Sync>(&self, src: R) -> Result<()> {
-        let new = Cert::from_reader(src)?;
-
+    fn insert(&self, cert: &Cert) -> Result<()> {
         let f = |new: Data, old: Option<Data>| {
             let merged = match old {
                 Some(old) => {
@@ -71,67 +90,124 @@ impl Store {
             Ok(merged)
         };
 
-        self.certd.insert(new.to_vec()?.into_boxed_slice(), f)?;
+        self.certd().insert(cert.to_vec()?.into_boxed_slice(), f)?;
         Ok(())
     }
 
-    /// Export all certs in the store.
-    pub fn export(&self, out: &mut dyn std::io::Write) -> Result<()> {
-        for (_fp, _tag, cert) in self.certd.iter()? {
-            let cert = Cert::from_bytes(&cert)?;
-            cert.export(out)?
-        }
-
-        Ok(())
-    }
-
-    /// Get the trust-root
-    /// The trust-root certificate's existence is not mandatory
-    // TODO: Explain, add link to spec
-    pub fn trust_root(&self) -> Result<Option<Cert>> {
-        self.certd
-            .get(TRUST_ROOT)?
-            .map(|(_tag, data)| Cert::from_bytes(&data))
-            .transpose()
-            .map_err(|e| crate::Error::from(e))
+    /// Iterate over all certificates in the store
+    fn certs(&self) -> Box<dyn Iterator<Item = Result<Cert>> + '_> {
+        let certs = self.certd().iter().map(|item| {
+            let (_fp, _tag, data) = item?;
+            Cert::from_bytes(&data).map_err(Into::into)
+        });
+        Box::new(certs)
     }
 
     /// Look for a cert by (subkey) KeyHandle (i.e. fingerprint or keyid).
     ///
     /// If no cert is found the resulting vector is empty.
-    /// Err is only returned if a problem occurs.
-    pub fn search_by_kh(&self, kh: &KeyHandle) -> Result<Vec<Cert>> {
+    ///
+    /// Ignores any certificate parsing or file-access errors.
+    fn search_by_kh(&self, kh: &KeyHandle) -> Vec<Cert> {
         let certs = self
-            .certd
-            .iter()?
-            .map(|(_fp, _tag, data)| data)
-            // TODO don't hide parsing errors?
-            .flat_map(|data| Cert::from_bytes(&data))
+            .certs()
+            .flatten()
             .filter(|cert| cert.keys().any(|key| key.key_handle().aliases(kh)))
             .collect::<Vec<Cert>>();
-
-        Ok(certs)
+        certs
     }
 
     /// Look for a cert by userid
     ///
     /// If no cert is found the resulting vector is empty.
-    /// Err is only returned if a problem occurs.
-    pub fn search_by_userid(&self, userid: &str) -> Result<Vec<Cert>> {
+    ///
+    /// Ignores any certificate parsing or file-access errors.
+    fn search_by_userid(&self, userid: &str) -> Vec<Cert> {
         let userid = openpgp::packet::UserID::from(userid);
         let certs = self
-            .certd
-            .iter()?
-            .map(|(_fp, _tag, data)| data)
-            // TODO don't hide parsing errors?
-            .flat_map(|data| Cert::from_bytes(&data))
-            // TODO this only does exact matches.
-            // At least name or email only should work.
-            // Substring of fuzzy matching should be discussed.
+            .certs()
+            .flatten()
             .filter(|cert| cert.userids().any(|u| u.userid() == &userid))
             .collect::<Vec<Cert>>();
+        certs
+    }
+}
 
-        Ok(certs)
+impl BasicStore for Store {
+    fn certd(&self) -> &CertD {
+        &self.certd
+    }
+}
+
+impl BasicStore for StoreWithTrustRoot {
+    fn certd(&self) -> &CertD {
+        &self.certd
+    }
+}
+
+impl Store {
+    // TODO rename
+    pub fn new<T: AsRef<Path>>(dir: Option<T>) -> Result<Self> {
+        Ok(match dir {
+            Some(path) => CertD::with_base_dir(path).map(|x| x.into())?,
+            None => CertD::new().map(|x| x.into())?,
+        })
+    }
+
+    /// Setup a new certificate store and import the trust-root.
+    ///
+    /// The trust-root must be valid according to the cert-d specification.
+    // TODO: add links
+    // Import the trust-root
+    //
+    // Check that
+    // a) the imported Key is valid, according to our TRUST_ROOT_POLICY
+    // b) the primary key is certification-capable
+    pub fn import_trust_root(
+        self,
+        cert: &Cert,
+        policy: &dyn Policy,
+    ) -> Result<StoreWithTrustRoot> {
+        let trust_root = cert;
+
+        if !trust_root
+            .with_policy(policy, None)?
+            .primary_key()
+            .for_certification()
+        {
+            return Err(TrustRootError::NotCertificationCapable.into());
+        }
+
+        self.certd().insert_special(
+            TRUST_ROOT,
+            trust_root.as_tsk().to_vec()?.into_boxed_slice(),
+            |ours, _theirs| Ok(ours),
+        )?;
+        Ok(StoreWithTrustRoot { certd: self.certd })
+    }
+
+    // There's already a trust root, transition to the more powerful type
+    // TODO: Name this right
+    // TODO: I hope this works for users
+    pub fn into_with_trust_root(self) -> Result<StoreWithTrustRoot> {
+        if self.certd.get(TRUST_ROOT)?.is_some() {
+            Ok(StoreWithTrustRoot { certd: self.certd })
+        } else {
+            // TODO improve Error
+            Err(anyhow::anyhow!("no trust root found").into())
+        }
+    }
+}
+
+impl StoreWithTrustRoot {
+    /// Get the trust-root
+    pub fn trust_root(&self) -> Result<Cert> {
+        self.certd
+            .get(TRUST_ROOT)
+            .transpose()
+            .unwrap()
+            .map(|(_tag, data)| Cert::from_bytes(&data))?
+            .map_err(Into::into)
     }
 }
 
@@ -155,20 +231,20 @@ mod tests {
     }
 
     #[test]
-    fn get_nonexistent() {
+    fn get_cert_nonexistent() {
         let base = test_base();
         let certd = Store::new(Some(base.path())).unwrap();
         let fp =
             Fingerprint::from_hex("39d100ab67d5bd8c04010205fb3751f1587daef1")
                 .unwrap();
 
-        let res = certd.get(&fp.into());
+        let res = certd.get_cert(&fp.into());
 
         assert!(res.is_err())
     }
 
     #[test]
-    fn get() -> Result<()> {
+    fn get_cert() -> Result<()> {
         // Setup new store with one cert
         let data = include_bytes!("../testdata/testy-new.pgp");
         let base = test_base();
@@ -180,19 +256,19 @@ mod tests {
                 .into();
 
         // Get the cert.
-        let output_cert = certd.get(&kh)?;
+        let output_cert = certd.get_cert(&kh)?;
 
         assert_eq!(output_cert, Cert::from_bytes(data)?);
 
         // Get the cert again, to check that it does not change.
-        let output_cert2 = certd.get(&kh)?;
+        let output_cert2 = certd.get_cert(&kh)?;
 
         assert_eq!(output_cert2, Cert::from_bytes(data)?);
         Ok(())
     }
 
     #[test]
-    fn get_uppercase() -> Result<()> {
+    fn get_cert_uppercase() -> Result<()> {
         // Setup new store with one cert
         let data = include_bytes!("../testdata/testy-new.pgp");
         let base = test_base();
@@ -202,7 +278,7 @@ mod tests {
         let fp =
             Fingerprint::from_hex("39d100ab67d5bd8c04010205fb3751f1587daef1")?;
 
-        let output_cert = certd.get(&fp.into())?;
+        let output_cert = certd.get_cert(&fp.into())?;
 
         assert_eq!(output_cert, Cert::from_bytes(data)?);
         Ok(())
@@ -289,7 +365,6 @@ mod tests {
 
     #[test]
     fn test_insert() -> anyhow::Result<()> {
-        let cert_bytes = include_bytes!("../testdata/testy-new.pgp");
         let cert =
             Cert::from_bytes(include_bytes!("../testdata/testy-new.pgp"))?;
 
@@ -298,7 +373,7 @@ mod tests {
         let certd = Store::new(Some(base.path()))?;
 
         // Insert the cert.
-        certd.insert(cert_bytes.as_ref())?;
+        certd.insert(&cert)?;
 
         let read_cert = Cert::from_bytes(&std::fs::read(
             base.child("39/d100ab67d5bd8c04010205fb3751f1587daef1"),
@@ -306,7 +381,7 @@ mod tests {
         assert_eq!(cert, read_cert);
 
         // Insert the cert again.
-        certd.insert(cert_bytes.as_ref())?;
+        certd.insert(&cert)?;
 
         let read_cert = Cert::from_bytes(&std::fs::read(
             base.child("39/d100ab67d5bd8c04010205fb3751f1587daef1"),
@@ -325,10 +400,19 @@ mod tests {
 
         base.child(TRUST_ROOT).write_binary(data)?;
 
-        let trust_root = certd.trust_root()?;
-        println!("{:?}", trust_root);
+        let trust_root = certd.into_with_trust_root()?.trust_root()?;
 
-        assert!(trust_root.is_some());
+        assert_eq!(Cert::from_bytes(data)?, trust_root);
+        Ok(())
+    }
+
+    #[test]
+    fn no_trust_root() -> Result<()> {
+        let base = test_base();
+        let certd = Store::new(Some(base.path()))?;
+
+        assert!(certd.into_with_trust_root().is_err());
+
         Ok(())
     }
 
@@ -345,11 +429,11 @@ mod tests {
             Fingerprint::from_hex("39d100ab67d5bd8c04010205fb3751f1587daef1")?;
         let kid = openpgp::KeyID::from(&fp);
 
-        let result = certd.search_by_kh(&fp.into()).unwrap();
+        let result = certd.search_by_kh(&fp.into());
         assert!(result.len() == 1);
         assert_eq!(result[0], Cert::from_bytes(data)?);
 
-        let result = certd.search_by_kh(&kid.into()).unwrap();
+        let result = certd.search_by_kh(&kid.into());
         assert!(result.len() == 1);
         assert_eq!(result[0], Cert::from_bytes(data)?);
         Ok(())
@@ -368,11 +452,11 @@ mod tests {
             Fingerprint::from_hex("f4d1450b041f622fcefbfdb18bd88e94c0d20333")?;
         let subkey_kid = openpgp::KeyID::from(&subkey_fp);
 
-        let result = certd.search_by_kh(&subkey_fp.into()).unwrap();
+        let result = certd.search_by_kh(&subkey_fp.into());
         assert!(result.len() == 1);
         assert_eq!(result[0], Cert::from_bytes(data)?);
 
-        let result = certd.search_by_kh(&subkey_kid.into()).unwrap();
+        let result = certd.search_by_kh(&subkey_kid.into());
         assert!(result.len() == 1);
         assert_eq!(result[0], Cert::from_bytes(data)?);
         Ok(())
@@ -391,9 +475,9 @@ mod tests {
             Fingerprint::from_hex("ffffffffffffffffffffffffffffffffffffffff")?;
         let subkey_kid = openpgp::KeyID::from(&subkey_fp);
 
-        let result = certd.search_by_kh(&subkey_fp.into()).unwrap();
+        let result = certd.search_by_kh(&subkey_fp.into());
         assert!(result.len() == 0);
-        let result = certd.search_by_kh(&subkey_kid.into()).unwrap();
+        let result = certd.search_by_kh(&subkey_kid.into());
         assert!(result.len() == 0);
         Ok(())
     }
