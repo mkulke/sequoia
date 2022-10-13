@@ -2030,8 +2030,6 @@ checksum = "624a8340c38c1b80fd549087862da4ba43e08858af025b236e509b6649fc13d5"
 [[package]]
 name = "openpgp-cert-d"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ccaa2a2e4502a5daf19c5753250fc6e37daa1d06f866ec97cd5e3416e6d05883"
 dependencies = [
  "anyhow",
  "dirs",
@@ -2039,6 +2037,7 @@ dependencies = [
  "sha1collisiondetection",
  "tempfile",
  "thiserror",
+ "walkdir",
 ]
 
 [[package]]
