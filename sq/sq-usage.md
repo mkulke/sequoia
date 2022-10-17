@@ -65,6 +65,8 @@ SUBCOMMANDS:
             Manages collections of keys or certs
     certify
             Certifies a User ID for a Certificate
+    keystore
+            Interact with the keystore
     autocrypt
             Communicates certificates using Autocrypt
     keyserver
@@ -1188,6 +1190,48 @@ EXAMPLES:
 
 # Juliet certifies that Romeo controls romeo.pgp and romeo@example.org
 $ sq certify juliet.pgp romeo.pgp "<romeo@example.org>"
+```
+
+## Subcommand sq keystore
+
+```text
+Interact with the keystore
+
+USAGE:
+    sq keystore <SUBCOMMAND>
+
+OPTIONS:
+    -h, --help
+            Print help information
+
+SUBCOMMANDS:
+    help
+            Print this message or the help of the given subcommand(s)
+    list
+            Lists resources on the keystore
+
+EXAMPLES:
+
+# List the keys.
+$ sq keystore list
+```
+
+### Subcommand sq keystore list
+
+```text
+Lists resources on the keystore
+
+USAGE:
+    sq keystore list
+
+OPTIONS:
+    -h, --help
+            Print help information
+
+EXAMPLES:
+
+# List the keys on the keystore
+$ sq keystore list
 ```
 
 ## Subcommand sq autocrypt

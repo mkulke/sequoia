@@ -745,6 +745,10 @@ fn main() -> Result<()> {
         SqSubcommands::Certify(command) => {
             commands::certify::certify(config, command)?
         }
+
+        SqSubcommands::Keystore(command) => {
+            commands::keystore::dispatch(config, command)?
+        }
     }
 
     Ok(())

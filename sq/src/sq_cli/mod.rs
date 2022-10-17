@@ -20,6 +20,7 @@ pub mod revoke;
 mod sign;
 mod verify;
 pub mod wkd;
+pub mod keystore;
 
 pub mod types;
 
@@ -125,6 +126,8 @@ pub enum SqSubcommands {
     Key(key::Command),
     Keyring(keyring::Command),
     Certify(certify::Command),
+
+    Keystore(keystore::Command),
 
     #[cfg(feature = "autocrypt")]
     Autocrypt(autocrypt::Command),
