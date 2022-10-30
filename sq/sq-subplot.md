@@ -996,7 +996,7 @@ given an installed sq
 given file hello.txt
 when I run sq key generate --export key.pgp
 when I run sq key extract-cert -o cert.pgp key.pgp
-when I run sq encrypt --recipient-cert cert.pgp hello.txt
+when I run sq encrypt --recipient-file cert.pgp hello.txt
 then stdout contains "-----BEGIN PGP MESSAGE-----"
 then stdout doesn't contain "hello, world"
 ~~~
@@ -1015,7 +1015,7 @@ given an installed sq
 given file hello.txt
 when I run sq key generate --export key.pgp
 when I run sq key extract-cert -o cert.pgp key.pgp
-when I run sq encrypt --binary --recipient-cert cert.pgp hello.txt
+when I run sq encrypt --binary --recipient-file cert.pgp hello.txt
 then stdout doesn't contain "-----BEGIN PGP MESSAGE-----"
 then stdout doesn't contain "hello, world"
 ~~~
@@ -1037,8 +1037,8 @@ given an installed sq
 given file hello.txt
 when I run sq key generate --export key.pgp
 when I run sq key extract-cert -o cert.pgp key.pgp
-when I run sq encrypt -o x.pgp --recipient-cert cert.pgp hello.txt
-when I run sq decrypt -o output.txt --recipient-key key.pgp x.pgp
+when I run sq encrypt -o x.pgp --recipient-file cert.pgp hello.txt
+when I run sq decrypt -o output.txt --recipient-file key.pgp x.pgp
 then files hello.txt and output.txt match
 ~~~
 
@@ -1056,12 +1056,12 @@ when I run sq key extract-cert -o alice-cert.pgp alice.pgp
 when I run sq key generate --export bob.pgp
 when I run sq key extract-cert -o bob-cert.pgp bob.pgp
 
-when I run sq encrypt --recipient-cert alice-cert.pgp --recipient-cert bob-cert.pgp hello.txt -o x.pgp
+when I run sq encrypt --recipient-file alice-cert.pgp --recipient-file bob-cert.pgp hello.txt -o x.pgp
 
-when I run sq decrypt --recipient-key alice.pgp -o alice.txt x.pgp
+when I run sq decrypt --recipient-file alice.pgp -o alice.txt x.pgp
 then files hello.txt and alice.txt match
 
-when I run sq decrypt --recipient-key bob.pgp -o bob.txt x.pgp
+when I run sq decrypt --recipient-file bob.pgp -o bob.txt x.pgp
 then files hello.txt and bob.txt match
 ~~~
 
@@ -1077,9 +1077,9 @@ given file hello.txt
 when I run sq key generate --export alice.pgp
 when I run sq key extract-cert -o alice-cert.pgp alice.pgp
 
-when I run sq encrypt --recipient-cert alice-cert.pgp --signer-key alice.pgp hello.txt -o x.pgp
+when I run sq encrypt --recipient-file alice-cert.pgp --signer-file alice.pgp hello.txt -o x.pgp
 
-when I run sq decrypt --recipient-key alice.pgp -o alice.txt x.pgp --signer-cert alice-cert.pgp
+when I run sq decrypt --recipient-file alice.pgp -o alice.txt x.pgp --signer-file alice-cert.pgp
 then files hello.txt and alice.txt match
 ~~~
 
@@ -1098,9 +1098,9 @@ when I run sq key extract-cert -o alice-cert.pgp alice.pgp
 when I run sq key generate --export bob.pgp
 when I run sq key extract-cert -o bob-cert.pgp bob.pgp
 
-when I run sq encrypt --recipient-cert alice-cert.pgp --signer-key alice.pgp hello.txt -o x.pgp
+when I run sq encrypt --recipient-file alice-cert.pgp --signer-file alice.pgp hello.txt -o x.pgp
 
-when I try to run sq decrypt --recipient-key alice.pgp -o alice.txt x.pgp --signer-cert bob-cert.pgp
+when I try to run sq decrypt --recipient-file alice.pgp -o alice.txt x.pgp --signer-file bob-cert.pgp
 then exit code is 1
 then files alice.txt and empty match
 ~~~
@@ -1174,7 +1174,7 @@ stdout in ASCII armor form._
 given an installed sq
 given file hello.txt
 when I run sq key generate --export key.pgp
-when I run sq sign --signer-key key.pgp hello.txt
+when I run sq sign --signer-file key.pgp hello.txt
 then stdout contains "-----BEGIN PGP MESSAGE-----"
 then stdout contains "-----END PGP MESSAGE-----"
 ~~~
@@ -1188,7 +1188,7 @@ stdout in binary form._
 given an installed sq
 given file hello.txt
 when I run sq key generate --export key.pgp
-when I run sq sign --signer-key key.pgp hello.txt --binary
+when I run sq sign --signer-file key.pgp hello.txt --binary
 then stdout doesn't contain "-----BEGIN PGP MESSAGE-----"
 then stdout doesn't contain "-----END PGP MESSAGE-----"
 ~~~
@@ -1202,7 +1202,7 @@ file._
 given an installed sq
 given file hello.txt
 when I run sq key generate --export key.pgp
-when I run sq sign --signer-key key.pgp hello.txt -o signed.txt
+when I run sq sign --signer-file key.pgp hello.txt -o signed.txt
 then file signed.txt contains "-----BEGIN PGP MESSAGE-----"
 then file signed.txt contains "-----END PGP MESSAGE-----"
 ~~~
@@ -1216,8 +1216,8 @@ given an installed sq
 given file hello.txt
 when I run sq key generate --export key.pgp
 when I run sq key extract-cert key.pgp -o cert.pgp
-when I run sq sign --signer-key key.pgp hello.txt -o signed.txt
-when I run sq verify --signer-cert cert.pgp signed.txt
+when I run sq sign --signer-file key.pgp hello.txt -o signed.txt
+when I run sq verify --signer-file cert.pgp signed.txt
 then stdout contains "hello, world"
 ~~~
 
@@ -1238,14 +1238,14 @@ when I run sq key extract-cert alice.pgp -o alice-cert.pgp
 when I run sq key generate --userid Bob --export bob.pgp
 when I run sq key extract-cert bob.pgp -o bob-cert.pgp
 
-when I run sq sign --signer-key alice.pgp hello.txt -o signed1.txt
-when I try to run sq verify --signer-cert alice-cert.pgp --signer-cert bob-cert.pgp --signatures=2 signed1.txt
+when I run sq sign --signer-file alice.pgp hello.txt -o signed1.txt
+when I try to run sq verify --signer-file alice-cert.pgp --signer-file bob-cert.pgp --signatures=2 signed1.txt
 then exit code is 1
 
-when I run sq sign --append --signer-key bob.pgp signed1.txt -o signed2.txt
-when I run sq verify --signer-cert alice-cert.pgp --signer-cert bob-cert.pgp --signatures=1 signed2.txt
+when I run sq sign --append --signer-file bob.pgp signed1.txt -o signed2.txt
+when I run sq verify --signer-file alice-cert.pgp --signer-file bob-cert.pgp --signatures=1 signed2.txt
 then stdout contains "hello, world"
-when I run sq verify --signer-cert alice-cert.pgp --signer-cert bob-cert.pgp --signatures=2 signed2.txt
+when I run sq verify --signer-file alice-cert.pgp --signer-file bob-cert.pgp --signatures=2 signed2.txt
 then stdout contains "hello, world"
 ~~~
 
@@ -1265,9 +1265,9 @@ given file hello.txt
 given file sed-in-place
 when I run sq key generate --export key.pgp
 when I run sq key extract-cert key.pgp -o cert.pgp
-when I run sq sign --signer-key key.pgp hello.txt -o signed.txt
+when I run sq sign --signer-file key.pgp hello.txt -o signed.txt
 when I run bash sed-in-place 3d signed.txt
-when I try to run sq verify --signer-cert cert.pgp signed.txt
+when I try to run sq verify --signer-file cert.pgp signed.txt
 then command fails
 ~~~
 
@@ -1292,11 +1292,11 @@ given file hello.txt
 when I run sq key generate --export key.pgp
 when I run sq key extract-cert key.pgp -o cert.pgp
 
-when I run sq sign --cleartext-signature --signer-key key.pgp hello.txt -o signed.txt
+when I run sq sign --cleartext-signature --signer-file key.pgp hello.txt -o signed.txt
 then file signed.txt contains "-----BEGIN PGP SIGNED MESSAGE-----"
 then file signed.txt contains "hello, world"
 then file signed.txt contains "-----END PGP SIGNATURE-----"
-when I run sq verify --signer-cert cert.pgp signed.txt
+when I run sq verify --signer-file cert.pgp signed.txt
 then stdout contains "hello, world"
 ~~~
 
@@ -1313,9 +1313,9 @@ given file sed-in-place
 when I run sq key generate --export key.pgp
 when I run sq key extract-cert key.pgp -o cert.pgp
 
-when I run sq sign --cleartext-signature --signer-key key.pgp hello.txt -o signed.txt
+when I run sq sign --cleartext-signature --signer-file key.pgp hello.txt -o signed.txt
 when I run bash sed-in-place s/hello/HELLO/ signed.txt
-when I try to run sq verify --signer-cert cert.pgp signed.txt
+when I try to run sq verify --signer-file cert.pgp signed.txt
 then exit code is 1
 ~~~
 
@@ -1330,10 +1330,10 @@ given file hello.txt
 when I run sq key generate --export key.pgp
 when I run sq key extract-cert key.pgp -o cert.pgp
 
-when I run sq sign --detached --signer-key key.pgp hello.txt -o sig.txt
+when I run sq sign --detached --signer-file key.pgp hello.txt -o sig.txt
 then file sig.txt contains "-----BEGIN PGP SIGNATURE-----"
 then file sig.txt contains "-----END PGP SIGNATURE-----"
-when I run sq verify --detached=sig.txt --signer-cert=cert.pgp hello.txt
+when I run sq verify --detached=sig.txt --signer-file=cert.pgp hello.txt
 then stdout doesn't contain "hello, world"
 then exit code is 0
 ~~~
@@ -1351,9 +1351,9 @@ given file sed-in-place
 when I run sq key generate --export key.pgp
 when I run sq key extract-cert key.pgp -o cert.pgp
 
-when I run sq sign --detached --signer-key key.pgp hello.txt -o sig.txt
+when I run sq sign --detached --signer-file key.pgp hello.txt -o sig.txt
 when I run bash sed-in-place s/hello/HELLO/ hello.txt
-when I try to run sq verify --detached=sig.txt --signer-cert=cert.pgp hello.txt
+when I try to run sq verify --detached=sig.txt --signer-file=cert.pgp hello.txt
 then exit code is 1
 ~~~
 
@@ -1371,9 +1371,9 @@ when I run sq key extract-cert alice.pgp -o alice-cert.pgp
 when I run sq key generate --userid Bob --export bob.pgp
 when I run sq key extract-cert bob.pgp -o bob-cert.pgp
 
-when I run sq sign --signer-key alice.pgp hello.txt -o signed1.txt
-when I run sq sign --signer-key bob.pgp --append signed1.txt -o signed2.txt
-when I run sq verify signed2.txt --signer-cert alice-cert.pgp --signer-cert bob-cert.pgp
+when I run sq sign --signer-file alice.pgp hello.txt -o signed1.txt
+when I run sq sign --signer-file bob.pgp --append signed1.txt -o signed2.txt
+when I run sq verify signed2.txt --signer-file alice-cert.pgp --signer-file bob-cert.pgp
 then stdout contains "hello, world"
 then stderr contains "2 good signatures"
 ~~~
@@ -1391,10 +1391,10 @@ when I run sq key extract-cert alice.pgp -o alice-cert.pgp
 when I run sq key generate --userid Bob --export bob.pgp
 when I run sq key extract-cert bob.pgp -o bob-cert.pgp
 
-when I run sq sign --signer-key alice.pgp hello.txt -o signed1.txt
-when I run sq sign --signer-key bob.pgp hello.txt -o signed2.txt
+when I run sq sign --signer-file alice.pgp hello.txt -o signed1.txt
+when I run sq sign --signer-file bob.pgp hello.txt -o signed2.txt
 when I run sq sign --merge=signed2.txt signed1.txt -o merged.txt
-when I run sq verify merged.txt --signer-cert alice-cert.pgp --signer-cert bob-cert.pgp
+when I run sq verify merged.txt --signer-file alice-cert.pgp --signer-file bob-cert.pgp
 then stdout contains "hello, world"
 then stderr contains "2 good signatures"
 ~~~
@@ -1412,9 +1412,9 @@ when I run sq key extract-cert alice.pgp -o alice-cert.pgp
 when I run sq key generate --userid Bob --export bob.pgp
 when I run sq key extract-cert bob.pgp -o bob-cert.pgp
 
-when I run sq sign --signer-key alice.pgp hello.txt -o signed.txt
-when I run sq sign --signer-key bob.pgp --notarize signed.txt -o notarized.txt
-when I run sq verify notarized.txt --signer-cert alice-cert.pgp --signer-cert bob-cert.pgp
+when I run sq sign --signer-file alice.pgp hello.txt -o signed.txt
+when I run sq sign --signer-file bob.pgp --notarize signed.txt -o notarized.txt
+when I run sq verify notarized.txt --signer-file alice-cert.pgp --signer-file bob-cert.pgp
 then stdout contains "hello, world"
 then stderr contains "Good level 1 notarization from"
 then stderr contains "2 good signatures"

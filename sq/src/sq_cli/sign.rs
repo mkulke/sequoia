@@ -18,10 +18,10 @@ The converse operation is \"sq verify\".
 "EXAMPLES:
 
 # Create a signed message
-$ sq sign --signer-key juliet.pgp message.txt
+$ sq sign --signer-file juliet.pgp message.txt
 
 # Create a detached signature
-$ sq sign --detached --signer-key juliet.pgp message.txt
+$ sq sign --detached --signer-file juliet.pgp message.txt
 ",
     )]
 pub struct Command {
@@ -85,9 +85,9 @@ pub struct Command {
     )]
     pub merge: Option<String>,
     #[clap(
-        long = "signer-key",
-        value_name = "KEY",
-        help = "Signs using KEY",
+        long = "signer-file",
+        value_name = "KEY_FILE",
+        help = "Signs the message using the key in KEY_FILE",
     )]
     pub secret_key_file: Vec<String>,
     #[clap(

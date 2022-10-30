@@ -31,10 +31,10 @@ signatures, consider using sequoia-sqv.
 "EXAMPLES:
 
 # Verify a signed message
-$ sq verify --signer-cert juliet.pgp signed-message.pgp
+$ sq verify --signer-file juliet.pgp signed-message.pgp
 
 # Verify a detached message
-$ sq verify --signer-cert juliet.pgp --detached message.sig message.txt
+$ sq verify --signer-file juliet.pgp --detached message.sig message.txt
 ",
     )]
 pub struct Command {
@@ -58,9 +58,9 @@ pub struct Command {
     )]
     pub signatures: usize,
     #[clap(
-        long = "signer-cert",
-        value_name = "CERT",
-        help = "Verifies signatures with CERT",
+        long = "signer-file",
+        value_name = "CERT_FILE",
+        help = "Verifies signatures using the certificate in CERT_FILE",
     )]
     // TODO: Should at least one sender_cert_file be required? Verification does not make sense
     // without one, does it?

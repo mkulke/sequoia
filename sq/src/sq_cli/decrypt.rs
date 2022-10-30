@@ -31,10 +31,10 @@ The converse operation is \"sq encrypt\".
 "EXAMPLES:
 
 # Decrypt a file using a secret key
-$ sq decrypt --recipient-key juliet.pgp ciphertext.pgp
+$ sq decrypt --recipient-file juliet.pgp ciphertext.pgp
 
 # Decrypt a file verifying signatures
-$ sq decrypt --recipient-key juliet.pgp --signer-cert romeo.pgp ciphertext.pgp
+$ sq decrypt --recipient-file juliet.pgp --signer-file romeo.pgp ciphertext.pgp
 
 # Decrypt a file using a password
 $ sq decrypt ciphertext.pgp
@@ -58,15 +58,15 @@ pub struct Command {
     )]
     pub signatures: Option<usize>,
     #[clap(
-        long = "signer-cert",
-        value_name = "CERT",
-        help = "Verifies signatures with CERT",
+        long = "signer-file",
+        value_name = "CERT_FILE",
+        help = "Verifies signatures using the certificates in CERT_FILE",
     )]
     pub sender_cert_file: Vec<String>,
     #[clap(
-        long = "recipient-key",
-        value_name = "KEY",
-        help = "Decrypts with KEY",
+        long = "recipient-file",
+        value_name = "KEY_FILE",
+        help = "Decrypts the message using the key in KEY_FILE",
     )]
     pub secret_key_file: Vec<String>,
     #[clap(

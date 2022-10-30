@@ -18,10 +18,10 @@ The converse operation is \"sq decrypt\".
 "EXAMPLES:
 
 # Encrypt a file using a certificate
-$ sq encrypt --recipient-cert romeo.pgp message.txt
+$ sq encrypt --recipient-file romeo.pgp message.txt
 
 # Encrypt a file creating a signature in the process
-$ sq encrypt --recipient-cert romeo.pgp --signer-key juliet.pgp message.txt
+$ sq encrypt --recipient-file romeo.pgp --signer-file juliet.pgp message.txt
 
 # Encrypt a file using a password
 $ sq encrypt --symmetric message.txt
@@ -37,16 +37,16 @@ pub struct Command {
     )]
     pub binary: bool,
     #[clap(
-        long = "recipient-cert",
-        value_name = "CERT-RING",
+        long = "recipient-file",
+        value_name = "CERT_RING_FILE",
         multiple_occurrences = true,
-        help = "Encrypts for all recipients in CERT-RING",
+        help = "Encrypts to all certificates in CERT_RING_FILE",
     )]
     pub recipients_cert_file: Vec<String>,
     #[clap(
-        long = "signer-key",
-        value_name = "KEY",
-        help = "Signs the message with KEY",
+        long = "signer-file",
+        value_name = "KEY_FILE",
+        help = "Signs the message using the key in KEY_FILE",
     )]
     pub signer_key_file: Vec<String>,
     #[clap(

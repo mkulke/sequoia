@@ -134,15 +134,15 @@ OPTIONS:
         --private-key-store <KEY_STORE>
             Provides parameters for private key store
 
-        --recipient-cert <CERT-RING>
-            Encrypts for all recipients in CERT-RING
+        --recipient-file <CERT_RING_FILE>
+            Encrypts to all certificates in CERT_RING_FILE
 
     -s, --symmetric
             Adds a password to encrypt with.  The message can be decrypted with
             either one of the recipient's keys, or any password.
 
-        --signer-key <KEY>
-            Signs the message with KEY
+        --signer-file <KEY_FILE>
+            Signs the message using the key in KEY_FILE
 
     -t, --time <TIME>
             Chooses keys valid at the specified time and sets the signature's
@@ -155,10 +155,10 @@ OPTIONS:
 EXAMPLES:
 
 # Encrypt a file using a certificate
-$ sq encrypt --recipient-cert romeo.pgp message.txt
+$ sq encrypt --recipient-file romeo.pgp message.txt
 
 # Encrypt a file creating a signature in the process
-$ sq encrypt --recipient-cert romeo.pgp --signer-key juliet.pgp message.txt
+$ sq encrypt --recipient-file romeo.pgp --signer-file juliet.pgp message.txt
 
 # Encrypt a file using a password
 $ sq encrypt --symmetric message.txt
@@ -215,14 +215,14 @@ OPTIONS:
         --private-key-store <KEY_STORE>
             Provides parameters for private key store
 
-        --recipient-key <KEY>
-            Decrypts with KEY
+        --recipient-file <KEY_FILE>
+            Decrypts the message using the key in KEY_FILE
 
         --session-key <SESSION-KEY>
             Decrypts an encrypted message using SESSION-KEY
 
-        --signer-cert <CERT>
-            Verifies signatures with CERT
+        --signer-file <CERT_FILE>
+            Verifies signatures using the certificates in CERT_FILE
 
     -x, --hex
             Prints a hexdump (implies --dump)
@@ -230,10 +230,10 @@ OPTIONS:
 EXAMPLES:
 
 # Decrypt a file using a secret key
-$ sq decrypt --recipient-key juliet.pgp ciphertext.pgp
+$ sq decrypt --recipient-file juliet.pgp ciphertext.pgp
 
 # Decrypt a file verifying signatures
-$ sq decrypt --recipient-key juliet.pgp --signer-cert romeo.pgp ciphertext.pgp
+$ sq decrypt --recipient-file juliet.pgp --signer-file romeo.pgp ciphertext.pgp
 
 # Decrypt a file using a password
 $ sq decrypt ciphertext.pgp
@@ -292,8 +292,8 @@ OPTIONS:
         --private-key-store <KEY_STORE>
             Provides parameters for private key store
 
-        --signer-key <KEY>
-            Signs using KEY
+        --signer-file <KEY_FILE>
+            Signs the message using the key in KEY_FILE
 
     -t, --time <TIME>
             Chooses keys valid at the specified time and sets the signature's
@@ -302,10 +302,10 @@ OPTIONS:
 EXAMPLES:
 
 # Create a signed message
-$ sq sign --signer-key juliet.pgp message.txt
+$ sq sign --signer-file juliet.pgp message.txt
 
 # Create a detached signature
-$ sq sign --detached --signer-key juliet.pgp message.txt
+$ sq sign --detached --signer-file juliet.pgp message.txt
 ```
 
 ## Subcommand sq verify
@@ -355,16 +355,16 @@ OPTIONS:
     -o, --output <FILE>
             Writes to FILE or stdout if omitted
 
-        --signer-cert <CERT>
-            Verifies signatures with CERT
+        --signer-file <CERT_FILE>
+            Verifies signatures using the certificate in CERT_FILE
 
 EXAMPLES:
 
 # Verify a signed message
-$ sq verify --signer-cert juliet.pgp signed-message.pgp
+$ sq verify --signer-file juliet.pgp signed-message.pgp
 
 # Verify a detached message
-$ sq verify --signer-cert juliet.pgp --detached message.sig message.txt
+$ sq verify --signer-file juliet.pgp --detached message.sig message.txt
 ```
 
 ## Subcommand sq key
@@ -1777,8 +1777,8 @@ OPTIONS:
         --private-key-store <KEY_STORE>
             Provides parameters for private key store
 
-        --recipient-key <KEY>
-            Decrypts the message with KEY
+        --recipient-file <KEY_FILE>
+            Decrypts the message using the key in KEY_FILE
 
         --session-key <SESSION-KEY>
             Decrypts an encrypted message using SESSION-KEY
@@ -1786,7 +1786,7 @@ OPTIONS:
 EXAMPLES:
 
 # Unwraps the encryption revealing the signed message
-$ sq packet decrypt --recipient-key juliet.pgp ciphertext.pgp
+$ sq packet decrypt --recipient-file juliet.pgp ciphertext.pgp
 ```
 
 ### Subcommand sq packet split
@@ -1909,11 +1909,11 @@ SUBCOMMANDS:
 EXAMPLES:
 
 # Revoke a certificate.
-$ sq revoke certificate --time 20220101 --certificate juliet.pgp \
+$ sq revoke certificate --time 20220101 --cert-file juliet.pgp \
   compromised "My parents went through my things, and found my backup."
 
 # Revoke a User ID.
-$ sq revoke userid --time 20220101 --certificate juliet.pgp \
+$ sq revoke userid --time 20220101 --cert-file juliet.pgp \
   "Juliet <juliet@capuleti.it>" retired "I've left the family."
 ```
 
@@ -1924,13 +1924,13 @@ Revokes a certificate
 
 Creates a revocation certificate for the certificate.
 
-If "--revocation-key" is provided, then that key is used to create
+If "--revocation-file" is provided, then that key is used to create
 the signature.  If that key is different from the certificate being
 revoked, this creates a third-party revocation.  This is normally only
 useful if the owner of the certificate designated the key to be a
 designated revoker.
 
-If "--revocation-key" is not provided, then the certificate must
+If "--revocation-file" is not provided, then the certificate must
 include a certification-capable key.
 
 USAGE:
@@ -1984,7 +1984,7 @@ OPTIONS:
     -B, --binary
             Emits binary data
 
-        --certificate <FILE>
+        --certificate-file <FILE>
             Reads the certificate to revoke from FILE or stdin, if omitted.  It
             is an error for the file to contain more than one certificate.
 
@@ -2002,11 +2002,12 @@ OPTIONS:
         --private-key-store <KEY_STORE>
             Provides parameters for private key store
 
-        --revocation-key <KEY>
-            Signs the revocation certificate using KEY.  If the key is different
-            from the certificate, this creates a third-party revocation.  If
-            this option is not provided, and the certificate includes secret key
-            material, then that key is used to sign the revocation certificate.
+        --revocation-file <KEY_FILE>
+            Signs the revocation certificate using the key in KEY_FILE.  If the
+            key is different from the certificate, this creates a third-party
+            revocation.  If this option is not provided, and the certificate
+            includes secret key material, then that key is used to sign the
+            revocation certificate.
 
     -t, --time <TIME>
             Chooses keys valid at the specified time and sets the revocation
@@ -2020,12 +2021,12 @@ Revokes a subkey
 
 Creates a revocation certificate for a subkey.
 
-If "--revocation-key" is provided, then that key is used to create the
+If "--revocation-file" is provided, then that key is used to create the
 signature.  If that key is different from the certificate being revoked, this
 creates a third-party revocation.  This is normally only useful if the owner of
 the certificate designated the key to be a designated revoker.
 
-If "--revocation-key" is not provided, then the certificate must include a
+If "--revocation-file" is not provided, then the certificate must include a
 certification-capable key.
 
 USAGE:
@@ -2080,7 +2081,7 @@ OPTIONS:
     -B, --binary
             Emits binary data
 
-        --certificate <FILE>
+        --certificate-file <FILE>
             Reads the certificate containing the subkey to revoke from FILE or
             stdin, if omitted.  It is an error for the file to contain more than
             one certificate.
@@ -2099,11 +2100,12 @@ OPTIONS:
         --private-key-store <KEY_STORE>
             Provides parameters for private key store
 
-        --revocation-key <KEY>
-            Signs the revocation certificate using KEY.  If the key is different
-            from the certificate, this creates a third-party revocation.  If
-            this option is not provided, and the certificate includes secret key
-            material, then that key is used to sign the revocation certificate.
+        --revocation-file <KEY_FILE>
+            Signs the revocation certificate using the key in KEY_FILE.  If the
+            key is different from the certificate, this creates a third-party
+            revocation.  If this option is not provided, and the certificate
+            includes secret key material, then that key is used to sign the
+            revocation certificate.
 
     -t, --time <TIME>
             Chooses keys valid at the specified time and sets the revocation
@@ -2166,9 +2168,9 @@ OPTIONS:
     -B, --binary
             Emits binary data
 
-        --certificate <FILE>
-            Reads the certificate to revoke from FILE or stdin, if omitted.  It
-            is an error for the file to contain more than one certificate.
+        --certificate-file <CERT_FILE>
+            Reads the certificate to revoke from CERT_FILE or stdin, if omitted.
+            It is an error for the file to contain more than one certificate.
 
     -h, --help
             Print help information
@@ -2184,11 +2186,12 @@ OPTIONS:
         --private-key-store <KEY_STORE>
             Provides parameters for private key store
 
-        --revocation-key <KEY>
-            Signs the revocation certificate using KEY.  If the key is different
-            from the certificate, this creates a third-party revocation.  If
-            this option is not provided, and the certificate includes secret key
-            material, then that key is used to sign the revocation certificate.
+        --revocation-file <KEY_FILE>
+            Signs the revocation certificate using the key in KEY_FILE.  If the
+            key is different from the certificate, this creates a third-party
+            revocation.  If this option is not provided, and the certificate
+            includes secret key material, then that key is used to sign the
+            revocation certificate.
 
     -t, --time <TIME>
             Chooses keys valid at the specified time and sets the revocation

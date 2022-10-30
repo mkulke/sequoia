@@ -145,7 +145,7 @@ mod integration {
 
         let _tmp_dir = match (third_party, stdin) {
             (true, true) => {
-                // cat cert | sq revoke --revocation-key third-party
+                // cat cert | sq revoke --revocation-file third-party
                 let dir = TempDir::new()?;
 
                 cmd.write_stdin(cert);
@@ -155,14 +155,14 @@ mod integration {
                 file.write_all(&revoker)?;
 
                 cmd.args([
-                    "--revocation-key",
+                    "--revocation-file",
                     &*revoker_pgp.to_string_lossy()
                 ]);
 
                 Some(dir)
             },
             (true, false) => { // third_party && ! stdin
-                // sq revoke --certificate cert --revocation-key third-party
+                // sq revoke --cert-file cert --revocation-file third-party
                 let dir = TempDir::new()?;
 
                 let cert_pgp = dir.path().join("cert.pgp");
@@ -170,7 +170,7 @@ mod integration {
                 file.write_all(&cert)?;
 
                 cmd.args([
-                    "--certificate",
+                    "--cert-file",
                     &*cert_pgp.to_string_lossy()
                 ]);
 
@@ -179,7 +179,7 @@ mod integration {
                 file.write_all(&revoker)?;
 
                 cmd.args([
-                    "--revocation-key",
+                    "--revocation-file",
                     &*revoker_pgp.to_string_lossy()
                 ]);
 
@@ -192,7 +192,7 @@ mod integration {
                 None
             },
             (false, false) => { // ! third_party && ! stdin
-                // sq revoke --certificate key
+                // sq revoke --cert-file key
                 let dir = TempDir::new()?;
 
                 let key_pgp = dir.path().join("key.pgp");
@@ -200,7 +200,7 @@ mod integration {
                 file.write_all(&revoker)?;
 
                 cmd.args([
-                    "--certificate",
+                    "--cert-file",
                     &*key_pgp.to_string_lossy()
                 ]);
 
