@@ -169,16 +169,16 @@ impl Time {
             "%Y%m%dT%H",
         ] {
             if f.ends_with("%#z") {
-                if let Ok(d) = DateTime::parse_from_str(s, *f) {
+                if let Ok(d) = DateTime::parse_from_str(s, f) {
                     return Ok(d.into());
                 }
-            } else if let Ok(d) = chrono::NaiveDateTime::parse_from_str(s, *f) {
+            } else if let Ok(d) = chrono::NaiveDateTime::parse_from_str(s, f) {
                 return Ok(DateTime::from_utc(d, Utc));
             }
         }
         for f in &["%Y-%m-%d", "%Y-%m", "%Y-%j", "%Y%m%d", "%Y%m", "%Y%j", "%Y"]
         {
-            if let Ok(d) = chrono::NaiveDate::parse_from_str(s, *f) {
+            if let Ok(d) = chrono::NaiveDate::parse_from_str(s, f) {
                 return Ok(DateTime::from_utc(d.and_time(pad_date_with), Utc));
             }
         }

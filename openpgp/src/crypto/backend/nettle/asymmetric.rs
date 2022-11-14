@@ -419,14 +419,14 @@ impl<R> Key4<SecretParts, R>
         let (public, private) = rsa::generate_keypair(&mut rng, bits as u32)?;
         let (p, q, u) = private.as_rfc4880();
         let public_mpis = PublicKey::RSA {
-            e: MPI::new(&*public.e()),
-            n: MPI::new(&*public.n()),
+            e: MPI::new(&public.e()),
+            n: MPI::new(&public.n()),
         };
         let private_mpis = mpi::SecretKeyMaterial::RSA {
-            d: MPI::new(&*private.d()).into(),
-            p: MPI::new(&*p).into(),
-            q: MPI::new(&*q).into(),
-            u: MPI::new(&*u).into(),
+            d: MPI::new(&private.d()).into(),
+            p: MPI::new(&p).into(),
+            q: MPI::new(&q).into(),
+            u: MPI::new(&u).into(),
         };
 
         Self::with_secret(

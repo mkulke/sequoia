@@ -768,10 +768,10 @@ fn parse_iso8601(s: &str, pad_date_with: chrono::NaiveTime)
         "%Y%m%dT%H",
     ] {
         if f.ends_with("%#z") {
-            if let Ok(d) = DateTime::parse_from_str(s, *f) {
+            if let Ok(d) = DateTime::parse_from_str(s, f) {
                 return Ok(d.into());
             }
-        } else if let Ok(d) = chrono::NaiveDateTime::parse_from_str(s, *f) {
+        } else if let Ok(d) = chrono::NaiveDateTime::parse_from_str(s, f) {
             return Ok(DateTime::from_utc(d, Utc));
         }
     }
@@ -784,7 +784,7 @@ fn parse_iso8601(s: &str, pad_date_with: chrono::NaiveTime)
         "%Y%j",
         "%Y",
     ] {
-        if let Ok(d) = chrono::NaiveDate::parse_from_str(s, *f) {
+        if let Ok(d) = chrono::NaiveDate::parse_from_str(s, f) {
             return Ok(DateTime::from_utc(d.and_time(pad_date_with), Utc));
         }
     }

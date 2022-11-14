@@ -428,7 +428,7 @@ mod tests {
         let mut cfb = algo.make_encrypt_cfb(key, iv).unwrap();
         let msg = hex::decode("6bc1bee22e409f96e93d7e117393172a").unwrap();
         let mut dst = vec![0; msg.len()];
-        cfb.encrypt(&mut dst, &*msg).unwrap();
+        cfb.encrypt(&mut dst, &msg).unwrap();
         assert_eq!(&dst[..16], &*hex::decode("3b3fd92eb72dad20333449f8e83cfb4a").unwrap());
 
         // 32-byte long message

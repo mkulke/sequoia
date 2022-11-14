@@ -446,8 +446,8 @@ mod integration {
                                           third_party, time, stdin, notations,
                                           reason, msg);
                                 t(&subcommand,
-                                  *reason, *msg,
-                                  *stdin, *third_party, *notations,
+                                  *reason, msg,
+                                  *stdin, *third_party, notations,
                                   *time)?;
                             }
                         }
