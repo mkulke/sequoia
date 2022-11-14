@@ -56,18 +56,18 @@ const SECONDS_IN_YEAR : u64 =
 fn parse_duration(expiry: &str) -> Result<Duration> {
     let mut expiry = expiry.chars().peekable();
 
-    let _ = expiry.by_ref()
+    expiry.by_ref()
         .peeking_take_while(|c| c.is_whitespace())
         .for_each(|_| ());
     let digits = expiry.by_ref()
         .peeking_take_while(|c| {
             *c == '+' || *c == '-' || c.is_ascii_digit()
         }).collect::<String>();
-    let _ = expiry.by_ref()
+    expiry.by_ref()
         .peeking_take_while(|c| c.is_whitespace())
         .for_each(|_| ());
     let suffix = expiry.next();
-    let _ = expiry.by_ref()
+    expiry.by_ref()
         .peeking_take_while(|c| c.is_whitespace())
         .for_each(|_| ());
     let junk = expiry.collect::<String>();
