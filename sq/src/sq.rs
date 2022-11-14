@@ -61,7 +61,7 @@ fn parse_duration(expiry: &str) -> Result<Duration> {
         .for_each(|_| ());
     let digits = expiry.by_ref()
         .peeking_take_while(|c| {
-            *c == '+' || *c == '-' || c.is_digit(10)
+            *c == '+' || *c == '-' || c.is_ascii_digit()
         }).collect::<String>();
     let _ = expiry.by_ref()
         .peeking_take_while(|c| c.is_whitespace())
