@@ -182,13 +182,7 @@ impl AutocryptHeader {
 
     /// Looks up an attribute.
     pub fn get(&self, key: &str) -> Option<&Attribute> {
-        for a in &self.attributes {
-            if a.key == key {
-                return Some(a);
-            }
-        }
-
-        None
+        self.attributes.iter().find(|&a| a.key == key)
     }
 
     /// Writes a serialized version of the object to `o`.
