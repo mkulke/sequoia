@@ -173,7 +173,7 @@ impl<'input> Iterator for Lexer<'input> {
         t!("input is {:?}", String::from_utf8_lossy(self.input));
 
         use self::Token::*;
-        let token = match *self.input.get(0)? {
+        let token = match *self.input.first()? {
             0x20 => SPACE,
             0x23 => HASH,
             0x25 => PERCENT,

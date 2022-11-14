@@ -1504,7 +1504,7 @@ mod test {
         assert_eq!(certs_orig.len(), n);
 
         t!("Start of data: {} {}",
-           if let Some(x) = data.get(0) {
+           if let Some(x) = data.first() {
                format!("{:02X}", x)
            } else {
                "XX".into()

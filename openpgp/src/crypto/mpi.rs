@@ -132,7 +132,7 @@ impl MPI {
     /// Leading zero-bits are not included in the returned size.
     pub fn bits(&self) -> usize {
         self.value.len() * 8
-            - self.value.get(0).map(|&b| b.leading_zeros() as usize)
+            - self.value.first().map(|&b| b.leading_zeros() as usize)
                   .unwrap_or(0)
     }
 
@@ -193,7 +193,7 @@ impl MPI {
                     ).into());
                 }
 
-                if value.get(0).map(|&b| b != 0x40).unwrap_or(true) {
+                if value.first().map(|&b| b != 0x40).unwrap_or(true) {
                     return Err(Error::MalformedMPI(
                         "Bad encoding of Curve25519 key".into()).into());
                 }
@@ -223,10 +223,10 @@ impl MPI {
                                 value.len(), expected_length)).into());
                 }
 
-                if value.get(0).map(|&b| b != 0x04).unwrap_or(true) {
+                if value.first().map(|&b| b != 0x04).unwrap_or(true) {
                     return Err(Error::MalformedMPI(
                         format!("Bad prefix: {:?} (expected Some(0x04))",
-                                value.get(0))).into());
+                                value.first())).into());
                 }
 
                 Ok((&value[1..1 + coordinate_length],
@@ -402,7 +402,7 @@ impl ProtectedMPI {
     /// Leading zero-bits are not included in the returned size.
     pub fn bits(&self) -> usize {
         self.value.len() * 8
-            - self.value.get(0).map(|&b| b.leading_zeros() as usize)
+            - self.value.first().map(|&b| b.leading_zeros() as usize)
                   .unwrap_or(0)
     }
 

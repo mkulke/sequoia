@@ -172,7 +172,7 @@ impl Cookie {
         // read it in two invocations of this function.
         if self.hash_stash.as_ref().map(|buf| buf.as_slice() == &b"\r"[..])
             .unwrap_or(false)
-            && data.get(0).cloned() == Some(b'\n')
+            && data.first().cloned() == Some(b'\n')
         {
             self.hash_stash.as_mut().expect("checked above").push(b'\n');
             data = &data[1..];

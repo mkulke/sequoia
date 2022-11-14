@@ -67,7 +67,7 @@ impl Context {
         // Guess if we're dealing with Unix/Cygwin or native Windows variant
         // We need to do that in order to pass paths in correct style to gpgconf
         let a_gpg_path = Self::gpgconf(&None, &["--list-dirs", "homedir"], 1)?;
-        let first_byte = a_gpg_path.get(0).and_then(|c| c.get(0)).and_then(|c| c.get(0));
+        let first_byte = a_gpg_path.get(0).and_then(|c| c.get(0)).and_then(|c| c.first());
         let gpg_style = match first_byte {
             Some(b'/') => Mode::Unix,
             _ => Mode::native(),

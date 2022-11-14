@@ -101,7 +101,7 @@ impl Keygrip {
             // gcrypt sometimes prepends a zero to prevent the most
             // significant bit from being interpreted as a sign bit.
             // Computing keygrips is one of these times.
-            let prefix = if mpi.value().get(0).map(|msb| msb & 0x80 > 0)
+            let prefix = if mpi.value().first().map(|msb| msb & 0x80 > 0)
                 .unwrap_or(false)
             {
                 // The most significant bit is set.  Prepend a zero

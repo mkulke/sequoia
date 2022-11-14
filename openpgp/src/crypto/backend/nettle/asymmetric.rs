@@ -261,7 +261,7 @@ impl<P: key::KeyParts, R: key::KeyRole> Key<P, R> {
             (PublicKey::EdDSA { curve, q }, Signature::EdDSA { r, s }) =>
               match curve {
                 Curve::Ed25519 => {
-                    if q.value().get(0).map(|&b| b != 0x40).unwrap_or(true) {
+                    if q.value().first().map(|&b| b != 0x40).unwrap_or(true) {
                         return Err(Error::MalformedPacket(
                             "Invalid point encoding".into()).into());
                     }
