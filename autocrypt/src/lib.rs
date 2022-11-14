@@ -273,9 +273,7 @@ impl AutocryptHeaders {
     /// This function should be called only on "Autocrypt" or "Autocrypt-Gossip"
     /// headers.
     fn decode_autocrypt_like_header(line: &str) -> AutocryptHeader {
-        let mut parts = line.splitn(2, ": ");
-        let header_name = parts.next().unwrap();
-        let ac_value = parts.next().unwrap();
+        let (header_name, ac_value) = line.split_once(": ").unwrap();
 
         let header_type = match header_name {
             "Autocrypt" => AutocryptHeaderType::Sender,
