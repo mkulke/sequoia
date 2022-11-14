@@ -158,7 +158,7 @@ impl KeyFlags {
 
     /// Returns a new `KeyFlags` with all capabilities disabled.
     pub fn empty() -> Self {
-        KeyFlags::new(&[])
+        KeyFlags::new([])
     }
 
     /// Returns a slice containing the raw values.
@@ -418,7 +418,7 @@ mod tests {
 
     quickcheck! {
         fn roundtrip(val: KeyFlags) -> bool {
-            let mut q = KeyFlags::new(&val.as_slice());
+            let mut q = KeyFlags::new(val.as_slice());
             assert_eq!(val, q);
             assert!(val.normalized_eq(&q));
 

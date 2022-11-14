@@ -1241,7 +1241,7 @@ impl NotationDataFlags {
 
     /// Returns an empty key server preference set.
     pub fn empty() -> Self {
-        Self::new(&[0, 0, 0, 0]).unwrap()
+        Self::new([0, 0, 0, 0]).unwrap()
     }
 
     /// Returns a slice containing the raw values.
@@ -7241,21 +7241,21 @@ fn accessors() {
     assert_eq!(sig_.intended_recipients().collect::<Vec<&Fingerprint>>(),
                fps.iter().collect::<Vec<&Fingerprint>>());
 
-    sig = sig.set_notation("test@example.org", &[0, 1, 2], None, false)
+    sig = sig.set_notation("test@example.org", [0, 1, 2], None, false)
         .unwrap();
     let sig_ =
         sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.notation("test@example.org").collect::<Vec<&[u8]>>(),
                vec![&[0, 1, 2]]);
 
-    sig = sig.add_notation("test@example.org", &[3, 4, 5], None, false)
+    sig = sig.add_notation("test@example.org", [3, 4, 5], None, false)
         .unwrap();
     let sig_ =
         sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
     assert_eq!(sig_.notation("test@example.org").collect::<Vec<&[u8]>>(),
                vec![&[0, 1, 2], &[3, 4, 5]]);
 
-    sig = sig.set_notation("test@example.org", &[6, 7, 8], None, false)
+    sig = sig.set_notation("test@example.org", [6, 7, 8], None, false)
         .unwrap();
     let sig_ =
         sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();

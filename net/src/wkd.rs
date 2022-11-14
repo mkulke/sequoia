@@ -509,8 +509,8 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let dir_path = dir.path();
-        insert(&dir_path, "sequoia-pgp.org", None, &cert).unwrap();
-        insert(&dir_path, "sequoia-pgp.org", None, &cert2).unwrap();
+        insert(dir_path, "sequoia-pgp.org", None, &cert).unwrap();
+        insert(dir_path, "sequoia-pgp.org", None, &cert2).unwrap();
 
         // justus and juga files will be generated, but not test one.
         let path = dir_path.join(

@@ -1409,7 +1409,7 @@ impl Signature4 {
 
             // We know that the top reader is not a HashedReader (it's
             // a buffered_reader::Dup).  So, start with it's child.
-            let mut r = (&mut pp.reader).get_mut();
+            let mut r = pp.reader.get_mut();
             while let Some(tmp) = r {
                 {
                     let cookie = tmp.cookie_mut();

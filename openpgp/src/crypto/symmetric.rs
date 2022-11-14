@@ -455,8 +455,8 @@ mod tests {
         let iv = hex::decode("000102030405060708090A0B0C0D0E0F").unwrap();
         let mut cfb = algo.make_encrypt_cfb(key, iv).unwrap();
         let mut dst = vec![0; msg.len()];
-        for (mut dst, msg) in dst.chunks_mut(16).zip(msg.chunks(16)) {
-            cfb.encrypt(&mut dst, msg).unwrap();
+        for (dst, msg) in dst.chunks_mut(16).zip(msg.chunks(16)) {
+            cfb.encrypt(dst, msg).unwrap();
         }
         assert_eq!(&dst, &hex::decode(
             "04960ebfb9044196bb29418ce9d6cc0939d5ccb1d0712fa8e45fe5673456fded0b"

@@ -61,7 +61,7 @@ impl<'a> Keybox<'a> {
         let len = u32::from_be_bytes(input[..4].try_into().unwrap()) as usize;
 
         let content = self.reader.data_consume_hard(len)?;
-        let kbx_record = KeyboxRecord::new((&content[..len]).to_vec())?;
+        let kbx_record = KeyboxRecord::new(content[..len].to_vec())?;
         Ok(kbx_record)
     }
 }

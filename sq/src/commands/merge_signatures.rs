@@ -90,7 +90,7 @@ fn compare_and_write_literal<'a, 'b, 'c>(
 fn normalize_literal(p: Packet) -> Result<Literal> {
     if let Packet::Literal(mut l) = p {
         l.set_date(None)?;
-        l.set_filename(&[])?;
+        l.set_filename([])?;
         Ok(l)
     } else {
         Err(anyhow::anyhow!("Not a literal packet"))

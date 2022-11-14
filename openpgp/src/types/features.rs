@@ -388,8 +388,8 @@ mod tests {
 
     #[test]
     fn set_clear() {
-        let a = Features::new(&[ 0x5, 0x1, 0x0, 0xff ]);
-        let b = Features::new(&[])
+        let a = Features::new([ 0x5, 0x1, 0x0, 0xff ]);
+        let b = Features::new([])
             .set(0).set(2)
             .set(8)
             .set(24).set(25).set(26).set(27).set(28).set(29).set(30).set(31);
@@ -443,17 +443,17 @@ mod tests {
     #[test]
     fn known() {
         let a = Features::empty().set_mdc();
-        let b = Features::new(&[ 0x1 ]);
+        let b = Features::new([ 0x1 ]);
         assert_eq!(a, b);
         assert!(a.normalized_eq(&b));
 
         let a = Features::empty().set_aead();
-        let b = Features::new(&[ 0x2 ]);
+        let b = Features::new([ 0x2 ]);
         assert_eq!(a, b);
         assert!(a.normalized_eq(&b));
 
         let a = Features::empty().set_mdc().set_aead();
-        let b = Features::new(&[ 0x1 | 0x2 ]);
+        let b = Features::new([ 0x1 | 0x2 ]);
         assert_eq!(a, b);
         assert!(a.normalized_eq(&b));
     }

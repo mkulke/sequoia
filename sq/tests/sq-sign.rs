@@ -844,7 +844,7 @@ fn sq_multiple_signers() -> Result<()> {
         .args([
             "sign",
             "--signer-file", alice_pgp.to_str().unwrap(),
-            "--signer-file", &bob_pgp.to_str().unwrap(),
+            "--signer-file", bob_pgp.to_str().unwrap(),
             "--detached",
         ])
         .write_stdin(&b"foo"[..])

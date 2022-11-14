@@ -96,7 +96,7 @@ impl KeyServerPreferences {
 
     /// Returns an empty key server preference set.
     pub fn empty() -> Self {
-        Self::new(&[])
+        Self::new([])
     }
 
     /// Returns a slice containing the raw values.
@@ -289,9 +289,9 @@ mod tests {
     fn basics() -> crate::Result<()> {
         let p = KeyServerPreferences::empty();
         assert_eq!(p.no_modify(), false);
-        let p = KeyServerPreferences::new(&[]);
+        let p = KeyServerPreferences::new([]);
         assert_eq!(p.no_modify(), false);
-        let p = KeyServerPreferences::new(&[0xff]);
+        let p = KeyServerPreferences::new([0xff]);
         assert_eq!(p.no_modify(), true);
         Ok(())
     }

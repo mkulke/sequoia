@@ -387,7 +387,7 @@ mod test {
         use super::hex::Dumper;
 
         let mut dumper = Dumper::new(Vec::new(), "III");
-        dumper.write(&[0x89, 0x01, 0x33], "frame").unwrap();
+        dumper.write([0x89, 0x01, 0x33], "frame").unwrap();
         let buf = dumper.into_inner();
         assert_eq!(
             ::std::str::from_utf8(&buf[..]).unwrap(),
@@ -396,7 +396,7 @@ mod test {
              frame\n");
 
         let mut dumper = Dumper::new(Vec::new(), "III");
-        dumper.write(&[0x89, 0x01, 0x33, 0x89, 0x01, 0x33, 0x89, 0x01], "frame")
+        dumper.write([0x89, 0x01, 0x33, 0x89, 0x01, 0x33, 0x89, 0x01], "frame")
             .unwrap();
         let buf = dumper.into_inner();
         assert_eq!(
@@ -406,7 +406,7 @@ mod test {
              frame\n");
 
         let mut dumper = Dumper::new(Vec::new(), "III");
-        dumper.write(&[0x89, 0x01, 0x33, 0x89, 0x01, 0x33, 0x89, 0x01,
+        dumper.write([0x89, 0x01, 0x33, 0x89, 0x01, 0x33, 0x89, 0x01,
                        0x89, 0x01, 0x33, 0x89, 0x01, 0x33, 0x89, 0x01], "frame")
             .unwrap();
         let buf = dumper.into_inner();
@@ -417,7 +417,7 @@ mod test {
              frame\n");
 
         let mut dumper = Dumper::new(Vec::new(), "III");
-        dumper.write(&[0x89, 0x01, 0x33, 0x89, 0x01, 0x33, 0x89, 0x01,
+        dumper.write([0x89, 0x01, 0x33, 0x89, 0x01, 0x33, 0x89, 0x01,
                        0x89, 0x01, 0x33, 0x89, 0x01, 0x33, 0x89, 0x01,
                        0x89, 0x01, 0x33, 0x89, 0x01, 0x33, 0x89, 0x01,
                        0x89, 0x01, 0x33, 0x89, 0x01, 0x33, 0x89, 0x01], "frame")
@@ -432,9 +432,9 @@ mod test {
              89 01 33 89 01 33 89 01  89 01 33 89 01 33 89 01\n");
 
         let mut dumper = Dumper::new(Vec::new(), "");
-        dumper.write(&[0x89, 0x01, 0x33], "frame").unwrap();
-        dumper.write(&[0x04], "version").unwrap();
-        dumper.write(&[0x00], "type").unwrap();
+        dumper.write([0x89, 0x01, 0x33], "frame").unwrap();
+        dumper.write([0x04], "version").unwrap();
+        dumper.write([0x00], "type").unwrap();
         let buf = dumper.into_inner();
         assert_eq!(
             ::std::str::from_utf8(&buf[..]).unwrap(),

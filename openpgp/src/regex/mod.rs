@@ -2009,18 +2009,18 @@ mod tests {
 
     #[test]
     fn regex_set() -> Result<()> {
-        let re = RegexSet::new(&[ "ab", "cd" ])?;
+        let re = RegexSet::new([ "ab", "cd" ])?;
         assert!(re.is_match("ab"));
         assert!(re.is_match("cdef"));
         assert!(!re.is_match("xxx"));
 
         // Try to make sure one re does not leak into another.
-        let re = RegexSet::new(&[ "cd$", "^ab" ])?;
+        let re = RegexSet::new([ "cd$", "^ab" ])?;
         assert!(re.is_match("abxx"));
         assert!(re.is_match("xxcd"));
 
         // Invalid regular expressions should be ignored.
-        let re = RegexSet::new(&[ "[ab", "cd]", "x" ])?;
+        let re = RegexSet::new([ "[ab", "cd]", "x" ])?;
         assert!(!re.is_match("a"));
         assert!(!re.is_match("ab"));
         assert!(!re.is_match("[ab"));
@@ -2031,7 +2031,7 @@ mod tests {
 
         // If all regular expressions are invalid, nothing should
         // match.
-        let re = RegexSet::new(&[ "[ab", "cd]" ])?;
+        let re = RegexSet::new([ "[ab", "cd]" ])?;
         assert!(!re.is_match("a"));
         assert!(!re.is_match("ab"));
         assert!(!re.is_match("[ab"));
@@ -2043,7 +2043,7 @@ mod tests {
         // If there are no regular expressions, everything should
         // match.
         let s: [&str; 0] = [];
-        let re = RegexSet::new(&s)?;
+        let re = RegexSet::new(s)?;
         assert!(re.is_match("a"));
         assert!(re.is_match("ab"));
         assert!(re.is_match("[ab"));
@@ -2057,7 +2057,7 @@ mod tests {
 
     #[test]
     fn regex_set_sequoia() -> Result<()> {
-        let re = RegexSet::new(&["<[^>]+[@.]sequoia-pgp\\.org>$"])?;
+        let re = RegexSet::new(["<[^>]+[@.]sequoia-pgp\\.org>$"])?;
         dbg!(&re);
         assert!(re.is_match("<justus@sequoia-pgp.org>"));
         assert!(!re.is_match("<justus@gnupg.org>"));
@@ -2066,7 +2066,7 @@ mod tests {
 
     #[test]
     fn regex_set_sequoia_nodash() -> Result<()> {
-        let re = RegexSet::new(&["<[^>]+[@.]sequoiapgp\\.org>$"])?;
+        let re = RegexSet::new(["<[^>]+[@.]sequoiapgp\\.org>$"])?;
         dbg!(&re);
         assert!(re.is_match("<justus@sequoiapgp.org>"));
         assert!(!re.is_match("<justus@gnupg.org>"));

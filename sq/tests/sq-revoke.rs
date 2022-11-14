@@ -127,7 +127,7 @@ mod integration {
                     cmd.arg("certificate");
                 }
                 Subcommand::Subkey => {
-                    cmd.args(&["subkey", &subkey.fingerprint().to_string()]);
+                    cmd.args(["subkey", &subkey.fingerprint().to_string()]);
                 }
                 Subcommand::UserID(_) => unreachable!(),
             }
