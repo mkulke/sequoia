@@ -312,9 +312,7 @@ impl<T: BufferedReader<Cookie>> BufferedReaderPartialBodyFilter<T> {
         if need_fill {
             t!("Need to refill the buffer.");
             let result = self.do_fill_buffer(amount);
-            if let Err(err) = result {
-                return Err(err);
-            }
+            result?
         }
 
         //println!("  Buffer: {:?} (cursor at {})",
