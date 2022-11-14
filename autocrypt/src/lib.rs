@@ -57,7 +57,7 @@ impl Default for Autocrypt {
 }
 
 /// An autocrypt header attribute.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Attribute {
     /// Whether the attribute is critical.
     pub critical: bool,
@@ -72,7 +72,7 @@ pub struct Attribute {
 
 /// Whether the data comes from an "Autocrypt" or "Autocrypt-Gossip"
 /// header.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum AutocryptHeaderType {
     /// An "Autocrypt" header.
     Sender,

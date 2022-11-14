@@ -22,7 +22,7 @@ pub(crate) type LexerItem<Token, Loc, LexicalError>
     = Spanned<Token, Loc, LexicalError>;
 
 /// The components of an OpenPGP Message.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(clippy::upper_case_acronyms)]
 pub enum Token {
     PIPE,

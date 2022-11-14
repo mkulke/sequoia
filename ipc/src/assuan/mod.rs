@@ -340,7 +340,7 @@ impl Stream for Client {
 }
 
 /// Server response.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Response {
     /// Operation successful.
     Ok {

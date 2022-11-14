@@ -12,7 +12,7 @@ pub(crate) type LexerItem<Tok, Loc, Error>
 /// Note: This enum cannot be exhaustively matched to allow future
 /// extensions.
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[deprecated(since = "1.9.0",
              note = "Not covered by SemVer guarantees, DO NOT match on it.")]
 pub enum Token {

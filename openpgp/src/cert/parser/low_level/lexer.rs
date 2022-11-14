@@ -20,7 +20,7 @@ pub(crate) type LexerItem<Tok, Loc, Error>
     = ::std::result::Result<(Loc, Tok, Loc), Error>;
 
 /// The components of an OpenPGP Message.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Token {
     /// A `PublicKey` packet.
     PublicKey(Option<Packet>),

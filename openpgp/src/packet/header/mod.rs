@@ -231,7 +231,7 @@ impl Header {
 ///   [Section 4.2 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-4.2
 #[derive(Debug)]
 // We need PartialEq so that assert_eq! works.
-#[derive(PartialEq)]
+#[derive(PartialEq, Eq)]
 #[derive(Clone, Copy)]
 pub enum BodyLength {
     /// The packet's size is known.

@@ -108,7 +108,7 @@ use super::{
 ///
 /// [See the module level documentation](self) for a detailed
 /// description.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComponentBundle<C> {
     pub(crate) component: C,
 

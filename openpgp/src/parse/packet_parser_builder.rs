@@ -24,7 +24,7 @@ use crate::packet;
 ///
 ///   [Section 6 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-6
 ///   [`PacketParserBuilder::dearmor`]: PacketParserBuilder::dearmor()
-#[derive(PartialEq)]
+#[derive(PartialEq, Eq)]
 pub enum Dearmor {
     /// Unconditionally treat the input as if it were an OpenPGP
     /// message encoded using ASCII armor.

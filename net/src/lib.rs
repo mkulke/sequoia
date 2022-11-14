@@ -80,7 +80,7 @@ const KEYSERVER_ENCODE_SET: &AsciiSet =
 ///
 /// With this policy you can control how Sequoia accesses remote
 /// systems.
-#[derive(PartialEq, PartialOrd, Debug, Copy, Clone)]
+#[derive(PartialEq, Eq, PartialOrd, Debug, Copy, Clone)]
 pub enum Policy {
     /// Do not contact remote systems.
     Offline,

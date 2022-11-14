@@ -67,7 +67,7 @@ impl CTBNew {
 ///   [old CTB]: CTBOld
 ///   [Section 4.2.1 of RFC 4880]: https://tools.ietf.org/html/rfc4880#section-4.2.1
 #[derive(Debug)]
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum PacketLengthType {
     /// A one-octet Body Length header encodes a length of 0 to 191 octets.
     ///

@@ -327,7 +327,7 @@ impl MessageValidator {
 /// w.finalize()?;
 /// # Ok(()) }
 /// ```
-#[derive(PartialEq)]
+#[derive(PartialEq, Eq)]
 pub struct Message {
     /// A message is just a validated packet pile.
     pile: PacketPile,

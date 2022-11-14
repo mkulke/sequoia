@@ -102,7 +102,7 @@ use crate::parse::Cookie;
 /// #     Ok(())
 /// # }
 /// ```
-#[derive(PartialEq, Clone, Default)]
+#[derive(PartialEq, Eq, Clone, Default)]
 pub struct PacketPile {
     /// At the top level, we have a sequence of packets, which may be
     /// containers.

@@ -64,7 +64,7 @@ const LINE_ENDING: &str = "\n";
 /// Specifies the type of data (see [RFC 4880, section 6.2]).
 ///
 /// [RFC 4880, section 6.2]: https://tools.ietf.org/html/rfc4880#section-6.2
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Kind {
     /// A generic OpenPGP message.  (Since its structure hasn't been
     /// validated, in this crate's terminology, this is just a
@@ -500,7 +500,7 @@ impl<W: Write> Write for Writer<W> {
 }
 
 /// How an ArmorReader should act.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReaderMode {
     /// Makes the armor reader tolerant of simple errors.
     ///
