@@ -974,7 +974,7 @@ impl<'a> Reader<'a> {
                         expected_kind = Some(kind);
                     }
 
-                    if expected_kind == None {
+                    if expected_kind.is_none() {
                         // Found any!
                         self.kind = Some(kind);
                         break 'search len;
