@@ -72,7 +72,7 @@ fn generate(
             let now = builder.creation_time()
                 .unwrap_or_else(std::time::SystemTime::now);
             let expiration = SystemTime::from(
-                crate::parse_iso8601(&t, chrono::NaiveTime::from_hms(0, 0, 0))?);
+                crate::parse_iso8601(&t, chrono::NaiveTime::default())?);
             let validity = expiration.duration_since(now)?;
             builder = builder.set_creation_time(now)
                 .set_validity_period(validity);

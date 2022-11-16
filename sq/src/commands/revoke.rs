@@ -314,7 +314,7 @@ a revocation certificate for that User ID anyways, specify '--force'"));
                               k.fingerprint().to_hex(),
                               chrono::DateTime::<chrono::offset::Utc>
                                   ::from(k.creation_time())
-                                  .date(),
+                                  .date_naive(),
                               k.key_flags().unwrap_or_else(KeyFlags::empty));
                 }
                 if ! have_valid {

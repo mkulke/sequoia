@@ -140,8 +140,10 @@ impl std::str::FromStr for Time {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> anyhow::Result<Time> {
-        let time =
-            Time::parse_iso8601(s, chrono::NaiveTime::from_hms(0, 0, 0))?;
+        let time = Time::parse_iso8601(
+            s,
+            chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap(),
+        )?;
         Ok(Time { time })
     }
 }
