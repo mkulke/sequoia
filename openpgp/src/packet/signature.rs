@@ -1901,7 +1901,6 @@ impl Signature4 {
     ///
     /// If you want to sign something, consider using the [`SignatureBuilder`]
     /// interface.
-    ///
     pub fn new(typ: SignatureType, pk_algo: PublicKeyAlgorithm,
                hash_algo: HashAlgorithm, hashed_area: SubpacketArea,
                unhashed_area: SubpacketArea,
@@ -2105,13 +2104,6 @@ impl PartialEq for Signature3 {
     /// This method compares the serialized version of the two
     /// packets.  Thus, the computed values are ignored ([`level`],
     /// [`computed_digest`]).
-    ///
-    /// Note: because this function also compares the unhashed
-    /// subpacket area, it is possible for a malicious party to take
-    /// valid signatures, add subpackets to the unhashed area,
-    /// yielding valid but distinct signatures.  If you want to ignore
-    /// the unhashed area, you should instead use the
-    /// [`Signature::normalized_eq`] method.
     ///
     /// [`level`]: Signature3::level()
     /// [`computed_digest`]: Signature3::computed_digest()
