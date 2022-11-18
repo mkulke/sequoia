@@ -5474,6 +5474,7 @@ impl<'a> PacketParser<'a> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::serialize::Serialize;
 
     enum Data<'a> {
         File(&'a str),
@@ -5761,14 +5762,27 @@ mod test {
 
     #[test]
     fn message_validator() {
+      for marker in 0..4 {
+        let marker_before = marker & 1 > 0;
+        let marker_after = marker & 2 > 0;
+
         for test in DECRYPT_TESTS.iter() {
             if !test.algo.is_supported() {
                 eprintln!("Algorithm {} unsupported, skipping", test.algo);
                 continue;
             }
 
-            let mut ppr = PacketParserBuilder::from_bytes(
-                crate::tests::message(test.filename)).unwrap()
+            let mut buf = Vec::new();
+            if marker_before {
+                Packet::Marker(Default::default()).serialize(&mut buf).unwrap();
+            }
+            buf.extend_from_slice(crate::tests::message(test.filename));
+            if marker_after {
+                Packet::Marker(Default::default()).serialize(&mut buf).unwrap();
+            }
+
+            let mut ppr = PacketParserBuilder::from_bytes(&buf)
+                .unwrap()
                 .build()
                 .expect(&format!("Error reading {}", test.filename)[..]);
 
@@ -5799,19 +5813,32 @@ mod test {
                 unreachable!();
             }
         }
+      }
     }
 
     #[test]
     fn keyring_validator() {
-        use std::io::Cursor;
+      for marker in 0..4 {
+        let marker_before = marker & 1 > 0;
+        let marker_after = marker & 2 > 0;
+
         for test in &["testy.pgp",
                       "lutz.gpg",
                       "testy-new.pgp",
                       "neal.pgp"]
         {
-            let mut ppr = PacketParserBuilder::from_reader(
-                Cursor::new(crate::tests::key("testy.pgp")).chain(
-                    Cursor::new(crate::tests::key(test)))).unwrap()
+            let mut buf = Vec::new();
+            if marker_before {
+                Packet::Marker(Default::default()).serialize(&mut buf).unwrap();
+            }
+            buf.extend_from_slice(crate::tests::key("testy.pgp"));
+            buf.extend_from_slice(crate::tests::key(test));
+            if marker_after {
+                Packet::Marker(Default::default()).serialize(&mut buf).unwrap();
+            }
+
+            let mut ppr = PacketParserBuilder::from_bytes(&buf)
+                .unwrap()
                 .build()
                 .expect(&format!("Error reading {:?}", test));
 
@@ -5826,16 +5853,30 @@ mod test {
                 unreachable!();
             }
         }
+      }
     }
 
     #[test]
     fn cert_validator() {
+      for marker in 0..4 {
+        let marker_before = marker & 1 > 0;
+        let marker_after = marker & 2 > 0;
+
         for test in &["testy.pgp",
                       "lutz.gpg",
                       "testy-new.pgp",
                       "neal.pgp"]
         {
-            let mut ppr = PacketParserBuilder::from_bytes(crate::tests::key(test))
+            let mut buf = Vec::new();
+            if marker_before {
+                Packet::Marker(Default::default()).serialize(&mut buf).unwrap();
+            }
+            buf.extend_from_slice(crate::tests::key(test));
+            if marker_after {
+                Packet::Marker(Default::default()).serialize(&mut buf).unwrap();
+            }
+
+            let mut ppr = PacketParserBuilder::from_bytes(&buf)
                 .unwrap()
                 .build()
                 .expect(&format!("Error reading {:?}", test));
@@ -5852,6 +5893,7 @@ mod test {
                 unreachable!();
             }
         }
+      }
     }
 
     // If we don't decrypt the SEIP packet, it shows up as opaque

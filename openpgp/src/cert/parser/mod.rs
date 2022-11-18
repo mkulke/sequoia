@@ -157,6 +157,12 @@ impl KeyringValidator {
             Tag::UserAttribute => Token::UserAttribute(None),
             Tag::Signature => Token::Signature(None),
             Tag::Trust => Token::Trust(None),
+            Tag::Marker => {
+                // Ignore Marker Packet.  RFC4880, section 5.8:
+                //
+                //   Such a packet MUST be ignored when received.
+                return;
+            },
             _ => {
                 // Unknown token.
                 self.error = Some(CertParserError::OpenPGP(
@@ -1196,6 +1202,14 @@ mod test {
         Packet::Marker(Default::default())
             .serialize(&mut testy_with_marker).unwrap();
         testy_with_marker.extend_from_slice(crate::tests::key("testy.pgp"));
+        CertParser::from(
+            PacketParser::from_bytes(&testy_with_marker).unwrap())
+            .next().unwrap().unwrap();
+
+        let mut testy_with_marker = Vec::new();
+        testy_with_marker.extend_from_slice(crate::tests::key("testy.pgp"));
+        Packet::Marker(Default::default())
+            .serialize(&mut testy_with_marker).unwrap();
         CertParser::from(
             PacketParser::from_bytes(&testy_with_marker).unwrap())
             .next().unwrap().unwrap();
