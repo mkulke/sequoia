@@ -38,6 +38,8 @@ impl From<CertD> for Store {
 }
 
 trait BasicStore {
+    // TODO write doc
+    // Required fn to access the underlying CertD
     fn certd(&self) -> &CertD;
 
     /// Get the path to the certificate store directory.
@@ -47,10 +49,11 @@ trait BasicStore {
         self.certd().get_base_dir()
     }
 
-    /// Query the store for a certificate by fingerprint or KeyID.
+    /// Query the store for a certificate by primary fingerprint or KeyID.
     ///
     /// Returns the certificate as a [`sequoia_openpgp::Cert`].
-    fn get_cert(&self, kh: &KeyHandle) -> Result<Cert> {
+    // TODO: maybe strip internal (non-exportable) stuff
+    fn cert(&self, kh: &KeyHandle) -> Result<Cert> {
         if let Some((_tag, cert)) = self.certd().get(&kh.to_hex())? {
             Cert::from_bytes(&cert).map_err(Into::into)
         } else {
@@ -60,8 +63,8 @@ trait BasicStore {
         }
     }
 
-    /// Query the store for a certificate's path by fingerprint.
-    fn get_cert_path(&self, kh: &KeyHandle) -> Result<PathBuf> {
+    /// Query the store for a certificate's path by primary fingerprint.
+    fn cert_path(&self, kh: &KeyHandle) -> Result<PathBuf> {
         Ok(self.certd().get_path(&kh.to_hex())?)
     }
 
@@ -69,6 +72,7 @@ trait BasicStore {
     fn export(&self, out: &mut dyn std::io::Write) -> Result<()> {
         for item in self.certd().iter() {
             let (_fp, _tag, cert) = item?;
+            // Use export to remove non-exportable parts from certificates
             let cert = Cert::from_bytes(&cert)?;
             cert.export(out)?
         }
@@ -108,7 +112,7 @@ trait BasicStore {
     /// If no cert is found the resulting vector is empty.
     ///
     /// Ignores any certificate parsing or file-access errors.
-    fn search_by_kh(&self, kh: &KeyHandle) -> Vec<Cert> {
+    fn find_by_kh(&self, kh: &KeyHandle) -> Vec<Cert> {
         let certs = self
             .certs()
             .flatten()
@@ -117,12 +121,13 @@ trait BasicStore {
         certs
     }
 
-    /// Look for a cert by userid
+    /// Look for a cert by exact userid
     ///
     /// If no cert is found the resulting vector is empty.
     ///
     /// Ignores any certificate parsing or file-access errors.
-    fn search_by_userid(&self, userid: &str) -> Vec<Cert> {
+    // TODO maybe userid: sequoia::packet::UserID
+    fn find_by_userid(&self, userid: &str) -> Vec<Cert> {
         let userid = openpgp::packet::UserID::from(userid);
         let certs = self
             .certs()
@@ -131,6 +136,22 @@ trait BasicStore {
             .collect::<Vec<Cert>>();
         certs
     }
+
+    //
+    fn find_by_email(&self, _email: &str) -> Vec<Cert> {
+        todo!()
+    }
+
+    //
+    fn find_by_name(&self, _name: &str) -> Vec<Cert> {
+        todo!()
+    }
+
+    //
+    //fn find_by_predicate(&self, _predicate: Fn(sequoia_openpgp::packet::UserID) -> bool) ->
+    //    Vec<Cert> {
+    //    todo!()
+    //}
 }
 
 impl BasicStore for Store {
@@ -157,6 +178,8 @@ impl Store {
     /// Setup a new certificate store and import the trust-root.
     ///
     /// The trust-root must be valid according to the cert-d specification.
+    ///
+    /// Overrides the current trust root if present. TODO, don't do this!!!
     // TODO: add links
     // Import the trust-root
     //
@@ -197,6 +220,10 @@ impl Store {
             Err(anyhow::anyhow!("no trust root found").into())
         }
     }
+
+
+    // TODO
+    // pub fn has_trust_root -> bool
 }
 
 impl StoreWithTrustRoot {
@@ -209,6 +236,8 @@ impl StoreWithTrustRoot {
             .map(|(_tag, data)| Cert::from_bytes(&data))?
             .map_err(Into::into)
     }
+
+    // add label, remove label, find by label
 }
 
 #[cfg(test)]
@@ -417,7 +446,7 @@ mod tests {
     }
 
     #[test]
-    fn search_by_kh_primary() -> Result<()> {
+    fn find_by_kh_primary() -> Result<()> {
         // Setup new store with one cert
         let data = include_bytes!("../testdata/testy-new.pgp");
         let base = test_base();
@@ -429,18 +458,18 @@ mod tests {
             Fingerprint::from_hex("39d100ab67d5bd8c04010205fb3751f1587daef1")?;
         let kid = openpgp::KeyID::from(&fp);
 
-        let result = certd.search_by_kh(&fp.into());
+        let result = certd.find_by_kh(&fp.into());
         assert!(result.len() == 1);
         assert_eq!(result[0], Cert::from_bytes(data)?);
 
-        let result = certd.search_by_kh(&kid.into());
+        let result = certd.find_by_kh(&kid.into());
         assert!(result.len() == 1);
         assert_eq!(result[0], Cert::from_bytes(data)?);
         Ok(())
     }
 
     #[test]
-    fn search_by_kh_subkey() -> Result<()> {
+    fn find_by_kh_subkey() -> Result<()> {
         // Setup new store with one cert
         let data = include_bytes!("../testdata/testy-new.pgp");
         let base = test_base();
@@ -452,18 +481,18 @@ mod tests {
             Fingerprint::from_hex("f4d1450b041f622fcefbfdb18bd88e94c0d20333")?;
         let subkey_kid = openpgp::KeyID::from(&subkey_fp);
 
-        let result = certd.search_by_kh(&subkey_fp.into());
+        let result = certd.find_by_kh(&subkey_fp.into());
         assert!(result.len() == 1);
         assert_eq!(result[0], Cert::from_bytes(data)?);
 
-        let result = certd.search_by_kh(&subkey_kid.into());
+        let result = certd.find_by_kh(&subkey_kid.into());
         assert!(result.len() == 1);
         assert_eq!(result[0], Cert::from_bytes(data)?);
         Ok(())
     }
 
     #[test]
-    fn search_by_kh_no_match() -> Result<()> {
+    fn find_by_kh_no_match() -> Result<()> {
         // Setup new store with one cert
         let data = include_bytes!("../testdata/testy-new.pgp");
         let base = test_base();
@@ -475,9 +504,9 @@ mod tests {
             Fingerprint::from_hex("ffffffffffffffffffffffffffffffffffffffff")?;
         let subkey_kid = openpgp::KeyID::from(&subkey_fp);
 
-        let result = certd.search_by_kh(&subkey_fp.into());
+        let result = certd.find_by_kh(&subkey_fp.into());
         assert!(result.len() == 0);
-        let result = certd.search_by_kh(&subkey_kid.into());
+        let result = certd.find_by_kh(&subkey_kid.into());
         assert!(result.len() == 0);
         Ok(())
     }
