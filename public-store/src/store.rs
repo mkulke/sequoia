@@ -260,20 +260,20 @@ mod tests {
     }
 
     #[test]
-    fn get_cert_nonexistent() {
+    fn cert_nonexistent() {
         let base = test_base();
         let certd = Store::new(Some(base.path())).unwrap();
         let fp =
             Fingerprint::from_hex("39d100ab67d5bd8c04010205fb3751f1587daef1")
                 .unwrap();
 
-        let res = certd.get_cert(&fp.into());
+        let res = certd.cert(&fp.into());
 
         assert!(res.is_err())
     }
 
     #[test]
-    fn get_cert() -> Result<()> {
+    fn cert() -> Result<()> {
         // Setup new store with one cert
         let data = include_bytes!("../testdata/testy-new.pgp");
         let base = test_base();
@@ -285,19 +285,19 @@ mod tests {
                 .into();
 
         // Get the cert.
-        let output_cert = certd.get_cert(&kh)?;
+        let output_cert = certd.cert(&kh)?;
 
         assert_eq!(output_cert, Cert::from_bytes(data)?);
 
         // Get the cert again, to check that it does not change.
-        let output_cert2 = certd.get_cert(&kh)?;
+        let output_cert2 = certd.cert(&kh)?;
 
         assert_eq!(output_cert2, Cert::from_bytes(data)?);
         Ok(())
     }
 
     #[test]
-    fn get_cert_uppercase() -> Result<()> {
+    fn cert_uppercase() -> Result<()> {
         // Setup new store with one cert
         let data = include_bytes!("../testdata/testy-new.pgp");
         let base = test_base();
@@ -307,7 +307,7 @@ mod tests {
         let fp =
             Fingerprint::from_hex("39d100ab67d5bd8c04010205fb3751f1587daef1")?;
 
-        let output_cert = certd.get_cert(&fp.into())?;
+        let output_cert = certd.cert(&fp.into())?;
 
         assert_eq!(output_cert, Cert::from_bytes(data)?);
         Ok(())
