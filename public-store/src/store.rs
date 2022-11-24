@@ -8,7 +8,7 @@ use openpgp::serialize::{Serialize, SerializeInto};
 use openpgp::{Cert, KeyHandle};
 use sequoia_openpgp as openpgp;
 
-use crate::error::OpenPgpError;
+use crate::error::SequoiaOpenpgpError;
 use crate::error::TrustRootError;
 use crate::{Error, Result};
 
@@ -60,7 +60,7 @@ trait BasicStore {
                 keyhandle: kh.clone(),
             })?;
 
-        cert_from_bytes(&cert, &kh.to_hex())
+        cert_from_bytes(&cert)
     }
 
     /// Query the store for a certificate's path by primary fingerprint.
@@ -71,13 +71,10 @@ trait BasicStore {
     /// Export all certs in the store.
     fn export(&self, out: &mut dyn std::io::Write) -> Result<()> {
         for item in self.certd().iter() {
-            let (fp, _tag, cert) = item?;
+            let (_fp, _tag, cert) = item?;
             // Use export to remove non-exportable parts from certificates
-            let cert = cert_from_bytes(&cert, &fp)?;
-            cert.export(out)
-                .map_err(|_| OpenPgpError::FailedToExportCert {
-                    keyhandle: fp.to_owned(),
-                })?
+            let cert = cert_from_bytes(&cert)?;
+            cert.export(out).map_err(<SequoiaOpenpgpError>::from)?
         }
 
         Ok(())
@@ -99,9 +96,7 @@ trait BasicStore {
 
         self.certd().insert(
             cert.to_vec()
-                .map_err(|_| OpenPgpError::FailedToSerializeCert {
-                    keyhandle: cert.fingerprint().to_hex(),
-                })?
+                .map_err(<SequoiaOpenpgpError>::from)?
                 .into_boxed_slice(),
             f,
         )?;
@@ -111,8 +106,8 @@ trait BasicStore {
     /// Iterate over all certificates in the store
     fn certs(&self) -> Box<dyn Iterator<Item = Result<Cert>> + '_> {
         let certs = self.certd().iter().map(|item| {
-            let (fp, _tag, data) = item?;
-            cert_from_bytes(&data, &fp)
+            let (_fp, _tag, data) = item?;
+            cert_from_bytes(&data)
         });
         Box::new(certs)
     }
@@ -217,9 +212,7 @@ impl Store {
             trust_root
                 .as_tsk()
                 .to_vec()
-                .map_err(|_| OpenPgpError::FailedToSerializeCert {
-                    keyhandle: TRUST_ROOT.to_owned(),
-                })?
+                .map_err(<SequoiaOpenpgpError>::from)?
                 .into_boxed_slice(),
             |ours, _theirs| Ok(ours),
         )?;
@@ -248,19 +241,14 @@ impl StoreWithTrustRoot {
             .get(TRUST_ROOT)
             .transpose()
             .unwrap()
-            .map(|(_tag, data)| cert_from_bytes(&data, TRUST_ROOT))?
+            .map(|(_tag, data)| cert_from_bytes(&data))?
     }
 
     // add label, remove label, find by label
 }
 
-fn cert_from_bytes(bytes: &Box<[u8]>, kh: &str) -> Result<Cert> {
-    Cert::from_bytes(&bytes).map_err(|_| {
-        OpenPgpError::FailedToParseCert {
-            keyhandle: kh.to_owned(),
-        }
-        .into()
-    })
+fn cert_from_bytes(bytes: &Box<[u8]>) -> Result<Cert> {
+    Cert::from_bytes(&bytes).map_err(|e| <SequoiaOpenpgpError>::from(e).into())
 }
 
 #[cfg(test)]

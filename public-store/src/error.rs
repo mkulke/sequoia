@@ -22,9 +22,9 @@ pub enum Error {
     #[error("IO error")]
     IoError(#[from] std::io::Error),
 
-    /// A trust-root error
+    /// Other kind of Error
     #[error(transparent)]
-    OpenPgpError(#[from] OpenPgpError),
+    Other(#[from] Box<dyn std::error::Error + Send + Sync>),
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -42,17 +42,4 @@ pub enum TrustRootError {
     InvalidTrustRoot,
 }
 
-#[derive(thiserror::Error, Debug)]
-pub enum OpenPgpError {
-    /// Failed to parse a cert in the store
-    #[error("Failed to parse a cert in the store: {keyhandle}")]
-    FailedToParseCert { keyhandle: String },
-
-    /// Failed to export a cert
-    #[error("Failed to export a cert: {keyhandle}")]
-    FailedToExportCert { keyhandle: String },
-
-    /// Failed to serialize a cert
-    #[error("Failed to serialize a cert: {keyhandle}")]
-    FailedToSerializeCert { keyhandle: String },
-}
+pub(crate) type SequoiaOpenpgpError = Box<dyn std::error::Error + Send + Sync>;
