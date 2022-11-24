@@ -8,6 +8,7 @@ use openpgp::serialize::{Serialize, SerializeInto};
 use openpgp::{Cert, KeyHandle};
 use sequoia_openpgp as openpgp;
 
+use crate::error::OpenPgpError;
 use crate::error::TrustRootError;
 use crate::{Error, Result};
 
@@ -54,13 +55,12 @@ trait BasicStore {
     /// Returns the certificate as a [`sequoia_openpgp::Cert`].
     // TODO: maybe strip internal (non-exportable) stuff
     fn cert(&self, kh: &KeyHandle) -> Result<Cert> {
-        if let Some((_tag, cert)) = self.certd().get(&kh.to_hex())? {
-            Cert::from_bytes(&cert).map_err(Into::into)
-        } else {
-            Err(Error::CertNotFound {
+        let (_tag, cert) =
+            self.certd().get(&kh.to_hex())?.ok_or(Error::CertNotFound {
                 keyhandle: kh.clone(),
-            })
-        }
+            })?;
+
+        cert_from_bytes(&cert, &kh.to_hex())
     }
 
     /// Query the store for a certificate's path by primary fingerprint.
@@ -71,10 +71,13 @@ trait BasicStore {
     /// Export all certs in the store.
     fn export(&self, out: &mut dyn std::io::Write) -> Result<()> {
         for item in self.certd().iter() {
-            let (_fp, _tag, cert) = item?;
+            let (fp, _tag, cert) = item?;
             // Use export to remove non-exportable parts from certificates
-            let cert = Cert::from_bytes(&cert)?;
-            cert.export(out)?
+            let cert = cert_from_bytes(&cert, &fp)?;
+            cert.export(out)
+                .map_err(|_| OpenPgpError::FailedToExportCert {
+                    keyhandle: fp.to_owned(),
+                })?
         }
 
         Ok(())
@@ -94,15 +97,22 @@ trait BasicStore {
             Ok(merged)
         };
 
-        self.certd().insert(cert.to_vec()?.into_boxed_slice(), f)?;
+        self.certd().insert(
+            cert.to_vec()
+                .map_err(|_| OpenPgpError::FailedToSerializeCert {
+                    keyhandle: cert.fingerprint().to_hex(),
+                })?
+                .into_boxed_slice(),
+            f,
+        )?;
         Ok(())
     }
 
     /// Iterate over all certificates in the store
     fn certs(&self) -> Box<dyn Iterator<Item = Result<Cert>> + '_> {
         let certs = self.certd().iter().map(|item| {
-            let (_fp, _tag, data) = item?;
-            Cert::from_bytes(&data).map_err(Into::into)
+            let (fp, _tag, data) = item?;
+            cert_from_bytes(&data, &fp)
         });
         Box::new(certs)
     }
@@ -194,7 +204,8 @@ impl Store {
         let trust_root = cert;
 
         if !trust_root
-            .with_policy(policy, None)?
+            .with_policy(policy, None)
+            .map_err(|_| TrustRootError::InvalidTrustRoot)?
             .primary_key()
             .for_certification()
         {
@@ -203,7 +214,13 @@ impl Store {
 
         self.certd().insert_special(
             TRUST_ROOT,
-            trust_root.as_tsk().to_vec()?.into_boxed_slice(),
+            trust_root
+                .as_tsk()
+                .to_vec()
+                .map_err(|_| OpenPgpError::FailedToSerializeCert {
+                    keyhandle: TRUST_ROOT.to_owned(),
+                })?
+                .into_boxed_slice(),
             |ours, _theirs| Ok(ours),
         )?;
         Ok(StoreWithTrustRoot { certd: self.certd })
@@ -216,11 +233,9 @@ impl Store {
         if self.certd.get(TRUST_ROOT)?.is_some() {
             Ok(StoreWithTrustRoot { certd: self.certd })
         } else {
-            // TODO improve Error
-            Err(anyhow::anyhow!("no trust root found").into())
+            Err(TrustRootError::NoTrustRoot.into())
         }
     }
-
 
     // TODO
     // pub fn has_trust_root -> bool
@@ -233,11 +248,19 @@ impl StoreWithTrustRoot {
             .get(TRUST_ROOT)
             .transpose()
             .unwrap()
-            .map(|(_tag, data)| Cert::from_bytes(&data))?
-            .map_err(Into::into)
+            .map(|(_tag, data)| cert_from_bytes(&data, TRUST_ROOT))?
     }
 
     // add label, remove label, find by label
+}
+
+fn cert_from_bytes(bytes: &Box<[u8]>, kh: &str) -> Result<Cert> {
+    Cert::from_bytes(&bytes).map_err(|_| {
+        OpenPgpError::FailedToParseCert {
+            keyhandle: kh.to_owned(),
+        }
+        .into()
+    })
 }
 
 #[cfg(test)]
