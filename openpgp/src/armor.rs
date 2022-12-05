@@ -1550,11 +1550,6 @@ impl<'a> Reader<'a> {
         //          else { None });
 
 
-        // See if there is an error from the last invocation.
-        if let Some(e) = self.error.take() {
-            return Err(e);
-        }
-
         if let Some(ref buffer) = self.buffer {
             // We have a buffer.  Make sure `cursor` is sane.
             assert!(self.cursor <= buffer.len());
@@ -1577,6 +1572,11 @@ impl<'a> Reader<'a> {
 
             let mut amount_read = 0;
             while amount_buffered + amount_read < amount {
+                // See if there is an error from the last invocation.
+                if let Some(_e) = &self.error {
+                    break;
+                }
+
                 match self.do_read(&mut buffer_new
                                    [amount_buffered + amount_read..]) {
                     Ok(read) => {
