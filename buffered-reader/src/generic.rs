@@ -114,11 +114,6 @@ impl<T: io::Read + Send + Sync, C: fmt::Debug + Sync + Send> Generic<T, C> {
         //          else { None });
 
 
-        // See if there is an error from the last invocation.
-        if let Some(e) = self.error.take() {
-            return Err(e);
-        }
-
         if let Some(ref buffer) = self.buffer {
             // We have a buffer.  Make sure `cursor` is sane.
             assert!(self.cursor <= buffer.len());
@@ -141,6 +136,11 @@ impl<T: io::Read + Send + Sync, C: fmt::Debug + Sync + Send> Generic<T, C> {
 
             let mut amount_read = 0;
             while amount_buffered + amount_read < amount {
+                // See if there is an error from the last invocation.
+                if let Some(_e) = self.error.take() {
+                    break;
+                }
+
                 match self.reader.read(&mut buffer_new
                                        [amount_buffered + amount_read..]) {
                     Ok(read) => {
@@ -373,5 +373,30 @@ mod test {
                 }
             }
         }
+    }
+
+    /// Tests that we can request some data using data_hard even if a
+    /// previous request for more data failed.
+    #[test]
+    fn data_hard_after_failure() -> io::Result<()> {
+        /// Returns one byte once, then errors.
+        #[derive(Default)]
+        struct BuggySource(bool);
+        impl io::Read for BuggySource {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                if self.0 {
+                    Err(io::Error::new(io::ErrorKind::Other, "oops"))
+                } else {
+                    self.0 = true;
+                    Ok(1)
+                }
+            }
+        }
+
+        let mut br = Generic::new(BuggySource::default(), None);
+        assert!(br.data(2).is_ok()); // Ok...
+        assert_eq!(br.data(2).unwrap().len(), 1); // ... but short.
+        assert!(br.data_hard(1).is_ok()); // Should be fine then.
+        Ok(())
     }
 }
