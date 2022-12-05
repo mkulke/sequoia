@@ -6375,4 +6375,32 @@ mod test {
 
         Ok(())
     }
+
+    /// Tests for a panic in the packet parser.
+    fn parse_message(message: &str) {
+        eprintln!("parsing {:?}", message);
+        let mut ppr = match PacketParser::from_bytes(message) {
+            Ok(ppr) => ppr,
+            Err(_) => return,
+        };
+        while let PacketParserResult::Some(pp) = ppr {
+            dbg!(&pp.packet);
+            if let Ok((_, tmp)) = pp.recurse() {
+                ppr = tmp;
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// Tests issue 1005.
+    #[test]
+    fn panic_on_short_zip() {
+        parse_message("-----BEGIN PGP SIGNATURE-----
+
+owGjAA0=
+zXvj
+-----END PGP SIGNATURE-----
+");
+    }
 }

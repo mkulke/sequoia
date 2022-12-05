@@ -119,12 +119,6 @@ impl<T: io::Read + Send + Sync, C: fmt::Debug + Sync + Send> Generic<T, C> {
            self.cursor,
            self.buffer.as_ref().map(|buffer| buffer.len()));
 
-        // See if there is an error from the last invocation.
-        if let Some(e) = self.error.take() {
-            t!("Returning stashed error: {}", e);
-            return Err(e);
-        }
-
         if let Some(ref buffer) = self.buffer {
             // We have a buffer.  Make sure `cursor` is sane.
             assert!(self.cursor <= buffer.len());
@@ -156,6 +150,12 @@ impl<T: io::Read + Send + Sync, C: fmt::Debug + Sync + Send> Generic<T, C> {
 
                 if self.eof {
                     t!("Hit EOF on the underlying reader, don't poll again.");
+                    break;
+                }
+
+                // See if there is an error from the last invocation.
+                if let Some(e) = &self.error {
+                    t!("We have a stashed error, don't poll again: {}", e);
                     break;
                 }
 
@@ -403,5 +403,30 @@ mod test {
                 }
             }
         }
+    }
+
+    /// Tests that we can request some data using data_hard even if a
+    /// previous request for more data failed.
+    #[test]
+    fn data_hard_after_failure() -> io::Result<()> {
+        /// Returns one byte once, then errors.
+        #[derive(Default)]
+        struct BuggySource(bool);
+        impl io::Read for BuggySource {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                if self.0 {
+                    Err(io::Error::new(io::ErrorKind::Other, "oops"))
+                } else {
+                    self.0 = true;
+                    Ok(1)
+                }
+            }
+        }
+
+        let mut br = Generic::new(BuggySource::default(), None);
+        assert!(br.data(2).is_ok()); // Ok...
+        assert_eq!(br.data(2).unwrap().len(), 1); // ... but short.
+        assert!(br.data_hard(1).is_ok()); // Should be fine then.
+        Ok(())
     }
 }
