@@ -6135,4 +6135,32 @@ mod test {
         }
         Ok(())
     }
+
+    /// Tests for a panic in the packet parser.
+    fn parse_message(message: &str) {
+        eprintln!("parsing {:?}", message);
+        let mut ppr = match PacketParser::from_bytes(message) {
+            Ok(ppr) => ppr,
+            Err(_) => return,
+        };
+        while let PacketParserResult::Some(pp) = ppr {
+            dbg!(&pp.packet);
+            if let Ok((_, tmp)) = pp.recurse() {
+                ppr = tmp;
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// Tests issue 957.
+    #[test]
+    fn panic_on_malformed_armor() {
+        parse_message("-----BEGIN PGP MESSAGE-----
+
+heLBX8Pq0kUBwQz2iFAzRwOdgTBvH5KsDU9lmE
+
+-----END PGP MESSAGE-----
+");
+    }
 }
