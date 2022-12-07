@@ -6,11 +6,18 @@ use anyhow::Context as _;
 use futures::StreamExt;
 
 use sequoia_openpgp as openpgp;
-use crate::openpgp::types::{
-    HashAlgorithm,
-    SymmetricAlgorithm,
+use crate::openpgp::{
+    packet::{
+        Any,
+        PKESK,
+    },
+    PacketPile,
+    types::{
+        HashAlgorithm,
+        SymmetricAlgorithm,
+    },
 };
-use crate::openpgp::crypto::SessionKey;
+use crate::openpgp::crypto::{SessionKey, Decryptor};
 use crate::openpgp::parse::{Parse, stream::*};
 use crate::openpgp::serialize::{Serialize, stream::*};
 use crate::openpgp::cert::prelude::*;
@@ -213,9 +220,16 @@ fn decrypt() -> openpgp::Result<()> {
     use openpgp::policy::StandardPolicy as P;
 
     let p = &P::new();
-    let ctx = make_context!();
+
+    // Make a cert for a second recipient.
+    let (other, _) = CertBuilder::new()
+        .add_userid("other-recipient@example.org")
+        .add_transport_encryption_subkey()
+        .generate()?;
 
     for cs in &[RSA2k, Cv25519, P521] {
+        let ctx = make_context!();
+
         let (cert, _) = CertBuilder::new()
             .set_cipher_suite(*cs)
             .add_userid("someone@example.org")
@@ -226,12 +240,18 @@ fn decrypt() -> openpgp::Result<()> {
         cert.as_tsk().serialize(&mut buf).unwrap();
         gpg_import(&ctx, &buf)?;
 
+        // Import the second recipient.
+        let mut buf = Vec::new();
+        other.serialize(&mut buf).unwrap();
+        gpg_import(&ctx, &buf)?;
+
         let mut message = Vec::new();
         {
             let recipients =
-                cert.keys().with_policy(p, None).alive().revoked(false)
-                .for_transport_encryption()
-                .map(|ka| ka.key())
+                [&cert, &other].iter().flat_map(
+                    |c| c.keys().with_policy(p, None).alive().revoked(false)
+                        .for_transport_encryption()
+                        .map(|ka| ka.key()))
                 .collect::<Vec<_>>();
 
             // Start streaming an OpenPGP message.
@@ -254,9 +274,41 @@ fn decrypt() -> openpgp::Result<()> {
             literal_writer.finalize().unwrap();
         }
 
+        // First, test Agent::decrypt.  Using this function we can try
+        // multiple decryption requests on the same connection.
+        let rt = tokio::runtime::Runtime::new()?;
+        let mut agent = rt.block_on(Agent::connect(&ctx))?;
+        let pp = PacketPile::from_bytes(&message)?;
+        let pkesk_0: &PKESK =
+            pp.path_ref(&[0]).unwrap().downcast_ref().unwrap();
+        let pkesk_1: &PKESK =
+            pp.path_ref(&[1]).unwrap().downcast_ref().unwrap();
+
+        // We only gave the cert to GnuPG, the agent doesn't have the
+        // secret.
+        let keypair = KeyPair::new(
+            &ctx,
+            other.keys().with_policy(p, None)
+                .for_storage_encryption().for_transport_encryption()
+                .take(1).next().unwrap().key())?;
+        assert!(rt.block_on(agent.decrypt(&keypair, pkesk_1.esk()))
+                .is_err());
+
+        // Now try "our" key.
+        let keypair = KeyPair::new(
+            &ctx,
+            cert.keys().with_policy(p, None)
+                .for_storage_encryption().for_transport_encryption()
+                .take(1).next().unwrap().key())?;
+        assert!(rt.block_on(agent.decrypt(&keypair, pkesk_0.esk()))
+                .is_ok());
+
+        // Close connection.
+        drop(agent);
+
         // Make a helper that that feeds the recipient's secret key to the
         // decryptor.
-        let helper = Helper { policy: p, ctx: &ctx, cert: &cert, };
+        let helper = Helper { policy: p, ctx: &ctx, cert: &cert, other: &other};
 
         // Now, create a decryptor with a helper using the given Certs.
         let mut decryptor = DecryptorBuilder::from_bytes(&message).unwrap()
@@ -271,6 +323,7 @@ fn decrypt() -> openpgp::Result<()> {
             policy: &'a dyn Policy,
             ctx: &'a Context,
             cert: &'a openpgp::Cert,
+            other: &'a openpgp::Cert,
         }
 
         impl<'a> VerificationHelper for Helper<'a> {
@@ -296,6 +349,20 @@ fn decrypt() -> openpgp::Result<()> {
                           -> openpgp::Result<Option<openpgp::Fingerprint>>
                 where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool
             {
+                // We only gave the cert to GnuPG, the agent doesn't
+                // have the secret.
+                let mut keypair = KeyPair::new(
+                    self.ctx,
+                    self.other.keys().with_policy(self.policy, None)
+                        .for_storage_encryption().for_transport_encryption()
+                        .take(1).next().unwrap().key())
+                    .unwrap();
+
+                for pkesk in pkesks {
+                    assert!(pkesk.decrypt(&mut keypair, sym_algo).is_none());
+                }
+
+                // Now use "our" key.
                 let mut keypair = KeyPair::new(
                     self.ctx,
                     self.cert.keys().with_policy(self.policy, None)
@@ -303,8 +370,16 @@ fn decrypt() -> openpgp::Result<()> {
                         .take(1).next().unwrap().key())
                     .unwrap();
 
-                pkesks[0].decrypt(&mut keypair, sym_algo)
-                    .map(|(algo, session_key)| decrypt(algo, &session_key));
+                for pkesk in pkesks {
+                    if *pkesk.recipient() != keypair.public().keyid() {
+                        continue;
+                    }
+
+                    let (algo, session_key) =
+                        pkesk.decrypt(&mut keypair, sym_algo)
+                        .expect("decryption must succeed");
+                    assert!(decrypt(algo, &session_key));
+                }
 
                 // XXX: In production code, return the Fingerprint of the
                 // recipient's Cert here

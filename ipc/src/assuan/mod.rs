@@ -16,6 +16,7 @@ use tokio::io::{BufReader, ReadHalf, WriteHalf};
 use tokio::io::{AsyncRead, AsyncWriteExt};
 
 use crate::openpgp;
+use openpgp::crypto::mem::Protected;
 
 use crate::Error;
 use crate::Result;
@@ -101,6 +102,11 @@ impl Client {
     /// For the command to be actually executed, stream the responses
     /// using this objects [`Stream`] implementation.
     ///
+    /// Note: It is very important to poll the client object until it
+    /// returns `None`.  Otherwise, the server and client will lose
+    /// synchronization, and requests and responses will no longer be
+    /// correctly associated.
+    ///
     /// [`Stream`]: #impl-Stream
     ///
     /// The response stream ends in either a [`Response::Ok`],
@@ -145,6 +151,46 @@ impl Client {
         };
 
         Ok(())
+    }
+
+    /// Sends a simple command to the server and returns the response.
+    ///
+    /// This method can only be used with simple commands, i.e. those
+    /// which do not require handling inquiries from the server.  To
+    /// send complex commands, use [`Client::send`] and handle the
+    /// inquiries.
+    pub async fn send_simple<C>(&mut self, cmd: C) -> Result<Protected>
+    where
+        C: AsRef<str>,
+    {
+        self.send(cmd.as_ref())?;
+        let mut data = Vec::new();
+        let mut ok = false;
+        while let Some(response) = self.next().await {
+            match response? {
+                Response::Data { partial } => {
+                    // Securely erase partial.
+                    let partial = Protected::from(partial);
+                    data.extend_from_slice(&partial);
+                },
+                Response::Ok { .. } =>
+                    ok = true,
+                Response::Comment { .. }
+                | Response::Status { .. } =>
+                    (), // Ignore.
+                Response::Error { ref message, .. } =>
+                    return operation_failed(self, message).await,
+                response =>
+                    return protocol_error(&response),
+            }
+        }
+
+        if ok {
+            Ok(data.into())
+        } else {
+            Err(crate::gnupg::Error::ProtocolError(
+                "Got neither success nor error".into()).into())
+        }
     }
 
     /// Lazily cancels a pending operation.
@@ -201,6 +247,36 @@ impl Client {
         write!(&mut request, "\nEND").unwrap();
         self.send(request)
     }
+}
+
+/// Returns a convenient Err value for use in the state machines.
+///
+/// This function must only be called after the assuan server returns
+/// an ERR.  message is the error message returned from the server.
+/// This function first checks that the server hasn't sent anything
+/// else, which would be a protocol violation.  If that is not the
+/// case, it turns the message into an Err.
+// XXX: It is a slight layering violation to return gnupg::Error here.
+pub(crate) async fn operation_failed<T>(agent: &mut Client,
+                                        message: &Option<String>)
+                                        -> Result<T>
+{
+    if let Some(response) = agent.next().await {
+        protocol_error(&response?)
+    } else {
+        Err(crate::gnupg::Error::OperationFailed(
+            message.as_ref().map(|e| e.to_string())
+                .unwrap_or_else(|| "Unknown reason".into()))
+            .into())
+    }
+}
+
+/// Returns a convenient Err value for use in the state machines.
+// XXX: It is a slight layering violation to return gnupg::Error here.
+pub(crate) fn protocol_error<T>(response: &Response) -> Result<T> {
+    Err(crate::gnupg::Error::ProtocolError(
+        format!("Got unexpected response {:?}", response))
+        .into())
 }
 
 /// A future that will resolve to a `Client`.
