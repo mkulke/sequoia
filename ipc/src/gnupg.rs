@@ -652,70 +652,15 @@ impl<'a, 'b, 'c> Future for DecryptionRequest<'a, 'b, 'c>
 
                 Options => match client.as_mut().poll_next(cx)? {
                     Poll::Ready(Some(r)) => match r {
-                        assuan::Response::Ok { .. }
-                        | assuan::Response::Comment { .. }
-                        | assuan::Response::Status { .. } =>
-                            (), // Ignore.
-                        assuan::Response::Error { ref message, .. } =>
-                            return Poll::Ready(operation_failed(message)),
-                        _ =>
-                            return Poll::Ready(protocol_error(&r)),
-                    },
-                    Poll::Ready(None) => {
-                        if let Some(option) = options.pop() {
-                            client.send(option)?;
-                        } else {
-                            let grip = Keygrip::of(key.public.mpis())?;
-                            client.send(format!("SETKEY {}", grip))?;
-                            *state = SetKey;
+                        assuan::Response::Ok { .. } => {
+                            if let Some(option) = options.pop() {
+                                client.send(option)?;
+                            } else {
+                                let grip = Keygrip::of(key.public.mpis())?;
+                                client.send(format!("SETKEY {}", grip))?;
+                                *state = SetKey;
+                            }
                         }
-                    },
-                    Poll::Pending => return Poll::Pending,
-                },
-
-                SetKey => match client.as_mut().poll_next(cx)? {
-                    Poll::Ready(Some(r)) => match r {
-                        assuan::Response::Ok { .. }
-                        | assuan::Response::Comment { .. }
-                        | assuan::Response::Status { .. } =>
-                            (), // Ignore.
-                        assuan::Response::Error { ref message, .. } =>
-                            return Poll::Ready(operation_failed(message)),
-                        _ =>
-                            return Poll::Ready(protocol_error(&r)),
-                    },
-                    Poll::Ready(None) => {
-                        client.send(
-                            format!("SETKEYDESC {}",
-                                    assuan::escape(&key.password_prompt)))?;
-                        *state = SetKeyDesc;
-                    },
-                    Poll::Pending => return Poll::Pending,
-                },
-
-                SetKeyDesc => match client.as_mut().poll_next(cx)? {
-                    Poll::Ready(Some(r)) => match r {
-                        assuan::Response::Ok { .. }
-                        | assuan::Response::Comment { .. }
-                        | assuan::Response::Status { .. } =>
-                            (), // Ignore.
-                        assuan::Response::Error { ref message, .. } =>
-                            return Poll::Ready(operation_failed(message)),
-                        _ =>
-                            return Poll::Ready(protocol_error(&r)),
-                    },
-                    Poll::Ready(None) => {
-                        client.send("PKDECRYPT")?;
-                        *state = PkDecrypt;
-                    },
-                    Poll::Pending => return Poll::Pending,
-                },
-
-                PkDecrypt => match client.as_mut().poll_next(cx)? {
-                    Poll::Ready(Some(r)) => match r {
-                        assuan::Response::Inquire { ref keyword, .. }
-                          if keyword == "CIPHERTEXT" =>
-                            (), // What we expect.
                         assuan::Response::Comment { .. }
                         | assuan::Response::Status { .. } =>
                             (), // Ignore.
@@ -725,11 +670,79 @@ impl<'a, 'b, 'c> Future for DecryptionRequest<'a, 'b, 'c>
                             return Poll::Ready(protocol_error(&r)),
                     },
                     Poll::Ready(None) => {
-                        let mut buf = Vec::new();
-                        Sexp::try_from(*ciphertext)?
-                            .serialize(&mut buf)?;
-                        client.data(&buf)?;
-                        *state = Inquire(Vec::new(), true);
+                        // We're still waiting for the response to an
+                        // outstanding OPTION.
+                    }
+                    Poll::Pending => return Poll::Pending,
+                },
+
+                SetKey => match client.as_mut().poll_next(cx)? {
+                    Poll::Ready(Some(r)) => match r {
+                        assuan::Response::Ok { .. } => {
+                            client.send(
+                                format!("SETKEYDESC {}",
+                                        assuan::escape(&key.password_prompt)))?;
+                            *state = SetKeyDesc;
+                        }
+                        assuan::Response::Comment { .. }
+                        | assuan::Response::Status { .. } =>
+                            (), // Ignore.
+                        assuan::Response::Error { ref message, .. } =>
+                            return Poll::Ready(operation_failed(message)),
+                        _ =>
+                            return Poll::Ready(protocol_error(&r)),
+                    },
+                    Poll::Ready(None) => {
+                        // We're still waiting for the response to an
+                        // outstanding OPTION.
+                    }
+                    Poll::Pending => return Poll::Pending,
+                },
+
+                SetKeyDesc => match client.as_mut().poll_next(cx)? {
+                    Poll::Ready(Some(r)) => match r {
+                        assuan::Response::Ok { .. } => {
+                            client.send("PKDECRYPT")?;
+                            *state = PkDecrypt;
+                        }
+                        assuan::Response::Comment { .. }
+                        | assuan::Response::Status { .. } =>
+                            (), // Ignore.
+                        assuan::Response::Error { ref message, .. } =>
+                            return Poll::Ready(operation_failed(message)),
+                        _ =>
+                            return Poll::Ready(protocol_error(&r)),
+                    },
+                    Poll::Ready(None) => {
+                        // We're still waiting for the response to an
+                        // outstanding SETKEY.
+                    },
+                    Poll::Pending => return Poll::Pending,
+                },
+
+                PkDecrypt => match client.as_mut().poll_next(cx)? {
+                    Poll::Ready(Some(r)) => match r {
+                        assuan::Response::Inquire { ref keyword, .. }
+                          if keyword == "CIPHERTEXT" => {
+                              let mut buf = Vec::new();
+                              Sexp::try_from(*ciphertext)?
+                                  .serialize(&mut buf)?;
+                              client.data(&buf)?;
+                              *state = Inquire(Vec::new(), true);
+                          }
+                        assuan::Response::Comment { .. }
+                        | assuan::Response::Status { .. } =>
+                            (), // Ignore.
+                        assuan::Response::Error { ref message, .. } => {
+                            *state = Start;
+                            return Poll::Ready(operation_failed(message));
+                        }
+                        _ =>
+                            return Poll::Ready(protocol_error(&r)),
+                    },
+                    Poll::Ready(None) => {
+                        // We're still waiting for the response to an
+                        // outstanding SETKEYDESC.
                     },
                     Poll::Pending => return Poll::Pending,
                 },
@@ -737,34 +750,39 @@ impl<'a, 'b, 'c> Future for DecryptionRequest<'a, 'b, 'c>
 
                 Inquire(ref mut data, ref mut padding) => match client.as_mut().poll_next(cx)? {
                     Poll::Ready(Some(r)) => match r {
-                        assuan::Response::Ok { .. }
-                        | assuan::Response::Comment { .. } =>
+                        assuan::Response::Ok { .. } => {
+                            // Get rid of the safety-0.
+                            //
+                            // gpg-agent seems to add a trailing 0,
+                            // supposedly for good measure.
+                            if data.iter().last() == Some(&0) {
+                                let l = data.len();
+                                data.truncate(l - 1);
+                            }
+
+                            return Poll::Ready(
+                                Sexp::from_bytes(&data)?.finish_decryption(
+                                    &key.public, ciphertext, *padding)
+                            );
+                        }
+                        assuan::Response::Comment { .. } =>
                             (), // Ignore.
                         assuan::Response::Status { ref keyword, ref message } =>
                             if keyword == "PADDING" {
                                 *padding = message != "0";
                             },
-                        assuan::Response::Error { ref message, .. } =>
-                            return Poll::Ready(operation_failed(message)),
+                        assuan::Response::Error { ref message, .. } => {
+                            *state = Start;
+                            return Poll::Ready(operation_failed(message));
+                        }
                         assuan::Response::Data { ref partial } =>
                             data.extend_from_slice(partial),
                         _ =>
                             return Poll::Ready(protocol_error(&r)),
                     },
                     Poll::Ready(None) => {
-                        // Get rid of the safety-0.
-                        //
-                        // gpg-agent seems to add a trailing 0,
-                        // supposedly for good measure.
-                        if data.iter().last() == Some(&0) {
-                            let l = data.len();
-                            data.truncate(l - 1);
-                        }
-
-                        return Poll::Ready(
-                            Sexp::from_bytes(&data)?.finish_decryption(
-                            &key.public, ciphertext, *padding)
-                        );
+                        // We're still waiting for the response to an
+                        // outstanding PKDECRYPT.
                     },
                     Poll::Pending => return Poll::Pending,
                 },
