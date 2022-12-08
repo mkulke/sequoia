@@ -2806,6 +2806,7 @@ dependencies = [
  "nettle",
  "num-bigint-dig",
  "openssl",
+ "openssl-sys",
  "p256",
  "quickcheck",
  "rand 0.7.3",

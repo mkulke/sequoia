@@ -10,6 +10,10 @@ fn main() {
             println!("cargo:rustc-cfg=osslconf=\"{}\"", var);
         }
     }
+    for (key, value) in env::vars() {
+        println!("cargo:warning={} = {}", key, value);
+    }
+    println!("cargo:warning=CFG IS: {}", cfg!(osslconf));
 
     crypto_backends_sanity_check();
     lalrpop::process_root().unwrap();
