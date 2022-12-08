@@ -5,6 +5,12 @@ use std::path::PathBuf;
 use std::process::exit;
 
 fn main() {
+    if let Ok(vars) = env::var("DEP_OPENSSL_CONF") {
+        for var in vars.split(',') {
+            println!("cargo:rustc-cfg=osslconf=\"{}\"", var);
+        }
+    }
+
     crypto_backends_sanity_check();
     lalrpop::process_root().unwrap();
     include_test_data().unwrap();
