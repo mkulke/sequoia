@@ -43,8 +43,14 @@ pub fn main() -> openpgp::Result<()> {
     io::copy(&mut decryptor, &mut io::sink())
         .context("Decryption failed")?;
 
-    eprintln!("### Complete AEAD-EAX encrypted packet sequence\n");
-    eprintln!("~~~");
+    let h = decryptor.into_helper();
+    let aead = h.seip.as_ref().unwrap().aead();
+
+    eprintln!("### Complete AEAD-{:?} encrypted packet sequence\n", aead);
+
+    eprintln!("{{: sourcecode-name=\"v5skesk-aes128-{}.pgp\"}}",
+              format!("{:?}", aead).to_lowercase());
+    eprintln!("~~~ application/pgp-encrypted");
     io::stderr().write_all(&m)?;
     eprintln!("~~~");
     Ok(())
@@ -68,6 +74,10 @@ impl DecryptionHelper for Helper {
                   -> openpgp::Result<Option<openpgp::Fingerprint>>
         where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool
     {
+        let aead = self.seip.as_ref().unwrap().aead();
+        eprintln!("## Sample AEAD-{:?} encryption and decryption\n", aead);
+        eprintln!("This example encrypts the cleartext string `Hello, world!` with the password `password`, using AES-128 with AEAD-{:?} encryption.\n", aead);
+
         eprintln!("### Sample Parameters\n");
         for skesk in skesks {
             let skesk5 = if let SKESK::V5(v5) = skesk { v5 } else { panic!() };
@@ -88,14 +98,15 @@ impl DecryptionHelper for Helper {
             dump_rfc("Nonce", skesk5.aead_iv());
             dump_rfc("Encrypted session key and AEAD tag", skesk5.esk());
 
-            eprintln!("### Starting AEAD-EAX decryption of the session key\n");
+            eprintln!("### Starting AEAD-{:?} decryption of the session key\n", aead);
             let (algo, session_key) = skesk.decrypt(&"password".into())?;
 
             eprintln!("### Sample v2 SEIPD packet\n");
             let b = &self.bytes;
             let seip = self.seip.as_ref().unwrap();
             dump_rfc("Packet header", &b[..2]);
-            dump_rfc("Version, AES-128, EAX, Chunk size octet", &b[2..2 + 4]);
+            dump_rfc(&format!("Version, AES-128, {:?}, Chunk size octet", aead),
+                     &b[2..2 + 4]);
             dump_rfc("Salt", seip.salt()); // XXX
             let tag_size = seip.aead().digest_size()?;
             dump_rfc("Chunk #0 encrypted data",
