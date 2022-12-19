@@ -3,7 +3,6 @@
 //! An encrypted data packet is a container.  See [XXX] for details.
 
 use crate::{
-    Error,
     packet::{
         self,
         Packet,
@@ -36,8 +35,6 @@ pub struct SEIP2 {
     sym_algo: SymmetricAlgorithm,
     /// AEAD algorithm.
     aead: AEADAlgorithm,
-    /// Chunk size.
-    chunk_size: u64,
     /// Salt.
     salt: [u8; 32],
 
@@ -61,28 +58,17 @@ impl std::ops::DerefMut for SEIP2 {
 }
 
 impl SEIP2 {
+    /// The size of chunks that are encrypted and integrity protected.
+    pub const CHUNK_SIZE: usize = 16384;
+
     /// Creates a new SEIP2 packet.
     pub fn new(sym_algo: SymmetricAlgorithm,
                aead: AEADAlgorithm,
-               chunk_size: u64,
                salt: [u8; 32]) -> Result<Self> {
-        if chunk_size.count_ones() != 1 {
-            return Err(Error::InvalidArgument(
-                format!("chunk size is not a power of two: {}", chunk_size))
-                .into());
-        }
-
-        if chunk_size < 64 {
-            return Err(Error::InvalidArgument(
-                format!("chunk size is too small: {}", chunk_size))
-                .into());
-        }
-
         Ok(SEIP2 {
             common: Default::default(),
             sym_algo,
             aead,
-            chunk_size,
             salt,
             container: Default::default(),
         })
@@ -107,34 +93,6 @@ impl SEIP2 {
     /// Sets the AEAD algorithm.
     pub fn set_aead(&mut self, aead: AEADAlgorithm) -> AEADAlgorithm {
         std::mem::replace(&mut self.aead, aead)
-    }
-
-    /// Gets the chunk size.
-    pub fn chunk_size(&self) -> u64 {
-        self.chunk_size
-    }
-
-    /// Sets the chunk size.
-    pub fn set_chunk_size(&mut self, chunk_size: u64) -> Result<()> {
-        if chunk_size.count_ones() != 1 {
-            return Err(Error::InvalidArgument(
-                format!("chunk size is not a power of two: {}", chunk_size))
-                .into());
-        }
-
-        if chunk_size < 64 {
-            return Err(Error::InvalidArgument(
-                format!("chunk size is too small: {}", chunk_size))
-                .into());
-        }
-
-        self.chunk_size = chunk_size;
-        Ok(())
-    }
-
-    /// Gets the size of a chunk with a digest.
-    pub fn chunk_digest_size(&self) -> Result<u64> {
-        Ok(self.chunk_size + self.aead.digest_size()? as u64)
     }
 
     /// Gets the salt.

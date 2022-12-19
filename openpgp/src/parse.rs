@@ -2848,21 +2848,12 @@ impl SEIP2 {
             php_try!(php.parse_u8("sym_algo")).into();
         let aead: AEADAlgorithm =
             php_try!(php.parse_u8("aead_algo")).into();
-        let chunk_size = php_try!(php.parse_u8("chunk_size"));
 
-        // DRAFT 4880bis-08, section 5.16: "An implementation MUST
-        // support chunk size octets with values from 0 to 56.  Chunk
-        // size octets with other values are reserved for future
-        // extensions."
-        if chunk_size > 56 {
-            return php.fail("unsupported chunk size");
-        }
-        let chunk_size: u64 = 1 << (chunk_size + 6);
         let salt_v = php_try!(php.parse_bytes("salt", 32));
         let mut salt = [0u8; 32];
         salt.copy_from_slice(&salt_v);
 
-        let seip2 = php_try!(Self::new(cipher, aead, chunk_size, salt));
+        let seip2 = php_try!(Self::new(cipher, aead, salt));
         php.ok(seip2.into()).map(|pp| pp.set_encrypted(true))
     }
 }
@@ -5394,9 +5385,6 @@ impl<'a> PacketParser<'a> {
             },
 
             Packet::SEIP(SEIP::V2(seip)) => {
-                let chunk_size =
-                    aead::chunk_size_usize(seip.chunk_size())?;
-
                 // Read the first chunk and check whether we can
                 // decrypt it using the provided key.  Don't actually
                 // consume them in case we can't.
@@ -5406,23 +5394,22 @@ impl<'a> PacketParser<'a> {
                     // it has a partial block and it needs to verify
                     // the final chunk.
                     let amount = aead::chunk_size_usize(
-                        seip.chunk_digest_size()?
-                        + seip.aead().digest_size()? as u64)?;
+                        4096
+                        + 2 * seip.aead().digest_size()? as u64)?;
 
                     let data = self.data(amount)?;
                     let (message_key, schedule) = aead::SEIPv2Schedule::new(
                         &key,
                         seip.symmetric_algo(),
                         seip.aead(),
-                        chunk_size,
                         seip.salt())?;
 
                     let dec = aead::Decryptor::new(
-                        seip.symmetric_algo(), seip.aead(), chunk_size,
+                        seip.symmetric_algo(), seip.aead(), SEIP2::CHUNK_SIZE,
                         schedule, message_key,
                         &data[..cmp::min(data.len(), amount)])?;
                     let mut chunk = Vec::new();
-                    dec.take(seip.chunk_size() as u64).read_to_end(&mut chunk)?;
+                    dec.take(SEIP2::CHUNK_SIZE as u64).read_to_end(&mut chunk)?;
                 }
 
                 // Ok, we can decrypt the data.  Push a Decryptor and
@@ -5434,12 +5421,11 @@ impl<'a> PacketParser<'a> {
                     &key,
                     seip.symmetric_algo(),
                     seip.aead(),
-                    chunk_size,
                     seip.salt())?;
 
                 let reader = self.take_reader();
                 let mut reader = aead::BufferedReaderDecryptor::with_cookie(
-                    seip.symmetric_algo(), seip.aead(), chunk_size,
+                    seip.symmetric_algo(), seip.aead(), SEIP2::CHUNK_SIZE,
                     schedule, message_key, reader, Cookie::default()).unwrap();
                 reader.cookie_mut().level = Some(self.recursion_depth());
 

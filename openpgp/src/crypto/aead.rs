@@ -235,7 +235,7 @@ impl Schedule for AEDv1Schedule {
     }
 }
 
-const SEIP2AD_PREFIX_LEN: usize = 5;
+const SEIP2AD_PREFIX_LEN: usize = 4;
 pub(crate) struct SEIPv2Schedule {
     iv: Box<[u8]>,
     ad: [u8; SEIP2AD_PREFIX_LEN],
@@ -246,14 +246,8 @@ impl SEIPv2Schedule {
     pub(crate) fn new(session_key: &SessionKey,
                       sym_algo: SymmetricAlgorithm,
                       aead: AEADAlgorithm,
-                      chunk_size: usize,
                       salt: &[u8]) -> Result<(SessionKey, Self)>
     {
-        if !(MIN_CHUNK_SIZE..=MAX_CHUNK_SIZE).contains(&chunk_size) {
-            return Err(Error::InvalidArgument(
-                format!("Invalid AEAD chunk size: {}", chunk_size)).into());
-        }
-
         eprintln!("### Decryption of data
 
 Starting AEAD-{:?} decryption of data, using the session key.\n", aead);
@@ -269,7 +263,6 @@ Starting AEAD-{:?} decryption of data, using the session key.\n", aead);
             2,    // Version.
             sym_algo.into(),
             aead.into(),
-            chunk_size.trailing_zeros() as u8 - 6,
         ];
         dump_rfc("HKDF info", &ad);
         hkdf_sha256(session_key, Some(salt), &ad, &mut key_iv);

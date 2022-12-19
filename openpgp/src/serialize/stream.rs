@@ -2935,14 +2935,13 @@ impl<'a> Encryptor<'a> {
             CTB::new(Tag::SEIP).serialize(&mut inner)?;
             let mut inner = PartialBodyFilter::new(Message::from(inner),
                                                    Cookie::new(level));
-            let seip = SEIP2::new(self.sym_algo, aead.algo,
-                                 aead.chunk_size as u64, aead.salt)?;
+            let seip = SEIP2::new(self.sym_algo, aead.algo, aead.salt)?;
             seip.serialize_headers(&mut inner)?;
 
             use crate::crypto::aead::SEIPv2Schedule;
             let (message_key, schedule) = SEIPv2Schedule::new(
                 &sk,
-                seip.symmetric_algo(), seip.aead(), aead.chunk_size,
+                seip.symmetric_algo(), seip.aead(),
                 seip.salt())?;
 
             writer::AEADEncryptor::new(

@@ -2487,8 +2487,7 @@ impl SEIP2 {
     fn serialize_headers(&self, o: &mut dyn std::io::Write) -> Result<()> {
         o.write_all(&[2, // Version.
                       self.symmetric_algo().into(),
-                      self.aead().into(),
-                      self.chunk_size().trailing_zeros() as u8 - 6])?;
+                      self.aead().into()])?;
         o.write_all(self.salt())?;
         Ok(())
     }
