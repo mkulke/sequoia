@@ -400,10 +400,11 @@ impl<W: Write> Writer<W> {
         let bytes = &crc.to_be_bytes()[1..4];
 
         // CRC and footer.
-        write!(self.sink, "={}{}{}{}",
-               base64::encode_config(&bytes, base64::STANDARD_NO_PAD),
-               LINE_ENDING, self.kind.end(), LINE_ENDING)?;
-
+        if false { // no more crc24 in rfc9760
+            write!(self.sink, "={}{}{}{}",
+                   base64::encode_config(&bytes, base64::STANDARD_NO_PAD),
+                   LINE_ENDING, self.kind.end(), LINE_ENDING)?;
+        }
         self.dirty = false;
         crate::vec_truncate(&mut self.scratch, 0);
         Ok(())
