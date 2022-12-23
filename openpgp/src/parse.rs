@@ -6293,4 +6293,45 @@ mod test {
         }
         Ok(())
     }
+
+    #[test]
+    fn packet_before_junk_not_emitted() -> Result<()> {
+        let bytes = crate::tests::key("testy-new.pgp");
+
+        let mut ppr = match PacketParser::from_bytes(bytes) {
+            Ok(ppr) => ppr,
+            Err(_) => panic!("valid"),
+        };
+        let mut packets_ok = Vec::new();
+        while let PacketParserResult::Some(pp) = ppr {
+            if let Ok((packet, tmp)) = pp.recurse() {
+                packets_ok.push(packet);
+                ppr = tmp;
+            } else {
+                break;
+            }
+        }
+
+        let mut bytes = bytes.to_vec();
+        // Add some junk.
+        bytes.push(0);
+        let mut ppr = match PacketParser::from_bytes(&bytes[..]) {
+            Ok(ppr) => ppr,
+            Err(_) => panic!("valid"),
+        };
+        let mut packets_mangled = Vec::new();
+        while let PacketParserResult::Some(pp) = ppr {
+            if let Ok((packet, tmp)) = pp.recurse() {
+                packets_mangled.push(packet);
+                ppr = tmp;
+            } else {
+                break;
+            }
+        }
+
+        assert_eq!(packets_ok.len(), packets_mangled.len());
+        assert_eq!(packets_ok, packets_mangled);
+
+        Ok(())
+    }
 }
