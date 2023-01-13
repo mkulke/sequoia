@@ -42,6 +42,8 @@ impl Curve {
         match &self {
             NistP256 | NistP384 | NistP521 | Ed25519 | Cv25519
                 => true,
+            Ed448 | Cv448
+                => false,
             BrainpoolP256 | BrainpoolP512 | Unknown(_)
                 => false,
         }

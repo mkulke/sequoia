@@ -1,6 +1,12 @@
 //! Elliptic Curve Diffie-Hellman.
 
-use nettle::{curve25519, ecc, ecdh, random::Yarrow};
+use nettle::{
+    curve25519,
+    curve448,
+    ecc,
+    ecdh,
+    random::Yarrow,
+};
 
 use crate::{Error, Result};
 use crate::crypto::SessionKey;
@@ -45,6 +51,28 @@ pub fn encrypt<R>(recipient: &Key<key::PublicParts, R>,
 
                 encrypt_wrap(recipient, session_key, VB, &S)
             }
+            Curve::Cv448 => {
+                // Obtain the authenticated recipient public key R
+                let R = q.decode_octet_string(curve.field_size()?)?;
+
+                // Generate an ephemeral key pair {v, V=vG}
+                let v: Protected =
+                    curve448::private_key(&mut rng).into();
+
+                // Compute the public key.
+                let mut VB = [0; curve448::CURVE448_SIZE];
+                curve448::mul_g(&mut VB, &v)
+                    .expect("buffers are of the wrong size");
+                let VB = MPI::new_octet_string(&VB);
+
+                // Compute the shared point S = vR;
+                let mut S: Protected =
+                    vec![0; curve448::CURVE448_SIZE].into();
+                curve448::mul(&mut S, &v, R)
+                    .expect("buffers are of the wrong size");
+
+                encrypt_wrap(recipient, session_key, VB, &S)
+            },
             Curve::NistP256 | Curve::NistP384 | Curve::NistP521 => {
                 // Obtain the authenticated recipient public key R and
                 // generate an ephemeral private key v.
@@ -107,7 +135,7 @@ pub fn encrypt<R>(recipient: &Key<key::PublicParts, R>,
                 Err(Error::UnsupportedEllipticCurve(curve.clone()).into()),
 
             // N/A
-            Curve::Unknown(_) | Curve::Ed25519 =>
+            Curve::Unknown(_) | Curve::Ed25519 | Curve::Ed448 =>
                 Err(Error::UnsupportedEllipticCurve(curve.clone()).into()),
         }
     } else {
@@ -153,6 +181,20 @@ pub fn decrypt<R>(recipient: &Key<key::PublicParts, R>,
                         .expect("buffers are of the wrong size");
                     S
                 }
+
+                Curve::Cv448 => {
+                    // Get the public part V of the ephemeral key.
+                    let V = e.decode_octet_string(curve.field_size()?)?;
+                    let r = scalar.decode_octet_string(curve.field_size()?)?;
+
+                    // Compute the shared point S = rV = rvG, where (r, R)
+                    // is the recipient's key pair.
+                    let mut S: Protected =
+                        vec![0; curve448::CURVE448_SIZE].into();
+                    curve448::mul(&mut S, r, V)
+                        .expect("buffers are of the wrong size");
+                    S
+                },
 
                 Curve::NistP256 | Curve::NistP384 | Curve::NistP521 => {
                     // Get the public part V of the ephemeral key and
@@ -208,7 +250,7 @@ pub fn decrypt<R>(recipient: &Key<key::PublicParts, R>,
                     Err(Error::UnsupportedEllipticCurve(curve.clone()).into()),
 
                 // N/A
-                Curve::Unknown(_) | Curve::Ed25519 =>
+                Curve::Unknown(_) | Curve::Ed25519 | Curve::Ed448 =>
                     return
                     Err(Error::UnsupportedEllipticCurve(curve.clone()).into()),
             };

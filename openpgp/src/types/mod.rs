@@ -363,6 +363,10 @@ pub enum Curve {
     Ed25519,
     /// Elliptic curve Diffie-Hellman using D.J. Bernstein's Curve25519.
     Cv25519,
+    /// Mike Hamburg's Edwards curve Ed448-Goldilocks.
+    Ed448,
+    /// Elliptic curve Diffie-Hellman using Mike Hamburg's Ed448-Goldilocks.
+    Cv448,
     /// Unknown curve.
     Unknown(Box<[u8]>),
 }
@@ -402,6 +406,8 @@ impl Curve {
             BrainpoolP512 => Some(512),
             Ed25519 => Some(256),
             Cv25519 => Some(256),
+            Ed448 => Some(57 * 8),
+            Cv448 => Some(56 * 8),
             Unknown(_) => None,
         }
     }
@@ -461,6 +467,11 @@ impl fmt::Display for Curve {
                     => f.write_str("D.J. Bernstein's \"Twisted\" Edwards curve Ed25519"),
                 Cv25519
                     => f.write_str("Elliptic curve Diffie-Hellman using D.J. Bernstein's Curve25519"),
+                Ed448
+                    => f.write_str("Mike Hamburg's Edwards curve Ed448-Goldilocks"),
+                Cv448
+                    => f.write_str("Elliptic curve Diffie-Hellman using \
+                                    Mike Hamburg's Ed448-Goldilocks"),
                 Unknown(ref oid)
                     => write!(f, "Unknown curve (OID: {:?})", oid),
             }
@@ -475,6 +486,8 @@ impl fmt::Display for Curve {
                     => f.write_str("Ed25519"),
                 Cv25519
                     => f.write_str("Curve25519"),
+                Ed448 => f.write_str("Ed448"),
+                Cv448 => f.write_str("Curve448"),
                 Unknown(ref oid)
                     => write!(f, "Unknown curve {:?}", oid),
             }
@@ -493,6 +506,8 @@ const ED25519_OID: &[u8] =
     &[0x2B, 0x06, 0x01, 0x04, 0x01, 0xDA, 0x47, 0x0F, 0x01];
 const CV25519_OID: &[u8] =
     &[0x2B, 0x06, 0x01, 0x04, 0x01, 0x97, 0x55, 0x01, 0x05, 0x01];
+const ED448_OID: &[u8] = &[0x2b, 0x65, 0x71];
+const CV448_OID: &[u8] = &[0x2b, 0x65, 0x6f];
 
 #[allow(clippy::len_without_is_empty)]
 impl Curve {
@@ -517,6 +532,8 @@ impl Curve {
             BRAINPOOL_P512_OID => Curve::BrainpoolP512,
             ED25519_OID => Curve::Ed25519,
             CV25519_OID => Curve::Cv25519,
+            ED448_OID => Curve::Ed448,
+            CV448_OID => Curve::Cv448,
             oid => Curve::Unknown(Vec::from(oid).into_boxed_slice()),
         }
     }
@@ -541,6 +558,8 @@ impl Curve {
             Curve::BrainpoolP512 => BRAINPOOL_P512_OID,
             Curve::Ed25519 => ED25519_OID,
             Curve::Cv25519 => CV25519_OID,
+            Curve::Ed448 => ED448_OID,
+            Curve::Cv448 => CV448_OID,
             Curve::Unknown(ref oid) => oid,
         }
     }
@@ -572,6 +591,8 @@ impl Curve {
             Curve::BrainpoolP512 => Ok(512),
             Curve::Ed25519 => Ok(256),
             Curve::Cv25519 => Ok(256),
+            Curve::Ed448 => Ok(57 * 8),
+            Curve::Cv448 => Ok(56 * 8),
             Curve::Unknown(_) =>
                 Err(Error::UnsupportedEllipticCurve(self.clone())
                     .into()),
@@ -597,7 +618,7 @@ impl Curve {
 #[cfg(test)]
 impl Arbitrary for Curve {
     fn arbitrary(g: &mut Gen) -> Self {
-        match u8::arbitrary(g) % 8 {
+        match u8::arbitrary(g) % 10 {
             0 => Curve::NistP256,
             1 => Curve::NistP384,
             2 => Curve::NistP521,
@@ -605,7 +626,9 @@ impl Arbitrary for Curve {
             4 => Curve::BrainpoolP512,
             5 => Curve::Ed25519,
             6 => Curve::Cv25519,
-            7 => Curve::Unknown({
+            7 => Curve::Ed448,
+            8 => Curve::Cv448,
+            9 => Curve::Unknown({
                 let mut k = <Vec<u8>>::arbitrary(g);
                 k.truncate(255);
                 k.into_boxed_slice()

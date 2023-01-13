@@ -70,6 +70,10 @@ impl Curve {
         match &self {
             NistP256 | NistP384 | NistP521 | Ed25519 | Cv25519
                 => true,
+            Ed448
+                => nettle::ed448::IS_SUPPORTED,
+            Cv448
+                => nettle::curve448::IS_SUPPORTED,
             BrainpoolP256 | BrainpoolP512 | Unknown(_)
                 => false,
         }

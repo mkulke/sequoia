@@ -60,6 +60,8 @@ where
 
             encrypt_wrap(recipient, session_key, VB, &S)
         }
+        Curve::Cv448 =>
+            return Err(Error::UnsupportedEllipticCurve(curve.clone()).into()),
         Curve::NistP256 | Curve::NistP384 | Curve::NistP521 => {
             let (Rx, Ry) = q.decode_point(curve)?;
 
@@ -142,7 +144,7 @@ where
             Err(Error::UnsupportedEllipticCurve(curve.clone()).into()),
 
         // N/A
-        Curve::Unknown(_) | Curve::Ed25519 =>
+        Curve::Unknown(_) | Curve::Ed25519 | Curve::Ed448 =>
             Err(Error::UnsupportedEllipticCurve(curve.clone()).into()),
     }
 }
@@ -203,6 +205,9 @@ where
             secret.reverse();
             secret.into()
         }
+
+        Curve::Cv448 =>
+            return Err(Error::UnsupportedEllipticCurve(curve.clone()).into()),
 
         Curve::NistP256 | Curve::NistP384 | Curve::NistP521 => {
             // Get the public part V of the ephemeral key and

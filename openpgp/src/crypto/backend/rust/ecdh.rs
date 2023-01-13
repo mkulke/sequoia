@@ -52,6 +52,8 @@ pub fn encrypt<R>(recipient: &Key<key::PublicParts, R>,
 
             (VB, shared)
         },
+        Curve::Cv448 =>
+            return Err(Error::UnsupportedEllipticCurve(curve.clone()).into()),
         Curve::NistP256 => {
             use p256::{EncodedPoint, PublicKey, ecdh::EphemeralSecret};
 
@@ -111,6 +113,8 @@ pub fn decrypt<R>(recipient: &Key<key::PublicParts, R>,
             let secret = r.diffie_hellman(&V);
             Vec::from(secret.to_bytes()).into()
         },
+        Curve::Cv448 =>
+            return Err(Error::UnsupportedEllipticCurve(curve.clone()).into()),
         Curve::NistP256 => {
             use p256::{
                 SecretKey,

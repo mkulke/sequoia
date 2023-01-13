@@ -430,7 +430,7 @@ OPTIONS:
             Selects the cryptographic algorithms for the key
 
             [default: cv25519]
-            [possible values: rsa3k, rsa4k, cv25519]
+            [possible values: rsa3k, rsa4k, cv25519, cv448]
 
         --can-authenticate
             Adds an authentication-capable subkey (default)

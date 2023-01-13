@@ -203,7 +203,8 @@ $ sq key generate --creation-time 20110609T1938+0200 --export noam.pgp
 pub enum CipherSuite {
     Rsa3k,
     Rsa4k,
-    Cv25519
+    Cv25519,
+    Cv448,
 }
 
 #[derive(ArgEnum, Clone, Debug)]

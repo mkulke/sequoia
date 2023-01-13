@@ -64,6 +64,8 @@ pub use key::{
 pub enum CipherSuite {
     /// EdDSA and ECDH over Curve25519 with SHA512 and AES256
     Cv25519,
+    /// EdDSA and ECDH over Curve448 with SHA512 and AES256
+    Cv448,
     /// 3072 bit RSA with SHA512 and AES256
     RSA3k,
     /// EdDSA and ECDH over NIST P-256 with SHA256 and AES256
@@ -118,6 +120,12 @@ impl CipherSuite {
                 check_pk!(PublicKeyAlgorithm::ECDH);
                 check_curve!(Curve::Cv25519);
             },
+            Cv448 => {
+                check_pk!(PublicKeyAlgorithm::EdDSA);
+                check_curve!(Curve::Ed448);
+                check_pk!(PublicKeyAlgorithm::ECDH);
+                check_curve!(Curve::Cv448);
+            },
             RSA2k | RSA3k | RSA4k => {
                 check_pk!(PublicKeyAlgorithm::RSAEncryptSign);
             },
@@ -154,8 +162,11 @@ impl CipherSuite {
                 Key4::generate_rsa(3072),
             CipherSuite::RSA4k =>
                 Key4::generate_rsa(4096),
-            CipherSuite::Cv25519 | CipherSuite::P256 |
-            CipherSuite::P384 | CipherSuite::P521 => {
+            CipherSuite::Cv25519
+                | CipherSuite::Cv448
+                | CipherSuite::P256
+                | CipherSuite::P384
+                | CipherSuite::P521 => {
                 let flags = flags.as_ref();
                 let sign = flags.for_certification() || flags.for_signing()
                     || flags.for_authentication();
@@ -164,6 +175,8 @@ impl CipherSuite {
                 let curve = match self {
                     CipherSuite::Cv25519 if sign => Curve::Ed25519,
                     CipherSuite::Cv25519 if encrypt => Curve::Cv25519,
+                    CipherSuite::Cv448 if sign => Curve::Ed448,
+                    CipherSuite::Cv448 if encrypt => Curve::Cv448,
                     CipherSuite::Cv25519 => {
                         return Err(Error::InvalidOperation(
                             "No key flags set".into())
@@ -1699,7 +1712,7 @@ mod tests {
     fn all_ciphersuites() {
         use self::CipherSuite::*;
 
-        for cs in vec![Cv25519, RSA3k, P256, P384, P521, RSA2k, RSA4k]
+        for cs in vec![Cv25519, Cv448, RSA3k, P256, P384, P521, RSA2k, RSA4k]
             .into_iter().filter(|cs| cs.is_supported().is_ok())
         {
             assert!(CertBuilder::new()
