@@ -360,14 +360,9 @@ windows-msvc32-cng:
     CFLAGS: "" # Silence some C warnings when compiling with MSVC
 
 docker-build-push:
-  # Official docker image.
-  image: docker:stable
   stage: build
-  services:
-    - docker:dind
   tags:
-    - docker
-    - self-hosted
+    - kvm
   before_script:
     - docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY
   script:
@@ -390,8 +385,6 @@ docker-build-push:
   variables:
     CI_REGISTRY: "registry.gitlab.com"
     IMAGE: "$CI_REGISTRY/sequoia-pgp/sequoia"
-    DOCKER_HOST: tcp://docker:2376
-    DOCKER_DRIVER: overlay2
 
 variables:
   DEBIAN_FRONTEND: noninteractive
