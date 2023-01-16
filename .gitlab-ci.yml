@@ -391,7 +391,7 @@ docker-build-push:
     CI_REGISTRY: "registry.gitlab.com"
     IMAGE: "$CI_REGISTRY/sequoia-pgp/sequoia"
     DOCKER_HOST: tcp://docker:2376
-    DOCKER_DRIVER: overlay2
+    DOCKER_DRIVER: aufs
 
 variables:
   DEBIAN_FRONTEND: noninteractive
