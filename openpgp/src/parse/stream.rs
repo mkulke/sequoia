@@ -3442,4 +3442,21 @@ wgoEAAAAAAB6CkAAxADLBq8AAKurq8IKBCC/CAAAAAD0sA==
             .unwrap();
         Ok(())
     }
+
+    /// Checks for a crash related to HashedReader's HashingMode.
+    #[test]
+    fn csf_hashing_mode_assertion_failure() -> Result<()> {
+        let p = P::new();
+        let m = b"-----BEGIN PGP SIGNED MESSAGE-----
+---BEGIN PGP SIGNATURE
+0iHUEARYIAB0QCyUHMcArrZbte9msAndEO9clJG5wpCAEA2/";
+
+        let mut h = VHelper::new(0, 0, 0, 0, vec![
+            Cert::from_bytes(crate::tests::key("testy.pgp"))?,
+        ]);
+        h.error_out = false;
+        let _ = VerifierBuilder::from_bytes(&m[..])?
+            .with_policy(&p, None, h);
+        Ok(())
+    }
 }
