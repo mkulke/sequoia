@@ -3459,4 +3459,22 @@ wgoEAAAAAAB6CkAAxADLBq8AAKurq8IKBCC/CAAAAAD0sA==
             .with_policy(&p, None, h);
         Ok(())
     }
+
+    /// Checks for a crash related to HashedReader's assumptions about
+    /// the number of signature groups.
+    #[test]
+    fn csf_sig_group_count_assertion_failure() -> Result<()> {
+        let p = P::new();
+        let m = b"-----BEGIN PGP SIGNED MESSAGE-----
+-----BEGIN PGP SIGNATURE-----
+xHUDBRY0WIQ+50WENDPP";
+
+        let mut h = VHelper::new(0, 0, 0, 0, vec![
+            Cert::from_bytes(crate::tests::key("testy.pgp"))?,
+        ]);
+        h.error_out = false;
+        let _ = VerifierBuilder::from_bytes(&m[..])?
+            .with_policy(&p, None, h);
+        Ok(())
+    }
 }
