@@ -159,8 +159,12 @@ impl Cookie {
         let ngroups = self.sig_groups.len();
 
         assert_eq!(self.hashes_for, HashesFor::CleartextSignature);
-        // There is exactly one group.
-        assert_eq!(ngroups, 1);
+        // There is exactly one group.  However, this can momentarily
+        // be violated if there are One-Pass-Signature packets in the
+        // signature block.  This doesn't last long though: the
+        // message parser will reject the message because it doesn't
+        // adhere to the grammar.
+        assert!(ngroups == 1 || ngroups == /* momentarily */ 2);
 
         tracer!(TRACE, "Cookie::hash_update_csf", level);
         t!("Cleartext Signature Framework message");
