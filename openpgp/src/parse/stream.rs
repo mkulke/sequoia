@@ -651,7 +651,15 @@ impl IMessageStructure {
                 _ => (),
             }
         }
-        panic!("signature unaccounted for");
+
+        // As a last resort, push a new signature group for this
+        // signature.  This may not accurately describe the structure,
+        // but if we get to this point, we failed to grasp the message
+        // structure in some way, so there is nothing we can do really.
+        self.layers.push(IMessageLayer::SignatureGroup {
+            sigs: vec![sig],
+            count: 0,
+        });
     }
 
     fn push_bare_signature(&mut self, sig: Signature) {
@@ -3411,6 +3419,27 @@ mod test {
         assert!(v.helper_ref().bad == 1);
         assert!(v.helper_ref().unknown == 0);
         assert!(v.helper_ref().error == 0);
+        Ok(())
+    }
+
+    /// Checks for a crash with signatures that are unaccounted for.
+    #[test]
+    fn unaccounted_signatures() -> Result<()> {
+        let p = P::new();
+        let m = b"-----BEGIN PGP MESSAGE-----
+
+wgoEAAAAAAB6CkAAxADLBq8AAKurq8IKBCC/CAAAAAD0sA==
+=KRn6
+-----END PGP MESSAGE-----
+";
+
+        let mut h = VHelper::new(0, 0, 0, 0, vec![
+            Cert::from_bytes(crate::tests::key("testy.pgp"))?,
+        ]);
+        h.error_out = false;
+        VerifierBuilder::from_bytes(&m[..])?
+            .with_policy(&p, None, h)
+            .unwrap();
         Ok(())
     }
 }
