@@ -3,6 +3,7 @@ use std::time::{SystemTime, Duration};
 use anyhow::Context;
 
 use sequoia_openpgp as openpgp;
+use openpgp::Fingerprint;
 use openpgp::Result;
 use openpgp::cert::prelude::*;
 use openpgp::packet::prelude::*;
@@ -29,7 +30,11 @@ pub fn certify(config: Config, c: certify::Command)
 
     let certifier = Cert::from_file(certifier)?;
     let private_key_store = c.private_key_store;
-    let cert = Cert::from_file(cert)?;
+    let cert = if let Ok(fpr) = cert.parse::<Fingerprint>() {
+        config.lookup_cert(&fpr)?
+    } else {
+        Cert::from_file(cert)?
+    };
 
     let trust_depth: u8 = c.depth;
     let trust_amount: u8 = c.amount;

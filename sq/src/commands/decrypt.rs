@@ -100,7 +100,7 @@ struct Helper<'a> {
 }
 
 impl<'a> Helper<'a> {
-    fn new(config: &Config<'a>, private_key_store: Option<&str>,
+    fn new(config: &'a Config<'a>, private_key_store: Option<&str>,
            signatures: usize, certs: Vec<Cert>, secrets: Vec<Cert>,
            session_keys: Vec<sq_cli::types::SessionKey>,
            dump_session_key: bool, dump: bool)

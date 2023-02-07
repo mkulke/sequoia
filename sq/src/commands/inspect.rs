@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime};
 use anyhow::Context;
 
 use sequoia_openpgp as openpgp;
-use openpgp::{KeyHandle, Packet, Result};
+use openpgp::{Fingerprint, KeyHandle, Packet, Result};
 use openpgp::cert::prelude::*;
 use openpgp::packet::{
     Signature,
@@ -17,12 +17,13 @@ use openpgp::packet::key::SecretKeyMaterial;
 
 use super::dump::Convert;
 
+use crate::Config;
 use crate::SECONDS_IN_YEAR;
 use crate::SECONDS_IN_DAY;
 
 use crate::sq_cli::inspect;
 
-pub fn inspect(c: inspect::Command, policy: &dyn Policy, output: &mut dyn io::Write)
+pub fn inspect(config: Config, c: inspect::Command, output: &mut dyn io::Write)
                -> Result<()> {
     let print_certifications = c.certifications;
 
@@ -36,8 +37,24 @@ pub fn inspect(c: inspect::Command, policy: &dyn Policy, output: &mut dyn io::Wr
         None
     };
 
-    let input = c.input.as_deref();
-    let input_name = input.unwrap_or("-");
+    let cert_bytes;
+    let (input, input_name) = if let Some(input) = c.input.as_deref() {
+        if let Ok(fpr) = input.parse::<Fingerprint>() {
+            cert_bytes = config.lookup_cert_bytes(&fpr)
+                .with_context(|| {
+                    format!("{} not found in certificate store", fpr)
+                 })?;
+
+            (Box::new(buffered_reader::Memory::new(&cert_bytes))
+                 as Box<dyn buffered_reader::BufferedReader<()>>,
+             format!("{} from certificate store", fpr))
+        } else {
+            (crate::open_or_stdin(Some(input))?, input.into())
+        }
+    } else {
+        (crate::open_or_stdin(None)?, "-".into())
+    };
+
     write!(output, "{}: ", input_name)?;
 
     let mut type_called = false;  // Did we print the type yet?
@@ -49,7 +66,7 @@ pub fn inspect(c: inspect::Command, policy: &dyn Policy, output: &mut dyn io::Wr
     let mut literal_prefix = Vec::new();
 
     let mut ppr =
-        openpgp::parse::PacketParser::from_reader(crate::open_or_stdin(input)?)?;
+        openpgp::parse::PacketParser::from_reader(input)?;
     while let PacketParserResult::Some(mut pp) = ppr {
         match pp.packet {
             Packet::PublicKey(_) | Packet::SecretKey(_) => {
@@ -65,7 +82,7 @@ pub fn inspect(c: inspect::Command, policy: &dyn Policy, output: &mut dyn io::Wr
                         std::mem::take(&mut packets));
                     let cert = openpgp::Cert::try_from(pp)?;
                     inspect_cert(
-                        policy,
+                        &config.policy,
                         time,
                         output,
                         &cert,
@@ -128,7 +145,7 @@ pub fn inspect(c: inspect::Command, policy: &dyn Policy, output: &mut dyn io::Wr
         } else if is_cert.is_ok() || is_keyring.is_ok() {
             let pp = openpgp::PacketPile::from(packets);
             let cert = openpgp::Cert::try_from(pp)?;
-            inspect_cert(policy, time, output, &cert, print_certifications)?;
+            inspect_cert(&config.policy, time, output, &cert, print_certifications)?;
         } else if packets.is_empty() && ! sigs.is_empty() {
             writeln!(output, "Detached signature{}.",
                      if sigs.len() > 1 { "s" } else { "" })?;

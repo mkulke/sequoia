@@ -1,5 +1,8 @@
 use clap::{ArgEnum, Parser};
 
+use sequoia_openpgp as openpgp;
+use openpgp::Fingerprint;
+
 use crate::sq_cli::types::{IoArgs, Time};
 
 #[derive(Parser, Debug)]
@@ -37,12 +40,19 @@ pub struct Command {
     )]
     pub binary: bool,
     #[clap(
+        long = "recipient-cert",
+        value_name = "CERT_HANDLE",
+        multiple_occurrences = true,
+        help = "Encrypts to the named certificates",
+    )]
+    pub recipients_cert: Vec<Fingerprint>,
+    #[clap(
         long = "recipient-file",
         value_name = "CERT_RING_FILE",
         multiple_occurrences = true,
         help = "Encrypts to all certificates in CERT_RING_FILE",
     )]
-    pub recipients_cert_file: Vec<String>,
+    pub recipients_file: Vec<String>,
     #[clap(
         long = "signer-file",
         value_name = "KEY_FILE",

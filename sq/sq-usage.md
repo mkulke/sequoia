@@ -63,6 +63,10 @@ SUBCOMMANDS:
             Manages keys
     keyring
             Manages collections of keys or certs
+    import
+            Imports certificates into the local certificate store
+    export
+            Exports certificates from the local certificate store
     certify
             Certifies a User ID for a Certificate
     autocrypt
@@ -133,6 +137,9 @@ OPTIONS:
 
         --private-key-store <KEY_STORE>
             Provides parameters for private key store
+
+        --recipient-cert <CERT_HANDLE>
+            Encrypts to the named certificates
 
         --recipient-file <CERT_RING_FILE>
             Encrypts to all certificates in CERT_RING_FILE
@@ -354,6 +361,9 @@ OPTIONS:
 
     -o, --output <FILE>
             Writes to FILE or stdout if omitted
+
+        --signer-cert <CERT_HANDLE>
+            Verifies signatures using the certificate in certificate store
 
         --signer-file <CERT_FILE>
             Verifies signatures using the certificate in CERT_FILE
@@ -1063,6 +1073,95 @@ $ sq keyring filter --domain example.org keys.pgp | \
 
 # Gets the keys with a user id on example.org, pruning other userids
 $ sq keyring filter --domain example.org --prune-certs certs.pgp
+```
+
+## Subcommand sq import
+
+```text
+Imports certificates into the local certificate store
+
+USAGE:
+    sq import [OPTIONS] [FILE]
+
+ARGS:
+    <FILE>
+            Reads from FILE or stdin if omitted
+
+OPTIONS:
+    -h, --help
+            Print help information
+
+    -o, --output <FILE>
+            Writes to FILE or stdout if omitted
+
+EXAMPLES:
+
+# Inspects a certificate
+$ sq import < juliet.pgp
+```
+
+## Subcommand sq export
+
+```text
+Exports certificates from the local certificate store
+
+If multiple predicates are specified a certificate is returned if any
+of them match.
+
+This does not check the validity of the certificates or their
+components (subkeys and User IDs) in anyway.  Before using the
+certificates, be sure to validate and authenticate them.
+
+USAGE:
+    sq export [OPTIONS]
+
+OPTIONS:
+    -B, --binary
+            Emits binary data
+
+        --cert <FINGERPRINT>
+            Returns certificates with the specified fingerprint
+
+        --email <EMAIL>
+            Returns certificates where a UserID contains the email address
+
+    -h, --help
+            Print help information
+
+        --key <FINGERPRINT>
+            Returns certificates where a key has the specified fingerprint
+
+    -o, --output <FILE>
+            Writes to FILE or stdout if omitted
+
+        --userid <USERID>
+            Returns certificates where a UserID matches exactly
+
+EXAMPLES:
+
+# Exports all certificates
+$ sq export > all.pgp
+
+# Exports certificates with a matching User ID packet.  The
+# binding signatures are checked, but the User IDs are not
+# authenticated.
+$ sq export --userid 'Alice <alice@example.org>'
+
+# Exports certificates with a User ID containing the email
+# address.  The binding signatures are checked, but the User IDs are
+# not authenticated.
+$ sq export --email 'alice@example.org'
+
+# Exports certificates with the matching Key ID.
+$ sq export --cert 1234567812345678
+
+# Exports certificates that contain a key with the matching Key
+# ID.
+$ sq export --key 1234567812345678
+
+# Exports certificates that contain a User ID with *either*
+# (not both!) email address.
+$ sq export --email alice@example.org --email bob@example.org
 ```
 
 ## Subcommand sq certify

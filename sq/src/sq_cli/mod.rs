@@ -10,6 +10,8 @@ pub mod dane;
 mod dearmor;
 mod decrypt;
 pub mod encrypt;
+pub mod export;
+pub mod import;
 pub mod inspect;
 pub mod key;
 pub mod keyring;
@@ -124,6 +126,8 @@ pub enum SqSubcommands {
 
     Key(key::Command),
     Keyring(keyring::Command),
+    Import(import::Command),
+    Export(export::Command),
     Certify(certify::Command),
 
     #[cfg(feature = "autocrypt")]

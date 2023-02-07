@@ -11,11 +11,13 @@ use std::str::FromStr;
 use std::time::Duration;
 use chrono::{DateTime, offset::Utc};
 use itertools::Itertools;
+use once_cell::unsync::OnceCell;
 
 use buffered_reader::{BufferedReader, Dup, File, Generic, Limitor};
 use sequoia_openpgp as openpgp;
 
 use openpgp::{
+    Fingerprint,
     Result,
 };
 use openpgp::{armor, Cert};
@@ -306,7 +308,6 @@ fn emit_unstable_cli_warning() {
                Use with caution in scripts.\n");
 }
 
-#[derive(Clone)]
 pub struct Config<'a> {
     force: bool,
     output_format: OutputFormat,
@@ -314,6 +315,7 @@ pub struct Config<'a> {
     policy: P<'a>,
     /// Have we emitted the warning yet?
     unstable_cli_warning_emitted: bool,
+    certd: OnceCell<openpgp_cert_d::CertD>,
 }
 
 impl Config<'_> {
@@ -384,6 +386,101 @@ impl Config<'_> {
             }
         }
     }
+
+    // Returns the certd.
+    //
+    // If it is not yet open, opens it.  If the certd is disabled,
+    // returns None.
+    fn certd(&self) -> Result<Option<&openpgp_cert_d::CertD>> {
+        if let Some(certd) = self.certd.get() {
+            return Ok(Some(certd));
+        }
+
+        let certd = openpgp_cert_d::CertD::new()
+            .map_err(|err| {
+                let err = anyhow::Error::from(err)
+                    .context("While opening the certificate store");
+                print_error_chain(&err);
+                err
+            })?;
+
+        let _ = self.certd.set(certd);
+        Ok(Some(self.certd.get().expect("just set")))
+    }
+
+    /// Loads one or more certs from the certificate store.  Returns
+    /// an error if we fail to load any cert.
+    fn lookup_certs<'a, I>(&self, mut handles: I)
+        -> openpgp::Result<Vec<Cert>>
+    where I: Iterator<Item=&'a Fingerprint>,
+    {
+        let mut certs = vec![];
+
+        // Avoid initializing the certd, if there is nothing to read.
+        let first = if let Some(first) = handles.next() {
+            first
+        } else {
+            return Ok(certs);
+        };
+
+        let certd = if let Some(certd) = self.certd()? {
+            certd
+        } else {
+            return Err(anyhow::anyhow!("certificate store is not configured"));
+        };
+
+        for kh in std::iter::once(first).chain(handles) {
+            match certd.get(&kh.to_hex()) {
+                Err(err) => {
+                    let err = anyhow::Error::from(err);
+                    return Err(err.context(
+                        format!("Failed to load {} from certificate store", kh)
+                    ));
+                }
+                Ok(None) => {
+                    return Err(anyhow::anyhow!(
+                        format!("{} not present in certificate store", kh)
+                    ));
+                }
+                Ok(Some((_tag, cert))) => {
+                    certs.push(
+                        Cert::from_bytes(&cert)
+                            .context(format!("Failed to parse {} as loaded from \
+                                              certificate store", kh))?);
+                }
+            }
+        }
+
+        Ok(certs)
+    }
+
+    /// Loads a certs.
+    fn lookup_cert(&self, fpr: &Fingerprint)
+        -> openpgp::Result<Cert>
+    {
+        Ok(self.lookup_certs(std::iter::once(fpr))?
+               .into_iter()
+               .next()
+               .expect("have one"))
+    }
+
+    /// Loads a cert's bytes.
+    fn lookup_cert_bytes(&self, fpr: &Fingerprint)
+        -> openpgp::Result<Vec<u8>>
+    {
+        let certd = if let Some(certd) = self.certd()? {
+            certd
+        } else {
+            return Err(anyhow::anyhow!("certificate store is not configured"));
+        };
+
+        let (_tag, bytes) = certd.get(&fpr.to_hex())?
+            .ok_or_else(|| {
+                anyhow::anyhow!("{} not found in certificate store", fpr)
+            })?;
+
+        Ok(bytes.into())
+    }
 }
 
 // TODO: Use `derive`d command structs. No more values_of
@@ -424,6 +521,7 @@ fn main() -> Result<()> {
         output_version,
         policy: policy.clone(),
         unstable_cli_warning_emitted: false,
+        certd: OnceCell::new(),
     };
 
     match c.subcommand {
@@ -444,8 +542,7 @@ fn main() -> Result<()> {
                 config.create_or_stdout_safe(command.io.output.as_deref())?;
 
             let certs = load_certs(
-                command.sender_cert_file.iter().map(|s| s.as_ref()),
-            )?;
+                command.sender_cert_file.iter().map(|s| s.as_ref()))?;
             // Fancy default for --signatures.  If you change this,
             // also change the description in the CLI definition.
             let signatures = command.signatures.unwrap_or_else(|| {
@@ -473,9 +570,10 @@ fn main() -> Result<()> {
                               command.dump, command.hex)?;
         },
         SqSubcommands::Encrypt(command) => {
-            let recipients = load_certs(
-                command.recipients_cert_file.iter().map(|s| s.as_ref()),
-            )?;
+            let mut recipients = load_certs(
+                command.recipients_file.iter().map(|s| s.as_ref()))?;
+            recipients.extend(
+                config.lookup_certs(command.recipients_cert.iter())?);
             let mut input = open_or_stdin(command.io.input.as_deref())?;
 
             let output = config.create_or_stdout_pgp(
@@ -554,7 +652,9 @@ fn main() -> Result<()> {
             };
             let signatures = command.signatures;
             // TODO ugly adaptation to load_certs' signature, fix later
-            let certs = load_certs(command.sender_cert_file.iter().map(|s| s.as_ref()))?;
+            let mut certs = load_certs(
+                command.sender_file.iter().map(|s| s.as_ref()))?;
+            certs.extend(config.lookup_certs(command.sender_cert.iter())?);
             commands::verify(config, &mut input,
                              detached.as_mut().map(|r| r as &mut (dyn io::Read + Sync + Send)),
                              &mut output, signatures, certs)?;
@@ -626,11 +726,19 @@ fn main() -> Result<()> {
             // sq inspect does not have --output, but commands::inspect does.
             // Work around this mismatch by always creating a stdout output.
             let mut output = config.create_or_stdout_unsafe(None)?;
-            commands::inspect(command, policy, &mut output)?;
+            commands::inspect(config, command, &mut output)?;
         },
 
         SqSubcommands::Keyring(command) => {
             commands::keyring::dispatch(config, command)?
+        },
+
+        SqSubcommands::Import(command) => {
+            commands::import::dispatch(config, command)?
+        },
+
+        SqSubcommands::Export(command) => {
+            commands::export::dispatch(config, command)?
         },
 
         SqSubcommands::Packet(command) => match command.subcommand {

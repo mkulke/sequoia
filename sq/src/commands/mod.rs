@@ -55,6 +55,8 @@ pub mod key;
 pub mod merge_signatures;
 pub use self::merge_signatures::merge_signatures;
 pub mod keyring;
+pub mod import;
+pub mod export;
 pub mod net;
 pub mod certify;
 
@@ -442,7 +444,7 @@ pub fn encrypt(opts: EncryptOpts) -> Result<()> {
 
 struct VHelper<'a> {
     #[allow(dead_code)]
-    config: Config<'a>,
+    config: &'a Config<'a>,
     signatures: usize,
     certs: Option<Vec<Cert>>,
     labels: HashMap<KeyID, String>,
@@ -456,11 +458,11 @@ struct VHelper<'a> {
 }
 
 impl<'a> VHelper<'a> {
-    fn new(config: &Config<'a>, signatures: usize,
+    fn new(config: &'a Config<'a>, signatures: usize,
            certs: Vec<Cert>)
            -> Self {
         VHelper {
-            config: config.clone(),
+            config: config,
             signatures,
             certs: Some(certs),
             labels: HashMap::new(),
