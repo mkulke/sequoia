@@ -1088,6 +1088,11 @@ mod tests {
         g &= c("Vorname Nachname, Dr. <dr@example.org>",
                Some("Vorname Nachname, Dr."), None, Some("dr@example.org"), None);
 
+        g &= c("test (->) <test@vollkorn.cryptobitch.de>",
+               Some("test"), Some("->"), Some("test@vollkorn.cryptobitch.de"), None);
+        g &= c("test -> <test@vollkorn.cryptobitch.de>",
+               Some("test ->"), None, Some("test@vollkorn.cryptobitch.de"), None);
+
         // Only the last comment counts as a comment.  The rest if
         // part of the name.
         g &= c("Foo (Bar) (Baz)",
