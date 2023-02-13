@@ -993,6 +993,9 @@ pub enum Signature {
 
     /// Signature packet version 4.
     V4(self::signature::Signature4),
+
+    /// Signature packet version 6.
+    V6(self::signature::Signature6),
 }
 assert_send_and_sync!(Signature);
 
@@ -1002,6 +1005,7 @@ impl Signature {
         match self {
             Signature::V3(_) => 3,
             Signature::V4(_) => 4,
+            Signature::V6(_) => 6,
         }
     }
 }
@@ -1012,6 +1016,18 @@ impl From<Signature> for Packet {
     }
 }
 
+impl Signature {
+    /// Gets the salt, if any.
+    pub fn salt(&self) -> Option<&[u8]> {
+        match self {
+            Signature::V3(_) => None,
+            Signature::V4(_) => None,
+            Signature::V6(s) => Some(s.salt()),
+        }
+    }
+
+}
+
 // Trivial forwarder for singleton enum.
 impl Deref for Signature {
     type Target = signature::Signature4;
@@ -1020,6 +1036,7 @@ impl Deref for Signature {
         match self {
             Signature::V3(sig) => &sig.intern,
             Signature::V4(sig) => sig,
+            Signature::V6(sig) => &sig.common,
         }
     }
 }
@@ -1030,6 +1047,7 @@ impl DerefMut for Signature {
         match self {
             Signature::V3(ref mut sig) => &mut sig.intern,
             Signature::V4(ref mut sig) => sig,
+            Signature::V6(ref mut sig) => &mut sig.common,
         }
     }
 }
