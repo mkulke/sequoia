@@ -40,7 +40,7 @@ use crate::packet::UserAttribute;
 use crate::packet::key;
 use crate::packet::key::Key4;
 use crate::packet::Signature;
-use crate::packet::signature::{self, Signature3, Signature4};
+use crate::packet::signature::{self, Signature3, Signature4, Signature6};
 use crate::Result;
 use crate::types::Timestamp;
 
@@ -413,6 +413,7 @@ impl Hash for Signature {
         match self {
             Signature::V3(sig) => sig.hash(hash),
             Signature::V4(sig) => sig.hash(hash),
+            Signature::V6(sig) => sig.hash(hash),
         }
     }
 }
@@ -446,17 +447,17 @@ impl Hash for Signature3 {
 
 impl Hash for Signature4 {
     fn hash(&self, hash: &mut dyn Digest) {
-        self.fields.hash(hash);
+        Self::hash_fields(hash, &self.fields);
     }
 }
 
-impl Hash for signature::SignatureFields {
-    fn hash(&self, hash: &mut dyn Digest) {
+impl Signature4 {
+    fn hash_fields(hash: &mut dyn Digest, sig: &signature::SignatureFields) {
         use crate::serialize::MarshalInto;
 
         // XXX: Annoyingly, we have no proper way of handling errors
         // here.
-        let hashed_area = self.hashed_area().to_vec()
+        let hashed_area = sig.hashed_area().to_vec()
             .unwrap_or_else(|_| Vec::new());
 
         // A version 4 signature packet is laid out as follows:
@@ -473,9 +474,9 @@ impl Hash for signature::SignatureFields {
 
         // Version.
         header[0] = 4;
-        header[1] = self.typ().into();
-        header[2] = self.pk_algo().into();
-        header[3] = self.hash_algo().into();
+        header[1] = sig.typ().into();
+        header[2] = sig.pk_algo().into();
+        header[3] = sig.hash_algo().into();
 
         // The length of the hashed area, as a 16-bit big endian number.
         let len = hashed_area.len() as u16;
@@ -508,13 +509,91 @@ impl Hash for signature::SignatureFields {
     }
 }
 
+impl Hash for Signature6 {
+    fn hash(&self, hash: &mut dyn Digest) {
+        Self::hash_fields(hash, &self.fields);
+    }
+}
+
+impl Signature6 {
+    fn hash_fields(hash: &mut dyn Digest, sig: &signature::SignatureFields) {
+        use crate::serialize::MarshalInto;
+
+        // XXX: Annoyingly, we have no proper way of handling errors
+        // here.
+        let hashed_area = sig.hashed_area().to_vec()
+            .unwrap_or_else(|_| Vec::new());
+
+        // A version 6 signature packet is laid out as follows:
+        //
+        //   version - 1 byte                    \
+        //   type - 1 byte                        \
+        //   pk_algo - 1 byte                      \
+        //   hash_algo - 1 byte                      Included in the hash
+        //   hashed_area_len - 4 bytes (big endian)/
+        //   hashed_area                         _/
+        //   ...                                 <- Not included in the hash
+
+        let mut header = [0u8; 8];
+
+        // Version.
+        header[0] = 6;
+        header[1] = sig.typ().into();
+        header[2] = sig.pk_algo().into();
+        header[3] = sig.hash_algo().into();
+
+        // The length of the hashed area, as a 16-bit big endian number.
+        let len = hashed_area.len() as u32;
+        header[4..8].copy_from_slice(&len.to_be_bytes());
+
+        hash.update(&header[..]);
+        hash.update(&hashed_area);
+
+        // A version 6 signature trailer is:
+        //
+        //   version - 1 byte
+        //   0xFF (constant) - 1 byte
+        //   amount - 8 bytes (big endian)
+        //
+        // The amount field is the amount of hashed from this
+        // packet (this excludes the message content, and this
+        // trailer).
+        //
+        // See https://tools.ietf.org/html/rfc4880#section-5.2.4
+        let mut trailer = [0u8; 10];
+
+        trailer[0] = 6;
+        trailer[1] = 0xff;
+        // The signature packet's length, not including the previous
+        // two bytes and the length.
+        let len = (header.len() + hashed_area.len()) as u64;
+        trailer[2..10].copy_from_slice(&len.to_be_bytes());
+
+        hash.update(&trailer[..]);
+    }
+}
+
+impl Hash for signature::SignatureBuilder {
+    fn hash(&self, hash: &mut dyn Digest) {
+        match self.version {
+            signature::SBVersion::V4 {} =>
+                Signature4::hash_fields(hash, &self.fields),
+            signature::SBVersion::V6 { .. } =>
+                Signature6::hash_fields(hash, &self.fields),
+        }
+    }
+}
+
 /// Hashing-related functionality.
 ///
 /// <a id="hashing-functions"></a>
-impl signature::SignatureFields {
+impl signature::SignatureBuilder {
     /// Hashes this standalone signature.
     pub fn hash_standalone(&self, hash: &mut dyn Digest)
     {
+        if let Some(salt) = self.prefix_salt() {
+            hash.update(salt);
+        }
         self.hash(hash);
     }
 
@@ -530,6 +609,9 @@ impl signature::SignatureFields {
                               key: &Key<P, key::PrimaryRole>)
         where P: key::KeyParts,
     {
+        if let Some(salt) = self.prefix_salt() {
+            hash.update(salt);
+        }
         key.hash(hash);
         self.hash(hash);
     }
@@ -542,6 +624,9 @@ impl signature::SignatureFields {
         where P: key::KeyParts,
               Q: key::KeyParts,
     {
+        if let Some(salt) = self.prefix_salt() {
+            hash.update(salt);
+        }
         key.hash(hash);
         subkey.hash(hash);
         self.hash(hash);
@@ -555,6 +640,9 @@ impl signature::SignatureFields {
         where P: key::KeyParts,
               Q: key::KeyParts,
     {
+        if let Some(salt) = self.prefix_salt() {
+            hash.update(salt);
+        }
         self.hash_subkey_binding(hash, key, subkey);
     }
 
@@ -565,6 +653,9 @@ impl signature::SignatureFields {
                                   userid: &UserID)
         where P: key::KeyParts,
     {
+        if let Some(salt) = self.prefix_salt() {
+            hash.update(salt);
+        }
         key.hash(hash);
         userid.hash(hash);
         self.hash(hash);
@@ -580,6 +671,9 @@ impl signature::SignatureFields {
         ua: &UserAttribute)
         where P: key::KeyParts,
     {
+        if let Some(salt) = self.prefix_salt() {
+            hash.update(salt);
+        }
         key.hash(hash);
         ua.hash(hash);
         self.hash(hash);
@@ -590,12 +684,104 @@ impl signature::SignatureFields {
 ///
 /// <a id="hashing-functions"></a>
 impl Signature {
+    /// Hashes this standalone signature.
+    pub fn hash_standalone(&self, hash: &mut dyn Digest)
+    {
+        if let Some(salt) = self.salt() {
+            hash.update(salt);
+        }
+        self.hash(hash);
+    }
+
+    /// Hashes this timestamp signature.
+    pub fn hash_timestamp(&self, hash: &mut dyn Digest)
+    {
+        self.hash_standalone(hash);
+    }
+
+    /// Hashes this direct key signature over the specified primary
+    /// key, and the primary key.
+    pub fn hash_direct_key<P>(&self, hash: &mut dyn Digest,
+                              key: &Key<P, key::PrimaryRole>)
+        where P: key::KeyParts,
+    {
+        if let Some(salt) = self.salt() {
+            hash.update(salt);
+        }
+        key.hash(hash);
+        self.hash(hash);
+    }
+
+    /// Hashes this subkey binding over the specified primary key and
+    /// subkey, the primary key, and the subkey.
+    pub fn hash_subkey_binding<P, Q>(&self, hash: &mut dyn Digest,
+                                     key: &Key<P, key::PrimaryRole>,
+                                     subkey: &Key<Q, key::SubordinateRole>)
+        where P: key::KeyParts,
+              Q: key::KeyParts,
+    {
+        if let Some(salt) = self.salt() {
+            hash.update(salt);
+        }
+        key.hash(hash);
+        subkey.hash(hash);
+        self.hash(hash);
+    }
+
+    /// Hashes this primary key binding over the specified primary key
+    /// and subkey, the primary key, and the subkey.
+    pub fn hash_primary_key_binding<P, Q>(&self, hash: &mut dyn Digest,
+                                          key: &Key<P, key::PrimaryRole>,
+                                          subkey: &Key<Q, key::SubordinateRole>)
+        where P: key::KeyParts,
+              Q: key::KeyParts,
+    {
+        if let Some(salt) = self.salt() {
+            hash.update(salt);
+        }
+        self.hash_subkey_binding(hash, key, subkey);
+    }
+
+    /// Hashes this user ID binding over the specified primary key and
+    /// user ID, the primary key, and the userid.
+    pub fn hash_userid_binding<P>(&self, hash: &mut dyn Digest,
+                                  key: &Key<P, key::PrimaryRole>,
+                                  userid: &UserID)
+        where P: key::KeyParts,
+    {
+        if let Some(salt) = self.salt() {
+            hash.update(salt);
+        }
+        key.hash(hash);
+        userid.hash(hash);
+        self.hash(hash);
+    }
+
+    /// Hashes this user attribute binding over the specified primary
+    /// key and user attribute, the primary key, and the user
+    /// attribute.
+    pub fn hash_user_attribute_binding<P>(
+        &self,
+        hash: &mut dyn Digest,
+        key: &Key<P, key::PrimaryRole>,
+        ua: &UserAttribute)
+        where P: key::KeyParts,
+    {
+        if let Some(salt) = self.salt() {
+            hash.update(salt);
+        }
+        key.hash(hash);
+        ua.hash(hash);
+        self.hash(hash);
+    }
+
     /// Hashes this signature for use in a Third-Party Confirmation
     /// signature.
     pub fn hash_for_confirmation(&self, hash: &mut dyn Digest) {
         match self {
             Signature::V3(s) => s.hash_for_confirmation(hash),
             Signature::V4(s) => s.hash_for_confirmation(hash),
+            Signature::V6(s) => s.hash_for_confirmation(hash),
         }
     }
 }
