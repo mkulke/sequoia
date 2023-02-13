@@ -2204,6 +2204,7 @@ impl Key<key::UnspecifiedParts, key::UnspecifiedRole>
 
         match version {
             4 => Key4::parse(php),
+            6 => Key6::parse(php),
             _ => php.fail("unknown version"),
         }
     }
@@ -2213,6 +2214,7 @@ impl Key<key::UnspecifiedParts, key::UnspecifiedRole>
         -> Result<()>
         where T: BufferedReader<C>, C: fmt::Debug + Send + Sync
     {
+        // XXX support other versions.
         Key4::plausible(bio, header)
     }
 }
@@ -2376,6 +2378,134 @@ impl Key4<key::UnspecifiedParts, key::UnspecifiedRole>
             Err(Error::MalformedPacket("Invalid or unsupported data".into())
                 .into())
         }
+    }
+}
+
+// Key6::parse doesn't actually use the Key6 type parameters.  So, we
+// can just set them to anything.  This avoids the caller having to
+// set them to something.
+impl Key6<key::UnspecifiedParts, key::UnspecifiedRole>
+{
+    /// Parses the body of a public key, public subkey, secret key or
+    /// secret subkey packet.
+    fn parse<'a, T: 'a + BufferedReader<Cookie>>(mut php: PacketHeaderParser<T>) -> Result<PacketParser<'a>> {
+        make_php_try!(php);
+        let tag = php.header.ctb().tag();
+        assert!(tag == Tag::Reserved
+                || tag == Tag::PublicKey
+                || tag == Tag::PublicSubkey
+                || tag == Tag::SecretKey
+                || tag == Tag::SecretSubkey);
+
+        let creation_time = php_try!(php.parse_be_u32("creation_time"));
+        let pk_algo: PublicKeyAlgorithm = php_try!(php.parse_u8("pk_algo")).into();
+        let public_len = php_try!(php.parse_be_u32("public_len"));
+        let _ = public_len; // XXX limit mpis below
+        let mpis = php_try!(PublicKey::_parse(pk_algo, &mut php));
+        let secret = if let Ok(secret_len) = php.parse_be_u32("secret_len") {
+            let _ = secret_len; // XXX make use of that somehow
+            let s2k_usage = php_try!(php.parse_u8("s2k_usage"));
+            use crypto::mpi;
+            let sec = match s2k_usage {
+                // Unencrypted
+                0 => {
+                    let sec = php_try!(
+                        mpi::SecretKeyMaterial::_parse(
+                            pk_algo, &mut php,
+                            Some(mpi::SecretKeyChecksum::Sum16)));
+                    sec.into()
+                }
+                // Encrypted & MD5 for key derivation: unsupported
+                1..=253 => {
+                    return php.fail("unsupported secret key encryption");
+                }
+                // Encrypted, S2K & SHA-1 checksum
+                254 | 255 => {
+                    let sk: SymmetricAlgorithm = php_try!(php.parse_u8("sym_algo")).into();
+                    let s2k = php_try!(S2K::parse_v4(&mut php));
+                    let s2k_supported = s2k.is_supported();
+                    let cipher =
+                        php_try!(php.parse_bytes_eof("encrypted_mpis"))
+                        .into_boxed_slice();
+
+                    crate::packet::key::Encrypted::new_raw(
+                        s2k, sk,
+                        if s2k_usage == 254 {
+                            Some(mpi::SecretKeyChecksum::SHA1)
+                        } else {
+                            Some(mpi::SecretKeyChecksum::Sum16)
+                        },
+                        if s2k_supported {
+                            Ok(cipher)
+                        } else {
+                            Err(cipher)
+                        },
+                    ).into()
+                }
+            };
+
+            Some(sec)
+        } else {
+            None
+        };
+
+        let have_secret = secret.is_some();
+        if have_secret {
+            if tag == Tag::PublicKey || tag == Tag::PublicSubkey {
+                return php.error(Error::MalformedPacket(
+                    format!("Unexpected secret key found in {:?} packet", tag)
+                ).into());
+            }
+        } else if tag == Tag::SecretKey || tag == Tag::SecretSubkey {
+            return php.error(Error::MalformedPacket(
+                format!("Expected secret key in {:?} packet", tag)
+            ).into());
+        }
+
+        fn k<R>(creation_time: u32,
+                pk_algo: PublicKeyAlgorithm,
+                mpis: PublicKey)
+            -> Result<Key6<key::PublicParts, R>>
+            where R: key::KeyRole
+        {
+            Key6::make(creation_time, pk_algo, mpis, None)
+        }
+        fn s<R>(creation_time: u32,
+                pk_algo: PublicKeyAlgorithm,
+                mpis: PublicKey,
+                secret: SecretKeyMaterial)
+            -> Result<Key6<key::SecretParts, R>>
+            where R: key::KeyRole
+        {
+            Key6::make(creation_time, pk_algo, mpis, Some(secret))
+        }
+
+        let tag = php.header.ctb().tag();
+
+        let p : Packet = match tag {
+            // For the benefit of Key::from_bytes.
+            Tag::Reserved => if have_secret {
+                Packet::SecretKey(
+                    php_try!(s(creation_time, pk_algo, mpis, secret.unwrap()))
+                        .into())
+            } else {
+                Packet::PublicKey(
+                    php_try!(k(creation_time, pk_algo, mpis)).into())
+            },
+            Tag::PublicKey => Packet::PublicKey(
+                php_try!(k(creation_time, pk_algo, mpis)).into()),
+            Tag::PublicSubkey => Packet::PublicSubkey(
+                php_try!(k(creation_time, pk_algo, mpis)).into()),
+            Tag::SecretKey => Packet::SecretKey(
+                php_try!(s(creation_time, pk_algo, mpis, secret.unwrap()))
+                    .into()),
+            Tag::SecretSubkey => Packet::SecretSubkey(
+                php_try!(s(creation_time, pk_algo, mpis, secret.unwrap()))
+                    .into()),
+            _ => unreachable!(),
+        };
+
+        php.ok(p)
     }
 }
 

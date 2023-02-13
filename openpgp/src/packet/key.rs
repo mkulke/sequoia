@@ -108,6 +108,8 @@ use crate::KeyHandle;
 use crate::policy::HashAlgoSecurity;
 
 mod conversions;
+mod v6;
+pub use v6::Key6;
 
 /// A marker trait that captures whether a `Key` definitely contains
 /// secret key material.
@@ -1644,9 +1646,14 @@ impl<P, R> Arbitrary for super::Key<P, R>
     where P: KeyParts, P: Clone,
           R: KeyRole, R: Clone,
           Key4<P, R>: Arbitrary,
+          Key6<P, R>: Arbitrary,
 {
     fn arbitrary(g: &mut Gen) -> Self {
-        Key4::arbitrary(g).into()
+        if <bool>::arbitrary(g) {
+            Key4::arbitrary(g).into()
+        } else {
+            Key6::arbitrary(g).into()
+        }
     }
 }
 
@@ -2296,5 +2303,20 @@ FwPoSAbbsLkNS/iNN2MDGAVYvezYn2QZ
                                       i: usize) -> bool {
             mutate_eq_discriminates_key(key, i)
         }
+    }
+
+    #[test]
+    fn v6_key_fingerprint() -> Result<()> {
+        let p = Packet::from_bytes("-----BEGIN PGP ARMORED FILE-----
+
+xjcGY4d/4xYAAAAtCSsGAQQB2kcPAQEHQPlNp7tI1gph5WdwamWH0DMZmbudiRoI
+JC6thFQ9+JWj
+=SgmS
+-----END PGP ARMORED FILE-----")?;
+        let k: &Key<PublicParts, PrimaryRole> = p.downcast_ref().unwrap();
+        assert_eq!(k.fingerprint().to_string(),
+                   "4EADF309C6BC874AE04702451548F93F\
+                    96FA7A01D0A33B5AF7D4E379E0F9F8EE".to_string());
+        Ok(())
     }
 }

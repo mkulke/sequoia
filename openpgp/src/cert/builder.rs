@@ -5,6 +5,7 @@ use crate::packet;
 use crate::packet::{
     Key,
     key::Key4,
+    key::Key6,
     key::KeyRole,
     key::SecretKey as KeySecretKey,
     key::SecretParts as KeySecretParts,
@@ -140,11 +141,19 @@ impl CipherSuite {
         Ok(())
     }
 
-    fn generate_key<K, R>(self, flags: K)
+    fn generate_key<K, R>(self, flags: K, version: u8)
         -> Result<Key<KeySecretParts, R>>
         where R: KeyRole,
               K: AsRef<KeyFlags>,
     {
+        match version {
+            4 => (),
+            6 => (),
+            n => return Err(Error::InvalidArgument(
+                format!("Generating OpenPGP v{} keys not supported", n)
+            ).into()),
+        }
+
         use crate::types::Curve;
 
         match self {
@@ -188,7 +197,11 @@ impl CipherSuite {
                             .into()),
                 }
             },
-        }.map(|key| key.into())
+        }.map(|key| match version {
+            4 => key.into(),
+            6 => Key6::from_common(key).into(),
+            _ => unreachable!("checked on top of the function"),
+        })
     }
 }
 
@@ -269,6 +282,7 @@ assert_send_and_sync!(KeyBlueprint);
 pub struct CertBuilder<'a> {
     creation_time: Option<std::time::SystemTime>,
     ciphersuite: CipherSuite,
+    version: u8,
     primary: KeyBlueprint,
     subkeys: Vec<(Option<SignatureBuilder>, KeyBlueprint)>,
     userids: Vec<(Option<SignatureBuilder>, packet::UserID)>,
@@ -321,6 +335,7 @@ impl CertBuilder<'_> {
         CertBuilder {
             creation_time: None,
             ciphersuite: CipherSuite::default(),
+            version: 4,
             primary: KeyBlueprint{
                 flags: KeyFlags::empty().set_certification(),
                 validity: None,
@@ -505,6 +520,44 @@ impl CertBuilder<'_> {
     pub fn set_cipher_suite(mut self, cs: CipherSuite) -> Self {
         self.ciphersuite = cs;
         self
+    }
+
+    /// Sets the OpenPGP version to generate keys for.
+    ///
+    /// Supported are version 4 and version 6 keys.  By default, we
+    /// generate OpenPGP v4 keys.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::cert::prelude::*;
+    /// use openpgp::types::PublicKeyAlgorithm;
+    ///
+    /// # fn main() -> openpgp::Result<()> {
+    /// let (key, _) =
+    ///     CertBuilder::general_purpose(None, Some("alice@example.org"))
+    ///         .generate()?;
+    /// assert_eq!(key.primary_key().version(), 4);
+    ///
+    /// let (key, _) =
+    ///     CertBuilder::general_purpose(None, Some("alice@example.org"))
+    ///         .set_version(6)?
+    ///         .generate()?;
+    /// assert_eq!(key.primary_key().version(), 6);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn set_version(mut self, version: u8) -> Result<Self> {
+        match version {
+            4 => (),
+            6 => (),
+            n => return Err(Error::InvalidArgument(
+                format!("Generating OpenPGP v{} keys not supported", n)
+            ).into()),
+        }
+        self.version = version;
+        Ok(self)
     }
 
     /// Adds a User ID.
@@ -1441,7 +1494,7 @@ impl CertBuilder<'_> {
             let flags = &blueprint.flags;
             let mut subkey = blueprint.ciphersuite
                 .unwrap_or(self.ciphersuite)
-                .generate_key(flags)?;
+                .generate_key(flags, self.version)?;
             subkey.set_creation_time(creation_time)?;
 
             let sig = template.unwrap_or_else(
@@ -1492,7 +1545,8 @@ impl CertBuilder<'_> {
     {
         let mut key = self.primary.ciphersuite
             .unwrap_or(self.ciphersuite)
-            .generate_key(KeyFlags::empty().set_certification())?;
+            .generate_key(KeyFlags::empty().set_certification(),
+                          self.version)?;
         key.set_creation_time(creation_time)?;
         let sig = SignatureBuilder::new(SignatureType::DirectKey);
         let sig = Self::signature_common(sig, creation_time)?;

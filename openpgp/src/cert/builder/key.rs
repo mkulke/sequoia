@@ -143,8 +143,9 @@ impl KeyBuilder {
     /// NTP is widely used, empirically it seems that some virtual
     /// machines have laggy clocks.
     pub fn subkey(self, vc: ValidCert) -> Result<SubkeyBuilder<'_>> {
+        let version = vc.primary_key().version();
         let mut key: Key<key::SecretParts, key::SubordinateRole>
-            = self.cipher_suite.generate_key(&self.flags)?;
+            = self.cipher_suite.generate_key(&self.flags, version)?;
         let ct = self.creation_time.unwrap_or_else(|| {
             crate::now() - Duration::new(SIG_BACKDATE_BY, 0)
         });
