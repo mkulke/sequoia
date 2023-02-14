@@ -54,6 +54,6 @@ pub use crate::packet::{
     signature::Signature4,
     signature::SignatureBuilder,
     skesk::SKESK4,
-    skesk::SKESK5,
+    skesk::SKESK6,
     user_attribute,
 };
