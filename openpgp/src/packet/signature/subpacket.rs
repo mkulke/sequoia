@@ -673,13 +673,7 @@ impl SubpacketArea {
             packets,
             parsed: Mutex::new(RefCell::new(None)),
         };
-        if area.serialized_len() > std::u16::MAX as usize {
-            Err(Error::InvalidArgument(
-                format!("Subpacket area exceeds maximum size: {}",
-                        area.serialized_len())).into())
-        } else {
-            Ok(area)
-        }
+        Ok(area)
     }
 
     // Initialize `Signature::hashed_area_parsed` from
