@@ -117,10 +117,15 @@ assert_send_and_sync!(Field<'_>);
 
 impl<'a> Field<'a> {
     fn new(map: &'a Map, i: usize) -> Option<Field<'a>> {
+        // Synthetic packets have no CTB.
+        #[allow(clippy::len_zero)]
+        let has_ctb = map.header.len() > 0;
+
         // Old-style CTB with indeterminate length emits no length
         // field.
         let has_length = map.header.len() > 1;
-        if i == 0 {
+
+        if i == 0 && has_ctb {
             Some(Field {
                 offset: 0,
                 name: "CTB",
@@ -133,8 +138,11 @@ impl<'a> Field<'a> {
                 data: &map.header.as_slice()[1..]
             })
         } else {
-            let offset_length = if has_length { 1 } else { 0 };
-            map.entries.get(i - 1 - offset_length).map(|e| {
+            let offset =
+                if has_ctb { 1 } else { 0 }
+                + if has_length { 1 } else { 0 };
+
+            map.entries.get(i - offset).map(|e| {
                 let len = map.data.len();
                 let start = cmp::min(len, e.offset);
                 let end = cmp::min(len, e.offset + e.length);
