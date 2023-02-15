@@ -1458,8 +1458,8 @@ impl Marshal for SubpacketValue {
                     o.write_all(&[4])?;
                     o.write_all(fp.as_bytes())?;
                 },
-                Fingerprint::V5(_) => {
-                    o.write_all(&[5])?;
+                Fingerprint::V6(_) => {
+                    o.write_all(&[6])?;
                     o.write_all(fp.as_bytes())?;
                 },
                 _ => return Err(Error::InvalidArgument(
@@ -1474,8 +1474,8 @@ impl Marshal for SubpacketValue {
                     o.write_all(&[4])?;
                     o.write_all(fp.as_bytes())?;
                 },
-                Fingerprint::V5(_) => {
-                    o.write_all(&[5])?;
+                Fingerprint::V6(_) => {
+                    o.write_all(&[6])?;
                     o.write_all(fp.as_bytes())?;
                 },
                 _ => return Err(Error::InvalidArgument(
