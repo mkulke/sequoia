@@ -253,14 +253,31 @@ impl KeyHandle {
     /// #     = "0123 4567 8901 2345 6789  0123 AACB 3243 6300 52D9"
     /// #       .parse::<Fingerprint>()?.into();
     /// #
+    /// # let v6_fpr1 : KeyHandle
+    /// #     = "AACB3243630052D9AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    /// #       .parse::<Fingerprint>()?.into();
+    /// #
+    /// # let v6_fpr2 : KeyHandle
+    /// #     = "AACB3243630052D9BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+    /// #       .parse::<Fingerprint>()?.into();
+    /// #
     /// # let keyid : KeyHandle = "AACB 3243 6300 52D9".parse::<KeyID>()?
     /// #     .into();
     /// #
-    /// // fpr1 and fpr2 are different fingerprints with the same KeyID.
+    /// // fpr1 and fpr2 are different v4 fingerprints with the same KeyID.
     /// assert!(! fpr1.eq(&fpr2));
     /// assert!(fpr1.aliases(&keyid));
     /// assert!(fpr2.aliases(&keyid));
     /// assert!(! fpr1.aliases(&fpr2));
+    ///
+    /// // v6_fpr1 and v6_fpr2 are different v6 fingerprints with the same KeyID.
+    /// assert!(! v6_fpr1.eq(&v6_fpr2));
+    /// assert!(v6_fpr1.aliases(&keyid));
+    /// assert!(v6_fpr2.aliases(&keyid));
+    /// assert!(! v6_fpr1.aliases(&v6_fpr2));
+    ///
+    /// // And of course, v4 and v6 don't alias.
+    /// assert!(! fpr1.aliases(&v6_fpr1));
     /// # Ok(()) }
     /// ```
     pub fn aliases<H>(&self, other: H) -> bool
@@ -272,13 +289,22 @@ impl KeyHandle {
         } else {
             match (self, other) {
                 (KeyHandle::Fingerprint(Fingerprint::V4(f)),
-                 KeyHandle::KeyID(KeyID::V4(i)))
-                    | (KeyHandle::KeyID(KeyID::V4(i)),
+                 KeyHandle::KeyID(KeyID::Long(i)))
+                    | (KeyHandle::KeyID(KeyID::Long(i)),
                        KeyHandle::Fingerprint(Fingerprint::V4(f))) =>
                 {
                     // A v4 key ID are the 8 right-most octets of a v4
                     // fingerprint.
                     &f[12..] == i
+                },
+                (KeyHandle::Fingerprint(Fingerprint::V6(f)),
+                 KeyHandle::KeyID(KeyID::Long(i)))
+                    | (KeyHandle::KeyID(KeyID::Long(i)),
+                       KeyHandle::Fingerprint(Fingerprint::V6(f))) =>
+                {
+                    // A v6 key ID are the 8 left-most octets of a v4
+                    // fingerprint.
+                    &f[..8] == i
                 },
                 _ => false,
             }
@@ -406,7 +432,7 @@ mod tests {
         let handle = KeyHandle::Fingerprint(Fingerprint::Invalid(Box::new([10, 2, 3, 4])));
         assert_eq!(format!("{:X}", handle), "0A020304");
 
-        let handle = KeyHandle::KeyID(KeyID::V4([10, 2, 3, 4, 5, 6, 7, 8]));
+        let handle = KeyHandle::KeyID(KeyID::Long([10, 2, 3, 4, 5, 6, 7, 8]));
         assert_eq!(format!("{:X}", handle), "0A02030405060708");
 
         let handle = KeyHandle::KeyID(KeyID::Invalid(Box::new([10, 2])));
@@ -422,7 +448,7 @@ mod tests {
         let handle = KeyHandle::Fingerprint(Fingerprint::Invalid(Box::new([10, 2, 3, 4])));
         assert_eq!(format!("{:x}", handle), "0a020304");
 
-        let handle = KeyHandle::KeyID(KeyID::V4([10, 2, 3, 4, 5, 6, 7, 8]));
+        let handle = KeyHandle::KeyID(KeyID::Long([10, 2, 3, 4, 5, 6, 7, 8]));
         assert_eq!(format!("{:x}", handle), "0a02030405060708");
 
         let handle = KeyHandle::KeyID(KeyID::Invalid(Box::new([10, 2])));
@@ -439,7 +465,7 @@ mod tests {
                     0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0x01, 0x23, 0x45, 0x67]);
 
         let handle: KeyHandle = "89AB CDEF 0123 4567".parse()?;
-        assert_match!(&KeyHandle::KeyID(KeyID::V4(_)) = &handle);
+        assert_match!(&KeyHandle::KeyID(KeyID::Long(_)) = &handle);
         assert_eq!(handle.as_bytes(),
                    [0x89, 0xAB, 0xCD, 0xEF, 0x01, 0x23, 0x45, 0x67]);
 
