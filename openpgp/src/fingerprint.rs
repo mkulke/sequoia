@@ -50,8 +50,8 @@ pub enum Fingerprint {
     /// A 20 byte SHA-1 hash of the public key packet as defined in the RFC.
     V4([u8;20]),
 
-    /// A v5 OpenPGP fingerprint.
-    V5([u8; 32]),
+    /// A v6 OpenPGP fingerprint.
+    V6([u8; 32]),
 
     /// Used for holding fingerprint data that is not a V4 fingerprint, e.g. a
     /// V3 fingerprint (deprecated) or otherwise wrong-length data.
@@ -121,7 +121,7 @@ impl Fingerprint {
         } else if raw.len() == 32 {
             let mut fp: [u8; 32] = Default::default();
             fp.copy_from_slice(raw);
-            Fingerprint::V5(fp)
+            Fingerprint::V6(fp)
         } else {
             Fingerprint::Invalid(raw.to_vec().into_boxed_slice())
         }
@@ -148,7 +148,7 @@ impl Fingerprint {
     pub fn as_bytes(&self) -> &[u8] {
         match self {
             Fingerprint::V4(ref fp) => fp,
-            Fingerprint::V5(fp) => fp,
+            Fingerprint::V6(fp) => fp,
             Fingerprint::Invalid(ref fp) => fp,
         }
     }
@@ -379,7 +379,7 @@ impl Arbitrary for Fingerprint {
         } else {
             let mut fp = [0; 32];
             fp.iter_mut().for_each(|p| *p = Arbitrary::arbitrary(g));
-            Fingerprint::V5(fp)
+            Fingerprint::V6(fp)
         }
     }
 }
@@ -402,7 +402,7 @@ mod tests {
         let fp = "0123 4567 89AB CDEF 0123 4567 89AB CDEF \
                   0123 4567 89AB CDEF 0123 4567 89AB CDEF"
             .parse::<Fingerprint>()?;
-        assert!(matches!(&fp, Fingerprint::V5(_)));
+        assert!(matches!(&fp, Fingerprint::V6(_)));
         assert_eq!(format!("{:X}", fp), "0123456789ABCDEF0123456789ABCDEF\
                                          0123456789ABCDEF0123456789ABCDEF");
         assert_eq!(format!("{:x}", fp), "0123456789abcdef0123456789abcdef\
