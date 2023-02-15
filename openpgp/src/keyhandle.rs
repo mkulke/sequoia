@@ -395,7 +395,18 @@ impl KeyHandle {
 
 #[cfg(test)]
 mod tests {
+    use quickcheck::{Arbitrary, Gen};
     use super::*;
+
+    impl Arbitrary for KeyHandle {
+        fn arbitrary(g: &mut Gen) -> Self {
+            if bool::arbitrary(g) {
+                Fingerprint::arbitrary(g).into()
+            } else {
+                KeyID::arbitrary(g).into()
+            }
+        }
+    }
 
     #[test]
     fn upper_hex_formatting() {
@@ -454,5 +465,41 @@ mod tests {
         assert!(handle.is_err());
 
         Ok(())
+    }
+
+    quickcheck! {
+        fn partial_cmp_is_asymmetric(a: KeyHandle, b: KeyHandle)
+                                     -> bool {
+            use Ordering::*;
+            true
+                && (! (a.partial_cmp(&b) == Some(Less))
+                    || ! (a.partial_cmp(&b) == Some(Greater)))
+                && (! (a.partial_cmp(&b) == Some(Greater))
+                    || ! (a.partial_cmp(&b) == Some(Less)))
+        }
+    }
+
+    quickcheck! {
+        fn partial_cmp_is_transitive(a: KeyHandle, b: KeyHandle, c: KeyHandle)
+                                     -> bool {
+            use Ordering::*;
+
+            let a_cmp_b = a.partial_cmp(&b);
+            let a_cmp_c = a.partial_cmp(&c);
+            let b_cmp_c = b.partial_cmp(&c);
+
+            if a_cmp_b.is_none() || a_cmp_c.is_none() || b_cmp_c.is_none() {
+                return true;
+            }
+
+            true
+                && (! (a_cmp_b == Some(Less) && b_cmp_c == Some(Less))
+                    || a_cmp_c == Some(Less))
+                && (! (a_cmp_b == Some(Equal) && b_cmp_c == Some(Equal))
+                    || a_cmp_c == Some(Equal))
+                && (! (a_cmp_b == Some(Greater) && b_cmp_c == Some(Greater))
+                    || a_cmp_c == Some(Greater))
+
+        }
     }
 }
