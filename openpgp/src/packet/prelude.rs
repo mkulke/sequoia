@@ -51,7 +51,10 @@ pub use crate::packet::{
     one_pass_sig::OnePassSig3,
     one_pass_sig::OnePassSig6,
     pkesk::PKESK3,
-    seip::SEIP1,
+    seip::{
+        SEIP1,
+        SEIP2,
+    },
     signature,
     signature::Signature4,
     signature::Signature6,
