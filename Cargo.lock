@@ -1629,21 +1629,20 @@ dependencies = [
 
 [[package]]
 name = "nettle"
-version = "7.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91ff5d538c014cb58ab701db16e28aa66fbbb8b472bf65821d0e84f72aae6d4f"
+version = "7.1.0"
+source = "git+https://gitlab.com/sequoia-pgp/nettle-rs?branch=justus/ocb#f2d6d7f088c97a84dcfbdc8a4d10aad1efb0bee3"
 dependencies = [
  "getrandom 0.2.6",
  "libc",
  "nettle-sys",
  "thiserror",
+ "typenum",
 ]
 
 [[package]]
 name = "nettle-sys"
 version = "2.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b13b685c7883e3a32196ccf3ce594947ec37ace43d74e157de7ca03d3fe62d17"
+source = "git+https://gitlab.com/sequoia-pgp/nettle-sys?branch=justus/ocb#61e99ad29d46fe40685d99bc7c86f45f958a92ec"
 dependencies = [
  "bindgen",
  "cc",

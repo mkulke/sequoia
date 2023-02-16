@@ -1,7 +1,14 @@
 //! Implementation of AEAD using Nettle cryptographic library.
 use std::cmp::Ordering;
 
-use nettle::{aead::{self, Aead as _}, cipher};
+use nettle::{
+    aead::{
+        self,
+        Aead as _,
+        typenum::consts::U16,
+    },
+    cipher,
+};
 
 use crate::{Error, Result};
 
@@ -108,6 +115,30 @@ impl AEADAlgorithm {
                     ctx.update(aad);
                     Ok(Box::new(ctx))
                 },
+                _ => Err(Error::UnsupportedSymmetricAlgorithm(sym_algo).into()),
+            },
+            AEADAlgorithm::OCB => match sym_algo {
+                SymmetricAlgorithm::AES128 => Ok(Box::new(
+                    aead::Ocb::<cipher::Aes128, U16>::with_key_and_nonce(key, nonce)?,
+                )),
+                SymmetricAlgorithm::AES192 => Ok(Box::new(
+                    aead::Ocb::<cipher::Aes192, U16>::with_key_and_nonce(key, nonce)?,
+                )),
+                SymmetricAlgorithm::AES256 => Ok(Box::new(
+                    aead::Ocb::<cipher::Aes256, U16>::with_key_and_nonce(key, nonce)?,
+                )),
+                SymmetricAlgorithm::Twofish => Ok(Box::new(
+                    aead::Ocb::<cipher::Twofish, U16>::with_key_and_nonce(key, nonce)?,
+                )),
+                SymmetricAlgorithm::Camellia128 => Ok(Box::new(
+                    aead::Ocb::<cipher::Camellia128, U16>::with_key_and_nonce(key, nonce)?,
+                )),
+                SymmetricAlgorithm::Camellia192 => Ok(Box::new(
+                    aead::Ocb::<cipher::Camellia192, U16>::with_key_and_nonce(key, nonce)?,
+                )),
+                SymmetricAlgorithm::Camellia256 => Ok(Box::new(
+                    aead::Ocb::<cipher::Camellia256, U16>::with_key_and_nonce(key, nonce)?,
+                )),
                 _ => Err(Error::UnsupportedSymmetricAlgorithm(sym_algo).into()),
             },
             _ => Err(Error::UnsupportedAEADAlgorithm(*self).into()),
