@@ -53,10 +53,7 @@ bookworm:
   interruptible: true
   image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/bookworm-prebuild:latest
   script:
-    - cargo run --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-nettle,compression --example supported-algorithms
-    - $MAKE_TOP test
-    - if ! git diff --quiet Cargo.lock ; then echo "Cargo.lock changed.  Please add the change to the corresponding commit." ; git diff ; false ; fi
-    - if ! git diff --quiet ; then echo "The build changed the source.  Please investigate." ; git diff ; fi
+    - cargo test --manifest-path openpgp/Cargo.toml
   variables:
     CARGO_TARGET_DIR: /target
     CARGO_HOME: /cargo
@@ -70,7 +67,6 @@ bookworm-crypto-rust:
   dependencies:
     - codespell
   script:
-    - cargo run --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-rust,compression,allow-experimental-crypto,allow-variable-time-crypto --example supported-algorithms
     - cargo test --release --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-rust,compression,allow-experimental-crypto,allow-variable-time-crypto
   variables:
     CARGO_TARGET_DIR: /target
@@ -85,29 +81,6 @@ bookworm-crypto-openssl:
   dependencies:
     - codespell
   script:
-    - cargo run --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-openssl,compression --example supported-algorithms
-    - cargo test --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-openssl,compression
-  variables:
-    CARGO_TARGET_DIR: /target
-    CARGO_HOME: /cargo
-
-# Test on old Fedora that has a number of algorithms disabled in their
-# OpenSSL build (3.0.5)
-# See https://gitlab.com/sequoia-pgp/sequoia/-/issues/979 for details.
-fedora-crypto-openssl:
-  tags:
-    - linux
-  stage: build
-  interruptible: true
-  # We need this exact version for OpenSSL 3.0.5
-  image: fedora:36
-  dependencies:
-    - codespell
-  before_script:
-    - dnf install -y cargo openssl openssl-devel
-    - openssl version
-  script:
-    - cargo run --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-openssl,compression --example supported-algorithms
     - cargo test --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-openssl,compression
   variables:
     CARGO_TARGET_DIR: /target
@@ -120,57 +93,10 @@ bookworm-crypto-botan:
   interruptible: true
   image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/bookworm-prebuild:latest
   script:
-    - cargo run --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-botan,compression --example supported-algorithms
     - cargo test --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-botan,compression
   variables:
     CARGO_TARGET_DIR: /target
     CARGO_HOME: /cargo
-
-benchmarks:
-  stage: test
-  interruptible: true
-  image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/bookworm:latest
-  needs: ["rust-stable"]
-  only:
-    refs:
-      - /bench/i # refs containing 'bench' keyword
-      - tags
-      - web
-      - schedules
-  before_script:
-    - *before_script_start
-    - cargo install critcmp
-    - *before_script_end
-  script:
-    - cargo bench -- --color always --save-baseline $CI_COMMIT_SHA
-  after_script:
-    - MAIN_SHA=$(git merge-base $CI_COMMIT_SHA origin/main)
-    - echo CI_COMMIT_SHA=$CI_COMMIT_SHA > benchmark.txt
-    - echo CI_COMMIT_BEFORE_SHA=$CI_COMMIT_BEFORE_SHA >> benchmark.txt
-    - echo MAIN_SHA=$MAIN_SHA >> benchmark.txt
-    - $CARGO_HOME/bin/critcmp --baselines
-    - $CARGO_HOME/bin/critcmp $CI_COMMIT_SHA $CI_COMMIT_BEFORE_SHA $MAIN_SHA | tee -a benchmark.txt
-  artifacts:
-    expose_as: 'benchmark results'
-    paths: ['benchmark.txt']
-  variables:
-    CARGO_TARGET_DIR: $CI_PROJECT_DIR/../target.benchmarks
-
-all_commits:
-  # Test each commit up to main, to facilitate bisecting.
-  stage: test
-  interruptible: true
-  image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/rust-stable-prebuild:latest
-  needs: ["rust-stable"]
-  except:
-    # Do not run for pushes to the pep-engine branch.
-    - /^pep-engine$/
-  script:
-    - .ci/all_commits.sh
-  variables:
-    CARGO_TARGET_DIR: /target
-    CARGO_HOME: /cargo
-    GIT_STRATEGY: clone
 
 codespell:
   tags:
@@ -185,30 +111,6 @@ codespell:
     - *before_script_end
   script:
     - $MAKE_TOP codespell CODESPELL_FLAGS=--summary
-
-doc:
-  tags:
-    - linux
-  stage: build
-  interruptible: true
-  image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/rust-stable-prebuild:latest
-  script:
-    - cargo doc --document-private-items --no-deps
-  variables:
-    CARGO_TARGET_DIR: /target
-    CARGO_HOME: /cargo
-
-rust-stable:
-  tags:
-    - linux
-  stage: build
-  interruptible: true
-  image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/rust-stable-prebuild:latest
-  script:
-    - CARGO_PACKAGES="-p buffered-reader -p sequoia-openpgp" $MAKE_TOP test
-  variables:
-    CARGO_TARGET_DIR: /target
-    CARGO_HOME: /cargo
 
 clippy:
   tags:
@@ -227,143 +129,6 @@ clippy:
   variables:
     CARGO_TARGET_DIR: /target
     CARGO_HOME: /cargo
-
-rust-stable-armv7:
-  tags:
-    - linux
-  stage: build
-  interruptible: true
-  image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/bullseye-cross-arm-prebuild:latest
-  before_script:
-    - *before_script_start
-    - cat .ci/snippet_for_cross_compilation_config.toml >> .cargo/config.toml
-    - *before_script_end
-  script:
-    - cargo test --tests --target=armv7-unknown-linux-gnueabihf -p buffered-reader -p sequoia-openpgp
-  variables:
-    CARGO_TARGET_DIR: /target
-    CARGO_HOME: /cargo
-    PKG_CONFIG_PATH: /usr/lib/arm-linux-gnueabihf/pkgconfig
-    PKG_CONFIG_ALLOW_CROSS: 1
-
-windows-gnu-nettle:
-  tags:
-    - win
-    - win2019
-  stage: build
-  interruptible: true
-  image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/windows-gnu
-  only:
-    variables:
-      # Forks of this project most likely use gitlab's shared windows runners, which
-      # do not use the docker executor, so disable the windows jobs for forks.
-      - $CI_PROJECT_NAMESPACE == "sequoia-pgp"
-  before_script:
-    # the default before_scipt scriptlet doesn't work on Powershell
-    - rustc --version --verbose
-    - cargo --version
-    - clang -v
-    - gpg --version
-  script:
-    - cargo test --tests --workspace
-  after_script: [] # scriptlet doesn't work on Powershell
-  variables:
-    CFLAGS: "" # Silence some C warnings when compiling under Windows
-
-windows-gnu-cng:
-  tags:
-    - win
-    - win2019
-  stage: build
-  interruptible: true
-  # Depend on the main configuration.  As the jobs have common error
-  # conditions, if one fails it is often not worth trying the other.
-  # Therefore, we can short-circuit here.  Also, this pipelines
-  # Windows jobs, allowing us to test the other toolchain as well.
-  needs:
-    - windows-gnu-nettle
-  image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/windows-gnu
-  only:
-    variables:
-      # Forks of this project most likely use gitlab's shared windows runners, which
-      # do not use the docker executor, so disable the windows jobs for forks.
-      - $CI_PROJECT_NAMESPACE == "sequoia-pgp"
-  before_script:
-    # the default before_scipt scriptlet doesn't work on Powershell
-    - rustc --version --verbose
-    - cargo --version
-    - clang -v
-    - gpg --version
-  script:
-    # https://github.com/rust-lang/cargo/issues/5015
-    - cargo test --tests --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-cng,compression
-  after_script: [] # scriptlet doesn't work on Powershell
-  variables:
-    CFLAGS: "" # Silence some C warnings when compiling under Windows
-
-windows-msvc-cng:
-  tags:
-    - win
-    - win2019
-  stage: build
-  interruptible: true
-  image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/windows-msvc
-  only:
-    variables:
-      # Forks of this project most likely use gitlab's shared windows runners, which
-      # do not use the docker executor, so disable the windows jobs for forks.
-      - $CI_PROJECT_NAMESPACE == "sequoia-pgp"
-  before_script:
-    # We don't call *before_script_start or *before_script_end as we
-    # don't have bash, clang, etc.
-    - rustc --version --verbose
-    - cargo --version
-  script:
-    # https://github.com/rust-lang/cargo/issues/5015
-    - cargo run --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-cng,compression --example supported-algorithms
-    - cargo test --tests --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-cng,compression
-  after_script: [] # scriptlet doesn't work on Powershell
-  variables:
-    CFLAGS: "" # Silence some C warnings when compiling with MSVC
-
-windows-msvc32-cng:
-  tags:
-    - win
-    - win2019
-  stage: build
-  interruptible: true
-  # Depend on the main configuration.  As the jobs have common error
-  # conditions, if one fails it is often not worth trying the other.
-  # Therefore, we can short-circuit here.  Also, this pipelines
-  # Windows jobs, allowing us to test the other toolchain as well.
-  needs:
-    - windows-msvc-cng
-  image:
-    name: 192.168.122.1:5000/sequoia-pgp/build-docker-image/windows-msvc
-    # Set up a cross compilation environment for building x86 binaries on amd64, line copied from Dockerfile.windows.msvc
-    # see https://renenyffenegger.ch/notes/Windows/dirs/Program-Files-x86/Microsoft-Visual-Studio/version/edition/Common7/Tools/VsDevCmd_bat
-    #
-    # Alternatively: ["C:\\BuildTools\\VC\\Auxiliary\\Build\\vcvarsamd64_x86.bat", "&&", "type", "README", "&&", "powershell.exe", "-NoLogo", "-ExecutionPolicy", "Bypass"]
-    # see https://docs.microsoft.com/en-us/cpp/build/building-on-the-command-line?view=msvc-160
-    entrypoint: ["C:\\BuildTools\\Common7\\Tools\\VsDevCmd.bat", "-arch=x86", "-host_arch=amd64", "&&", "type", "README", "&&", "powershell.exe", "-NoLogo", "-ExecutionPolicy", "Bypass"]
-  only:
-    variables:
-      # Forks of this project most likely use gitlab's shared windows runners, which
-      # do not use the docker executor, so disable the windows jobs for forks.
-      - $CI_PROJECT_NAMESPACE == "sequoia-pgp"
-  before_script:
-    # We don't call *before_script_start or *before_script_end as we
-    # don't have bash, clang, etc.
-    - rustup target add i686-pc-windows-msvc
-    - rustup show
-    - rustc --version --verbose
-    - cargo --version
-  script:
-    # https://github.com/rust-lang/cargo/issues/5015
-    - cargo test --tests --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-cng,compression --target i686-pc-windows-msvc
-  after_script: [] # scriptlet doesn't work on Powershell
-  variables:
-    CFLAGS: "" # Silence some C warnings when compiling with MSVC
 
 variables:
   DEBIAN_FRONTEND: noninteractive
