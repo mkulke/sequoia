@@ -655,7 +655,7 @@ a_cutoff_list!(SecondPreImageResistantHashCutoffList, HashAlgorithm, 12,
                    ACCEPT,                   // 11. SHA224
                ]);
 
-a_cutoff_list!(SubpacketTagCutoffList, SubpacketTag, 38,
+a_cutoff_list!(SubpacketTagCutoffList, SubpacketTag, 40,
                [
                    REJECT,                 // 0. Reserved.
                    REJECT,                 // 1. Reserved.
@@ -698,9 +698,11 @@ a_cutoff_list!(SubpacketTagCutoffList, SubpacketTag, 38,
                    ACCEPT,                 // 35. IntendedRecipient.
                    REJECT,                 // 36. Reserved.
                    ACCEPT,                 // 37. AttestedCertifications.
+                   REJECT,                 // 38. Reserved.
+                   ACCEPT,                 // 39. PreferredAEADCiphersuites.
                ]);
 
-a_cutoff_list!(AsymmetricAlgorithmCutoffList, AsymmetricAlgorithm, 19,
+a_cutoff_list!(AsymmetricAlgorithmCutoffList, AsymmetricAlgorithm, 23,
                [
                    Some(Timestamp::Y2014M2), // 0. RSA1024.
                    ACCEPT,                   // 1. RSA2048.
@@ -720,7 +722,11 @@ a_cutoff_list!(AsymmetricAlgorithmCutoffList, AsymmetricAlgorithm, 19,
                    ACCEPT,                   // 15. BrainpoolP256.
                    ACCEPT,                   // 16. BrainpoolP512.
                    ACCEPT,                   // 17. Cv25519.
-                   ACCEPT,                   // 16. BrainpoolP384.
+                   ACCEPT,                   // 18. BrainpoolP384.
+                   ACCEPT,                   // 19. X25519.
+                   ACCEPT,                   // 20. X448.
+                   ACCEPT,                   // 21. Ed25519.
+                   ACCEPT,                   // 22. Ed448.
                ]);
 
 a_cutoff_list!(SymmetricAlgorithmCutoffList, SymmetricAlgorithm, 14,
@@ -1525,7 +1531,7 @@ impl<'a> Policy for StandardPolicy<'a> {
         -> Result<()>
     {
         use self::AsymmetricAlgorithm::{*, Unknown};
-        use crate::types::PublicKeyAlgorithm::*;
+        use crate::types::PublicKeyAlgorithm::{self, *};
         use crate::crypto::mpi::PublicKey;
 
         #[allow(deprecated)]
@@ -1588,6 +1594,11 @@ impl<'a> Policy for StandardPolicy<'a> {
                     Curve::Unknown(_) => Unknown,
                 }
             },
+
+            (PublicKeyAlgorithm::X25519, _) => AsymmetricAlgorithm::X25519,
+            (PublicKeyAlgorithm::X448, _) => AsymmetricAlgorithm::X448,
+            (PublicKeyAlgorithm::Ed25519, _) => AsymmetricAlgorithm::Ed25519,
+            (PublicKeyAlgorithm::Ed448, _) => AsymmetricAlgorithm::Ed448,
 
             _ => Unknown,
         };
@@ -1716,12 +1727,20 @@ pub enum AsymmetricAlgorithm {
     BrainpoolP512,
     /// D.J. Bernstein's Curve25519.
     Cv25519,
+    /// X25519 (RFC 7748).
+    X25519,
+    /// X448 (RFC 7748).
+    X448,
+    /// Ed25519 (RFC 8032).
+    Ed25519,
+    /// Ed448 (RFC 8032).
+    Ed448,
     /// Unknown algorithm.
     Unknown,
 }
 assert_send_and_sync!(AsymmetricAlgorithm);
 
-const ASYMMETRIC_ALGORITHM_VARIANTS: [AsymmetricAlgorithm; 19] = [
+const ASYMMETRIC_ALGORITHM_VARIANTS: [AsymmetricAlgorithm; 23] = [
     AsymmetricAlgorithm::RSA1024,
     AsymmetricAlgorithm::RSA2048,
     AsymmetricAlgorithm::RSA3072,
@@ -1741,6 +1760,10 @@ const ASYMMETRIC_ALGORITHM_VARIANTS: [AsymmetricAlgorithm; 19] = [
     AsymmetricAlgorithm::BrainpoolP384,
     AsymmetricAlgorithm::BrainpoolP512,
     AsymmetricAlgorithm::Cv25519,
+    AsymmetricAlgorithm::X25519,
+    AsymmetricAlgorithm::X448,
+    AsymmetricAlgorithm::Ed25519,
+    AsymmetricAlgorithm::Ed448,
 ];
 
 impl AsymmetricAlgorithm {
@@ -1782,6 +1805,10 @@ impl From<AsymmetricAlgorithm> for u8 {
             BrainpoolP384 => 18,
             BrainpoolP512 => 16,
             Cv25519 => 17,
+            X25519 => 18,
+            X448 => 19,
+            Ed25519 => 20,
+            Ed448 => 21,
             Unknown => 255,
         }
     }

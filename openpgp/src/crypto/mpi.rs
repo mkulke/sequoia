@@ -572,6 +572,30 @@ pub enum PublicKey {
         sym: SymmetricAlgorithm,
     },
 
+    /// X25519 public key.
+    X25519 {
+        /// The public key, an opaque string.
+        u: [u8; 32],
+    },
+
+    /// X448 public key.
+    X448 {
+        /// The public key, an opaque string.
+        u: Box<[u8; 56]>,
+    },
+
+    /// Ed25519 public key.
+    Ed25519 {
+        /// The public key, an opaque string.
+        a: [u8; 32],
+    },
+
+    /// Ed448 public key.
+    Ed448 {
+        /// The public key, an opaque string.
+        a: Box<[u8; 57]>,
+    },
+
     /// Unknown number of MPIs for an unknown algorithm.
     Unknown {
         /// The successfully parsed MPIs.
@@ -602,6 +626,10 @@ impl PublicKey {
             EdDSA { ref curve,.. } => curve.bits(),
             ECDSA { ref curve,.. } => curve.bits(),
             ECDH { ref curve,.. } => curve.bits(),
+            X25519 { .. } => Some(256),
+            X448 { .. } => Some(448),
+            Ed25519 { .. } => Some(256),
+            Ed448 { .. } => Some(456),
             Unknown { .. } => None,
         }
     }
@@ -617,6 +645,10 @@ impl PublicKey {
             EdDSA { .. } => Some(PublicKeyAlgorithm::EdDSA),
             ECDSA { .. } => Some(PublicKeyAlgorithm::ECDSA),
             ECDH { .. } => Some(PublicKeyAlgorithm::ECDH),
+            X25519 { .. } => Some(PublicKeyAlgorithm::X25519),
+            X448 { .. } => Some(PublicKeyAlgorithm::X448),
+            Ed25519 { .. } => Some(PublicKeyAlgorithm::Ed25519),
+            Ed448 { .. } => Some(PublicKeyAlgorithm::Ed448),
             Unknown { .. } => None,
         }
     }
@@ -635,7 +667,7 @@ impl Arbitrary for PublicKey {
         use self::PublicKey::*;
         use crate::arbitrary_helper::gen_arbitrary_from_range;
 
-        match gen_arbitrary_from_range(0..6, g) {
+        match gen_arbitrary_from_range(0..10, g) {
             0 => RSA {
                 e: MPI::arbitrary(g),
                 n: MPI::arbitrary(g),
@@ -671,10 +703,29 @@ impl Arbitrary for PublicKey {
                 sym: SymmetricAlgorithm::arbitrary(g),
             },
 
+            6 => X25519 { u: arbitrary(g) },
+            7 => X448 { u: Box::new(arbitrarize(g, [0; 56])) },
+            8 => Ed25519 { a: arbitrary(g) },
+            9 => Ed448 { a: Box::new(arbitrarize(g, [0; 57])) },
+
             _ => unreachable!(),
         }
     }
 }
+
+#[cfg(test)]
+pub(crate) fn arbitrarize<T: AsMut<[u8]>>(g: &mut Gen, mut a: T) -> T
+{
+    a.as_mut().iter_mut().for_each(|p| *p = Arbitrary::arbitrary(g));
+    a
+}
+
+#[cfg(test)]
+pub(crate) fn arbitrary<T: Default + AsMut<[u8]>>(g: &mut Gen) -> T
+{
+    arbitrarize(g, Default::default())
+}
+
 
 /// A secret key.
 ///
@@ -734,6 +785,30 @@ pub enum SecretKeyMaterial {
         scalar: ProtectedMPI,
     },
 
+    /// X25519 secret key.
+    X25519 {
+        /// The secret key, an opaque string.
+        x: Protected,
+    },
+
+    /// X448 secret key.
+    X448 {
+        /// The secret key, an opaque string.
+        x: Protected,
+    },
+
+    /// Ed25519 secret key.
+    Ed25519 {
+        /// The secret key, an opaque string.
+        x: Protected,
+    },
+
+    /// Ed448 secret key.
+    Ed448 {
+        /// The secret key, an opaque string.
+        x: Protected,
+    },
+
     /// Unknown number of MPIs for an unknown algorithm.
     Unknown {
         /// The successfully parsed MPIs.
@@ -760,6 +835,14 @@ impl fmt::Debug for SecretKeyMaterial {
                     write!(f, "ECDSA {{ scalar: {:?} }}", scalar),
                 SecretKeyMaterial::ECDH{ ref scalar } =>
                     write!(f, "ECDH {{ scalar: {:?} }}", scalar),
+                SecretKeyMaterial::X25519 { x } =>
+                    write!(f, "X25519 {{ x: {:?} }}", x),
+                SecretKeyMaterial::X448 { x } =>
+                    write!(f, "X448 {{ x: {:?} }}", x),
+                SecretKeyMaterial::Ed25519 { x } =>
+                    write!(f, "Ed25519 {{ x: {:?} }}", x),
+                SecretKeyMaterial::Ed448 { x } =>
+                    write!(f, "Ed448 {{ x: {:?} }}", x),
                 SecretKeyMaterial::Unknown{ ref mpis, ref rest } =>
                     write!(f, "Unknown {{ mips: {:?}, rest: {:?} }}", mpis, rest),
             }
@@ -777,6 +860,14 @@ impl fmt::Debug for SecretKeyMaterial {
                     f.write_str("ECDSA { <Redacted> }"),
                 SecretKeyMaterial::ECDH{ .. } =>
                     f.write_str("ECDH { <Redacted> }"),
+                SecretKeyMaterial::X25519 { .. } =>
+                    f.write_str("X25519 { <Redacted> }"),
+                SecretKeyMaterial::X448 { .. } =>
+                    f.write_str("X448 { <Redacted> }"),
+                SecretKeyMaterial::Ed25519 { .. } =>
+                    f.write_str("Ed25519 { <Redacted> }"),
+                SecretKeyMaterial::Ed448 { .. } =>
+                    f.write_str("Ed448 { <Redacted> }"),
                 SecretKeyMaterial::Unknown{ .. } =>
                     f.write_str("Unknown { <Redacted> }"),
             }
@@ -796,7 +887,11 @@ impl PartialOrd for SecretKeyMaterial {
                 SecretKeyMaterial::EdDSA{ .. } => 3,
                 SecretKeyMaterial::ECDSA{ .. } => 4,
                 SecretKeyMaterial::ECDH{ .. } => 5,
-                SecretKeyMaterial::Unknown{ .. } => 6,
+                SecretKeyMaterial::X25519 { .. } => 6,
+                SecretKeyMaterial::X448 { .. } => 7,
+                SecretKeyMaterial::Ed25519 { .. } => 8,
+                SecretKeyMaterial::Ed448 { .. } => 9,
+                SecretKeyMaterial::Unknown { .. } => 10,
             }
         }
 
@@ -833,6 +928,15 @@ impl PartialOrd for SecretKeyMaterial {
             ,&SecretKeyMaterial::ECDH{ scalar: ref scalar2 }) => {
                 scalar1.cmp(scalar2)
             }
+            (SecretKeyMaterial::X25519 { x: x0 },
+             SecretKeyMaterial::X25519 { x: x1 }) => x0.cmp(x1),
+            (SecretKeyMaterial::X448 { x: x0 },
+             SecretKeyMaterial::X448 { x: x1 }) => x0.cmp(x1),
+            (SecretKeyMaterial::Ed25519 { x: x0 },
+             SecretKeyMaterial::Ed25519 { x: x1 }) => x0.cmp(x1),
+            (SecretKeyMaterial::Ed448 { x: x0 },
+             SecretKeyMaterial::Ed448 { x: x1 }) => x0.cmp(x1),
+
             (&SecretKeyMaterial::Unknown{ mpis: ref mpis1, rest: ref rest1 }
             ,&SecretKeyMaterial::Unknown{ mpis: ref mpis2, rest: ref rest2 }) => {
                 let o1 = secure_cmp(rest1, rest2);
@@ -881,6 +985,10 @@ impl SecretKeyMaterial {
             EdDSA { .. } => Some(PublicKeyAlgorithm::EdDSA),
             ECDSA { .. } => Some(PublicKeyAlgorithm::ECDSA),
             ECDH { .. } => Some(PublicKeyAlgorithm::ECDH),
+            X25519 { .. } => Some(PublicKeyAlgorithm::X25519),
+            X448 { .. } => Some(PublicKeyAlgorithm::X448),
+            Ed25519 { .. } => Some(PublicKeyAlgorithm::Ed25519),
+            Ed448 { .. } => Some(PublicKeyAlgorithm::Ed448),
             Unknown { .. } => None,
         }
     }
@@ -924,6 +1032,19 @@ impl SecretKeyMaterial {
 
             ECDH => Ok(SecretKeyMaterial::ECDH {
                 scalar: MPI::arbitrary(g).into(),
+            }),
+
+            X25519 => Ok(SecretKeyMaterial::X25519 {
+                x: arbitrarize(g, vec![0; 32]).into(),
+            }),
+            X448 => Ok(SecretKeyMaterial::X448 {
+                x: arbitrarize(g, vec![0; 56]).into(),
+            }),
+            Ed25519 => Ok(SecretKeyMaterial::Ed25519 {
+                x: arbitrarize(g, vec![0; 32]).into(),
+            }),
+            Ed448 => Ok(SecretKeyMaterial::Ed448 {
+                x: arbitrarize(g, vec![0; 57]).into(),
             }),
 
             Private(_) | Unknown(_) =>
@@ -996,6 +1117,22 @@ pub enum Ciphertext {
         key: Box<[u8]>,
     },
 
+    /// X25519 ciphertext.
+    X25519 {
+        /// Ephermeral key.
+        e: Box<[u8; 32]>,
+        /// Symmetrically encrypted session key.
+        key: Box<[u8]>,
+    },
+
+    /// X448 ciphertext.
+    X448 {
+        /// Ephermeral key.
+        e: Box<[u8; 56]>,
+        /// Symmetrically encrypted session key.
+        key: Box<[u8]>,
+    },
+
     /// Unknown number of MPIs for an unknown algorithm.
     Unknown {
         /// The successfully parsed MPIs.
@@ -1019,6 +1156,8 @@ impl Ciphertext {
             RSA { .. } => Some(PublicKeyAlgorithm::RSAEncryptSign),
             ElGamal { .. } => Some(PublicKeyAlgorithm::ElGamalEncrypt),
             ECDH { .. } => Some(PublicKeyAlgorithm::ECDH),
+            X25519 { .. } => Some(PublicKeyAlgorithm::X25519),
+            X448 { .. } => Some(PublicKeyAlgorithm::X448),
             Unknown { .. } => None,
         }
     }
@@ -1036,7 +1175,7 @@ impl Arbitrary for Ciphertext {
     fn arbitrary(g: &mut Gen) -> Self {
         use crate::arbitrary_helper::gen_arbitrary_from_range;
 
-        match gen_arbitrary_from_range(0..3, g) {
+        match gen_arbitrary_from_range(0..5, g) {
             0 => Ciphertext::RSA {
                 c: MPI::arbitrary(g),
             },
@@ -1048,6 +1187,24 @@ impl Arbitrary for Ciphertext {
 
             2 => Ciphertext::ECDH {
                 e: MPI::arbitrary(g),
+                key: {
+                    let mut k = <Vec<u8>>::arbitrary(g);
+                    k.truncate(255);
+                    k.into_boxed_slice()
+                },
+            },
+
+            3 => Ciphertext::X25519 {
+                e: Box::new(arbitrary(g)),
+                key: {
+                    let mut k = <Vec<u8>>::arbitrary(g);
+                    k.truncate(255);
+                    k.into_boxed_slice()
+                },
+            },
+
+            4 => Ciphertext::X448 {
+                e: Box::new(arbitrarize(g, [0; 56])),
                 key: {
                     let mut k = <Vec<u8>>::arbitrary(g);
                     k.truncate(255);
@@ -1109,6 +1266,18 @@ pub enum Signature {
         s: MPI,
     },
 
+    /// Ed25519 signature.
+    Ed25519 {
+        /// The signature.
+        s: Box<[u8; 64]>,
+    },
+
+    /// Ed448 signature.
+    Ed448 {
+        /// The signature.
+        s: Box<[u8; 114]>,
+    },
+
     /// Unknown number of MPIs for an unknown algorithm.
     Unknown {
         /// The successfully parsed MPIs.
@@ -1131,7 +1300,7 @@ impl Arbitrary for Signature {
     fn arbitrary(g: &mut Gen) -> Self {
         use crate::arbitrary_helper::gen_arbitrary_from_range;
 
-        match gen_arbitrary_from_range(0..4, g) {
+        match gen_arbitrary_from_range(0..6, g) {
             0 => Signature::RSA  {
                 s: MPI::arbitrary(g),
             },
@@ -1149,6 +1318,14 @@ impl Arbitrary for Signature {
             3 => Signature::ECDSA  {
                 r: MPI::arbitrary(g),
                 s: MPI::arbitrary(g),
+            },
+
+            4 => Signature::Ed25519  {
+                s: Box::new(arbitrarize(g, [0; 64])),
+            },
+
+            5 => Signature::Ed448  {
+                s: Box::new(arbitrarize(g, [0; 114])),
             },
 
             _ => unreachable!(),
@@ -1192,6 +1369,14 @@ mod tests {
                     PublicKey::parse(ECDSA, cur).unwrap(),
                 PublicKey::ECDH { .. } =>
                     PublicKey::parse(ECDH, cur).unwrap(),
+                PublicKey::X25519 { .. } =>
+                    PublicKey::parse(X25519, cur).unwrap(),
+                PublicKey::X448 { .. } =>
+                    PublicKey::parse(X448, cur).unwrap(),
+                PublicKey::Ed25519 { .. } =>
+                    PublicKey::parse(Ed25519, cur).unwrap(),
+                PublicKey::Ed448 { .. } =>
+                    PublicKey::parse(Ed448, cur).unwrap(),
 
                 PublicKey::Unknown { .. } => unreachable!(),
             };
@@ -1242,6 +1427,14 @@ mod tests {
                     SecretKeyMaterial::parse(ECDH, cur).unwrap(),
                 SecretKeyMaterial::ElGamal { .. } =>
                     SecretKeyMaterial::parse(ElGamalEncrypt, cur).unwrap(),
+                SecretKeyMaterial::X25519 { .. } =>
+                    SecretKeyMaterial::parse(X25519, cur).unwrap(),
+                SecretKeyMaterial::X448 { .. } =>
+                    SecretKeyMaterial::parse(X448, cur).unwrap(),
+                SecretKeyMaterial::Ed25519 { .. } =>
+                    SecretKeyMaterial::parse(Ed25519, cur).unwrap(),
+                SecretKeyMaterial::Ed448 { .. } =>
+                    SecretKeyMaterial::parse(Ed448, cur).unwrap(),
 
                 SecretKeyMaterial::Unknown { .. } => unreachable!(),
             };
@@ -1267,6 +1460,10 @@ mod tests {
                     Ciphertext::parse(ElGamalEncrypt, cur).unwrap(),
                 Ciphertext::ECDH { .. } =>
                     Ciphertext::parse(ECDH, cur).unwrap(),
+                Ciphertext::X25519 { .. } =>
+                    Ciphertext::parse(X25519, cur).unwrap(),
+                Ciphertext::X448 { .. } =>
+                    Ciphertext::parse(X448, cur).unwrap(),
 
                 Ciphertext::Unknown { .. } => unreachable!(),
             };
@@ -1296,6 +1493,10 @@ mod tests {
                     Signature::parse(EdDSA, cur).unwrap(),
                 Signature::ECDSA { .. } =>
                     Signature::parse(ECDSA, cur).unwrap(),
+                Signature::Ed25519 { .. } =>
+                    Signature::parse(Ed25519, cur).unwrap(),
+                Signature::Ed448 { .. } =>
+                    Signature::parse(Ed448, cur).unwrap(),
 
                 Signature::Unknown { .. } => unreachable!(),
             };
