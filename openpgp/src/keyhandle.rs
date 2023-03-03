@@ -179,19 +179,29 @@ impl PartialOrd for KeyHandle {
         // Do a little endian comparison so that for v4 keys (where
         // the KeyID is a suffix of the Fingerprint) equivalent KeyIDs
         // and Fingerprints sort next to each other.
-        for (a, b) in a[a.len()-l..].iter().zip(b[b.len()-l..].iter()) {
+        for (a, b) in a[a.len()-l..].iter().zip(b[b.len()-l..].iter()).rev() {
             let cmp = a.cmp(b);
             if cmp != Ordering::Equal {
                 return Some(cmp);
             }
         }
 
-        if a.len() == b.len() {
-            Some(Ordering::Equal)
-        } else {
-            // One (a KeyID) is the suffix of the other (a
-            // Fingerprint).
-            None
+        match (self, other) {
+            (KeyHandle::Fingerprint(_a), KeyHandle::Fingerprint(_b)) =>
+                Some(Ordering::Equal),
+            (KeyHandle::KeyID(_a), KeyHandle::KeyID(_b)) =>
+            {
+                // Just because two key ids are identical doesn't mean
+                // they refer to the same object.
+                None
+            }
+            (KeyHandle::Fingerprint(_a), KeyHandle::KeyID(_b))
+                | (KeyHandle::KeyID(_b), KeyHandle::Fingerprint(_a)) =>
+            {
+                // Just because a fingerprint and a key id alias
+                // doesn't mean they refer to the same object.
+                None
+            }
         }
     }
 }
@@ -289,11 +299,25 @@ impl KeyHandle {
     pub fn aliases<H>(&self, other: H) -> bool
         where H: Borrow<KeyHandle>
     {
-        // This works, because the PartialOrd implementation only
-        // returns None if one value is a fingerprint and the other is
-        // a key id that matches the fingerprint's key id.
-        self.partial_cmp(other.borrow()).unwrap_or(Ordering::Equal)
-            == Ordering::Equal
+        match (self, other.borrow()) {
+            (KeyHandle::Fingerprint(a), KeyHandle::Fingerprint(b)) =>
+                a == b,
+            (KeyHandle::KeyID(a), KeyHandle::KeyID(b)) =>
+                a == b,
+            (KeyHandle::Fingerprint(Fingerprint::V4(a)), KeyHandle::KeyID(b))
+                | (KeyHandle::KeyID(b), KeyHandle::Fingerprint(Fingerprint::V4(a))) =>
+            {
+                // KeyID::from does a heap allocation.  Avoid it in
+                // the common case by inlining our knowledge about v4
+                // fingerprints.
+                &a[a.len() - 8..] == b.as_bytes()
+            }
+            (KeyHandle::Fingerprint(a), KeyHandle::KeyID(b))
+                | (KeyHandle::KeyID(b), KeyHandle::Fingerprint(a)) =>
+            {
+                &KeyID::from(a) == b
+            }
+        }
     }
 
     /// Returns whether the KeyHandle is invalid.
