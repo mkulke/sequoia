@@ -48,7 +48,7 @@ after_script:
 
 bookworm:
   tags:
-    - linux
+    - equinix-linux
   stage: build
   interruptible: true
   image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/bookworm-prebuild:latest
@@ -63,7 +63,7 @@ bookworm:
 
 bookworm-crypto-rust:
   tags:
-    - linux
+    - equinix-linux
   stage: build
   interruptible: true
   image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/bookworm-prebuild:latest
@@ -78,7 +78,7 @@ bookworm-crypto-rust:
 
 bookworm-crypto-openssl:
   tags:
-    - linux
+    - equinix-linux
   stage: build
   interruptible: true
   image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/bookworm-prebuild:latest
@@ -96,7 +96,7 @@ bookworm-crypto-openssl:
 # See https://gitlab.com/sequoia-pgp/sequoia/-/issues/979 for details.
 fedora-crypto-openssl:
   tags:
-    - linux
+    - equinix-linux
   stage: build
   interruptible: true
   # We need this exact version for OpenSSL 3.0.5
@@ -115,7 +115,7 @@ fedora-crypto-openssl:
 
 bookworm-crypto-botan:
   tags:
-    - linux
+    - equinix-linux
   stage: build
   interruptible: true
   image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/bookworm-prebuild:latest
@@ -127,6 +127,8 @@ bookworm-crypto-botan:
     CARGO_HOME: /cargo
 
 benchmarks:
+  tags:
+    - equinix-linux
   stage: test
   interruptible: true
   image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/bookworm:latest
@@ -158,6 +160,8 @@ benchmarks:
 
 all_commits:
   # Test each commit up to main, to facilitate bisecting.
+  tags:
+    - equinix-linux
   stage: test
   interruptible: true
   image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/rust-stable-prebuild:latest
@@ -174,7 +178,7 @@ all_commits:
 
 codespell:
   tags:
-    - linux
+    - equinix-linux
   stage: pre-check
   interruptible: true
   image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/bookworm:latest
@@ -188,7 +192,7 @@ codespell:
 
 doc:
   tags:
-    - linux
+    - equinix-linux
   stage: build
   interruptible: true
   image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/rust-stable-prebuild:latest
@@ -204,7 +208,7 @@ doc:
 
 rust-stable:
   tags:
-    - linux
+    - equinix-linux
   stage: build
   interruptible: true
   image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/rust-stable-prebuild:latest
@@ -220,7 +224,7 @@ rust-stable:
 
 clippy:
   tags:
-    - linux
+    - equinix-linux
   stage: build
   interruptible: true
   image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/rust-stable-prebuild:latest
@@ -239,7 +243,7 @@ clippy:
 
 rust-stable-armv7:
   tags:
-    - linux
+    - equinix-linux
   stage: build
   interruptible: true
   image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/bullseye-cross-arm-prebuild:latest
