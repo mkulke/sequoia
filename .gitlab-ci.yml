@@ -248,12 +248,10 @@ rust-stable-armv7:
     - cat .ci/snippet_for_cross_compilation_config.toml >> .cargo/config.toml
     - *before_script_end
   script:
-    - CARGO_PACKAGES="-p buffered-reader -p sequoia-openpgp" $MAKE_TOP test
+    - cargo test --tests -target=armv7-unknown-linux-gnueabihf -p buffered-reader -p sequoia-openpgp
   variables:
     CARGO_TARGET_DIR: /target
     CARGO_HOME: /cargo
-    CARGO_PACKAGES: -p buffered-reader -p sequoia-openpgp
-    CARGO_FLAGS: --target=armv7-unknown-linux-gnueabihf
     PKG_CONFIG_PATH: /usr/lib/arm-linux-gnueabihf/pkgconfig
     PKG_CONFIG_ALLOW_CROSS: 1
 
