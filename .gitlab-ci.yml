@@ -263,11 +263,11 @@ rust-stable-armv7:
 
 windows-gnu-nettle:
   tags:
-    - win
-    - win2019
+    - equinix-win
+    - equinix-win2019
   stage: build
   interruptible: true
-  image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/windows-gnu
+  image: registry.gitlab.com/sequoia-pgp/build-docker-image/windows-gnu
   only:
     variables:
       # Forks of this project most likely use gitlab's shared windows runners, which
@@ -289,8 +289,8 @@ windows-gnu-nettle:
 
 windows-gnu-cng:
   tags:
-    - win
-    - win2019
+    - equinix-win
+    - equinix-win2019
   stage: build
   interruptible: true
   # Depend on the main configuration.  As the jobs have common error
@@ -299,7 +299,7 @@ windows-gnu-cng:
   # Windows jobs, allowing us to test the other toolchain as well.
   needs:
     - windows-gnu-nettle
-  image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/windows-gnu
+  image: registry.gitlab.com/sequoia-pgp/build-docker-image/windows-gnu
   only:
     variables:
       # Forks of this project most likely use gitlab's shared windows runners, which
@@ -321,11 +321,11 @@ windows-gnu-cng:
 
 windows-msvc-cng:
   tags:
-    - win
-    - win2019
+    - equinix-win
+    - equinix-win2019
   stage: build
   interruptible: true
-  image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/windows-msvc
+  image: registry.gitlab.com/sequoia-pgp/build-docker-image/windows-msvc
   only:
     variables:
       # Forks of this project most likely use gitlab's shared windows runners, which
@@ -347,8 +347,8 @@ windows-msvc-cng:
 
 windows-msvc32-cng:
   tags:
-    - win
-    - win2019
+    - equinix-win
+    - equinix-win2019
   stage: build
   interruptible: true
   # Depend on the main configuration.  As the jobs have common error
@@ -358,7 +358,7 @@ windows-msvc32-cng:
   needs:
     - windows-msvc-cng
   image:
-    name: 192.168.122.1:5000/sequoia-pgp/build-docker-image/windows-msvc
+    name: registry.gitlab.com/sequoia-pgp/build-docker-image/windows-msvc
     # Set up a cross compilation environment for building x86 binaries on amd64, line copied from Dockerfile.windows.msvc
     # see https://renenyffenegger.ch/notes/Windows/dirs/Program-Files-x86/Microsoft-Visual-Studio/version/edition/Common7/Tools/VsDevCmd_bat
     #
