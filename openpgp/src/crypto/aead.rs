@@ -56,9 +56,6 @@ pub trait Aead : seal::Sealed {
     /// ciphertext and the digest!
     fn encrypt_seal(&mut self, dst: &mut [u8], src: &[u8]) -> Result<()>;
 
-    /// Length of the digest in bytes.
-    fn digest_size(&self) -> usize;
-
     /// Decrypt one chunk `src` to `dst` and verify that the digest is
     /// correct.
     fn decrypt_verify(&mut self, dst: &mut [u8], src: &[u8]) -> Result<()>;
@@ -704,7 +701,7 @@ impl<W: io::Write, S: Schedule> Encryptor<W, S> {
                     // size.  The vector has capacity chunk size plus
                     // digest size.
                     debug_assert!(self.buffer.len() < self.chunk_size);
-                    self.scratch.set_len(self.buffer.len() + aead.digest_size())
+                    self.scratch.set_len(self.buffer.len() + self.digest_size)
                 }
                 aead.encrypt_seal(&mut self.scratch, &self.buffer)?;
                 self.bytes_encrypted += self.buffer.len() as u64;

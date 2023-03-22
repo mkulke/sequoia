@@ -114,11 +114,8 @@ macro_rules! impl_aead {
     ($($type: ty),*) => {
         $(
         impl Aead for Eax<$type, Encrypt> {
-            fn digest_size(&self) -> usize {
-                <eax::Tag as GenericArrayExt<_, _>>::LEN
-            }
             fn encrypt_seal(&mut self, dst: &mut [u8], src: &[u8]) -> Result<()> {
-                debug_assert_eq!(dst.len(), src.len() + self.digest_size());
+                debug_assert_eq!(dst.len(), src.len() + <eax::Tag as GenericArrayExt<_, _>>::LEN);
                 let len = core::cmp::min(dst.len(), src.len());
                 dst[..len].copy_from_slice(&src[..len]);
                 Eax::<$type, Encrypt>::encrypt(self, &mut dst[..len]);
@@ -135,17 +132,15 @@ macro_rules! impl_aead {
         )*
         $(
         impl Aead for Eax<$type, Decrypt> {
-            fn digest_size(&self) -> usize {
-                <eax::Tag as GenericArrayExt<_, _>>::LEN
-            }
             fn encrypt_seal(&mut self, _dst: &mut [u8], _src: &[u8]) -> Result<()> {
                 panic!("AEAD encryption called in the decryption context")
             }
             fn decrypt_verify(&mut self, dst: &mut [u8], src: &[u8]) -> Result<()> {
-                debug_assert_eq!(dst.len() + self.digest_size(), src.len());
+                let digest_size = <eax::Tag as GenericArrayExt<_, _>>::LEN;
+                debug_assert_eq!(dst.len() + digest_size, src.len());
 
                 // Split src into ciphertext and digest.
-                let l = self.digest_size();
+                let l = digest_size;
                 let digest = &src[src.len().saturating_sub(l)..];
                 let src = &src[..src.len().saturating_sub(l)];
 

@@ -50,9 +50,6 @@ impl<T: nettle::aead::Aead> Aead for T {
             }
         Ok(())
     }
-    fn digest_size(&self) -> usize {
-        self.digest_size()
-    }
 }
 
 impl AEADAlgorithm {

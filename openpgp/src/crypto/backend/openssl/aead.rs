@@ -14,7 +14,7 @@ struct OpenSslContext {
 
 impl Aead for OpenSslContext {
     fn encrypt_seal(&mut self, dst: &mut [u8], src: &[u8]) -> Result<()> {
-        debug_assert_eq!(dst.len(), src.len() + self.digest_size());
+        debug_assert_eq!(dst.len(), src.len() + self.ctx.block_size());
 
         // SAFETY: Process completely one full chunk.  Since `update`
         // is not being called again with partial block info and the
@@ -26,11 +26,11 @@ impl Aead for OpenSslContext {
     }
 
     fn decrypt_verify(&mut self, dst: &mut [u8], src: &[u8]) -> Result<()> {
-        debug_assert!(src.len() >= self.digest_size());
-        debug_assert_eq!(dst.len() + self.digest_size(), src.len());
+        debug_assert!(src.len() >= self.ctx.block_size());
+        debug_assert_eq!(dst.len() + self.ctx.block_size(), src.len());
 
         // Split src into ciphertext and tag.
-        let l = self.digest_size();
+        let l = self.ctx.block_size();
         let ciphertext = &src[..src.len().saturating_sub(l)];
         let tag = &src[src.len().saturating_sub(l)..];
 
@@ -43,10 +43,6 @@ impl Aead for OpenSslContext {
         self.ctx.set_tag(tag)?;
         unsafe { self.ctx.cipher_final_unchecked(&mut dst[size..])? };
         Ok(())
-    }
-
-    fn digest_size(&self) -> usize {
-        self.ctx.block_size()
     }
 }
 

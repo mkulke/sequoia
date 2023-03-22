@@ -45,12 +45,8 @@ where
     Cipher: BlockCipher<BlockSize = U16> + NewBlockCipher + Clone,
     Cipher::ParBlocks: ArrayLength<Block<Cipher>>,
 {
-    fn digest_size(&self) -> usize {
-        eax::Tag::LEN
-    }
-
     fn encrypt_seal(&mut self, dst: &mut [u8], src: &[u8]) -> Result<()> {
-        debug_assert_eq!(dst.len(), src.len() + self.digest_size());
+        debug_assert_eq!(dst.len(), src.len() + eax::Tag::LEN);
         let len = cmp::min(dst.len(), src.len());
         dst[..len].copy_from_slice(&src[..len]);
         Self::encrypt(self, &mut dst[..len]);
@@ -69,19 +65,15 @@ where
     Cipher: BlockCipher<BlockSize = U16> + NewBlockCipher + Clone,
     Cipher::ParBlocks: ArrayLength<Block<Cipher>>,
 {
-    fn digest_size(&self) -> usize {
-        eax::Tag::LEN
-    }
-
     fn encrypt_seal(&mut self, _dst: &mut [u8], _src: &[u8]) -> Result<()> {
         panic!("AEAD encryption called in the decryption context")
     }
 
     fn decrypt_verify(&mut self, dst: &mut [u8], src: &[u8]) -> Result<()> {
-        debug_assert_eq!(dst.len() + self.digest_size(), src.len());
+        debug_assert_eq!(dst.len() + eax::Tag::LEN, src.len());
 
         // Split src into ciphertext and digest.
-        let l = self.digest_size();
+        let l = eax::Tag::LEN;
         let digest = &src[src.len().saturating_sub(l)..];
         let src = &src[..src.len().saturating_sub(l)];
 

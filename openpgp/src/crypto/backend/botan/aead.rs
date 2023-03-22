@@ -11,18 +11,15 @@ struct Cipher(botan::Cipher, usize);
 impl seal::Sealed for Cipher {}
 impl Aead for Cipher {
     fn encrypt_seal(&mut self, dst: &mut [u8], src: &[u8]) -> Result<()> {
-        debug_assert_eq!(dst.len(), src.len() + self.digest_size());
+        debug_assert_eq!(dst.len(), src.len() + self.1);
         self.0.finish_into(src, dst)?;
         Ok(())
     }
 
     fn decrypt_verify(&mut self, dst: &mut [u8], src: &[u8]) -> Result<()> {
-        debug_assert_eq!(dst.len() + self.digest_size(), src.len());
+        debug_assert_eq!(dst.len() + self.1, src.len());
         self.0.finish_into(src, dst)?;
         Ok(())
-    }
-    fn digest_size(&self) -> usize {
-        self.1
     }
 }
 
