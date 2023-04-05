@@ -829,12 +829,26 @@ pub(crate) struct SignatureGroup {
     ops_count: usize,
 
     /// The hash contexts.
-    pub(crate) hashes: Vec<HashingMode<Box<dyn crypto::hash::Digest>>>,
+    ///
+    /// We store a salt and the hash context as tuples.
+    ///
+    /// In v6, the hash is salted.  We store the salt here so that we
+    /// can find the right hash context again when we encounter the
+    /// signature packet.
+    ///
+    /// In v4, the hash is not salted.  Hence, salt is the zero-length
+    /// vector.  The fact that the hash is not salted allows for an
+    /// optimization: to verify two signatures using the same hash
+    /// algorithm, the hash must be computed just once.  We implement
+    /// this optimization for v4 signatures.
+    pub(crate) hashes: Vec<(Vec<u8>,
+                            HashingMode<Box<dyn crypto::hash::Digest>>)>,
 }
 
 impl fmt::Debug for SignatureGroup {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let algos = self.hashes.iter().map(|mode| mode.map(|ctx| ctx.algo()))
+        let algos = self.hashes.iter()
+            .map(|(salt, mode)| (salt, mode.map(|ctx| ctx.algo())))
             .collect::<Vec<_>>();
 
         f.debug_struct("Cookie")
@@ -1406,6 +1420,12 @@ impl Signature {
         }
 
         let need_hash = HashingMode::for_signature(hash_algo, typ);
+        let need_salt =
+            if let Packet::Signature(Signature::V6(sig)) = &pp.packet {
+                sig.salt()
+            } else {
+                &[]
+            };
 
         // Locate the corresponding HashedReader and extract the
         // computed hash.
@@ -1447,8 +1467,10 @@ impl Signature {
                     {
                         if let Some(hash) =
                             cookie.sig_group().hashes.iter().find_map(
-                                |mode|
-                                if mode.map(|ctx| ctx.algo()) == need_hash {
+                                |(salt, mode)|
+                                if salt == need_salt
+                                    && mode.map(|ctx| ctx.algo()) == need_hash
+                                {
                                     Some(mode.as_ref())
                                 } else {
                                     None
@@ -2042,6 +2064,7 @@ impl OnePassSig {
         let version = php_try!(php.parse_u8("version"));
         match version {
             3 => OnePassSig3::parse(php),
+            6 => OnePassSig6::parse(php),
             _ => {
                 t!("Ignoring version {} packet", version);
 
@@ -2114,13 +2137,16 @@ impl OnePassSig3 {
                                 // hash algorithm.
                                 if php.state.settings.automatic_hashing
                                     && ! cookie.sig_group().hashes.iter()
-                                    .any(|mode| {
+                                    .any(|(salt, mode)| {
                                         mode.map(|ctx| ctx.algo()) == need_hash
+                                            && salt.is_empty()
                                     })
                                 {
                                     if let Ok(ctx) = hash_algo.context() {
                                         cookie.sig_group_mut().hashes.push(
-                                            HashingMode::for_signature(Box::new(ctx), typ)
+                                            (vec![],
+                                             HashingMode::for_signature(
+                                                 Box::new(ctx), typ))
                                         );
                                     }
                                 }
@@ -2177,7 +2203,7 @@ impl OnePassSig3 {
         assert!(! fake_eof);
 
         let mut reader = HashedReader::new(
-            reader, want_hashes_for, algos)?;
+            reader, want_hashes_for, vec![], algos)?;
         reader.cookie_mut().level = Some(recursion_depth - 1);
         // Account for this OPS packet.
         reader.cookie_mut().sig_group_mut().ops_count += 1;
@@ -2253,6 +2279,7 @@ impl PacketParser<'_> {
 
         let hash_algo = ops.hash_algo();
         let typ = ops.typ();
+        let salt = ops.salt();
         let need_hash = HashingMode::for_signature(hash_algo, typ);
         let recursion_depth = self.recursion_depth();
         let want_hashes_for = if Cookie::processing_csf_message(&self.reader) {
@@ -2279,12 +2306,13 @@ impl PacketParser<'_> {
                             // hash algorithm.
                             if ! cookie.sig_group().hashes.iter()
                                 .any(|mode| {
-                                    mode.map(|ctx| ctx.algo()) == need_hash
+                                    mode.1.map(|ctx| ctx.algo()) == need_hash
                                 })
                             {
-                                cookie.sig_group_mut().hashes.push(
+                                cookie.sig_group_mut().hashes.push((
+                                    salt.map(|s| s.into()).unwrap_or_default(),
                                     HashingMode::for_signature(
-                                        Box::new(hash_algo.context()?), typ));
+                                        Box::new(hash_algo.context()?), typ)));
                             }
                             break;
                         }
@@ -2300,7 +2328,7 @@ impl PacketParser<'_> {
 }
 
 #[test]
-fn one_pass_sig_parser_test () {
+fn one_pass_sig3_parser_test () {
     use crate::SignatureType;
     use crate::PublicKeyAlgorithm;
 
@@ -2324,12 +2352,108 @@ fn one_pass_sig_parser_test () {
 
 impl<'a> Parse<'a, OnePassSig3> for OnePassSig3 {
     fn from_reader<R: 'a + Read + Send + Sync>(reader: R) -> Result<Self> {
-        OnePassSig::from_reader(reader).map(|p| match p {
-            OnePassSig::V3(p) => p,
-            // XXX: Once we have a second variant.
-            //
-            // p => Err(Error::InvalidOperation(
-            //     format!("Not a OnePassSig::V3 packet: {:?}", p)).into()),
+        OnePassSig::from_reader(reader).and_then(|p| match p {
+            OnePassSig::V3(p) => Ok(p),
+             p => Err(Error::InvalidOperation(
+                 format!("Not a OnePassSig::V3 packet: {:?}", p)).into()),
+        })
+    }
+}
+
+impl OnePassSig6 {
+    #[allow(clippy::blocks_in_if_conditions)]
+    fn parse(mut php: PacketHeaderParser) -> Result<PacketParser> {
+        let indent = php.recursion_depth();
+        tracer!(TRACE, "OnePassSig6", indent);
+
+        make_php_try!(php);
+
+        let typ = php_try!(php.parse_u8("type"));
+        let hash_algo = php_try!(php.parse_u8("hash_algo"));
+        let pk_algo = php_try!(php.parse_u8("pk_algo"));
+        let salt_len = php_try!(php.parse_u8("salt_len"));
+        let salt = php_try!(php.parse_bytes("salt", salt_len.into()));
+        let mut issuer = [0u8; 32];
+        issuer.copy_from_slice(&php_try!(php.parse_bytes("issuer", 32)));
+        let last = php_try!(php.parse_u8("last"));
+
+        let hash_algo = hash_algo.into();
+        let typ = typ.into();
+        let mut sig = OnePassSig6::new(typ, Fingerprint::from_bytes(&issuer));
+        sig.set_salt(salt.clone());
+        sig.set_hash_algo(hash_algo);
+        sig.set_pk_algo(pk_algo.into());
+        sig.set_last_raw(last);
+
+        let recursion_depth = php.recursion_depth();
+
+        // Check if we are processing a cleartext signed message.
+        let want_hashes_for = if Cookie::processing_csf_message(&php.reader) {
+            HashesFor::CleartextSignature
+        } else {
+            HashesFor::Signature
+        };
+
+        // We create an empty hashed reader even if we don't support
+        // the hash algorithm so that we have something to match
+        // against when we get to the Signature packet.
+        let mut algos = Vec::new();
+        if hash_algo.is_supported() {
+            algos.push(HashingMode::for_signature(hash_algo, typ));
+        }
+
+        // Commit here after potentially pushing a signature group.
+        let mut pp = php.ok(Packet::OnePassSig(sig.into()))?;
+
+        // We can't push the HashedReader on the BufferedReader stack:
+        // when we finish processing this OnePassSig packet, it will
+        // be popped.  Instead, we need to insert it at the next
+        // higher level.  Unfortunately, this isn't possible.  But,
+        // since we're done reading the current packet, we can pop the
+        // readers associated with it, and then push the HashedReader.
+        // This is a bit of a layering violation, but I (Neal) can't
+        // think of a more elegant solution.
+
+        assert!(pp.reader.cookie_ref().level <= Some(recursion_depth));
+        let (fake_eof, reader)
+            = buffered_reader_stack_pop(Box::new(pp.take_reader()),
+                                        recursion_depth)?;
+        // We only pop the buffered readers for the OPS, and we
+        // (currently) never use a fake eof for OPS packets.
+        assert!(! fake_eof);
+
+        let mut reader = HashedReader::new(
+            reader, want_hashes_for, salt, algos)?;
+        reader.cookie_mut().level = Some(recursion_depth - 1);
+        // Account for this OPS packet.
+        reader.cookie_mut().sig_group_mut().ops_count += 1;
+        // Keep track of the last flag.
+        reader.cookie_mut().saw_last = last > 0;
+
+        t!("Pushed a hashed reader, level {:?}", reader.cookie_mut().level);
+
+        // We add an empty limitor on top of the hashed reader,
+        // because when we are done processing a packet,
+        // PacketParser::finish discards any unread data from the top
+        // reader.  Since the top reader is the HashedReader, this
+        // discards any following packets.  To prevent this, we push a
+        // Limitor on the reader stack.
+        let mut reader = buffered_reader::Limitor::with_cookie(
+            reader, 0, Cookie::default());
+        reader.cookie_mut().level = Some(recursion_depth);
+
+        pp.reader = Box::new(reader);
+
+        Ok(pp)
+    }
+}
+
+impl<'a> Parse<'a, OnePassSig6> for OnePassSig6 {
+    fn from_reader<R: 'a + Read + Send + Sync>(reader: R) -> Result<Self> {
+        OnePassSig::from_reader(reader).and_then(|p| match p {
+            OnePassSig::V6(p) => Ok(p),
+             p => Err(Error::InvalidOperation(
+                 format!("Not a OnePassSig::V6 packet: {:?}", p)).into()),
         })
     }
 }
@@ -3276,7 +3400,7 @@ impl MDC {
                         if !state.sig_group().hashes.is_empty() {
                             let h = state.sig_group_mut().hashes
                                 .iter_mut().find_map(
-                                    |mode|
+                                    |(_salt, mode)|
                                     if mode.map(|ctx| ctx.algo()) ==
                                         HashingMode::Binary(HashAlgorithm::SHA1)
                                     {
@@ -5829,6 +5953,7 @@ impl<'a> PacketParser<'a> {
                 // And the hasher.
                 let mut reader = HashedReader::new(
                     reader, HashesFor::MDC,
+                    vec![],
                     vec![HashingMode::Binary(HashAlgorithm::SHA1)])?;
                 reader.cookie_mut().level = Some(self.recursion_depth());
 
