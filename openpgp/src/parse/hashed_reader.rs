@@ -217,17 +217,19 @@ impl<R: BufferedReader<Cookie>> HashedReader<R> {
     /// purpose.  `algos` is a list of algorithms for which we should
     /// compute the hash.
     pub fn new(reader: R, hashes_for: HashesFor,
+               salt: Vec<u8>,
                algos: Vec<HashingMode<HashAlgorithm>>)
             -> Result<Self> {
         let mut cookie = Cookie::default();
 
         for mode in algos {
             let mode = mode.mapf(|algo| {
-                let ctx = algo.context()?;
+                let mut ctx = algo.context()?;
+                ctx.update(&salt);
                 Ok(ctx)
             })?;
 
-            cookie.sig_group_mut().hashes.push(mode);
+            cookie.sig_group_mut().hashes.push((salt.clone(), mode));
         }
 
         cookie.hashes_for = hashes_for;
@@ -265,11 +267,13 @@ impl Cookie {
             assert!(ngroups > 1);
             for h in self.sig_groups[ngroups-2].hashes.iter_mut()
             {
-                t!("({:?}): group {} {:?} hashing {} stashed bytes.",
-                   hashes_for, ngroups-2, h.map(|ctx| ctx.algo()),
+                t!("({:?}): group {} {:?} (salted: {:?}) hashing {} stashed bytes.",
+                   hashes_for, ngroups-2,
+                   h.1.map(|ctx| ctx.algo()),
+                   ! h.0.is_empty(),
                    data.len());
 
-                h.update(&stashed_data);
+                h.1.update(&stashed_data);
             }
         }
 
@@ -294,8 +298,8 @@ impl Cookie {
 
             for h in sig_group.hashes.iter_mut() {
                 t!("{:?}: group {} {:?} hashing {} bytes.",
-                   hashes_for, i, h.map(|ctx| ctx.algo()), data.len());
-                h.update(data);
+                   hashes_for, i, h.1.map(|ctx| ctx.algo()), data.len());
+                h.1.update(data);
             }
         }
     }
@@ -343,12 +347,12 @@ impl Cookie {
         if let Some(stashed_data) = self.hash_stash.take() {
             for h in self.sig_groups[0].hashes.iter_mut() {
                 t!("{:?}: {:?} hashing {} stashed bytes.",
-                   hashes_for, h.map(|ctx| ctx.algo()),
+                   hashes_for, h.1.map(|ctx| ctx.algo()),
                    stashed_data.len());
-                assert!(matches!(h, HashingMode::Text(_)
+                assert!(matches!(h.1, HashingMode::Text(_)
                                  | HashingMode::TextLastWasCr(_)),
                         "CSF transformation uses text signatures");
-                h.update(&stashed_data[..]);
+                h.1.update(&stashed_data[..]);
             }
         }
 
@@ -370,11 +374,11 @@ impl Cookie {
         // Hash everything but the last newline now.
         for h in self.sig_groups[0].hashes.iter_mut() {
             t!("{:?}: {:?} hashing {} bytes.",
-               hashes_for, h.map(|ctx| ctx.algo()), l);
-            assert!(matches!(h, HashingMode::Text(_)
+               hashes_for, h.1.map(|ctx| ctx.algo()), l);
+            assert!(matches!(h.1, HashingMode::Text(_)
                              | HashingMode::TextLastWasCr(_)),
                     "CSF transformation uses text signatures");
-            h.update(&data[..l]);
+            h.1.update(&data[..l]);
         }
 
         // The newline we stash away.  If more text is written
@@ -511,14 +515,14 @@ pub(crate) fn hash_buffered_reader<R>(reader: R,
     where R: BufferedReader<crate::parse::Cookie>,
 {
     let mut reader
-        = HashedReader::new(reader, HashesFor::Signature, algos.to_vec())?;
+        = HashedReader::new(reader, HashesFor::Signature, vec![], algos.to_vec())?;
 
     // Hash all of the data.
     reader.drop_eof()?;
 
     let hashes =
         mem::take(&mut reader.cookie_mut().sig_group_mut().hashes);
-    Ok(hashes)
+    Ok(hashes.into_iter().map(|h| h.1).collect())
 }
 
 #[cfg(test)]
@@ -566,6 +570,7 @@ mod test {
                     test.data, None, Default::default());
             let mut reader
                 = HashedReader::new(reader, HashesFor::MDC,
+                                    vec![],
                                     test.expected.keys().cloned()
                                     .map(HashingMode::Binary)
                                     .collect()).unwrap();
@@ -575,7 +580,7 @@ mod test {
             let cookie = reader.cookie_mut();
 
             let mut hashes = std::mem::take(&mut cookie.sig_group_mut().hashes);
-            for mode in hashes.iter_mut() {
+            for (_salt, mode) in hashes.iter_mut() {
                 let hash = mode.as_mut();
                 let algo = hash.algo();
                 let mut digest = vec![0u8; hash.digest_size()];
