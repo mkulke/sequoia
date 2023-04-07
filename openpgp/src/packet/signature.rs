@@ -179,6 +179,7 @@ macro_rules! impl_arbitrary_with_bound {
 }
 
 pub mod subpacket;
+pub mod cache;
 
 /// How many seconds to backdate signatures.
 ///
@@ -2770,7 +2771,38 @@ impl Signature {
         let digest = computed_digest.as_ref().map(AsRef::as_ref)
             .or(self.computed_digest())
             .ok_or_else(|| Error::BadSignature("Hash not computed.".into()))?;
-        let result = key.verify(self.mpis(), self.hash_algo(), digest);
+
+        let result = if let Ok(entry) = cache::Entry::new(
+            self, digest, key.parts_as_public().role_as_unspecified())
+        {
+            match entry.lookup() {
+                Some(true) => {
+                    // The signature is good.
+                    Ok(())
+                }
+                Some(false) => {
+                    // The signature is definitely bad.
+
+                    // This loses precision, but its the best we can
+                    // do without actually verifying the signature.
+                    Err(Error::BadSignature("Invalid signature".into()).into())
+                }
+                None => {
+                    // It's not in the cache.
+
+                    let result = key.verify(
+                        self.mpis(), self.hash_algo(), digest);
+
+                    // Insert the result in the cache.
+                    entry.insert(result.is_ok());
+
+                    result
+                }
+            }
+        } else {
+            key.verify(self.mpis(), self.hash_algo(), digest)
+        };
+
         if result.is_ok() {
             // Mark information in this signature as authenticated.
 
