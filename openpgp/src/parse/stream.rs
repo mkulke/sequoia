@@ -3159,11 +3159,12 @@ pub mod test {
         let p = P::new();
 
         let certs = [
-            "neal.pgp",
-            "testy-new.pgp",
-            "emmelie-dorothea-dina-samantha-awina-ed25519.pgp"
+            "keys/neal.pgp",
+            "keys/testy-new.pgp",
+            "keys/emmelie-dorothea-dina-samantha-awina-ed25519.pgp",
+            "crypto-refresh/v6-minimal-cert.key",
         ].iter()
-         .map(|f| Cert::from_bytes(crate::tests::key(f)).unwrap())
+         .map(|f| Cert::from_bytes(crate::tests::file(f)).unwrap())
          .collect::<Vec<_>>();
         let tests = &[
             // Signed messages.
@@ -3215,6 +3216,13 @@ pub mod test {
             (crate::tests::message("a-problematic-poem.txt.cleartext.sig")
              .to_vec(),
              crate::tests::message("a-problematic-poem.txt").to_vec(),
+             false,
+             None,
+             VHelper::new(1, 0, 0, 0, certs.clone())),
+            (crate::tests::file("crypto-refresh/cleartext-signed-message.txt")
+             .to_vec(),
+             crate::tests::file("crypto-refresh/cleartext-signed-message.txt.plain")
+             .to_vec(),
              false,
              None,
              VHelper::new(1, 0, 0, 0, certs.clone())),

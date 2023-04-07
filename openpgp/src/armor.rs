@@ -46,6 +46,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as base64std;
 use base64::engine::general_purpose::STANDARD_NO_PAD as base64nopad;
 
+use crate::Fingerprint;
 use crate::packet::prelude::*;
 use crate::packet::header::{BodyLength, CTBNew, CTBOld};
 use crate::parse::Cookie;
@@ -1348,25 +1349,60 @@ impl<'a> Reader<'a> {
             match self.csft.as_ref().expect("CSFT has been initialized") {
                 CSFTransformer::OPS => {
                     // Determine the set of hash algorithms.
-                    let mut algos: HashSet<HashAlgorithm> = self.headers.iter()
-                        .filter(|(key, _value)| key == "Hash")
-                        .flat_map(|(_key, value)| {
-                            value.split(',')
-                                .filter_map(|hash| hash.parse().ok())
+                    let mut algos: HashSet<(Vec<u8>, HashAlgorithm)> =
+                        self.headers.iter()
+                        .filter_map(|(key, value)| match key.as_str() {
+                            "Hash" => Some(("", value.as_str())),
+                            "SaltedHash" => {
+                                let mut c = value.splitn(2, ':');
+                                let hash = c.next()?;
+                                let salt = c.next()?;
+                                Some((salt, hash))
+                            },
+                            _ => None,
+                        })
+                        .flat_map(|(salt, value)|
+                                    -> Box<dyn Iterator<Item = (Vec<u8>, HashAlgorithm)>> {
+                            if salt.is_empty() {
+                                Box::new(value.split(',').filter_map(
+                                    |hash| Some((vec![], hash.parse().ok()?))))
+                            } else {
+                                let mut r = Vec::with_capacity(1);
+                                if let (Ok(hash), Ok(salt)) =
+                                    (value.parse(),
+                                     base64nopad.decode(salt))
+                                {
+                                    r.push((salt, hash));
+                                }
+                                Box::new(r.into_iter())
+                            }
                         }).collect();
 
                     if algos.is_empty() {
                         // The default is MD5.
+                        // XXX: the new default is to reject the message.
                         #[allow(deprecated)]
-                        algos.insert(HashAlgorithm::MD5);
+                        algos.insert((vec![], HashAlgorithm::MD5));
                     }
 
                     // Now create an OPS packet for every algorithm.
                     let count = algos.len();
-                    for (i, &algo) in algos.iter().enumerate() {
-                        let mut ops = OnePassSig3::new(SignatureType::Text);
-                        ops.set_hash_algo(algo);
-                        ops.set_last(i + 1 == count);
+                    for (i, (salt, algo)) in algos.into_iter().enumerate() {
+                        let ops: OnePassSig = if salt.is_empty() {
+                            let mut ops = OnePassSig3::new(SignatureType::Text);
+                            ops.set_hash_algo(algo);
+                            ops.set_last(i + 1 == count);
+                            ops.into()
+                        } else {
+                            let mut ops = OnePassSig6::new(
+                                SignatureType::Text,
+                                Fingerprint::V6(Default::default()));
+                            ops.set_hash_algo(algo);
+                            ops.set_salt(salt);
+                            ops.set_last(i + 1 == count);
+                            ops.into()
+                        };
+
                         Packet::from(ops).serialize(&mut self.decode_buffer)
                             .expect("writing to vec does not fail");
                     }
@@ -2351,6 +2387,9 @@ mod test {
 
         f(crate::tests::message("a-problematic-poem.txt.cleartext.sig"),
           crate::tests::message("a-problematic-poem.txt"), HashAlgorithm::SHA256)?;
+        f(crate::tests::file("crypto-refresh/cleartext-signed-message.txt"),
+          crate::tests::file("crypto-refresh/cleartext-signed-message.txt.plain"),
+          HashAlgorithm::SHA512)?;
         f(crate::tests::message("a-cypherpunks-manifesto.txt.cleartext.sig"),
           {
               // The transformation process trims trailing whitespace,
