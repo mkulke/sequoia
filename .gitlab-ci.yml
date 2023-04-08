@@ -52,6 +52,8 @@ bookworm:
   stage: build
   interruptible: true
   image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/bookworm-prebuild:latest
+  before_script:
+    - apt-get update -yqq ; apt-get install mold -yqq
   script:
     - cargo run --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-nettle,compression --example supported-algorithms
     - $MAKE_TOP test
@@ -75,6 +77,8 @@ rust-stable-crypto-rust:
   image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/rust-stable-prebuild:latest
   dependencies:
     - codespell
+  before_script:
+    - apt-get update -yqq ; apt-get install mold -yqq
   script:
     - cargo run --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-rust,compression,allow-experimental-crypto,allow-variable-time-crypto --example supported-algorithms
     - cargo test --release --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-rust,compression,allow-experimental-crypto,allow-variable-time-crypto
@@ -90,6 +94,8 @@ bookworm-crypto-openssl:
   image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/bookworm-prebuild:latest
   dependencies:
     - codespell
+  before_script:
+    - apt-get update -yqq ; apt-get install mold -yqq
   script:
     - cargo run --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-openssl,compression --example supported-algorithms
     - cargo test --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-openssl,compression
@@ -125,6 +131,8 @@ bookworm-crypto-botan:
   stage: build
   interruptible: true
   image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/bookworm-prebuild:latest
+  before_script:
+    - apt-get update -yqq ; apt-get install mold -yqq
   script:
     - cargo run --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-botan2,compression --example supported-algorithms
     - cargo test --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-botan2,compression
