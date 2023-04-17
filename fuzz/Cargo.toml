@@ -1,0 +1,27 @@
+[package]
+name = "sequoia-openpgp-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.sequoia-openpgp]
+path = "../openpgp"
+
+# Prevent this from interfering with workspaces
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "pgp-parser"
+path = "fuzz_targets/pgp-parser.rs"
+test = false
+doc = false
