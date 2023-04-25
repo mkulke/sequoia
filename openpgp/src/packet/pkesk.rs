@@ -21,6 +21,9 @@ use crate::SymmetricAlgorithm;
 use crate::crypto::SessionKey;
 use crate::packet;
 
+mod v6;
+pub use v6::PKESK6;
+
 /// Holds an asymmetrically encrypted session key.
 ///
 /// The session key is needed to decrypt the actual ciphertext.  See
@@ -207,7 +210,11 @@ impl From<PKESK3> for Packet {
 #[cfg(test)]
 impl Arbitrary for super::PKESK {
     fn arbitrary(g: &mut Gen) -> Self {
-        PKESK3::arbitrary(g).into()
+        if bool::arbitrary(g) {
+            PKESK3::arbitrary(g).into()
+        } else {
+            PKESK6::arbitrary(g).into()
+        }
     }
 }
 
