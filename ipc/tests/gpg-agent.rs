@@ -396,7 +396,7 @@ fn decrypt(also_try_explicit_async: bool) -> openpgp::Result<()> {
                           sym_algo: Option<SymmetricAlgorithm>,
                           mut decrypt: D)
                           -> openpgp::Result<Option<openpgp::Fingerprint>>
-                where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool
+                where D: FnMut(Option<SymmetricAlgorithm>, &SessionKey) -> bool
             {
                 // We only gave the cert to GnuPG, the agent doesn't
                 // have the secret.
@@ -424,7 +424,10 @@ fn decrypt(also_try_explicit_async: bool) -> openpgp::Result<()> {
                 }
 
                 for pkesk in pkesks {
-                    if *pkesk.recipient() != keypair.public().keyid() {
+                    if pkesk.recipient()
+                        .map(|h| ! h.aliases(keypair.public().key_handle()))
+                        .unwrap_or(true)
+                    {
                         continue;
                     }
 

@@ -128,7 +128,7 @@ fn main() -> openpgp::Result<()> {
 #                   sym_algo: Option<SymmetricAlgorithm>,
 #                   mut decrypt: D)
 #                   -> openpgp::Result<Option<openpgp::Fingerprint>>
-#         where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool
+#         where D: FnMut(Option<SymmetricAlgorithm>, &SessionKey) -> bool
 #     {
 #         // The encryption key is the first and only subkey.
 #         let key = self.secret.keys().unencrypted_secret()
@@ -276,7 +276,7 @@ fn generate() -> openpgp::Result<openpgp::Cert> {
 #                   sym_algo: Option<SymmetricAlgorithm>,
 #                   mut decrypt: D)
 #                   -> openpgp::Result<Option<openpgp::Fingerprint>>
-#         where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool
+#         where D: FnMut(Option<SymmetricAlgorithm>, &SessionKey) -> bool
 #     {
 #         // The encryption key is the first and only subkey.
 #         let key = self.secret.keys().unencrypted_secret()
@@ -424,7 +424,7 @@ fn encrypt(policy: &dyn Policy,
 #                   sym_algo: Option<SymmetricAlgorithm>,
 #                   mut decrypt: D)
 #                   -> openpgp::Result<Option<openpgp::Fingerprint>>
-#         where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool
+#         where D: FnMut(Option<SymmetricAlgorithm>, &SessionKey) -> bool
 #     {
 #         // The encryption key is the first and only subkey.
 #         let key = self.secret.keys().unencrypted_secret()
@@ -586,7 +586,7 @@ impl<'a> DecryptionHelper for Helper<'a> {
                    sym_algo: Option<SymmetricAlgorithm>,
                   mut decrypt: D)
                   -> openpgp::Result<Option<openpgp::Fingerprint>>
-        where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool
+        where D: FnMut(Option<SymmetricAlgorithm>, &SessionKey) -> bool
     {
         // The encryption key is the first and only subkey.
         let key = self.secret.keys().unencrypted_secret()

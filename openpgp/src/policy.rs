@@ -2207,7 +2207,7 @@ mod test {
             fn decrypt<D>(&mut self, _: &[PKESK], _: &[SKESK],
                           _: Option<SymmetricAlgorithm>,_: D)
                           -> Result<Option<Fingerprint>>
-                where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool
+                where D: FnMut(Option<SymmetricAlgorithm>, &SessionKey) -> bool
             {
                 unreachable!();
             }
@@ -2713,7 +2713,7 @@ mod test {
             fn decrypt<D>(&mut self, _: &[PKESK], _: &[SKESK],
                           _: Option<SymmetricAlgorithm>,_: D)
                           -> Result<Option<Fingerprint>>
-                where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool
+                where D: FnMut(Option<SymmetricAlgorithm>, &SessionKey) -> bool
             {
                 unreachable!();
             }
@@ -2833,7 +2833,7 @@ mod test {
             fn decrypt<D>(&mut self, _: &[PKESK], _: &[SKESK],
                           _: Option<SymmetricAlgorithm>, _: D)
                           -> Result<Option<Fingerprint>>
-                where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool {
+                where D: FnMut(Option<SymmetricAlgorithm>, &SessionKey) -> bool {
                 Ok(None)
             }
         }
@@ -2880,7 +2880,7 @@ mod test {
             fn decrypt<D>(&mut self, pkesks: &[PKESK], _: &[SKESK],
                           algo: Option<SymmetricAlgorithm>, mut decrypt: D)
                           -> Result<Option<Fingerprint>>
-                where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool
+                where D: FnMut(Option<SymmetricAlgorithm>, &SessionKey) -> bool
             {
                 let p = &P::new();
                 let mut pair = Cert::from_bytes(

@@ -2532,7 +2532,8 @@ impl<'a, 'b> Encryptor2<'a, 'b> {
     /// for p in pkesks { // Emit the stashed PKESK packets.
     ///     Packet::from(p).serialize(&mut message)?;
     /// }
-    /// let message = Encryptor2::with_session_key(message, algo, sk)?.build()?;
+    /// let message = Encryptor2::with_session_key(
+    ///     message, algo.unwrap_or_default(), sk)?.build()?;
     /// let mut w = LiteralWriter::new(message).build()?;
     /// w.write_all(b"Encrypted reply")?;
     /// w.finalize()?;
@@ -2545,7 +2546,7 @@ impl<'a, 'b> Encryptor2<'a, 'b> {
     /// /// Decrypts the message preserving algo, session key, and PKESKs.
     /// struct Helper {
     ///     key: Cert,
-    ///     recycling_bin: Option<(SymmetricAlgorithm, SessionKey, Vec<PKESK>)>,
+    ///     recycling_bin: Option<(Option<SymmetricAlgorithm>, SessionKey, Vec<PKESK>)>,
     /// }
     ///
     /// # impl Helper {
@@ -2558,7 +2559,7 @@ impl<'a, 'b> Encryptor2<'a, 'b> {
     ///     fn decrypt<D>(&mut self, pkesks: &[PKESK], _skesks: &[SKESK],
     ///                   sym_algo: Option<SymmetricAlgorithm>, mut decrypt: D)
     ///                   -> Result<Option<Fingerprint>>
-    ///         where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool
+    ///         where D: FnMut(Option<SymmetricAlgorithm>, &SessionKey) -> bool
     ///     {
     ///         let p = &StandardPolicy::new();
     ///         let mut encryption_context = None;
@@ -2566,7 +2567,7 @@ impl<'a, 'b> Encryptor2<'a, 'b> {
     ///         for pkesk in pkesks { // Try each PKESK until we succeed.
     ///             for ka in self.key.keys().with_policy(p, None)
     ///                 .supported().unencrypted_secret()
-    ///                 .key_handle(pkesk.recipient())
+    ///                 .key_handles2(pkesk.recipient())
     ///                 .for_storage_encryption().for_transport_encryption()
     ///             {
     ///                 let mut pair = ka.key().clone().into_keypair().unwrap();
@@ -2906,6 +2907,13 @@ impl<'a, 'b> Encryptor2<'a, 'b> {
             ).into());
         }
 
+        // XXX autodetect v6
+        if ! self.recipients.is_empty()
+            && self.recipients.iter().all(|r| r.key.version() == 6)
+        {
+            self.aead_algo = Some(AEADAlgorithm::const_default());
+        }
+
         struct AEADParameters {
             algo: AEADAlgorithm,
             chunk_size: usize,
@@ -2939,10 +2947,17 @@ impl<'a, 'b> Encryptor2<'a, 'b> {
 
         // Write the PKESK packet(s).
         for recipient in self.recipients.iter() {
-            let mut pkesk =
-                PKESK3::for_recipient(self.sym_algo, &sk, recipient.key)?;
-            pkesk.set_recipient(recipient.keyid.clone());
-            Packet::PKESK(pkesk.into()).serialize(&mut inner)?;
+            if aead.is_some() {
+                let pkesk =
+                    PKESK6::for_recipient(&sk, recipient.key)?;
+                // XXX: handle anonymous recipient/ different recipient fps
+                Packet::PKESK(pkesk.into()).serialize(&mut inner)?;
+            } else {
+                let mut pkesk =
+                    PKESK3::for_recipient(self.sym_algo, &sk, recipient.key)?;
+                pkesk.set_recipient(recipient.keyid.clone());
+                Packet::PKESK(pkesk.into()).serialize(&mut inner)?;
+            }
         }
 
         // Write the SKESK packet(s).
@@ -3512,7 +3527,7 @@ mod test {
         #[derive(Debug, PartialEq)]
         enum State {
             Start,
-            Decrypted(Vec<(SymmetricAlgorithm, SessionKey)>),
+            Decrypted(Vec<(Option<SymmetricAlgorithm>, SessionKey)>),
             Deciphered,
             MDC,
             Done,
@@ -3676,7 +3691,7 @@ mod test {
             fn decrypt<D>(&mut self, pkesks: &[PKESK], _skesks: &[SKESK],
                           sym_algo: Option<SymmetricAlgorithm>,
                           mut decrypt: D) -> Result<Option<crate::Fingerprint>>
-                where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool
+                where D: FnMut(Option<SymmetricAlgorithm>, &SessionKey) -> bool
             {
                 let mut keypair = self.tsk.keys().with_policy(self.policy, None)
                     .for_transport_encryption()
@@ -4107,7 +4122,7 @@ mod test {
             fn decrypt<D>(&mut self, _: &[PKESK], skesks: &[SKESK],
                           _sym_algo: Option<SymmetricAlgorithm>,
                           mut decrypt: D) -> Result<Option<crate::Fingerprint>>
-            where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool
+            where D: FnMut(Option<SymmetricAlgorithm>, &SessionKey) -> bool
             {
                 skesks[0].decrypt(&"совершенно секретно".into())
                     .map(|(algo, session_key)| decrypt(algo, &session_key))?;
@@ -4205,6 +4220,9 @@ mod test {
             "brainpoolP256r1", "brainpoolP384r1", "brainpoolP512r1",
             "secp256k1",
         ].iter().map(|alg| format!("messages/encrypted/{}.sec.pgp", alg))
+            .chain(vec![
+                "crypto-refresh/v6-minimal-secret.key".into(),
+            ].into_iter())
         {
             eprintln!("Test vector {:?}...", path);
             let key = Cert::from_bytes(crate::tests::file(&path))?;
