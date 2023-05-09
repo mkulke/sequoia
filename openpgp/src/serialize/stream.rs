@@ -3716,6 +3716,7 @@ mod test {
 
         let (tsk, _) = CertBuilder::new()
             .set_cipher_suite(CipherSuite::Cv25519)
+            .set_version(6)?
             .add_transport_encryption_subkey()
             .generate().unwrap();
 
