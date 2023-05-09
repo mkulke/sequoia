@@ -3473,6 +3473,11 @@ mod test {
             fn check(&mut self, _structure: MessageStructure) -> Result<()> {
                 Ok(())
             }
+            fn inspect(&mut self, pp: &PacketParser<'_>) -> Result<()> {
+                assert!(! matches!(&pp.packet, Packet::Unknown(_)));
+                eprintln!("Parsed {:?}", pp.packet);
+                Ok(())
+            }
         }
         impl<'a> DecryptionHelper for Helper<'a> {
             fn decrypt<D>(&mut self, pkesks: &[PKESK], _skesks: &[SKESK],
