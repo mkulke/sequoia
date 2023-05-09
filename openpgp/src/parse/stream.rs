@@ -2417,6 +2417,8 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                 Packet::CompressedData(ref p) =>
                     v.structure.new_compression_layer(p.algo()),
                 Packet::SEIP(_) | Packet::AED(_) if v.mode == Mode::Decrypt => {
+                    t!("Found the encryption container");
+
                     // Get the symmetric algorithm from the decryption
                     // proxy function.  This is necessary because we
                     // cannot get the algorithm from the SEIP packet.
@@ -2427,6 +2429,8 @@ impl<'a, H: VerificationHelper + DecryptionHelper> Decryptor<'a, H> {
                             // the dummy one from the SKESK6 packet.
                             let algo = sym_algo_hint.unwrap_or(algo);
                             let result = pp.decrypt(algo, secret);
+                            t!("pp.decrypt({:?}, {:?}) => {:?}",
+                               algo, secret, result);
                             if let Ok(_) = result {
                                 sym_algo = Some(algo);
                                 true
