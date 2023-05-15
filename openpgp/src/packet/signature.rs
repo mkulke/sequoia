@@ -446,7 +446,7 @@ impl SignatureFields {
 /// ```
 // IMPORTANT: If you add fields to this struct, you need to explicitly
 // IMPORTANT: implement PartialEq, Eq, and Hash.
-#[derive(Clone, Hash, PartialEq, Eq)]
+#[derive(Clone, Hash, Eq)]
 pub struct SignatureBuilder {
     reference_time: Option<SystemTime>,
     overrode_creation_time: bool,
@@ -454,6 +454,46 @@ pub struct SignatureBuilder {
     fields: SignatureFields,
 }
 assert_send_and_sync!(SignatureBuilder);
+
+impl PartialEq for SignatureBuilder {
+    fn eq(&self, other: &SignatureBuilder) -> bool {
+        match (self.effective_signature_creation_time(),
+               other.effective_signature_creation_time())
+        {
+            (Ok(a), Ok(b)) => {
+                if a != b {
+                    eprintln!("{:?} vs {:?}", a, b);
+                    return false;
+                }
+            }
+            (Err(_), _) => return false,
+            (_, Err(_)) => return false,
+        }
+
+        // The effective signature creation times are equal.  Now we
+        // need to check the rest.  If the signature creation times as
+        // set in the SignatureField fields are different, clear them
+        // before comparing.
+
+        // XXX: SignatureBuilder sorts the subpacket areas before
+        // signing.  Our notion of equality probably should too.
+        if self.signature_creation_time()
+            == other.signature_creation_time()
+        {
+            self.fields == other.fields
+        } else {
+            let mut self_fields = self.fields.clone();
+            self_fields.hashed_area_mut().remove_all(
+                SubpacketTag::SignatureCreationTime);
+
+            let mut other_fields = other.fields.clone();
+            other_fields.hashed_area_mut().remove_all(
+                SubpacketTag::SignatureCreationTime);
+
+            self_fields == other_fields
+        }
+    }
+}
 
 impl Deref for SignatureBuilder {
     type Target = SignatureFields;
@@ -4240,5 +4280,40 @@ mod test {
         assert!(issuers.contains(&KeyHandle::from(&keyid)));
 
         Ok(())
+    }
+
+    #[test]
+    fn issue_997() {
+        let mut g = quickcheck::Gen::new(256);
+
+        // Signature::arbitrary does not necessarily generate a
+        // signature with a signature creation time.  Loop until we
+        // get a Signature that includes one.
+        let (sig, ct) = loop {
+            let sig = Signature::arbitrary(&mut g);
+            if let Some(ct) = sig.signature_creation_time() {
+                break (sig, ct);
+            }
+        };
+
+        let a = SignatureBuilder::from(sig.clone())
+            .set_reference_time(ct);
+        assert!(! a.overrode_creation_time);
+
+        let b = SignatureBuilder::from(sig.clone())
+            .set_signature_creation_time(ct)
+            .expect("valid");
+        assert!(b.overrode_creation_time);
+
+        if !(a == b) {
+            panic!("Should be equal");
+        }
+
+        let b = b.set_signature_creation_time(
+            ct + std::time::Duration::new(1, 0))
+            .expect("valid");
+        if !(a != b) {
+            panic!("Should be not equal");
+        }
     }
 }
