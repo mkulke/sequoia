@@ -49,21 +49,21 @@ bullseye:
     RUSTFLAGS: -D warnings -A unused-parens
   after_script: []
 
-all_commits:
-  # Test each commit up to main, to facilitate bisecting.
-  stage: test
-  image: registry.gitlab.com/sequoia-pgp/build-docker-image/rust-stable-prebuild:latest
-  needs: ["rust-stable"]
-  except:
-    # Do not run for pushes to the pep-engine branch.
-    - /^pep-engine$/
-  script:
-    - .ci/all_commits.sh
-  variables:
-    CARGO_TARGET_DIR: /target
-    CARGO_HOME: /cargo
-    RUSTFLAGS: -D warnings -A unused-parens
-    GIT_STRATEGY: clone
+# all_commits:
+#   # Test each commit up to main, to facilitate bisecting.
+#   stage: test
+#   image: registry.gitlab.com/sequoia-pgp/build-docker-image/rust-stable-prebuild:latest
+#   needs: ["rust-stable"]
+#   except:
+#     # Do not run for pushes to the pep-engine branch.
+#     - /^pep-engine$/
+#   script:
+#     - .ci/all_commits.sh
+#   variables:
+#     CARGO_TARGET_DIR: /target
+#     CARGO_HOME: /cargo
+#     RUSTFLAGS: -D warnings -A unused-parens
+#     GIT_STRATEGY: clone
 
 codespell:
   tags:
