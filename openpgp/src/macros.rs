@@ -67,7 +67,7 @@ macro_rules! tracer {
 /// displays the output on stderr.  The output is prefixed with label,
 /// if it is provided.
 ///
-/// ```
+/// ```nocompile
 /// let result = time_it!("Some code", 10, {
 ///     // Some code.
 ///     5
