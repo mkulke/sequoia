@@ -200,20 +200,20 @@ benchmarks:
   variables:
     CARGO_TARGET_DIR: $CI_PROJECT_DIR/../target.benchmarks
 
-all_commits:
-  # Test each commit up to main, to facilitate bisecting.
-  stage: test
-  image: registry.gitlab.com/sequoia-pgp/build-docker-image/rust-stable-prebuild:latest
-  needs: ["rust-stable"]
-  except:
-    # Do not run for pushes to the pep-engine branch.
-    - /^pep-engine$/
-  script:
-    - .ci/all_commits.sh
-  variables:
-    CARGO_TARGET_DIR: /target
-    CARGO_HOME: /cargo
-    GIT_STRATEGY: clone
+# all_commits:
+#   # Test each commit up to main, to facilitate bisecting.
+#   stage: test
+#   image: registry.gitlab.com/sequoia-pgp/build-docker-image/rust-stable-prebuild:latest
+#   needs: ["rust-stable"]
+#   except:
+#     # Do not run for pushes to the pep-engine branch.
+#     - /^pep-engine$/
+#   script:
+#     - .ci/all_commits.sh
+#   variables:
+#     CARGO_TARGET_DIR: /target
+#     CARGO_HOME: /cargo
+#     GIT_STRATEGY: clone
 
 all_commits:arm64:
   # Test each commit up to main, to facilitate bisecting.
