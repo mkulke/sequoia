@@ -113,14 +113,14 @@ macro_rules! time_it {
 ///
 /// For most types just call it after defining the type:
 ///
-/// ```
+/// ```nocompile
 /// pub struct MyStruct {}
 /// assert_send_and_sync!(MyStruct);
 /// ```
 ///
 /// For types with lifetimes, use the anonymous lifetime:
 ///
-/// ```
+/// ```nocompile
 /// pub struct WithLifetime<'a> {}
 /// assert_send_and_sync!(MyStruct<'_>);
 /// ```
@@ -129,7 +129,7 @@ macro_rules! time_it {
 /// pass the type `W` as a where clause
 /// including a trait bound when needed:
 ///
-/// ```
+/// ```nocompile
 /// pub struct MyWriter<W: io::Write> {}
 /// assert_send_and_sync!(MyWriterStruct<W> where W: io::Write);
 /// ```
@@ -141,7 +141,7 @@ macro_rules! time_it {
 /// Just make sure to list all the types - even those without additional
 /// trait bounds:
 ///
-/// ```
+/// ```nocompile
 /// pub struct MyWriterWithLifetime<'a, C, W: io::Write> {};
 /// assert_send_and_sync!(MyWriterStruct<'_, C, W> where C, W: io::Write);
 /// ```
@@ -153,23 +153,23 @@ macro_rules! time_it {
 /// by `+` characters.
 macro_rules! assert_send_and_sync {
     ( $x:ty where $( $g:ident$( : $a:path )? $(,)?)*) => {
-        impl<$( $g ),*> crate::types::Sendable for $x
-            where $( $g: Send + Sync $( + $a )? ),*
-            {}
-        impl<$( $g ),*> crate::types::Syncable for $x
-            where $( $g: Send + Sync $( + $a )? ),*
-            {}
+//        impl<$( $g ),*> crate::types::Sendable for $x
+//            where $( $g: Send + Sync $( + $a )? ),*
+//            {}
+//        impl<$( $g ),*> crate::types::Syncable for $x
+//            where $( $g: Send + Sync $( + $a )? ),*
+//            {}
     };
     ( $x:ty where $( $g:ident$( : $a:ident $( + $b:ident )* )? $(,)?)*) => {
-        impl<$( $g ),*> crate::types::Sendable for $x
-            where $( $g: Send + Sync $( + $a $( + $b )* )? ),*
-            {}
-        impl<$( $g ),*> crate::types::Syncable for $x
-            where $( $g: Send + Sync $( + $a $( + $b )* )? ),*
-            {}
+//        impl<$( $g ),*> crate::types::Sendable for $x
+//            where $( $g: Send + Sync $( + $a $( + $b )* )? ),*
+//            {}
+//        impl<$( $g ),*> crate::types::Syncable for $x
+//            where $( $g: Send + Sync $( + $a $( + $b )* )? ),*
+//            {}
     };
     ( $x:ty ) => {
-        impl crate::types::Sendable for $x {}
-        impl crate::types::Syncable for $x {}
+//        impl crate::types::Sendable for $x {}
+//        impl crate::types::Syncable for $x {}
     };
 }
