@@ -26,7 +26,7 @@ maintenance = { status = "actively-developed" }
 
 [dependencies]
 anyhow = "1.0.18"
-buffered-reader = { path = "../buffered-reader", version = "1.0.0", default-features = false }
+buffered-reader = { path = "../buffered-reader", version = "1.0, <1.1", default-features = false }
 base64 = ">=0.12, <0.21"
 bzip2 = { version = "0.4", optional = true }
 dyn-clone = "1"
