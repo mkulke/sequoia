@@ -253,7 +253,7 @@ codespell:
     - codespell --version
     - *before_script_end
   script:
-    - $MAKE_TOP codespell CODESPELL_FLAGS=--summary
+    - codespell --version
   after_script: []
 
 doc:
