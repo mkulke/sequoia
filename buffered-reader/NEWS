@@ -2,6 +2,12 @@
 #+TITLE: buffered-reader NEWS – history of user-visible changes
 #+STARTUP: content hidestars
 
+* Changes in 1.0.2
+ * Notable fixes
+   - A parser bug was fixed.  We classify this as a low-severity
+     issue, because Rust correctly detects the out-of-bounds access
+     and panics.  If an attacker controls the input, they may be able
+     to use this bug to cause a denial of service.
 * Changes in 1.0.1
 ** Notable fixes
    - Fixed a crash in Dup::read.
