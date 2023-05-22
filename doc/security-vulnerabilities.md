@@ -40,25 +40,25 @@ disclosure, and publish a fix as soon as possible.
 
   1. Create and test a minimal patch
 
-    - Candidate versions:
-     - The latest version
-     - The version in Debian stable
-     - The version in Debian testing, if testing is frozen
-     - Minor versions before an MSRV bump (i.e., if 1.x bumps the MSRV
-       consider patching 1.x-1).
-     - Downstreams may request patches for specific versions.
-       If approved, add them to this list.  (Note: companies should be a
-       partner, or have a support contract with us.)
+     - Candidate versions:
+       - The latest version
+       - The version in Debian stable
+       - The version in Debian testing, if testing is frozen
+       - Minor versions before an MSRV bump (i.e., if 1.x bumps the MSRV
+         consider patching 1.x-1).
+       - Downstreams may request patches for specific versions.
+         If approved, add them to this list.  (Note: companies should be a
+         partner, or have a support contract with us.)
 
-    - Suggestions:
-      - For testing purposes, gather all tests into a single file.  It
-        is then easy to drop the test into any version of the code
-        base and see if it is affected.
-      - Because we want the patch to cleanly apply to many versions,
-        don't append new tests to a sequence of unit tests.  This is
-        because the unit tests are normally appended to, and this will
-        very likely result in a merge conflict with earlier versions.
-        Either prepend the test, or add it to a new file.
+     - Suggestions:
+       - For testing purposes, gather all tests into a single file.  It
+         is then easy to drop the test into any version of the code
+         base and see if it is affected.
+       - Because we want the patch to cleanly apply to many versions,
+         don't append new tests to a sequence of unit tests.  This is
+         because the unit tests are normally appended to, and this will
+         very likely result in a merge conflict with earlier versions.
+         Either prepend the test, or add it to a new file.
 
   1. Reach out to downstreams (see list below):
 
