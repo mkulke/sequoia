@@ -41,7 +41,7 @@ disclosure, and publish a fix as soon as possible.
   1. Create and test a minimal patch
 
      - Candidate versions:
-       - The latest version
+       - The latest version (always)
        - The version in Debian stable
        - The version in Debian testing, if testing is frozen
        - Minor versions before an MSRV bump (i.e., if 1.x bumps the MSRV
