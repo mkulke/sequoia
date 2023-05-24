@@ -117,6 +117,11 @@ impl SessionKey {
         random(&mut sk);
         Self(sk)
     }
+
+    /// Returns a reference to the inner [`mem::Protected`].
+    pub fn as_protected(&self) -> &mem::Protected {
+        &self.0
+    }
 }
 
 impl Deref for SessionKey {

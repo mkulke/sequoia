@@ -5,6 +5,7 @@
 
 * Changes in 1.17.0
 ** New functionality
+   - crypto::SessionKey::as_protected
    - types::AEADAlgorithm::GCM
 * Changes in 1.16.0
 ** New functionality
