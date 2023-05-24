@@ -742,7 +742,20 @@ impl<P, R> Key<P, R>
 {
     /// Encrypts the given data with this key.
     pub fn encrypt(&self, data: &SessionKey) -> Result<mpi::Ciphertext> {
-        self.encrypt_backend(data)
+        use PublicKeyAlgorithm::*;
+
+        #[allow(deprecated, non_snake_case)]
+        match self.pk_algo() {
+            RSASign | DSA | ECDSA | EdDSA =>
+                Err(Error::InvalidOperation(
+                    format!("{} is not an encryption algorithm", self.pk_algo())
+                ).into()),
+
+            RSAEncryptSign | RSAEncrypt |
+            ElGamalEncrypt | ElGamalEncryptSign |
+            ECDH |
+            Private(_) | Unknown(_) => self.encrypt_backend(data),
+        }
     }
 
     /// Verifies the given signature.
