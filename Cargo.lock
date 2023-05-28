@@ -2392,6 +2392,7 @@ dependencies = [
  "ripemd",
  "rpassword",
  "rsa",
+ "serde",
  "sha-1",
  "sha1collisiondetection",
  "sha2 0.10.6",
