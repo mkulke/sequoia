@@ -1,5 +1,9 @@
-use std::time;
-use std::marker::PhantomData;
+use std::{
+    fmt::{Display, Formatter},
+    marker::PhantomData,
+    str::FromStr,
+    time,
+};
 
 use crate::packet;
 use crate::packet::{
@@ -83,6 +87,44 @@ assert_send_and_sync!(CipherSuite);
 impl Default for CipherSuite {
     fn default() -> Self {
         CipherSuite::Cv25519
+    }
+}
+
+impl Display for CipherSuite {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {
+        match self {
+            CipherSuite::Cv25519 => formatter.write_str("cv25519")?,
+            CipherSuite::P256 => formatter.write_str("p256")?,
+            CipherSuite::P384 => formatter.write_str("p384")?,
+            CipherSuite::P521 => formatter.write_str("p521")?,
+            CipherSuite::RSA2k => formatter.write_str("rsa2k")?,
+            CipherSuite::RSA3k => formatter.write_str("rsa3k")?,
+            CipherSuite::RSA4k => formatter.write_str("rsa4k")?,
+        }
+        Ok(())
+    }
+}
+
+impl FromStr for CipherSuite {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        Ok(match s.to_lowercase().as_str() {
+            "cv25519" => CipherSuite::Cv25519,
+            "p256" => CipherSuite::P256,
+            "p384" => CipherSuite::P384,
+            "p521" => CipherSuite::P521,
+            "rsa2k" => CipherSuite::RSA2k,
+            "rsa3k" => CipherSuite::RSA3k,
+            "rsa4k" => CipherSuite::RSA4k,
+            cipher_suite => {
+                return Err(crate::Error::InvalidArgument(format!(
+                    "cipher suite {} is not known",
+                    cipher_suite
+                ))
+                .into())
+            }
+        })
     }
 }
 
