@@ -419,139 +419,139 @@ impl Arbitrary for S2K {
 mod tests {
     use super::*;
 
+    use rstest::rstest;
+
     use crate::fmt::to_hex;
     use crate::SymmetricAlgorithm;
     use crate::Packet;
     use crate::parse::{Parse, PacketParser};
 
-    #[test]
-    fn s2k_parser_test() {
+    #[rstest]
+    // Note: this test only works with SK-ESK packets that don't
+    // contain an encrypted session key, i.e., the session key is
+    // the result of the s2k function.  gpg generates this type of
+    // SK-ESK packet when invoked with -c, but not -e.  (When
+    // invoked with -c and -e, it generates SK-ESK packets that
+    // include an encrypted session key.)
+    #[allow(deprecated)]
+    #[case(
+        "mode-0-password-1234.gpg",
+        SymmetricAlgorithm::AES256,
+        S2K::Simple{ hash: HashAlgorithm::SHA1, },
+        "1234".into(),
+        "7110EDA4D09E062AA5E4A390B0A572AC0D2C0220F352B0D292B65164C2A67301",
+    )]
+    #[allow(deprecated)]
+    #[case(
+        "mode-1-password-123456-1.gpg",
+        SymmetricAlgorithm::AES256,
+        S2K::Salted{
+            hash: HashAlgorithm::SHA1,
+            salt: [0xa8, 0x42, 0xa7, 0xa9, 0x59, 0xfa, 0x42, 0x2a],
+        },
+        "123456".into(),
+        "8B79077CA448F6FB3D3AD2A264D3B938D357C9FB3E41219FD962DF960A9AFA08",
+    )]
+    #[allow(deprecated)]
+    #[case(
+        "mode-1-password-foobar-2.gpg",
+        SymmetricAlgorithm::AES256,
+        S2K::Salted{
+            hash: HashAlgorithm::SHA1,
+            salt: [0xbc, 0x95, 0x58, 0x45, 0x81, 0x3c, 0x7c, 0x37],
+        },
+        "foobar".into(),
+        "B7D48AAE9B943B22A4D390083E8460B5EDFA118FE1688BF0C473B8094D1A8D10",
+    )]
+    #[case(
+        "mode-3-password-qwerty-1.gpg",
+        SymmetricAlgorithm::AES256,
+        S2K::Iterated {
+            hash: HashAlgorithm::SHA1,
+            salt: [0x78, 0x45, 0xf0, 0x5b, 0x55, 0xf7, 0xb4, 0x9e],
+            hash_bytes: S2K::decode_count(241),
+        },
+        "qwerty".into(),
+        "575AD156187A3F8CEC11108309236EB499F1E682F0D1AFADFAC4ECF97613108A",
+    )]
+    #[case(
+        "mode-3-password-9876-2.gpg",
+        SymmetricAlgorithm::AES256,
+        S2K::Iterated {
+            hash: HashAlgorithm::SHA1,
+            salt: [0xb9, 0x67, 0xea, 0x96, 0x53, 0xdb, 0x6a, 0xc8],
+            hash_bytes: S2K::decode_count(43),
+        },
+        "9876".into(),
+        "736C226B8C64E4E6D0325C6C552EF7C0738F98F48FED65FD8C93265103EFA23A",
+    )]
+    #[case(
+        "mode-3-aes192-password-123.gpg",
+        SymmetricAlgorithm::AES192,
+        S2K::Iterated {
+            hash: HashAlgorithm::SHA1,
+            salt: [0x8f, 0x81, 0x74, 0xc5, 0xd9, 0x61, 0xc7, 0x79],
+            hash_bytes: S2K::decode_count(238),
+        },
+        "123".into(),
+        "915E96FC694E7F90A6850B740125EA005199C725F3BD27E3",
+    )]
+    #[case(
+        "mode-3-twofish-password-13-times-0123456789.gpg",
+        SymmetricAlgorithm::Twofish,
+        S2K::Iterated {
+            hash: HashAlgorithm::SHA1,
+            salt: [0x51, 0xed, 0xfc, 0x15, 0x45, 0x40, 0x65, 0xac],
+            hash_bytes: S2K::decode_count(238),
+        },
+        "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789".into(),
+        "EA264FADA5A859C40D88A159B344ECF1F51FF327FDB3C558B0A7DC299777173E",
+    )]
+    #[case(
+        "mode-3-aes128-password-13-times-0123456789.gpg",
+        SymmetricAlgorithm::AES128,
+        S2K::Iterated {
+            hash: HashAlgorithm::SHA1,
+            salt: [0x06, 0xe4, 0x61, 0x5c, 0xa4, 0x48, 0xf9, 0xdd],
+            hash_bytes: S2K::decode_count(238),
+        },
+        "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789".into(),
+        "F3D0CE52ED6143637443E3399437FD0F",
+    )]
+    fn s2k_parser_test(
+            #[case] filename: &'static str,
+            #[case] cipher_algo: SymmetricAlgorithm,
+            #[case] s2k: S2K,
+            #[case] password: Password,
+            #[case] key_hex: &'static str) {
         use crate::packet::SKESK;
 
-        struct Test<'a> {
-            filename: &'a str,
-            s2k: S2K,
-            cipher_algo: SymmetricAlgorithm,
-            password: Password,
-            key_hex: &'a str,
+        if !cipher_algo.is_supported() {
+            return
         }
 
-        // Note: this test only works with SK-ESK packets that don't
-        // contain an encrypted session key, i.e., the session key is
-        // the result of the s2k function.  gpg generates this type of
-        // SK-ESK packet when invoked with -c, but not -e.  (When
-        // invoked with -c and -e, it generates SK-ESK packets that
-        // include an encrypted session key.)
-        #[allow(deprecated)]
-        let tests = [
-            Test {
-                filename: "mode-0-password-1234.gpg",
-                cipher_algo: SymmetricAlgorithm::AES256,
-                s2k: S2K::Simple{ hash: HashAlgorithm::SHA1, },
-                password: "1234".into(),
-                key_hex: "7110EDA4D09E062AA5E4A390B0A572AC0D2C0220F352B0D292B65164C2A67301",
-            },
-            Test {
-                filename: "mode-1-password-123456-1.gpg",
-                cipher_algo: SymmetricAlgorithm::AES256,
-                s2k: S2K::Salted{
-                    hash: HashAlgorithm::SHA1,
-                    salt: [0xa8, 0x42, 0xa7, 0xa9, 0x59, 0xfa, 0x42, 0x2a],
-                },
-                password: "123456".into(),
-                key_hex: "8B79077CA448F6FB3D3AD2A264D3B938D357C9FB3E41219FD962DF960A9AFA08",
-            },
-            Test {
-                filename: "mode-1-password-foobar-2.gpg",
-                cipher_algo: SymmetricAlgorithm::AES256,
-                s2k: S2K::Salted{
-                    hash: HashAlgorithm::SHA1,
-                    salt: [0xbc, 0x95, 0x58, 0x45, 0x81, 0x3c, 0x7c, 0x37],
-                },
-                password: "foobar".into(),
-                key_hex: "B7D48AAE9B943B22A4D390083E8460B5EDFA118FE1688BF0C473B8094D1A8D10",
-            },
-            Test {
-                filename: "mode-3-password-qwerty-1.gpg",
-                cipher_algo: SymmetricAlgorithm::AES256,
-                s2k: S2K::Iterated {
-                    hash: HashAlgorithm::SHA1,
-                    salt: [0x78, 0x45, 0xf0, 0x5b, 0x55, 0xf7, 0xb4, 0x9e],
-                    hash_bytes: S2K::decode_count(241),
-                },
-                password: "qwerty".into(),
-                key_hex: "575AD156187A3F8CEC11108309236EB499F1E682F0D1AFADFAC4ECF97613108A",
-            },
-            Test {
-                filename: "mode-3-password-9876-2.gpg",
-                cipher_algo: SymmetricAlgorithm::AES256,
-                s2k: S2K::Iterated {
-                    hash: HashAlgorithm::SHA1,
-                    salt: [0xb9, 0x67, 0xea, 0x96, 0x53, 0xdb, 0x6a, 0xc8],
-                    hash_bytes: S2K::decode_count(43),
-                },
-                password: "9876".into(),
-                key_hex: "736C226B8C64E4E6D0325C6C552EF7C0738F98F48FED65FD8C93265103EFA23A",
-            },
-            Test {
-                filename: "mode-3-aes192-password-123.gpg",
-                cipher_algo: SymmetricAlgorithm::AES192,
-                s2k: S2K::Iterated {
-                    hash: HashAlgorithm::SHA1,
-                    salt: [0x8f, 0x81, 0x74, 0xc5, 0xd9, 0x61, 0xc7, 0x79],
-                    hash_bytes: S2K::decode_count(238),
-                },
-                password: "123".into(),
-                key_hex: "915E96FC694E7F90A6850B740125EA005199C725F3BD27E3",
-            },
-            Test {
-                filename: "mode-3-twofish-password-13-times-0123456789.gpg",
-                cipher_algo: SymmetricAlgorithm::Twofish,
-                s2k: S2K::Iterated {
-                    hash: HashAlgorithm::SHA1,
-                    salt: [0x51, 0xed, 0xfc, 0x15, 0x45, 0x40, 0x65, 0xac],
-                    hash_bytes: S2K::decode_count(238),
-                },
-                password: "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789".into(),
-                key_hex: "EA264FADA5A859C40D88A159B344ECF1F51FF327FDB3C558B0A7DC299777173E",
-            },
-            Test {
-                filename: "mode-3-aes128-password-13-times-0123456789.gpg",
-                cipher_algo: SymmetricAlgorithm::AES128,
-                s2k: S2K::Iterated {
-                    hash: HashAlgorithm::SHA1,
-                    salt: [0x06, 0xe4, 0x61, 0x5c, 0xa4, 0x48, 0xf9, 0xdd],
-                    hash_bytes: S2K::decode_count(238),
-                },
-                password: "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789".into(),
-                key_hex: "F3D0CE52ED6143637443E3399437FD0F",
-            },
-        ];
+        let path = crate::tests::message(&format!("s2k/{}", filename));
+        let pp = PacketParser::from_bytes(path).unwrap().unwrap();
+        if let Packet::SKESK(SKESK::V4(ref skesk)) = pp.packet {
+            assert_eq!(skesk.symmetric_algo(), cipher_algo);
+            assert_eq!(skesk.s2k(), &s2k);
 
-        for test in tests.iter().filter(|t| t.cipher_algo.is_supported()) {
-            let path = crate::tests::message(&format!("s2k/{}", test.filename));
-            let pp = PacketParser::from_bytes(path).unwrap().unwrap();
-            if let Packet::SKESK(SKESK::V4(ref skesk)) = pp.packet {
-                assert_eq!(skesk.symmetric_algo(), test.cipher_algo);
-                assert_eq!(skesk.s2k(), &test.s2k);
-
-                let key = skesk.s2k().derive_key(
-                    &test.password,
-                    skesk.symmetric_algo().key_size().unwrap());
-                if let Ok(key) = key {
-                    let key = to_hex(&key[..], false);
-                    assert_eq!(key, test.key_hex);
-                } else {
-                    panic!("Session key: None!");
-                }
+            let key = skesk.s2k().derive_key(
+                &password,
+                skesk.symmetric_algo().key_size().unwrap());
+            if let Ok(key) = key {
+                let key = to_hex(&key[..], false);
+                assert_eq!(key, key_hex);
             } else {
-                panic!("Wrong packet!");
+                panic!("Session key: None!");
             }
-
-            // Get the next packet.
-            let (_, ppr) = pp.next().unwrap();
-            assert!(ppr.is_eof());
+        } else {
+            panic!("Wrong packet!");
         }
+
+        // Get the next packet.
+        let (_, ppr) = pp.next().unwrap();
+        assert!(ppr.is_eof());
     }
 
     quickcheck! {
