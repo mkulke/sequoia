@@ -87,3 +87,10 @@ mod botan;
 pub use self::botan::*;
 #[cfg(feature = "crypto-botan")]
 pub use self::botan::Backend;
+
+#[cfg(feature = "crypto-kernel")]
+mod kernel;
+#[cfg(feature = "crypto-kernel")]
+pub use self::kernel::*;
+#[cfg(feature = "crypto-kernel")]
+pub use self::kernel::Backend;

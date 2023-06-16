@@ -68,6 +68,7 @@ fn crypto_backends_sanity_check() {
                           any(feature = "crypto-openssl",
                               feature = "crypto-botan",
                               feature = "crypto-botan2",
+                              feature = "crypto-kernel",
                               feature = "crypto-rust"))))),
          Backend {
              name: "Nettle",
@@ -80,6 +81,7 @@ fn crypto_backends_sanity_check() {
                               feature = "crypto-openssl",
                               feature = "crypto-botan",
                               feature = "crypto-botan2",
+                              feature = "crypto-kernel",
                               feature = "crypto-rust"))))),
          Backend {
              name: "Windows CNG",
@@ -107,6 +109,12 @@ fn crypto_backends_sanity_check() {
         (cfg!(feature = "crypto-botan2"),
          Backend {
              name: "Botan",
+             production_ready: true,
+             constant_time: true,
+         }),
+        (cfg!(feature = "crypto-kernel"),
+         Backend {
+             name: "Kernel Crypto",
              production_ready: true,
              constant_time: true,
          }),
