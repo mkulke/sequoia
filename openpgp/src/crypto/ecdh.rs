@@ -20,6 +20,7 @@ use crate::packet::Key;
 use crate::types::{Curve, HashAlgorithm, PublicKeyAlgorithm, SymmetricAlgorithm};
 use crate::utils::{read_be_u64, write_be_u64};
 
+#[allow(unused_imports)]
 pub(crate) use crate::crypto::backend::ecdh::{encrypt, decrypt};
 
 /// Returns the default ECDH KDF hash function.
