@@ -1,8 +1,8 @@
 //! Hold the implementation of [`Signer`] and [`Decryptor`] for [`KeyPair`].
 //!
-//! [`Signer`]: super::super::asymmetric::Signer
-//! [`Decryptor`]: super::super::asymmetric::Decryptor
-//! [`KeyPair`]: super::super::asymmetric::KeyPair
+//! [`Signer`]: crate::crypto::Signer
+//! [`Decryptor`]: crate::crypto::Decryptor
+//! [`KeyPair`]: crate::crypto::KeyPair
 
 use nettle::{
     curve25519,
