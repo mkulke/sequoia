@@ -10,25 +10,20 @@ use crate::types::Curve;
 use crate::{Error, Result};
 
 /// Wraps a session key using Elliptic Curve Diffie-Hellman.
+#[unimpl::unimpl]
 pub fn encrypt<R>(
     recipient: &Key<key::PublicParts, R>,
     session_key: &SessionKey,
 ) -> Result<Ciphertext>
 where
-    R: key::KeyRole,
-{
-    unimplemented!();
-}
+    R: key::KeyRole,;
 
 /// Unwraps a session key using Elliptic Curve Diffie-Hellman.
+#[unimpl::unimpl]
 pub fn decrypt<R>(
     recipient: &Key<key::PublicParts, R>,
     recipient_sec: &SecretKeyMaterial,
     ciphertext: &Ciphertext,
 ) -> Result<SessionKey>
 where
-    R: key::KeyRole,
-
-{
-    unimplemented!();
-}
+    R: key::KeyRole,;
