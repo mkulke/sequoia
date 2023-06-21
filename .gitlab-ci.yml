@@ -195,7 +195,7 @@ codespell:
 doc:
   tags:
     - linux
-  stage: build
+  stage: pre-check
   interruptible: true
   image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/rust-stable-prebuild:latest
   script:
