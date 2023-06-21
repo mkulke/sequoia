@@ -12,6 +12,6 @@ rustflags = [
           "-Aclippy::manual-map",
 ]
 
-[target.x86_64-pc-linux-gnu]
+[target.x86_64-unknown-linux-gnu]
 linker = "clang"
 rustflags = ["-C", "link-arg=-fuse-ld=/usr/bin/mold"]
