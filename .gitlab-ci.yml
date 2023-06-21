@@ -200,6 +200,8 @@ doc:
   image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/rust-stable-prebuild:latest
   script:
     - cargo doc --document-private-items --no-deps
+    - if ! git diff --quiet Cargo.lock ; then echo "Cargo.lock changed.  Please add the change to the corresponding commit." ; git diff ; false ; fi
+    - if ! git diff --quiet ; then echo "The build changed the source.  Please investigate." ; git diff ; fi
   variables:
     CARGO_TARGET_DIR: /target
     CARGO_HOME: /cargo
