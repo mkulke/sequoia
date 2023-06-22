@@ -3,6 +3,15 @@
 #+TITLE: sequoia-openpgp NEWS – history of user-visible changes
 #+STARTUP: content hidestars
 
+* Changes in 2.0.0
+  The major new feature is the support for RFCXXXX, which modernizes
+  the cryptographic primitives used in OpenPGP.  Notably, it adds
+  Authenticated Encryption, Elliptic Curve Cryptography, and
+  deprecates old algorithms.
+
+  We have also used the opportunity to clean up our API.  Most
+  programs should only require minor adjustments.
+** New functionality
 * Changes in 1.19.0
 ** Notable fixes
    - Key4::import_secret_cv25519 will now clamp some bits of the given
