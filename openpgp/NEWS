@@ -12,6 +12,8 @@
   We have also used the opportunity to clean up our API.  Most
   programs should only require minor adjustments.
 ** New functionality
+   - HashAlgorithm::SHA3_256
+   - HashAlgorithm::SHA3_512
 * Changes in 1.19.0
 ** Notable fixes
    - Key4::import_secret_cv25519 will now clamp some bits of the given
