@@ -83,7 +83,12 @@ impl TryFrom<HashAlgorithm> for cng::HashAlgorithmId {
             HashAlgorithm::SHA384 => cng::HashAlgorithmId::Sha384,
             HashAlgorithm::SHA512 => cng::HashAlgorithmId::Sha512,
             HashAlgorithm::MD5 => cng::HashAlgorithmId::Md5,
-            algo => Err(Error::UnsupportedHashAlgorithm(algo))?,
+
+            HashAlgorithm::SHA224 |
+            HashAlgorithm::RipeMD |
+            HashAlgorithm::Private(_) |
+            HashAlgorithm::Unknown(_) =>
+                return Err(Error::UnsupportedHashAlgorithm(value)),
         })
     }
 }
@@ -113,7 +118,11 @@ impl HashAlgorithm {
             HashAlgorithm::SHA384 => true,
             HashAlgorithm::SHA512 => true,
             HashAlgorithm::MD5 => true,
-            _ => false,
+
+            HashAlgorithm::SHA224 |
+            HashAlgorithm::RipeMD |
+            HashAlgorithm::Private(_) |
+            HashAlgorithm::Unknown(_) => false,
         }
     }
 

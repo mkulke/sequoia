@@ -73,7 +73,8 @@ fn get_md(algo: HashAlgorithm) -> Option<MessageDigest> {
         SHA384 => Nid::SHA384,
         SHA512 => Nid::SHA512,
         SHA224 => Nid::SHA224,
-        _ => return None,
+        HashAlgorithm::Private(_) |
+        HashAlgorithm::Unknown(_) => return None,
     };
     MessageDigest::from_nid(nid)
 }
