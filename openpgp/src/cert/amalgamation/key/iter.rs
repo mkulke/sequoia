@@ -358,6 +358,9 @@ impl<'a, P, R> KeyAmalgamationIter<'a, P, R>
     /// Changes the iterator to only return a key if it matches one of
     /// the specified `KeyHandle`s.
     ///
+    /// If the given `handles` iterator is empty, the set of returned
+    /// keys is not constrained.
+    ///
     /// This function is cumulative.  If you call this function (or
     /// [`key_handle`]) multiple times, then the iterator returns a key
     /// if it matches *any* of the specified [`KeyHandle`s].
@@ -377,7 +380,7 @@ impl<'a, P, R> KeyAmalgamationIter<'a, P, R>
     /// #         .generate()?;
     /// # let key_handles = &[cert.primary_key().key_handle()][..];
     /// # let mut i = 0;
-    /// for ka in cert.keys().key_handles(key_handles.iter()) {
+    /// for ka in cert.keys().key_handles2(key_handles) {
     ///     // Use it.
     /// #   i += 1;
     /// }
@@ -389,6 +392,37 @@ impl<'a, P, R> KeyAmalgamationIter<'a, P, R>
     /// [`KeyHandle`s]: super::super::super::KeyHandle
     /// [`key_handle`]: KeyAmalgamationIter::key_handle()
     /// [`KeyHandle::aliases`]: super::super::super::KeyHandle::aliases()
+    pub fn key_handles2<H>(mut self, handles: H) -> Self
+    where
+        H: IntoIterator<Item=KeyHandle>,
+    {
+        let mut handles = handles.into_iter().collect::<Vec<_>>();
+
+        if ! handles.is_empty() {
+            if self.key_handles.is_none() {
+                self.key_handles = Some(handles);
+            } else {
+                self.key_handles.as_mut().unwrap().append(&mut handles);
+            }
+        }
+
+        self
+    }
+
+    /// Changes the iterator to only return a key if it matches one of
+    /// the specified `KeyHandle`s.
+    ///
+    /// This function is cumulative.  If you call this function (or
+    /// [`key_handle`]) multiple times, then the iterator returns a key
+    /// if it matches *any* of the specified [`KeyHandle`s].
+    ///
+    /// This function uses [`KeyHandle::aliases`] to compare key
+    /// handles.
+    ///
+    /// [`KeyHandle`s]: super::super::super::KeyHandle
+    /// [`key_handle`]: KeyAmalgamationIter::key_handle()
+    /// [`KeyHandle::aliases`]: super::super::super::KeyHandle::aliases()
+    #[deprecated(note = "Use key_handles2 instead")]
     pub fn key_handles<'b>(mut self, h: impl Iterator<Item=&'b KeyHandle>)
         -> Self
         where 'a: 'b
@@ -1456,6 +1490,9 @@ impl<'a, P, R> ValidKeyAmalgamationIter<'a, P, R>
     /// Changes the iterator to only return a key if it matches one of
     /// the specified `KeyHandle`s.
     ///
+    /// If the given `handles` iterator is empty, the set of returned
+    /// keys is not constrained.
+    ///
     /// This function is cumulative.  If you call this function (or
     /// [`key_handle`]) multiple times, then the iterator returns a key
     /// if it matches *any* of the specified [`KeyHandle`s].
@@ -1479,7 +1516,7 @@ impl<'a, P, R> ValidKeyAmalgamationIter<'a, P, R>
     /// #         .generate()?;
     /// # let key_handles = &[cert.primary_key().key_handle()][..];
     /// # let mut i = 0;
-    /// for ka in cert.keys().with_policy(p, None).key_handles(key_handles.iter()) {
+    /// for ka in cert.keys().with_policy(p, None).key_handles2(key_handles) {
     ///     // Use it.
     /// #   i += 1;
     /// }
@@ -1489,8 +1526,39 @@ impl<'a, P, R> ValidKeyAmalgamationIter<'a, P, R>
     /// ```
     ///
     /// [`KeyHandle`s]: super::super::super::KeyHandle
+    /// [`key_handle`]: KeyAmalgamationIter::key_handle()
+    /// [`KeyHandle::aliases`]: super::super::super::KeyHandle::aliases()
+    pub fn key_handles2<H>(mut self, handles: H) -> Self
+    where
+        H: IntoIterator<Item=KeyHandle>,
+    {
+        let mut handles = handles.into_iter().collect::<Vec<_>>();
+
+        if ! handles.is_empty() {
+            if self.key_handles.is_none() {
+                self.key_handles = Some(handles);
+            } else {
+                self.key_handles.as_mut().unwrap().append(&mut handles);
+            }
+        }
+
+        self
+    }
+
+    /// Changes the iterator to only return a key if it matches one of
+    /// the specified `KeyHandle`s.
+    ///
+    /// This function is cumulative.  If you call this function (or
+    /// [`key_handle`]) multiple times, then the iterator returns a key
+    /// if it matches *any* of the specified [`KeyHandle`s].
+    ///
+    /// This function uses [`KeyHandle::aliases`] to compare key
+    /// handles.
+    ///
+    /// [`KeyHandle`s]: super::super::super::KeyHandle
     /// [`key_handle`]: ValidKeyAmalgamationIter::key_handle()
     /// [`KeyHandle::aliases`]: super::super::super::KeyHandle::aliases()
+    #[deprecated(note = "Use key_handles2 instead")]
     pub fn key_handles<'b>(mut self, h: impl Iterator<Item=&'b KeyHandle>)
         -> Self
         where 'a: 'b
