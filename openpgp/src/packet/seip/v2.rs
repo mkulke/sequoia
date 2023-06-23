@@ -1,7 +1,9 @@
 //! Symmetrically Encrypted Integrity Protected data packets version 2.
 //!
-//! An encrypted data packet is a container.  See [XXX] for details.
-
+//! An encrypted data packet is a container.  See [Section 5.13.2 of
+//! draft-ietf-openpgp-crypto-refresh-10] for details.
+//!
+//! [Section 5.13.2 of draft-ietf-openpgp-crypto-refresh-10]: https://www.ietf.org/archive/id/draft-ietf-openpgp-crypto-refresh-10.html#name-version-2-symmetrically-enc
 use crate::{
     Error,
     packet::{
@@ -18,7 +20,10 @@ use crate::{
 
 /// Holds an encrypted data packet.
 ///
-/// An encrypted data packet is a container.  See [XXX] for details.
+/// An encrypted data packet is a container.  See [Section 5.13.2 of
+/// draft-ietf-openpgp-crypto-refresh-10] for details.
+///
+/// [Section 5.13.2 of draft-ietf-openpgp-crypto-refresh-10]: https://www.ietf.org/archive/id/draft-ietf-openpgp-crypto-refresh-10.html#name-version-2-symmetrically-enc
 ///
 /// # A note on equality
 ///
