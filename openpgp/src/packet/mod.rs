@@ -217,6 +217,8 @@ pub mod pkesk;
 mod mdc;
 pub use self::mdc::MDC;
 pub mod aed;
+mod padding;
+pub use self::padding::Padding;
 
 /// Enumeration of packet types.
 ///
@@ -285,6 +287,8 @@ pub enum Packet {
     MDC(MDC),
     /// AEAD Encrypted Data Packet.
     AED(AED),
+    /// Padding packet.
+    Padding(Padding),
 }
 assert_send_and_sync!(Packet);
 
@@ -360,6 +364,7 @@ impl Packet {
             Packet::SEIP(_) => Tag::SEIP,
             Packet::MDC(_) => Tag::MDC,
             Packet::AED(_) => Tag::AED,
+            Packet::Padding(_) => Tag::Padding,
         }
     }
 
@@ -402,6 +407,7 @@ impl Packet {
             Packet::SEIP(p) => Some(p.version()),
             Packet::MDC(_) => None,
             Packet::AED(p) => Some(p.version()),
+            Packet::Padding(_) => None,
         }
     }
 
@@ -443,6 +449,7 @@ impl Packet {
             Packet::MDC(x) => Hash::hash(&x, state),
             Packet::AED(x) => Hash::hash(&x, state),
             Packet::Unknown(x) => Hash::hash(&x, state),
+            Packet::Padding(x) => Padding::hash(x, state),
         }
     }
 }
@@ -469,10 +476,12 @@ impl Deref for Packet {
             Packet::CompressedData(ref packet) => &packet.common,
             Packet::PKESK(ref packet) => &packet.common,
             Packet::SKESK(SKESK::V4(ref packet)) => &packet.common,
-            Packet::SKESK(SKESK::V5(ref packet)) => &packet.skesk4.common,
-            Packet::SEIP(ref packet) => &packet.common,
+            Packet::SKESK(SKESK::V6(ref packet)) => &packet.skesk4.common,
+            Packet::SEIP(SEIP::V1(packet)) => &packet.common,
+            Packet::SEIP(SEIP::V2(packet)) => &packet.common,
             Packet::MDC(ref packet) => &packet.common,
             Packet::AED(ref packet) => &packet.common,
+            Packet::Padding(packet) => &packet.common,
         }
     }
 }
@@ -496,10 +505,12 @@ impl DerefMut for Packet {
             Packet::CompressedData(ref mut packet) => &mut packet.common,
             Packet::PKESK(ref mut packet) => &mut packet.common,
             Packet::SKESK(SKESK::V4(ref mut packet)) => &mut packet.common,
-            Packet::SKESK(SKESK::V5(ref mut packet)) => &mut packet.skesk4.common,
-            Packet::SEIP(ref mut packet) => &mut packet.common,
+            Packet::SKESK(SKESK::V6(ref mut packet)) => &mut packet.skesk4.common,
+            Packet::SEIP(SEIP::V1(packet)) => &mut packet.common,
+            Packet::SEIP(SEIP::V2(packet)) => &mut packet.common,
             Packet::MDC(ref mut packet) => &mut packet.common,
             Packet::AED(ref mut packet) => &mut packet.common,
+            Packet::Padding(packet) => &mut packet.common,
         }
     }
 }
@@ -527,6 +538,7 @@ impl fmt::Debug for Packet {
                 SEIP(v) => write!(f, "SEIP({:?})", v),
                 MDC(v) => write!(f, "MDC({:?})", v),
                 AED(v) => write!(f, "AED({:?})", v),
+                Padding(v) => write!(f, "Padding({:?})", v),
             }
         }
 
@@ -553,7 +565,7 @@ impl Arbitrary for Packet {
     fn arbitrary(g: &mut Gen) -> Self {
         use crate::arbitrary_helper::gen_arbitrary_from_range;
 
-        match gen_arbitrary_from_range(0..15, g) {
+        match gen_arbitrary_from_range(0..16, g) {
             0 => Signature::arbitrary(g).into(),
             1 => OnePassSig::arbitrary(g).into(),
             2 => Key::<key::PublicParts, key::UnspecifiedRole>::arbitrary(g)
@@ -572,7 +584,8 @@ impl Arbitrary for Packet {
             11 => CompressedData::arbitrary(g).into(),
             12 => PKESK::arbitrary(g).into(),
             13 => SKESK::arbitrary(g).into(),
-            14 => loop {
+            14 => Padding::arbitrary(g).into(),
+            15 => loop {
                 let mut u = Unknown::new(
                     Tag::arbitrary(g), anyhow::anyhow!("Arbitrary::arbitrary"));
                 u.set_body(Arbitrary::arbitrary(g));
@@ -1233,10 +1246,10 @@ impl DerefMut for PKESK {
 pub enum SKESK {
     /// SKESK packet version 4.
     V4(self::skesk::SKESK4),
-    /// SKESK packet version 5.
+    /// SKESK packet version 6.
     ///
     /// This feature is [experimental](super#experimental-features).
-    V5(self::skesk::SKESK5),
+    V6(self::skesk::SKESK6),
 }
 assert_send_and_sync!(SKESK);
 
@@ -1245,7 +1258,7 @@ impl SKESK {
     pub fn version(&self) -> u8 {
         match self {
             SKESK::V4(_) => 4,
-            SKESK::V5(_) => 5,
+            SKESK::V6(_) => 6,
         }
     }
 }
@@ -2057,6 +2070,9 @@ impl<P: key::KeyParts, R: key::KeyRole> DerefMut for Key<P, R> {
 pub enum SEIP {
     /// SEIP packet version 1.
     V1(self::seip::SEIP1),
+
+    /// SEIP packet version 2.
+    V2(self::seip::SEIP2),
 }
 assert_send_and_sync!(SEIP);
 
@@ -2065,6 +2081,7 @@ impl SEIP {
     pub fn version(&self) -> u8 {
         match self {
             SEIP::V1(_) => 1,
+            SEIP::V2(_) => 2,
         }
     }
 }
@@ -2072,26 +2089,6 @@ impl SEIP {
 impl From<SEIP> for Packet {
     fn from(p: SEIP) -> Self {
         Packet::SEIP(p)
-    }
-}
-
-// Trivial forwarder for singleton enum.
-impl Deref for SEIP {
-    type Target = self::seip::SEIP1;
-
-    fn deref(&self) -> &Self::Target {
-        match self {
-            SEIP::V1(ref p) => p,
-        }
-    }
-}
-
-// Trivial forwarder for singleton enum.
-impl DerefMut for SEIP {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        match self {
-            SEIP::V1(ref mut p) => p,
-        }
     }
 }
 

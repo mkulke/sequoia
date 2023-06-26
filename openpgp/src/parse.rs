@@ -3103,7 +3103,7 @@ impl SKESK {
         let version = php_try!(php.parse_u8("version"));
         match version {
             4 => SKESK4::parse(php),
-            5 => SKESK5::parse(php),
+            6 => SKESK6::parse(php),
             _ => php.fail("unknown version"),
         }
     }
@@ -3138,58 +3138,49 @@ impl SKESK4 {
     }
 }
 
-impl SKESK5 {
+impl SKESK6 {
     /// Parses the body of an SK-ESK packet.
     fn parse(mut php: PacketHeaderParser)
              -> Result<PacketParser>
     {
         make_php_try!(php);
+
+        // Octet count of the following 5 fields.
+        let parameter_len = php_try!(php.parse_u8("parameter_len"));
+        if parameter_len < 1 + 1 + 1 + 2 /* S2K */ + 12 /* IV */ {
+            return php.fail("expected at least 16 parameter octets");
+        }
+
         let sym_algo: SymmetricAlgorithm =
             php_try!(php.parse_u8("sym_algo")).into();
         let aead_algo: AEADAlgorithm =
             php_try!(php.parse_u8("aead_algo")).into();
-        let s2k = php_try!(S2K::parse_v4(&mut php));
-        let s2k_supported = s2k.is_supported();
-        let iv_size = php_try!(aead_algo.nonce_size());
-        let digest_size = php_try!(aead_algo.digest_size());
 
-        // The rest of the packet is (potentially) the S2K
-        // parameters, the AEAD IV, the ESK, and the AEAD
-        // digest.  We don't know the size of the S2K
-        // parameters if the S2K method is not supported, and
-        // we don't know the size of the ESK.
-        let mut esk = php_try!(php.reader.steal_eof()
-                               .map_err(anyhow::Error::from));
-        let aead_iv = if s2k_supported && esk.len() >= iv_size {
-            // We know the S2K method, so the parameters have
-            // been parsed into the S2K object.  So, `esk`
-            // starts with iv_size bytes of IV.
-            let mut iv = esk;
-            esk = iv.split_off(iv_size);
-            iv
-        } else {
-            Vec::with_capacity(0) // A dummy value.
-        };
-
-        let l = esk.len();
-        let aead_digest = esk.split_off(l.saturating_sub(digest_size));
-        // Now fix the map.
-        if s2k_supported {
-            php.field("aead_iv", iv_size);
+        // The S2K object's length and the S2K.
+        let s2k_len = php_try!(php.parse_u8("s2k_len"));
+        if parameter_len < 1 + 1 + 1 + s2k_len + 12 /* IV */ {
+            return php.fail("S2K overflows parameter count");
         }
-        php.field("esk", esk.len());
-        php.field("aead_digest", aead_digest.len());
 
-        let skesk = php_try!(SKESK5::new_raw(
+        let s2k = php_try!(S2K::parse_v6(&mut php, s2k_len));
+
+        // And the IV.
+        let iv =
+            if let Some(iv_len) = parameter_len.checked_sub(1 + 1 + 1 + s2k_len) {
+                php_try!(php.parse_bytes("iv", iv_len as usize)).into()
+            } else {
+                return php.fail("IV overflows parameter count");
+            };
+
+        // Finally, the ESK including the AEAD tag.
+        let esk = php_try!(php.parse_bytes_eof("esk")).into();
+
+        let skesk = php_try!(SKESK6::new(
             sym_algo,
             aead_algo,
             s2k,
-            if s2k_supported {
-                Ok((aead_iv.into(), esk.into()))
-            } else {
-                Err(esk.into())
-            },
-            aead_digest.into_boxed_slice(),
+            iv,
+            esk,
         ));
 
         php.ok(skesk.into())
@@ -3252,16 +3243,49 @@ impl SEIP {
     fn parse(mut php: PacketHeaderParser) -> Result<PacketParser> {
         make_php_try!(php);
         let version = php_try!(php.parse_u8("version"));
-        if version != 1 {
-            return php.fail("unknown version");
+        match version {
+            1 => SEIP1::parse(php),
+            2 => SEIP2::parse(php),
+            _ => php.fail("unknown version"),
         }
+    }
+}
 
+impl_parse_with_buffered_reader!(SEIP);
+
+impl SEIP1 {
+    /// Parses the body of a SEIP1 packet.
+    fn parse(php: PacketHeaderParser) -> Result<PacketParser> {
         php.ok(SEIP1::new().into())
             .map(|pp| pp.set_processed(false))
     }
 }
 
-impl_parse_with_buffered_reader!(SEIP);
+impl SEIP2 {
+    /// Parses the body of a SEIP1 packet.
+    fn parse(mut php: PacketHeaderParser) -> Result<PacketParser> {
+        make_php_try!(php);
+        let cipher: SymmetricAlgorithm =
+            php_try!(php.parse_u8("sym_algo")).into();
+        let aead: AEADAlgorithm =
+            php_try!(php.parse_u8("aead_algo")).into();
+        let chunk_size = php_try!(php.parse_u8("chunk_size"));
+
+        // An implementation MUST accept chunk size octets with values
+        // from 0 to 16. An implementation MUST NOT create data with a
+        // chunk size octet value larger than 16 (4 MiB chunks).
+        if chunk_size > 16 {
+            return php.fail("unsupported chunk size");
+        }
+        let chunk_size: u64 = 1 << (chunk_size + 6);
+        let salt_v = php_try!(php.parse_bytes("salt", 32));
+        let mut salt = [0u8; 32];
+        salt.copy_from_slice(&salt_v);
+
+        let seip2 = php_try!(Self::new(cipher, aead, chunk_size, salt));
+        php.ok(seip2.into()).map(|pp| pp.set_processed(false))
+    }
+}
 
 impl MDC {
     /// Parses the body of an MDC packet.
@@ -3361,6 +3385,18 @@ impl AED1 {
         php.ok(aed.into()).map(|pp| pp.set_processed(false))
     }
 }
+
+impl Padding {
+    /// Parses the body of a padding packet.
+    fn parse(mut php: PacketHeaderParser) -> Result<PacketParser> {
+        make_php_try!(php);
+        // XXX: I don't think we should capture the body.
+        let value = php_try!(php.parse_bytes_eof("value"));
+        php.ok(Packet::Padding(Padding::from(value)))
+    }
+}
+
+impl_parse_with_buffered_reader!(Padding);
 
 impl MPI {
     /// Parses an OpenPGP MPI.
@@ -4694,6 +4730,16 @@ impl <'a> PacketParser<'a> {
                 Err(Error::MalformedPacket("Looks like garbage".into()).into()),
 
             Tag::Marker => Marker::plausible(bio, header),
+            Tag::Padding => {
+                // Even though a padding packet may occur here, it has
+                // so little structure, that we're likely better off
+                // trying to find the next packet.
+                //
+                // XXX: We could optimize that though, by using the
+                // potential padding packet's length to see if the
+                // next packet is plausible.
+                bad
+            },
             Tag::Signature => Signature::plausible(bio, header),
 
             Tag::SecretKey => Key::plausible(bio, header),
@@ -4954,6 +5000,7 @@ impl <'a> PacketParser<'a> {
             Tag::MDC =>                 MDC::parse(parser),
             Tag::PKESK =>               PKESK::parse(parser),
             Tag::AED =>                 AED::parse(parser),
+            Tag::Padding =>             Padding::parse(parser),
             _ => Unknown::parse(parser,
                                 Error::UnsupportedPacketType(tag).into()),
         }?;
@@ -5238,7 +5285,8 @@ impl <'a> PacketParser<'a> {
                 | Packet::UserID(_) | Packet::UserAttribute(_)
                 | Packet::Literal(_) | Packet::PKESK(_) | Packet::SKESK(_)
                 | Packet::SEIP(_) | Packet::MDC(_) | Packet::AED(_)
-                | Packet::CompressedData(_) => {
+                | Packet::CompressedData(_)
+                | Packet::Padding(_) => {
                 // Drop through.
                 t!("A {:?} packet is not a container, not recursing.",
                    self.packet.tag());
@@ -5336,7 +5384,9 @@ impl <'a> PacketParser<'a> {
             Packet::Unknown(p) => set_or_extend(rest, p.container_mut(), false),
             Packet::CompressedData(p) =>
                 set_or_extend(rest, p.deref_mut(), self.processed),
-            Packet::SEIP(p) =>
+            Packet::SEIP(SEIP::V1(p)) =>
+                set_or_extend(rest, p.deref_mut(), self.processed),
+            Packet::SEIP(SEIP::V2(p)) =>
                 set_or_extend(rest, p.deref_mut(), self.processed),
             Packet::AED(p) =>
                 set_or_extend(rest, p.deref_mut(), self.processed),
@@ -5800,7 +5850,7 @@ impl<'a> PacketParser<'a> {
         }
 
         match self.packet.clone() {
-            Packet::SEIP(_) => {
+            Packet::SEIP(SEIP::V1(_)) => {
                 // Get the first blocksize plus two bytes and check
                 // whether we can decrypt them using the provided key.
                 // Don't actually consume them in case we can't.
@@ -5866,6 +5916,65 @@ impl<'a> PacketParser<'a> {
                 // Consume the header.  This shouldn't fail, because
                 // it worked when reading the header.
                 reader.data_consume_hard(bl + 2).unwrap();
+
+                self.reader = Box::new(reader);
+                self.processed = true;
+
+                Ok(())
+            },
+
+            Packet::SEIP(SEIP::V2(seip)) => {
+                let chunk_size =
+                    aead::chunk_size_usize(seip.chunk_size())?;
+
+                // Read the first chunk and check whether we can
+                // decrypt it using the provided key.  Don't actually
+                // consume them in case we can't.
+                {
+                    // We need a bit more than one chunk so that
+                    // `aead::Decryptor` won't see EOF and think that
+                    // it has a partial block and it needs to verify
+                    // the final chunk.
+                    let amount = aead::chunk_size_usize(
+                        seip.chunk_digest_size()?
+                        + seip.aead().digest_size()? as u64)?;
+
+                    let data = self.data(amount)?;
+                    let (message_key, schedule) = aead::SEIPv2Schedule::new(
+                        key,
+                        seip.symmetric_algo(),
+                        seip.aead(),
+                        chunk_size,
+                        seip.salt())?;
+
+                    let dec = aead::Decryptor::new(
+                        seip.symmetric_algo(), seip.aead(), chunk_size,
+                        schedule, message_key,
+                        &data[..cmp::min(data.len(), amount)])?;
+                    let mut chunk = Vec::new();
+                    dec.take(seip.chunk_size() as u64).read_to_end(&mut chunk)?;
+                }
+
+                // Ok, we can decrypt the data.  Push a Decryptor and
+                // a HashedReader on the `BufferedReader` stack.
+
+                // This can't fail, because we create a decryptor
+                // above with the same parameters.
+                let (message_key, schedule) = aead::SEIPv2Schedule::new(
+                    key,
+                    seip.symmetric_algo(),
+                    seip.aead(),
+                    chunk_size,
+                    seip.salt())?;
+
+                let reader = self.take_reader();
+                let mut reader = aead::BufferedReaderDecryptor::with_cookie(
+                    seip.symmetric_algo(), seip.aead(), chunk_size,
+                    schedule, message_key, reader, Cookie::default()).unwrap();
+                reader.cookie_mut().level = Some(self.recursion_depth());
+
+                t!("Pushing aead::Decryptor, level {:?}.",
+                   reader.cookie_ref().level);
 
                 self.reader = Box::new(reader);
                 self.processed = true;

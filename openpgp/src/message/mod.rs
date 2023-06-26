@@ -205,6 +205,7 @@ impl MessageValidator {
             Tag::SKESK => Token::SKESK,
             Tag::PKESK => Token::PKESK,
             Tag::SEIP if version == Some(1) => Token::SEIPv1,
+            Tag::SEIP if version == Some(2) => Token::SEIPv2,
             Tag::MDC => Token::MDC,
             Tag::AED => Token::AED,
             Tag::OnePassSig => Token::OPS,
@@ -212,6 +213,11 @@ impl MessageValidator {
             Tag::Marker => {
                 // "[Marker packets] MUST be ignored when received.",
                 // section 5.8 of RFC4880.
+                return;
+            },
+            Tag::Padding => {
+                // "[Padding packets] MUST be ignored when received.",
+                // section 5.15 of RFC XXXX.
                 return;
             },
             _ => {
