@@ -83,7 +83,18 @@ impl TryFrom<HashAlgorithm> for cng::HashAlgorithmId {
             HashAlgorithm::SHA384 => cng::HashAlgorithmId::Sha384,
             HashAlgorithm::SHA512 => cng::HashAlgorithmId::Sha512,
             HashAlgorithm::MD5 => cng::HashAlgorithmId::Md5,
-            algo => Err(Error::UnsupportedHashAlgorithm(algo))?,
+
+            // SHA3 support is on the horizon, see
+            // https://blogs.windows.com/windows-insider/2023/03/23/announcing-windows-11-insider-preview-build-25324/
+            HashAlgorithm::SHA3_256 |
+            HashAlgorithm::SHA3_512 =>
+                return Err(Error::UnsupportedHashAlgorithm(value)),
+
+            HashAlgorithm::SHA224 |
+            HashAlgorithm::RipeMD |
+            HashAlgorithm::Private(_) |
+            HashAlgorithm::Unknown(_) =>
+                return Err(Error::UnsupportedHashAlgorithm(value)),
         })
     }
 }
@@ -113,7 +124,16 @@ impl HashAlgorithm {
             HashAlgorithm::SHA384 => true,
             HashAlgorithm::SHA512 => true,
             HashAlgorithm::MD5 => true,
-            _ => false,
+
+            // SHA3 support is on the horizon, see
+            // https://blogs.windows.com/windows-insider/2023/03/23/announcing-windows-11-insider-preview-build-25324/
+            HashAlgorithm::SHA3_256 |
+            HashAlgorithm::SHA3_512 => false,
+
+            HashAlgorithm::SHA224 |
+            HashAlgorithm::RipeMD |
+            HashAlgorithm::Private(_) |
+            HashAlgorithm::Unknown(_) => false,
         }
     }
 
