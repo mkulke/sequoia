@@ -160,3 +160,4 @@ required-features = ["compression-deflate"]
 [[bench]]
 name = "run_benchmarks"
 harness = false
+required-features = ["compression-deflate"]
