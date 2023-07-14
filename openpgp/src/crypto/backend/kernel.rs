@@ -30,15 +30,14 @@ impl AEADAlgorithm {
     /// algorithm and the most performing one, but fall back to any
     /// supported algorithm.
     pub(crate) const fn const_default() -> AEADAlgorithm {
-        AEADAlgorithm::Unknown(99)
+        AEADAlgorithm::GCM
     }
 
     pub(crate) fn is_supported_by_backend(&self) -> bool {
-        false
+        *self == AEADAlgorithm::GCM
     }
 
-    #[cfg(test)]
     pub(crate) fn supports_symmetric_algo(&self, algo: &SymmetricAlgorithm) -> bool {
-        false
+        matches!(algo, SymmetricAlgorithm::AES128 | SymmetricAlgorithm::AES192 | SymmetricAlgorithm::AES256)
     }
 }
