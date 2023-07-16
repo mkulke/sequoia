@@ -105,7 +105,7 @@ lalrpop = { version = ">=0.17, <0.20", default-features = false }
 [dev-dependencies]
 quickcheck = { version = "1", default-features = false }
 rpassword = "6.0"
-criterion = { version = "0.4", features = ["html_reports"] }
+criterion = { version = "0.5", features = ["html_reports"] }
 
 [features]
 default = ["compression", "crypto-nettle"]
