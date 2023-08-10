@@ -80,6 +80,8 @@ impl SymmetricAlgorithm {
     pub(crate) fn make_encrypt_cfb(self, key: &[u8], iv: Vec<u8>) -> Result<Box<dyn Mode>> {
         let cipher = self.make_cfb_cipher()?;
         let mut ctx = CipherCtx::new()?;
+        eprintln!("IV = ({}) {:?}", iv.len(), iv);
+        eprintln!("Key = ({}) {:?}", key.len(), key);
         ctx.encrypt_init(Some(cipher), Some(key), Some(&iv))?;
         Ok(Box::new(OpenSslMode::new(ctx)))
     }

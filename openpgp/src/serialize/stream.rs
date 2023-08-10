@@ -3345,7 +3345,7 @@ mod test {
                     #[allow(deprecated)]
                     State::MDC =>
                         if let Packet::MDC(ref mdc) = pp.packet {
-                            assert_eq!(mdc.digest(), mdc.computed_digest());
+                            assert_eq!(mdc.digest(), mdc.computed_digest(), "Digest match");
                             State::Done
                         } else {
                             panic!("Unexpected packet: {:?}", pp.packet)

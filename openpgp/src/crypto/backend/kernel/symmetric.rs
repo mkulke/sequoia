@@ -27,6 +27,7 @@ struct KernelCipher {
 
 impl KernelCipher {
     fn new(mode: &str, sk_algo: SymmetricAlgorithm) -> Result<Self> {
+        println!("creating cipher: {} {} {}", mode, sk_algo, sk_algo.block_size()?);
         Ok(Self {
             cipher: None,
             block_size: sk_algo.block_size()?,
@@ -38,10 +39,12 @@ impl KernelCipher {
     }
 
     fn set_key(&mut self, key: &[u8]) {
+        println!("KEY = ({}) {key:?}", key.len());
         self.key = key.into();
     }
 
     fn set_iv(&mut self, iv: Vec<u8>) {
+        println!("IV  = ({}) {iv:?}", iv.len());
         self.iv = iv;
     }
 }
@@ -65,10 +68,14 @@ impl Mode for KernelCipher {
             dst.copy_from_slice(&cipher.stream_op()?[0]);
             self.cipher = Some(Mutex::new(cipher));
         }
+        println!("ENC: src = {src:?}, dst = {dst:?}");
         Ok(())
     }
 
     fn decrypt(&mut self, dst: &mut [u8], src: &[u8]) -> Result<()> {
+        if dst.len() == 0 && src.len() == 0 {
+            return Ok(());
+        }
         if let Some(cipher) = &self.cipher {
             let mut cipher = cipher.lock().expect("not to be poisoned");
             if src.len() < self.block_size {
@@ -82,6 +89,7 @@ impl Mode for KernelCipher {
             dst.copy_from_slice(&cipher.stream_op()?[0]);
             self.cipher = Some(Mutex::new(cipher));
         }
+        println!("DEC: src = ({}) {src:?}, dst = ({}) {dst:?}", src.len(), dst.len());
         Ok(())
     }
 }
