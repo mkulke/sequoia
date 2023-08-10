@@ -50,6 +50,7 @@ impl Mode for OpenSslMode {
         unsafe {
             self.ctx.cipher_update_unchecked(src, Some(dst))?;
         }
+        eprintln!("src = {src:?}, dst = {dst:?}");
         Ok(())
     }
 
@@ -87,6 +88,8 @@ impl SymmetricAlgorithm {
     pub(crate) fn make_decrypt_cfb(self, key: &[u8], iv: Vec<u8>) -> Result<Box<dyn Mode>> {
         let cipher = self.make_cfb_cipher()?;
         let mut ctx = CipherCtx::new()?;
+        eprintln!("IV = ({}) {:?}", iv.len(), iv);
+        eprintln!("Key = ({}) {:?}", key.len(), key);
         ctx.decrypt_init(Some(cipher), Some(key), Some(&iv))?;
         Ok(Box::new(OpenSslMode::new(ctx)))
     }

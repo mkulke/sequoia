@@ -687,7 +687,7 @@ mod test {
                 let (cipher, sk) = skesks[0].decrypt(&"password".into())?;
                 assert_eq!(cipher, SymmetricAlgorithm::AES256);
                 let r = decrypt(cipher, &sk);
-                assert!(r);
+                assert!(r, "Decryption succeeded");
                 Ok(None)
             }
         }
@@ -696,7 +696,7 @@ mod test {
         for variant in &["simple", "salted", "iterated.min", "iterated.max"] {
             for esk in &["", ".esk"] {
                 let name = format!("s2k/{}{}.pgp", variant, esk);
-                eprintln!("{}", name);
+                eprintln!("Testing <{}>", name);
                 let mut verifier = DecryptorBuilder::from_bytes(
                     crate::tests::message(&name))?
                     .with_policy(p, None, H())?;
