@@ -392,11 +392,14 @@ impl<'a, P, R> KeyAmalgamationIter<'a, P, R>
     /// [`KeyHandle`s]: super::super::super::KeyHandle
     /// [`key_handle`]: KeyAmalgamationIter::key_handle()
     /// [`KeyHandle::aliases`]: super::super::super::KeyHandle::aliases()
-    pub fn key_handles2<H>(mut self, handles: H) -> Self
+    pub fn key_handles2<H, K>(mut self, handles: H) -> Self
     where
-        H: IntoIterator<Item=KeyHandle>,
+        H: IntoIterator<Item=K>,
+        K: Borrow<KeyHandle>,
     {
-        let mut handles = handles.into_iter().collect::<Vec<_>>();
+        let mut handles = handles.into_iter()
+            .map(|h| h.borrow().clone())
+            .collect::<Vec<_>>();
 
         if ! handles.is_empty() {
             if self.key_handles.is_none() {
@@ -1528,11 +1531,14 @@ impl<'a, P, R> ValidKeyAmalgamationIter<'a, P, R>
     /// [`KeyHandle`s]: super::super::super::KeyHandle
     /// [`key_handle`]: KeyAmalgamationIter::key_handle()
     /// [`KeyHandle::aliases`]: super::super::super::KeyHandle::aliases()
-    pub fn key_handles2<H>(mut self, handles: H) -> Self
+    pub fn key_handles2<H, K>(mut self, handles: H) -> Self
     where
-        H: IntoIterator<Item=KeyHandle>,
+        H: IntoIterator<Item=K>,
+        K: Borrow<KeyHandle>,
     {
-        let mut handles = handles.into_iter().collect::<Vec<_>>();
+        let mut handles = handles.into_iter()
+            .map(|h| h.borrow().clone())
+            .collect::<Vec<_>>();
 
         if ! handles.is_empty() {
             if self.key_handles.is_none() {
@@ -1802,17 +1808,17 @@ mod test {
                 assert_eq!(keyids.len(), i);
 
                 check(
-                    &cert.keys().key_handles(keyids.iter())
+                    &cert.keys().key_handles2(keyids.iter())
                         .map(|ka| ka.key().key_handle())
                         .collect::<Vec<KeyHandle>>(),
                     &keyids);
                 check(
-                    &cert.keys().with_policy(p, None).key_handles(keyids.iter())
+                    &cert.keys().with_policy(p, None).key_handles2(keyids.iter())
                         .map(|ka| ka.key().key_handle())
                         .collect::<Vec<KeyHandle>>(),
                     &keyids);
                 check(
-                    &cert.keys().key_handles(keyids.iter()).with_policy(p, None)
+                    &cert.keys().key_handles2(keyids.iter()).with_policy(p, None)
                         .map(|ka| ka.key().key_handle())
                         .collect::<Vec<KeyHandle>>(),
                     &keyids);
