@@ -1415,11 +1415,27 @@ impl Signature {
         Signature4::plausible(bio, header)
     }
 
+    /// When parsing an inline-signed message, attaches the digest to
+    /// the signature.
     fn parse_finish(indent: isize, mut pp: PacketParser,
                     typ: SignatureType, hash_algo: HashAlgorithm)
         -> Result<PacketParser>
     {
         tracer!(TRACE, "Signature::parse_finish", indent);
+
+        let sig: &Signature = pp.packet.downcast_ref()
+            .ok_or_else(
+                || Error::InvalidOperation(
+                    format!("Called Signature::parse_finish on a {:?}",
+                            pp.packet)))?;
+
+        // If we are not parsing an inline-signed message, we are
+        // done.
+        if sig.typ() != SignatureType::Binary
+            && sig.typ() != SignatureType::Text
+        {
+            return Ok(pp);
+        }
 
         let need_hash = HashingMode::for_signature(hash_algo, typ);
         let need_salt =
