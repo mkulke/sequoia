@@ -2564,6 +2564,7 @@ impl crate::packet::Signature {
                     | PreferredAEADAlgorithms
                     | IntendedRecipient
                     | AttestedCertifications
+                    | PreferredAEADCiphersuites
                     | Reserved(_)
                     => false,
                 Issuer
