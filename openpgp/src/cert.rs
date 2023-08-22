@@ -482,6 +482,7 @@ pub trait Preferences<'a>: seal::Sealed {
     ///
     /// The algorithms are ordered according by the certificate holder's
     /// preference.
+    #[deprecated]
     fn preferred_aead_algorithms(&self) -> Option<&'a [AEADAlgorithm]>;
 
     /// Returns the certificate holder's keyserver preferences.
@@ -4241,6 +4242,7 @@ macro_rules! impl_pref {
             // look on the primary User ID and then fall back to the
             // direct key signature.  We need to be careful to handle
             // the case where there are no User IDs.
+            #[allow(deprecated)]
             if let Ok(u) = self.primary_userid() {
                 u.$subpacket()
             } else if let Ok(sig) = self.direct_key_signature() {

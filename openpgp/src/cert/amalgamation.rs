@@ -1835,6 +1835,7 @@ impl<'a, C> crate::cert::Preferences<'a>
     }
 
     fn preferred_aead_algorithms(&self) -> Option<&'a [AEADAlgorithm]> {
+        #[allow(deprecated)]
         self.map(|s| s.preferred_aead_algorithms())
     }
 

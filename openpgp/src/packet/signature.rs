@@ -2533,6 +2533,7 @@ impl crate::packet::Signature {
         // area.
         fn eligible(p: &Subpacket) -> bool {
             use SubpacketTag::*;
+            #[allow(deprecated)]
             match p.tag() {
                 SignatureCreationTime
                     | SignatureExpirationTime

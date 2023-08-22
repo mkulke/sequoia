@@ -181,6 +181,7 @@ fn main() -> openpgp::Result<()> {
                                 sigs_subpacket_tags_size_max[i] = len;
                             }
 
+                            #[allow(deprecated)]
                             match sub.value() {
                                 SubpacketValue::Unknown { .. } =>
                                     unreachable!(),

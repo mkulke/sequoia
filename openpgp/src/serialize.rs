@@ -1391,6 +1391,7 @@ impl seal::Sealed for SubpacketValue {}
 impl Marshal for SubpacketValue {
     fn serialize(&self, o: &mut dyn std::io::Write) -> Result<()> {
         use self::SubpacketValue::*;
+        #[allow(deprecated)]
         match self {
             SignatureCreationTime(t) =>
                 write_be_u32(o, (*t).into())?,
@@ -1502,6 +1503,7 @@ impl Marshal for SubpacketValue {
 impl MarshalInto for SubpacketValue {
     fn serialized_len(&self) -> usize {
         use self::SubpacketValue::*;
+        #[allow(deprecated)]
         match self {
             SignatureCreationTime(_) => 4,
             SignatureExpirationTime(_) => 4,

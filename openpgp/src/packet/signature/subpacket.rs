@@ -301,11 +301,13 @@ pub enum SubpacketTag {
     ///
     ///  [Section 5.2.3.28 of RFC 4880bis]: https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-09.html#section-5.2.3.28
     IssuerFingerprint,
-    /// The AEAD algorithms that the certificate holder prefers (proposed).
+
+    /// The AEAD algorithms that the certificate holder prefers (deprecated).
     ///
-    /// See [Section 5.2.3.8 of RFC 4880bis] for details.
+    /// See [Section 5.2.3.8 of draft-ietf-openpgp-rfc4880bis-09] for details.
     ///
-    ///  [Section 5.2.3.8 of RFC 4880bis]: https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-09.html#section-5.2.3.8
+    ///  [Section 5.2.3.8 of draft-ietf-openpgp-rfc4880bis-09]: https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-09.html#section-5.2.3.8
+    #[deprecated(note = "Use PreferredAEADCiphersuites instead")]
     PreferredAEADAlgorithms,
     /// Who the signed message was intended for (proposed).
     ///
@@ -365,6 +367,7 @@ impl fmt::Display for SubpacketTag {
 
 impl From<u8> for SubpacketTag {
     fn from(u: u8) -> Self {
+        #[allow(deprecated)]
         match u {
             2 => SubpacketTag::SignatureCreationTime,
             3 => SubpacketTag::SignatureExpirationTime,
@@ -404,6 +407,7 @@ impl From<u8> for SubpacketTag {
 
 impl From<SubpacketTag> for u8 {
     fn from(t: SubpacketTag) -> Self {
+        #[allow(deprecated)]
         match t {
             SubpacketTag::SignatureCreationTime => 2,
             SubpacketTag::SignatureExpirationTime => 3,
@@ -441,6 +445,7 @@ impl From<SubpacketTag> for u8 {
     }
 }
 
+#[allow(deprecated)]
 const SUBPACKET_TAG_VARIANTS: [SubpacketTag; 29] = [
     SubpacketTag::SignatureCreationTime,
     SubpacketTag::SignatureExpirationTime,
@@ -1681,11 +1686,13 @@ pub enum SubpacketValue {
     ///
     ///  [Section 5.2.3.28 of RFC 4880bis]: https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-09.html#section-5.2.3.28
     IssuerFingerprint(Fingerprint),
-    /// The AEAD algorithms that the certificate holder prefers (proposed).
+
+    /// The AEAD algorithms that the certificate holder prefers (deprecated).
     ///
-    /// See [Section 5.2.3.8 of RFC 4880bis] for details.
+    /// See [Section 5.2.3.8 of draft-ietf-openpgp-rfc4880bis-09] for details.
     ///
-    ///  [Section 5.2.3.8 of RFC 4880bis]: https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-09.html#section-5.2.3.8
+    ///  [Section 5.2.3.8 of draft-ietf-openpgp-rfc4880bis-09]: https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-09.html#section-5.2.3.8
+    #[deprecated(note = "Use PreferredAEADCiphersuites instead")]
     PreferredAEADAlgorithms(Vec<AEADAlgorithm>),
     /// Who the signed message was intended for (proposed).
     ///
@@ -1733,6 +1740,7 @@ impl ArbitraryBounded for SubpacketValue {
         use self::SubpacketValue::*;
         use crate::arbitrary_helper::gen_arbitrary_from_range;
 
+        #[allow(deprecated)]
         loop {
             break match gen_arbitrary_from_range(0..27, g) {
                 0 => SignatureCreationTime(Arbitrary::arbitrary(g)),
@@ -1787,6 +1795,7 @@ impl SubpacketValue {
     /// Returns the subpacket tag for this value.
     pub fn tag(&self) -> SubpacketTag {
         use self::SubpacketValue::*;
+        #[allow(deprecated)]
         match &self {
             SignatureCreationTime(_) => SubpacketTag::SignatureCreationTime,
             SignatureExpirationTime(_) =>
@@ -3348,9 +3357,11 @@ impl SubpacketAreas {
     }
 
     /// Returns the value of the Preferred AEAD Algorithms subpacket.
+    #[deprecated(note = "Use preferred_aead_ciphersuites instead")]
     pub fn preferred_aead_algorithms(&self)
                                      -> Option<&[AEADAlgorithm]> {
         // array of one-octet values
+        #[allow(deprecated)]
         if let Some(sb)
                 = self.subpacket(
                     SubpacketTag::PreferredAEADAlgorithms) {
@@ -6947,10 +6958,12 @@ impl signature::SignatureBuilder {
     }
 
     /// Sets the Preferred AEAD Algorithms subpacket.
+    #[deprecated(note = "Use set_preferred_aead_ciphersuites instead")]
     pub fn set_preferred_aead_algorithms(mut self,
                                          preferences: Vec<AEADAlgorithm>)
         -> Result<Self>
     {
+        #[allow(deprecated)]
         self.hashed_area.replace(Subpacket::new(
             SubpacketValue::PreferredAEADAlgorithms(preferences),
             false)?)?;
