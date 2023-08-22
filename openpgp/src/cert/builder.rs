@@ -1710,7 +1710,7 @@ mod tests {
         let sig =
             cert.primary_key().with_policy(p, None).unwrap().binding_signature();
         assert_eq!(sig.typ(), crate::types::SignatureType::DirectKey);
-        assert!(sig.features().unwrap().supports_mdc());
+        assert!(sig.features().unwrap().supports_seipdv1());
     }
 
     #[test]
@@ -1743,7 +1743,7 @@ mod tests {
                    PublicKeyAlgorithm::EdDSA);
         assert!(cert1.subkeys().next().is_none());
         assert!(cert1.with_policy(p, None).unwrap().primary_userid().unwrap()
-                .binding_signature().features().unwrap().supports_mdc());
+                .binding_signature().features().unwrap().supports_seipdv1());
     }
 
     #[test]

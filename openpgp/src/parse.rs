@@ -1786,6 +1786,7 @@ impl Subpacket {
         // Then clear it from the type and convert it.
         let tag: SubpacketTag = (tag & !(1 << 7)).into();
 
+        #[allow(deprecated)]
         let value = match tag {
             SubpacketTag::SignatureCreationTime =>
                 SubpacketValue::SignatureCreationTime(
@@ -1989,6 +1990,21 @@ impl Subpacket {
                         bytes.chunks(digest_size).map(Into::into).collect())
                 }
             },
+
+            SubpacketTag::PreferredAEADCiphersuites => {
+                if len % 2 != 0 {
+                    return Err(Error::BadSignature(
+                        "Wrong number of bytes in preferred AEAD \
+                         Ciphersuites subpacket"
+                            .into()).into());
+                }
+
+                SubpacketValue::PreferredAEADCiphersuites(
+                    php.parse_bytes("pref aead ciphersuites", len)?
+                        .chunks(2).map(|o| (o[0].into(),
+                                            o[1].into())).collect())
+            },
+
             SubpacketTag::Reserved(_)
                 | SubpacketTag::PlaceholderForBackwardCompatibility
                 | SubpacketTag::Private(_)

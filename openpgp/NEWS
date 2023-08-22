@@ -18,6 +18,11 @@
 ** New functionality
    - crypto::SessionKey::as_protected
    - types::AEADAlgorithm::GCM
+   - types::Features::{clear,set,supports}_seipdv1
+   - types::Features::{clear,set,supports}_seipdv2
+** Deprecated functionality
+   - types::Features::{clear,set,supports}_mdc
+   - types::Features::{clear,set,supports}_aead
 * Changes in 1.16.0
 ** New functionality
    - Add KeyFlags::set_certification_to.

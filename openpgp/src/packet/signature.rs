@@ -2634,6 +2634,7 @@ impl crate::packet::Signature {
         // area.
         fn eligible(p: &Subpacket) -> bool {
             use SubpacketTag::*;
+            #[allow(deprecated)]
             match p.tag() {
                 SignatureCreationTime
                     | SignatureExpirationTime
@@ -2659,6 +2660,7 @@ impl crate::packet::Signature {
                     | PreferredAEADAlgorithms
                     | IntendedRecipient
                     | AttestedCertifications
+                    | PreferredAEADCiphersuites
                     | Reserved(_)
                     => false,
                 Issuer

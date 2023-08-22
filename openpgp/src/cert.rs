@@ -470,10 +470,19 @@ pub trait Preferences<'a>: seal::Sealed {
     fn preferred_compression_algorithms(&self)
         -> Option<&'a [CompressionAlgorithm]>;
 
+    /// Returns the supported AEAD ciphersuites ordered by preference.
+    ///
+    /// The algorithms are ordered according by the certificate holder's
+    /// preference.
+    fn preferred_aead_ciphersuites(
+        &self)
+        -> Option<&'a [(SymmetricAlgorithm, AEADAlgorithm)]>;
+
     /// Returns the supported AEAD algorithms ordered by preference.
     ///
     /// The algorithms are ordered according by the certificate holder's
     /// preference.
+    #[deprecated]
     fn preferred_aead_algorithms(&self) -> Option<&'a [AEADAlgorithm]>;
 
     /// Returns the certificate holder's keyserver preferences.
@@ -4233,6 +4242,7 @@ macro_rules! impl_pref {
             // look on the primary User ID and then fall back to the
             // direct key signature.  We need to be careful to handle
             // the case where there are no User IDs.
+            #[allow(deprecated)]
             if let Ok(u) = self.primary_userid() {
                 u.$subpacket()
             } else if let Ok(sig) = self.direct_key_signature() {
@@ -4250,6 +4260,7 @@ impl<'a> Preferences<'a> for ValidCert<'a>
     impl_pref!(preferred_symmetric_algorithms, &'a [SymmetricAlgorithm]);
     impl_pref!(preferred_hash_algorithms, &'a [HashAlgorithm]);
     impl_pref!(preferred_compression_algorithms, &'a [CompressionAlgorithm]);
+    impl_pref!(preferred_aead_ciphersuites, &'a [(SymmetricAlgorithm, AEADAlgorithm)]);
     impl_pref!(preferred_aead_algorithms, &'a [AEADAlgorithm]);
     impl_pref!(key_server_preferences, KeyServerPreferences);
     impl_pref!(preferred_key_server, &'a [u8]);
@@ -6537,13 +6548,13 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
             assert_eq!(userid.preferred_compression_algorithms(),
                        Some(&[ Zlib, BZip2, Zip ][..]));
 
-            assert_eq!(userid.preferred_aead_algorithms(), None);
+            assert_eq!(userid.preferred_aead_ciphersuites(), None);
 
             // assert_eq!(userid.key_server_preferences(),
             //            Some(KeyServerPreferences::new(&[])));
 
             assert_eq!(userid.features(),
-                       Some(Features::new(&[]).set_mdc()));
+                       Some(Features::new(&[]).set_seipdv1()));
         } else {
             panic!("two user ids");
         }
@@ -6566,13 +6577,13 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
             assert_eq!(userid.preferred_compression_algorithms(),
                        Some(&[ Zlib, BZip2, Zip ][..]));
 
-            assert_eq!(userid.preferred_aead_algorithms(), None);
+            assert_eq!(userid.preferred_aead_ciphersuites(), None);
 
             assert_eq!(userid.key_server_preferences(),
                        Some(KeyServerPreferences::new(&[0x80])));
 
             assert_eq!(userid.features(),
-                       Some(Features::new(&[]).set_mdc()));
+                       Some(Features::new(&[]).set_seipdv1()));
 
             // Using the certificate should choose the primary user
             // id, which is this one (because it is lexicographically
@@ -6584,8 +6595,8 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
                        cert.preferred_hash_algorithms());
             assert_eq!(userid.preferred_compression_algorithms(),
                        cert.preferred_compression_algorithms());
-            assert_eq!(userid.preferred_aead_algorithms(),
-                       cert.preferred_aead_algorithms());
+            assert_eq!(userid.preferred_aead_ciphersuites(),
+                       cert.preferred_aead_ciphersuites());
             assert_eq!(userid.key_server_preferences(),
                        cert.key_server_preferences());
             assert_eq!(userid.features(),
@@ -6612,13 +6623,13 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
             assert_eq!(userid.preferred_compression_algorithms(),
                        Some(&[ BZip2, Zlib, Zip ][..]));
 
-            assert_eq!(userid.preferred_aead_algorithms(), None);
+            assert_eq!(userid.preferred_aead_ciphersuites(), None);
 
             assert_eq!(userid.key_server_preferences(),
                        Some(KeyServerPreferences::new(&[0x80])));
 
             assert_eq!(userid.features(),
-                       Some(Features::new(&[]).set_mdc()));
+                       Some(Features::new(&[]).set_seipdv1()));
         } else {
             panic!("two user ids");
         }
