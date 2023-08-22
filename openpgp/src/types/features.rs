@@ -43,7 +43,7 @@ use crate::types::Bitfield;
 /// match cert.with_policy(p, None)?.primary_userid()?.features() {
 ///     Some(features) => {
 ///         println!("Certificate holder's supported features:");
-///         assert!(features.supports_mdc());
+///         assert!(features.supports_seipdv1());
 ///         assert!(!features.supports_aead());
 ///     }
 ///     None => {
@@ -61,8 +61,8 @@ impl fmt::Debug for Features {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         // Print known features first.
         let mut need_comma = false;
-        if self.supports_mdc() {
-            f.write_str("MDC")?;
+        if self.supports_seipdv1() {
+            f.write_str("SEIPDv1")?;
             need_comma = true;
         }
         if self.supports_aead() {
@@ -74,7 +74,7 @@ impl fmt::Debug for Features {
         // Now print any unknown features.
         for i in self.0.iter() {
             match i {
-                FEATURE_FLAG_MDC => (),
+                FEATURE_FLAG_SEIPDV1 => (),
                 FEATURE_FLAG_AEAD => (),
                 i => {
                     if need_comma { f.write_str(", ")?; }
@@ -114,7 +114,8 @@ impl Features {
     pub fn sequoia() -> Self {
         let v : [u8; 1] = [ 0 ];
 
-        Self::new(&v[..]).set_mdc()
+        Self::new(&v[..])
+            .set_seipdv1()
     }
 
     /// Compares two feature sets for semantic equality.
@@ -168,7 +169,7 @@ impl Features {
     /// assert!(! f.get(3));
     /// assert!(! f.get(8));
     /// assert!(! f.get(80));
-    /// # assert!(f.supports_mdc());
+    /// # assert!(f.supports_seipdv1());
     /// # assert!(! f.supports_aead());
     /// # Ok(()) }
     /// ```
@@ -194,7 +195,7 @@ impl Features {
     /// assert!(! f.get(1));
     /// assert!(f.get(2));
     /// assert!(! f.get(3));
-    /// # assert!(f.supports_mdc());
+    /// # assert!(f.supports_seipdv1());
     /// # assert!(! f.supports_aead());
     /// # Ok(()) }
     /// ```
@@ -220,7 +221,7 @@ impl Features {
     /// assert!(! f.get(1));
     /// assert!(! f.get(2));
     /// assert!(! f.get(3));
-    /// # assert!(f.supports_mdc());
+    /// # assert!(f.supports_seipdv1());
     /// # assert!(! f.supports_aead());
     /// # Ok(()) }
     /// ```
@@ -228,7 +229,7 @@ impl Features {
         Self(self.0.clear(bit))
     }
 
-    /// Returns whether the MDC feature flag is set.
+    /// Returns whether the SEIPDv1 feature flag is set.
     ///
     /// # Examples
     ///
@@ -240,14 +241,20 @@ impl Features {
     /// # fn main() -> Result<()> {
     /// let f = Features::empty();
     ///
-    /// assert!(! f.supports_mdc());
+    /// assert!(! f.supports_seipdv1());
     /// # Ok(()) }
     /// ```
-    pub fn supports_mdc(&self) -> bool {
-        self.get(FEATURE_FLAG_MDC)
+    pub fn supports_seipdv1(&self) -> bool {
+        self.get(FEATURE_FLAG_SEIPDV1)
     }
 
-    /// Sets the MDC feature flag.
+    /// Returns whether the MDC feature flag is set.
+    #[deprecated(note = "Use supports_seipdv1.")]
+    pub fn supports_mdc(&self) -> bool {
+        self.supports_seipdv1()
+    }
+
+    /// Sets the SEIPDv1 feature flag.
     ///
     /// # Examples
     ///
@@ -257,17 +264,23 @@ impl Features {
     /// use openpgp::types::Features;
     ///
     /// # fn main() -> Result<()> {
-    /// let f = Features::empty().set_mdc();
+    /// let f = Features::empty().set_seipdv1();
     ///
-    /// assert!(f.supports_mdc());
+    /// assert!(f.supports_seipdv1());
     /// # assert!(f.get(0));
     /// # Ok(()) }
     /// ```
-    pub fn set_mdc(self) -> Self {
-        self.set(FEATURE_FLAG_MDC)
+    pub fn set_seipdv1(self) -> Self {
+        self.set(FEATURE_FLAG_SEIPDV1)
     }
 
-    /// Clears the MDC feature flag.
+    /// Sets the MDC feature flag.
+    #[deprecated(note = "Use set_seipdv1.")]
+    pub fn set_mdc(self) -> Self {
+        self.set_seipdv1()
+    }
+
+    /// Clears the SEIPDv1 feature flag.
     ///
     /// # Examples
     ///
@@ -278,14 +291,20 @@ impl Features {
     ///
     /// # fn main() -> Result<()> {
     /// let f = Features::new(&[0x1]);
-    /// assert!(f.supports_mdc());
+    /// assert!(f.supports_seipdv1());
     ///
-    /// let f = f.clear_mdc();
-    /// assert!(! f.supports_mdc());
+    /// let f = f.clear_seipdv1();
+    /// assert!(! f.supports_seipdv1());
     /// # Ok(()) }
     /// ```
+    pub fn clear_seipdv1(self) -> Self {
+        self.clear(FEATURE_FLAG_SEIPDV1)
+    }
+
+    /// Clears the MDC feature flag.
+    #[deprecated(note = "Use clear_seipdv1.")]
     pub fn clear_mdc(self) -> Self {
-        self.clear(FEATURE_FLAG_MDC)
+        self.clear_seipdv1()
     }
 
     /// Returns whether the AEAD feature flag is set.
@@ -349,8 +368,9 @@ impl Features {
     }
 }
 
-/// Modification Detection (packets 18 and 19).
-const FEATURE_FLAG_MDC: usize = 0;
+/// Symmetrically Encrypted and Integrity Protected Data packet
+/// version 1.
+const FEATURE_FLAG_SEIPDV1: usize = 0;
 
 /// AEAD Encrypted Data Packet (packet 20) and version 5 Symmetric-Key
 /// Encrypted Session Key Packets (packet 3).
@@ -442,7 +462,7 @@ mod tests {
 
     #[test]
     fn known() {
-        let a = Features::empty().set_mdc();
+        let a = Features::empty().set_seipdv1();
         let b = Features::new(&[ 0x1 ]);
         assert_eq!(a, b);
         assert!(a.normalized_eq(&b));
@@ -452,7 +472,7 @@ mod tests {
         assert_eq!(a, b);
         assert!(a.normalized_eq(&b));
 
-        let a = Features::empty().set_mdc().set_aead();
+        let a = Features::empty().set_seipdv1().set_aead();
         let b = Features::new(&[ 0x1 | 0x2 ]);
         assert_eq!(a, b);
         assert!(a.normalized_eq(&b));

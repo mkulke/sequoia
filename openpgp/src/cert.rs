@@ -6543,7 +6543,7 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
             //            Some(KeyServerPreferences::new(&[])));
 
             assert_eq!(userid.features(),
-                       Some(Features::new(&[]).set_mdc()));
+                       Some(Features::new(&[]).set_seipdv1()));
         } else {
             panic!("two user ids");
         }
@@ -6572,7 +6572,7 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
                        Some(KeyServerPreferences::new(&[0x80])));
 
             assert_eq!(userid.features(),
-                       Some(Features::new(&[]).set_mdc()));
+                       Some(Features::new(&[]).set_seipdv1()));
 
             // Using the certificate should choose the primary user
             // id, which is this one (because it is lexicographically
@@ -6618,7 +6618,7 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
                        Some(KeyServerPreferences::new(&[0x80])));
 
             assert_eq!(userid.features(),
-                       Some(Features::new(&[]).set_mdc()));
+                       Some(Features::new(&[]).set_seipdv1()));
         } else {
             panic!("two user ids");
         }

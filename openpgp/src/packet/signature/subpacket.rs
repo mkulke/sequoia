@@ -7278,7 +7278,7 @@ fn accessors() {
     assert_eq!(sig_.reason_for_revocation(),
                Some((ReasonForRevocation::KeyRetired, &b"foobar"[..])));
 
-    let feats = Features::empty().set_mdc();
+    let feats = Features::empty().set_seipdv1();
     sig = sig.set_features(feats.clone()).unwrap();
     let sig_ =
         sig.clone().sign_hash(&mut keypair, hash.clone()).unwrap();
@@ -7568,13 +7568,13 @@ fn subpacket_test_2() {
                        authenticated: false,
                    }));
 
-        assert_eq!(sig.features().unwrap(), Features::empty().set_mdc());
+        assert_eq!(sig.features().unwrap(), Features::empty().set_seipdv1());
         assert_eq!(sig.subpacket(SubpacketTag::Features),
                    Some(&Subpacket {
                        length: 2.into(),
                        critical: false,
                        value: SubpacketValue::Features(
-                           Features::empty().set_mdc()),
+                           Features::empty().set_seipdv1()),
                        authenticated: false,
                    }));
 
