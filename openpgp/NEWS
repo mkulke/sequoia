@@ -12,6 +12,7 @@
   We have also used the opportunity to clean up our API.  Most
   programs should only require minor adjustments.
 ** New functionality
+   - types::Features::{clear,set,supports}_seipdv2
 * Changes in 1.17.0
 ** Notable fixes
    - Sequoia now ignores some formatting errors when reading secret
