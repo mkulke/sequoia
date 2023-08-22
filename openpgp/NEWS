@@ -14,6 +14,9 @@
 ** New functionality
    - HashAlgorithm::SHA3_256
    - HashAlgorithm::SHA3_512
+   - types::Features::clear_seipdv2
+   - types::Features::set_seipdv2
+   - types::Features::supports_seipdv2
 * Changes in 1.19.0
 ** Notable fixes
    - Key4::import_secret_cv25519 will now clamp some bits of the given
