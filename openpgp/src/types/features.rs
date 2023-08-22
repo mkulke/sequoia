@@ -70,6 +70,7 @@ impl fmt::Debug for Features {
             f.write_str("SEIPDv2")?;
             need_comma = true;
         }
+        #[allow(deprecated)]
         if self.supports_aead() {
             if need_comma { f.write_str(", ")?; }
             f.write_str("AEAD")?;
@@ -389,6 +390,7 @@ impl Features {
     /// assert!(! f.supports_aead());
     /// # Ok(()) }
     /// ```
+    #[deprecated]
     pub fn supports_aead(&self) -> bool {
         self.get(FEATURE_FLAG_AEAD)
     }
@@ -409,6 +411,7 @@ impl Features {
     /// # assert!(f.get(1));
     /// # Ok(()) }
     /// ```
+    #[deprecated]
     pub fn set_aead(self) -> Self {
         self.set(FEATURE_FLAG_AEAD)
     }
@@ -430,6 +433,7 @@ impl Features {
     /// assert!(! f.supports_aead());
     /// # Ok(()) }
     /// ```
+    #[deprecated]
     pub fn clear_aead(self) -> Self {
         self.clear(FEATURE_FLAG_AEAD)
     }
@@ -543,11 +547,13 @@ mod tests {
         assert_eq!(a, b);
         assert!(a.normalized_eq(&b));
 
+        #[allow(deprecated)]
         let a = Features::empty().set_aead();
         let b = Features::new(&[ 0x2 ]);
         assert_eq!(a, b);
         assert!(a.normalized_eq(&b));
 
+        #[allow(deprecated)]
         let a = Features::empty().set_seipdv1().set_aead();
         let b = Features::new(&[ 0x1 | 0x2 ]);
         assert_eq!(a, b);
