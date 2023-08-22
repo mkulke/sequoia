@@ -1827,6 +1827,13 @@ impl<'a, C> crate::cert::Preferences<'a>
         self.map(|s| s.preferred_compression_algorithms())
     }
 
+    fn preferred_aead_ciphersuites(
+        &self)
+        -> Option<&'a [(SymmetricAlgorithm, AEADAlgorithm)]>
+    {
+        self.map(|s| s.preferred_aead_ciphersuites())
+    }
+
     fn preferred_aead_algorithms(&self) -> Option<&'a [AEADAlgorithm]> {
         self.map(|s| s.preferred_aead_algorithms())
     }
