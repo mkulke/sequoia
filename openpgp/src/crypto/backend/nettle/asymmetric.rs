@@ -308,7 +308,8 @@ impl KeyPair {
             (PublicKey::ECDH{ .. },
              mpi::SecretKeyMaterial::ECDH { .. },
              mpi::Ciphertext::ECDH { .. }) =>
-                crate::crypto::ecdh::decrypt(self.public(), secret, ciphertext)?,
+                crate::crypto::ecdh::decrypt(self.public(), secret, ciphertext,
+                                             plaintext_len)?,
 
             (public, secret, ciphertext) =>
                 return Err(Error::InvalidOperation(format!(

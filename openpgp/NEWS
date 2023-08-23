@@ -17,10 +17,12 @@
 * Changes in 1.17.0
 ** New functionality
    - crypto::SessionKey::as_protected
+   - crypto::ecdh::decrypt_unwrap2
    - types::AEADAlgorithm::GCM
    - types::Features::{clear,set,supports}_seipdv1
    - types::Features::{clear,set,supports}_seipdv2
 ** Deprecated functionality
+   - crypto::ecdh::decrypt_unwrap
    - types::Features::{clear,set,supports}_mdc
    - types::Features::{clear,set,supports}_aead
 * Changes in 1.16.0

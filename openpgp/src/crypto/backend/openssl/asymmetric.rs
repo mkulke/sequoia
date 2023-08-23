@@ -322,7 +322,7 @@ impl KeyPair {
         &self,
         secret: &mpi::SecretKeyMaterial,
         ciphertext: &mpi::Ciphertext,
-        _plaintext_len: Option<usize>,
+        plaintext_len: Option<usize>,
     ) -> Result<SessionKey> {
         use crate::crypto::mpi::PublicKey;
 
@@ -351,7 +351,9 @@ impl KeyPair {
                     PublicKey::ECDH { .. },
                     mpi::SecretKeyMaterial::ECDH { .. },
                     mpi::Ciphertext::ECDH { .. },
-                ) => crate::crypto::ecdh::decrypt(self.public(), secret, ciphertext)?,
+                ) => crate::crypto::ecdh::decrypt(self.public(), secret,
+                                                  ciphertext,
+                                                  plaintext_len)?,
 
                 (public, secret, ciphertext) => {
                     return Err(crate::Error::InvalidOperation(format!(

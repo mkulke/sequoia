@@ -10,7 +10,7 @@ use crate::{
     Result,
 };
 use crate::crypto::SessionKey;
-use crate::crypto::ecdh::{encrypt_wrap, decrypt_unwrap};
+use crate::crypto::ecdh::{encrypt_wrap, decrypt_unwrap2};
 use crate::crypto::mem::Protected;
 use crate::crypto::mpi::{
     MPI,
@@ -85,7 +85,8 @@ pub fn encrypt<R>(recipient: &Key<key::PublicParts, R>,
 #[allow(non_snake_case)]
 pub fn decrypt<R>(recipient: &Key<key::PublicParts, R>,
                   recipient_sec: &SecretKeyMaterial,
-                  ciphertext: &Ciphertext)
+                  ciphertext: &Ciphertext,
+                  plaintext_len: Option<usize>)
     -> Result<SessionKey>
     where R: key::KeyRole
 {
@@ -138,7 +139,8 @@ pub fn decrypt<R>(recipient: &Key<key::PublicParts, R>,
                 },
             };
 
-            decrypt_unwrap(recipient, &S, ciphertext)
+            decrypt_unwrap2(recipient.role_as_unspecified(), &S, ciphertext,
+                            plaintext_len)
         }
 
         _ =>
