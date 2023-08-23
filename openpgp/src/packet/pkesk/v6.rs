@@ -66,13 +66,13 @@ impl PKESK6 {
         where P: key::KeyParts,
               R: key::KeyRole,
     {
-        // XXX: Checksumming for non X25519 and X448 keys..
-        let esk = recipient.encrypt(session_key)?;
         Ok(PKESK6 {
             common: Default::default(),
             recipient: Some(recipient.fingerprint()),
             pk_algo: recipient.pk_algo(),
-            esk,
+            esk: packet::PKESK::encrypt_common(
+                None, session_key,
+                recipient.parts_as_unspecified().role_as_unspecified())?,
         })
     }
 
@@ -135,14 +135,8 @@ impl PKESK6 {
                         sym_algo_hint: Option<SymmetricAlgorithm>)
         -> Result<SessionKey>
     {
-        // XXX: Checksumming for non X25519 and X448 keys..
-        let plaintext_len = if let Some(s) = sym_algo_hint {
-            Some(s.key_size()? /* + 2 chksum */)
-        } else {
-            None
-        };
-        let plain = decryptor.decrypt(&self.esk, plaintext_len)?;
-        Ok(plain)
+        packet::PKESK::decrypt_common(&self.esk, decryptor, sym_algo_hint, false)
+            .map(|(_sym_algo, key)| key)
     }
 }
 
