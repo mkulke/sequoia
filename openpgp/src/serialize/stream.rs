@@ -2924,7 +2924,7 @@ impl<'a> Encryptor<'a> {
     /// let message = Message::new(&mut sink);
     /// let message =
     ///     Encryptor::with_passwords(message, Some("совершенно секретно"))
-    ///         .aead_algo(AEADAlgorithm::EAX)
+    ///         .aead_algo(AEADAlgorithm::default())
     ///         .build()?;
     /// let mut message = LiteralWriter::new(message).build()?;
     /// message.write_all(b"Hello world.")?;
