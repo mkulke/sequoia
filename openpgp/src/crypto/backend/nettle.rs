@@ -37,7 +37,11 @@ impl AEADAlgorithm {
     /// algorithm and the most performing one, but fall back to any
     /// supported algorithm.
     pub(crate) const fn const_default() -> AEADAlgorithm {
-        AEADAlgorithm::EAX
+        if nettle::aead::OCB_IS_SUPPORTED {
+            AEADAlgorithm::OCB
+        } else {
+            AEADAlgorithm::EAX
+        }
     }
 
     pub(crate) fn is_supported_by_backend(&self) -> bool {
