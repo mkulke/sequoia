@@ -253,18 +253,20 @@ impl packet::PKESK {
         if unencrypted_cipher_octet {
             modified_ciphertext = match ciphertext {
                 Ciphertext::X25519 { e, key, } => {
-                    sym_algo = Some(key.get(0)
-                        .ok_or_else(|| Error::MalformedPacket("Short ESK".into()))?
-                        .clone().into());
+                    sym_algo =
+                        Some((*key.get(0).ok_or_else(
+                            || Error::MalformedPacket("Short ESK".into()))?)
+                             .into());
                     Ciphertext::X25519 {
                         e: e.clone(),
                         key: key[1..].into(),
                     }
                 },
                 Ciphertext::X448 { e, key, } => {
-                    sym_algo = Some(key.get(0)
-                        .ok_or_else(|| Error::MalformedPacket("Short ESK".into()))?
-                        .clone().into());
+                    sym_algo =
+                        Some((*key.get(0).ok_or_else(
+                            || Error::MalformedPacket("Short ESK".into()))?)
+                             .into());
                     Ciphertext::X448 {
                         e: e.clone(),
                         key: key[1..].into(),
