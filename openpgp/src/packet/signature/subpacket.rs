@@ -519,7 +519,7 @@ mod tests {
                     (u == 0 || u == 1 || u == 8
                      || u == 13 || u == 14 || u == 15
                      || u == 17 || u == 18 || u == 19
-                     || u == 39),
+                     || u == 38),
                 SubpacketTag::Private(u) => (100..=110).contains(&u),
                 SubpacketTag::Unknown(u) => (u > 33 && u < 100) || u > 110,
                 _ => true
