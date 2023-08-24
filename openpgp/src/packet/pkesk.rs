@@ -251,31 +251,39 @@ impl packet::PKESK {
         let modified_ciphertext;
         let esk;
         if unencrypted_cipher_octet {
-            modified_ciphertext = match ciphertext {
+            match ciphertext {
                 Ciphertext::X25519 { e, key, } => {
                     sym_algo =
                         Some((*key.get(0).ok_or_else(
                             || Error::MalformedPacket("Short ESK".into()))?)
                              .into());
-                    Ciphertext::X25519 {
+                    modified_ciphertext = Ciphertext::X25519 {
                         e: e.clone(),
                         key: key[1..].into(),
-                    }
+                    };
+                    esk = &modified_ciphertext;
                 },
                 Ciphertext::X448 { e, key, } => {
                     sym_algo =
                         Some((*key.get(0).ok_or_else(
                             || Error::MalformedPacket("Short ESK".into()))?)
                              .into());
-                    Ciphertext::X448 {
+                    modified_ciphertext = Ciphertext::X448 {
                         e: e.clone(),
                         key: key[1..].into(),
-                    }
+                    };
+                    esk = &modified_ciphertext;
                 },
-                _ => unreachable!("We only prepend the cipher octet \
-                                   for X25519 and X448"),
-            };
-            esk = &modified_ciphertext;
+
+                _ => {
+                    // We only prepend the cipher octet for X25519 and
+                    // X448, yet we're trying to decrypt a ciphertext
+                    // that uses a different algorithm, clearly
+                    // something has gone wrong and will fail when we
+                    // try to decrypt it downstream.
+                    esk = ciphertext;
+                },
+            }
         } else {
             esk = ciphertext;
         }
