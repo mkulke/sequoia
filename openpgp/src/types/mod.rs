@@ -1017,6 +1017,12 @@ const AEAD_ALGORITHM_VARIANTS: [AEADAlgorithm; 3] = [
     AEADAlgorithm::GCM,
 ];
 
+impl Default for AEADAlgorithm {
+    fn default() -> Self {
+        Self::const_default()
+    }
+}
+
 impl AEADAlgorithm {
     /// Returns whether this algorithm is supported.
     ///

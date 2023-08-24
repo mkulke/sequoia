@@ -18,6 +18,7 @@
 ** New functionality
    - crypto::SessionKey::as_protected
    - crypto::ecdh::decrypt_unwrap2
+   - impl Default for types::AEADAlgorithm
    - types::AEADAlgorithm::GCM
    - types::Features::{clear,set,supports}_seipdv1
    - types::Features::{clear,set,supports}_seipdv2
