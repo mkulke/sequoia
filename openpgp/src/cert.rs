@@ -7286,4 +7286,12 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
 
         Ok(())
     }
+
+    #[test]
+    fn v6_issuer_in_pkbs() -> Result<()> {
+        let cert = Cert::from_bytes(
+            crate::tests::key("bob-with-v6-issuer-in-pkbs.pgp"))?;
+        assert_eq!(cert.bad_signatures().count(), 0);
+        Ok(())
+    }
 }
