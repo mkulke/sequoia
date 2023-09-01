@@ -45,6 +45,8 @@ regex-syntax = "0.6"
 sha1collisiondetection = { version = "0.2.3", default-features = false, features = ["std"] }
 thiserror = "1.0.2"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
+rand = { version = "0.8" }
+
 # At least 0.10.55 is needed due `no-ocb` check:
 # https://github.com/sfackler/rust-openssl/blob/master/openssl/CHANGELOG.md
 openssl = { version = "0.10.55", optional = true }
@@ -75,16 +77,12 @@ ecdsa = { version = "0.16", optional = true, features = ["hazmat", "arithmetic"]
 # need the std feature, at least so that ed25519::Error implements
 # std::error::Error.
 ed25519 = { version = "1", default-features = false, features = ["std"], optional = true }
-ed25519-dalek = { version = "1", default-features = false, features = ["rand", "u64_backend"], optional = true }
+ed25519-dalek = { version = "2", features = ["rand_core"], optional = true }
 generic-array = { version = "0.14.4", optional = true }
 idea = { version = "0.5", optional = true }
 md-5 = { version = "0.10", features = ["oid"], optional = true }
 num-bigint-dig = { version = "0.8", default-features = false, optional = true }
 p256 = { version = "0.13", optional = true, features = ["ecdh", "ecdsa"] }
-# XXX: ed25519-dalek 1.0.1 depends on rand 0.7 and doesn't reexport it.
-# https://github.com/dalek-cryptography/ed25519-dalek/blob/1.0.1/Cargo.toml#L28
-rand07 = { package = "rand", version = "0.7.3", optional = true }
-rand = { package = "rand", version = "0.8", optional = true }
 rand_core = { version = "0.6", optional = true }
 ripemd = { version = "0.1", features = ["oid"], optional = true }
 rsa = { version = "0.9.0", optional = true }
@@ -112,14 +110,12 @@ winapi = { version = "0.3.8", default-features = false, features = ["bcrypt"], o
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 chrono = { version = "0.4.10", default-features = false, features = ["std", "wasmbind", "clock"] }
 getrandom = { version = "0.2", features = ["js"] }
-rand07 = { package = "rand", version = "0.7", features = ["wasm-bindgen"] }
 
 [build-dependencies]
 lalrpop = { version = ">=0.17, <0.20", default-features = false }
 
 [dev-dependencies]
 quickcheck = { version = "1", default-features = false }
-rand = { version = "0.8" }
 rpassword = "6.0"
 criterion = { version = "0.4", features = ["html_reports"] }
 
@@ -130,13 +126,13 @@ crypto-nettle = ["nettle"]
 crypto-rust = [
     "aes", "block-padding", "blowfish", "camellia", "cast5", "cfb-mode", "cipher", "des",
     "digest", "eax", "ecb", "ed25519", "ed25519-dalek", "generic-array", "idea",
-    "md-5", "num-bigint-dig", "rand", "rand07", "ripemd", "rsa", "sha-1", "sha2",
+    "md-5", "num-bigint-dig", "ripemd", "rsa", "sha-1", "sha2",
     "twofish", "typenum", "x25519-dalek-ng", "p256",
     "rand_core", "rand_core/getrandom", "ecdsa", "aes-gcm", "dsa"
 ]
 crypto-cng = [
     "cipher", "eax", "winapi", "win-crypto-ng", "ed25519", "ed25519-dalek",
-    "num-bigint-dig", "aes-gcm"
+    "num-bigint-dig", "aes-gcm", "rand_core"
 ]
 crypto-openssl = ["openssl", "openssl-sys"]
 crypto-botan = ["botan/botan3"]

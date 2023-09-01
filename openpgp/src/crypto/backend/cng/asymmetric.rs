@@ -102,36 +102,31 @@ impl Asymmetric for super::Backend {
 
     fn ed25519_generate_key() -> Result<(Protected, [u8; 32])> {
         let mut rng = cng::random::RandomNumberGenerator::system_preferred();
-        let pair = ed25519_dalek::Keypair::generate(&mut rng);
-        Ok((pair.secret.as_bytes().as_slice().into(), pair.secret.to_bytes()))
+        let pair = ed25519_dalek::SigningKey::generate(&mut rng);
+        Ok((pair.to_bytes().into(), pair.verifying_key().to_bytes()))
     }
 
     fn ed25519_derive_public(secret: &Protected) -> Result<[u8; 32]> {
-        use ed25519_dalek::{PublicKey, SecretKey};
+        use ed25519_dalek::SigningKey;
 
-        let secret = SecretKey::from_bytes(secret).map_err(|e| {
+        let secret = secret.as_ref().try_into().map_err(|e: std::array::TryFromSliceError| {
             Error::InvalidKey(e.to_string())
         })?;
-        let public = PublicKey::from(&secret);
+
+        let secret = SigningKey::from_bytes(secret);
+        let public = secret.verifying_key();
         Ok(public.to_bytes())
     }
 
     fn ed25519_sign(secret: &Protected, public: &[u8; 32], digest: &[u8])
                     -> Result<[u8; 64]> {
-        use ed25519_dalek::{Keypair, Signer};
-        use ed25519_dalek::{PUBLIC_KEY_LENGTH, SECRET_KEY_LENGTH};
+        use ed25519_dalek::{SigningKey, Signer};
 
-        if secret.len() != SECRET_KEY_LENGTH {
-            return Err(crate::Error::InvalidArgument(
-                "Bad Ed25519 secret length".into()).into());
-        }
+        let mut keypair = secret.as_ref().try_into().map_err(|e: std::array::TryFromSliceError| {
+            Error::InvalidKey(e.to_string())
+        })?;
 
-        let mut keypair = Protected::from(
-            vec![0u8; SECRET_KEY_LENGTH + PUBLIC_KEY_LENGTH]
-        );
-        keypair.as_mut()[..SECRET_KEY_LENGTH].copy_from_slice(secret);
-        keypair.as_mut()[SECRET_KEY_LENGTH..].copy_from_slice(public);
-        let pair = Keypair::from_bytes(&keypair)?;
+        let pair = SigningKey::from_bytes(&keypair);
         unsafe {
             memsec::memzero(keypair.as_mut_ptr(), keypair.len());
         }
@@ -141,13 +136,16 @@ impl Asymmetric for super::Backend {
 
     fn ed25519_verify(public: &[u8; 32], digest: &[u8], signature: &[u8; 64])
                       -> Result<bool> {
-        use ed25519_dalek::{PublicKey, Signature};
-        use ed25519_dalek::{Verifier};
+        use ed25519_dalek::{VerifyingKey, Verifier, Signature};
 
-        let public = PublicKey::from_bytes(public).map_err(|e| {
+        let public = VerifyingKey::from_bytes(public).map_err(|e| {
             Error::InvalidKey(e.to_string())
         })?;
-        let signature = Signature::from_bytes(&signature.clone())?;
+        let signature = signature.as_ref().try_into().map_err(|e: std::array::TryFromSliceError| {
+            Error::InvalidArgument(e.to_string())
+        })?;
+
+        let signature = Signature::from_bytes(signature);
         Ok(public.verify(digest, &signature).is_ok())
     }
 
@@ -921,18 +919,18 @@ where
             },
             (Curve::Ed25519, true) => {
                 // CNG doesn't support EdDSA, use ed25519-dalek instead
-                use ed25519_dalek::Keypair;
+                use ed25519_dalek::SigningKey;
 
                 let mut rng = cng::random::RandomNumberGenerator::system_preferred();
-                let Keypair { public, secret } = Keypair::generate(&mut rng);
+                let key = SigningKey::generate(&mut rng);
 
-                let secret: Protected = secret.as_bytes().as_ref().into();
+                let secret: Protected = key.to_bytes().as_ref().into();
 
                 // Mark MPI as compressed point with 0x40 prefix. See
                 // https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-07#section-13.2.
                 let mut compressed_public = [0u8; 1 + CURVE25519_SIZE];
                 compressed_public[0] = 0x40;
-                compressed_public[1..].copy_from_slice(public.as_bytes());
+                compressed_public[1..].copy_from_slice(key.verifying_key().as_bytes());
 
                 (
                     EdDSA,

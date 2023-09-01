@@ -170,6 +170,18 @@ impl From<&[u8]> for Protected {
     }
 }
 
+impl From<[u8; 32]> for Protected {
+    fn from(v: [u8; 32]) -> Self {
+        let mut p = Protected::new(v.len());
+
+        // Very carefully copy the slice.  The obvious
+        // `p.copy_from_slice(v);` indeed leaks secrets.
+        v.iter().zip(p.iter_mut()).for_each(|(f, t)| *t = *f);
+
+        p
+    }
+}
+
 impl Drop for Protected {
     fn drop(&mut self) {
         unsafe {
