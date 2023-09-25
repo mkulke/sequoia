@@ -101,7 +101,23 @@ typenum = { version = "1.12.0", optional = true }
 x25519-dalek-ng = { version = "1", optional = true }
 
 [target.'cfg(windows)'.dependencies]
-win-crypto-ng = { version = ">=0.4, <0.6", features = ["rand", "block-cipher"], optional = true }
+# win-crypt-ng 0.5.1 depends on version 0.5 or 0.6 of rand_core.
+# ed25519-dalek requires version 0.5 of rand_core.  cargo is happy to
+# pull in rand_core 0.6 when compiling win-crypt-ng and 0.5 when
+# compiling ed25519-dalek.
+#
+# This is a problem.  We use a function from ed25519-dalek that takes
+# a parameter that has to implement traits defined by rand_core 0.5.
+# We pass it an object returned from win-crypt-ng.  When win-crypt-ng
+# uses rand_core 0.6, the types are incompatible.  cargo does not have
+# a way to expression this type of dependency (ed25519-dalek and
+# win-crypto-ng must use the same version of rand_core).
+#
+# To work around this limitation, we force the use of version 0.5.0 of
+# win-crypt-ng.  It only allows version 0.5.0 of rand_core.
+#
+# See https://gitlab.com/sequoia-pgp/sequoia/-/issues/1052 .
+win-crypto-ng = { version = ">=0.4, <0.5.1", features = ["rand", "block-cipher"], optional = true }
 winapi = { version = "0.3.8", default-features = false, features = ["bcrypt"], optional = true }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]

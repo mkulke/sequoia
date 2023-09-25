@@ -3060,13 +3060,13 @@ checksum = "17882f045410753661207383517a6f62ec3dbeb6a4ed2acce01f0728238d1983"
 
 [[package]]
 name = "win-crypto-ng"
-version = "0.5.1"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "99abfb435a71e54ab2971d8d8c32f1a7e006cdbf527f71743b1d45b93517bb92"
+checksum = "aea60789d46dc8aa7d41758143c1b7dc2d6101a421712f88716a9646da2a4e39"
 dependencies = [
  "cipher",
  "doc-comment",
- "rand_core 0.6.4",
+ "rand_core 0.5.1",
  "winapi",
  "zeroize",
 ]
