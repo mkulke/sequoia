@@ -18,7 +18,8 @@ git merge-base --is-ancestor HEAD~ origin/main &&
 git checkout HEAD~
 git rebase origin/main \
            --exec 'echo ===; echo ===; echo ===; git log -n 1;' \
-           --exec 'cargo test -p sequoia-openpgp' &&
+           --exec 'cargo test -p sequoia-openpgp' \
+           --exec 'git diff --exit-code' &&
   echo "All commits passed tests" &&
   exit 0
 
