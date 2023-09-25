@@ -29,7 +29,7 @@ stages:
 .before_script_end: &before_script_end
   - 'if test "x${RUSTFLAGS+SET}" = xSET; then echo "WARNING: before_script set \$RUSTFLAGS ($RUSTFLAGS)"; fi'
   - rustc --version --verbose
-  - cargo --version
+  - cargo --version --verbose
   - clang -v
   - if [ -d $CARGO_TARGET_DIR ]; then find $CARGO_TARGET_DIR | wc --lines; du -sh $CARGO_TARGET_DIR; fi
   - if [ -d $CARGO_HOME ]; then find $CARGO_HOME | wc --lines; du -sh $CARGO_HOME; fi
@@ -267,7 +267,7 @@ windows-gnu-nettle:
   before_script:
     # the default before_scipt scriptlet doesn't work on Powershell
     - rustc --version --verbose
-    - cargo --version
+    - cargo --version --verbose
     - clang -v
     - gpg --version
   script:
@@ -297,7 +297,7 @@ windows-gnu-cng:
   before_script:
     # the default before_scipt scriptlet doesn't work on Powershell
     - rustc --version --verbose
-    - cargo --version
+    - cargo --version --verbose
     - clang -v
     - gpg --version
   script:
@@ -323,7 +323,7 @@ windows-msvc-cng:
     # We don't call *before_script_start or *before_script_end as we
     # don't have bash, clang, etc.
     - rustc --version --verbose
-    - cargo --version
+    - cargo --version --verbose
   script:
     # https://github.com/rust-lang/cargo/issues/5015
     - cargo run --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-cng,compression --example supported-algorithms
@@ -363,7 +363,7 @@ windows-msvc32-cng:
     - rustup target add i686-pc-windows-msvc
     - rustup show
     - rustc --version --verbose
-    - cargo --version
+    - cargo --version --verbose
   script:
     # https://github.com/rust-lang/cargo/issues/5015
     - cargo test --tests --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-cng,compression --target i686-pc-windows-msvc
