@@ -38,6 +38,7 @@
      lifetimes.
 ** New functionality
    - The RustCrypto backend now supports DSA.
+   - Cert::insert_signature
    - crypto::SessionKey::as_protected
    - crypto::ecdh::decrypt_unwrap2
    - packet::Key::generate_dsa

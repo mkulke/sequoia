@@ -150,6 +150,7 @@ use crate::{
     Result,
     SignatureType,
     packet,
+    packet::Any,
     packet::Signature,
     packet::Key,
     packet::key,
@@ -491,6 +492,11 @@ pub trait Preferences<'a>: seal::Sealed {
     /// the certificate was issued under.
     fn policy_uri(&self) -> Option<&'a [u8]>;
 }
+
+/// Used by Cert::canonicalize_with_context to get keys to verify
+/// signatures with.
+type LookupFn =
+    dyn FnMut(&Signature) -> Option<Key<key::PublicParts, key::UnspecifiedRole>>;
 
 /// A collection of components and their associated signatures.
 ///
@@ -1516,7 +1522,18 @@ impl Cert {
         self.unknowns.sort_and_dedup(Unknown::best_effort_cmp, |_, _| {});
     }
 
-    fn canonicalize(mut self) -> Self {
+    fn canonicalize(self) -> Self {
+        // Placeholder lookup function.
+        fn no_context(_: &Signature)
+                      -> Option<Key<key::PublicParts, key::UnspecifiedRole>> {
+            None
+        }
+        self.canonicalize_with_context(&mut no_context)
+    }
+
+    fn canonicalize_with_context(mut self, lookup_fn: &mut LookupFn)
+                                 -> Self
+    {
         tracer!(TRACE, "canonicalize", 0);
 
         // Before we do anything, we'll order and deduplicate the
@@ -1649,12 +1666,6 @@ impl Cert {
                  check_3rd_party!($desc, $binding, $sigs, $lookup_fn,
                                   $verify_method, $hash_method, )
             });
-        }
-
-        // Placeholder lookup function.
-        fn lookup_fn(_: &Signature)
-                     -> Option<Key<key::PublicParts, key::UnspecifiedRole>> {
-            None
         }
 
         check!("primary key",
@@ -3135,6 +3146,95 @@ impl Cert {
               I::Item: Into<Packet>,
     {
         self.insert_packets2(packets).map(|(cert, _)| cert)
+    }
+
+    /// Adds a signature to the certificate, failing if it does not
+    /// belong to it.
+    ///
+    /// This can be used to insert signatures into certificates while
+    /// at the same time testing whether they actually belong to the
+    /// certificate.  Notably, if you want to merge a revocation
+    /// signature, you cannot know whether you are looking at a
+    /// first-party or third-party revocation.  So you look at the
+    /// issuer, pull a cert from the store, and then you need to try
+    /// to merge it.  If it is a first-party revocation, this will
+    /// succeed.  If it is a third-party revocation, it will fail.
+    /// Then, you need to iterate over all certs in your store that
+    /// have the revocation signature's issuer as designated revoker,
+    /// and try to merge it into those.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use sequoia_openpgp as openpgp;
+    /// # use openpgp::cert::prelude::CertBuilder;
+    /// # fn main() -> openpgp::Result<()> {
+    /// // Create two keys.
+    /// let (alice, alice_rev) =
+    ///       CertBuilder::general_purpose(None, Some("alice@example.org"))
+    ///       .generate()?;
+    /// let (bob, bob_rev) =
+    ///       CertBuilder::general_purpose(None, Some("bob@example.org"))
+    ///       .generate()?;
+    ///
+    /// // And try to insert the revocation signatures.
+    /// assert!(alice.clone().insert_signature(alice_rev.clone(), None).is_ok());
+    /// assert!(bob.clone().insert_signature(bob_rev.clone(), None).is_ok());
+    ///
+    /// // Note: This seems to work fine, but has a 1 in 65536 chance of
+    /// // succeeding even though the signature doesn't belong into the cert.
+    /// alice.clone().insert_signature(bob_rev.clone(), None)
+    ///    .is_err(); // Most of the time.
+    /// bob.clone().insert_signature(alice_rev.clone(), None)
+    ///    .is_err(); // Most of the time.
+    ///
+    /// // Therefore, it is important to pass in the signature's issuer.
+    /// assert!(alice.clone().insert_signature(
+    ///     bob_rev.clone(), bob.primary_key().key().clone().role_into_unspecified()).is_err());
+    /// assert!(bob.clone().insert_signature(
+    ///     alice_rev.clone(), alice.primary_key().key().clone().role_into_unspecified()).is_err());
+    /// # Ok(()) }
+    /// ```
+    pub fn insert_signature<I>(self, sig: Signature, issuer: I)
+                               -> Result<(Self, bool)>
+    where
+        I: Into<Option<Key<key::PublicParts, key::UnspecifiedRole>>>,
+    {
+        let bad_before = self.bad_signatures().count();
+        let (mut cert, changed) =
+            self.insert_packets_merge(
+                std::iter::once(Packet::from(sig)),
+                |old, new| {
+                    if let Some(old) = old {
+                        let old: Signature =
+                            old.downcast().expect("we inserted a sig");
+                        let new: Signature =
+                            new.downcast().expect("we inserted a sig");
+                        new.merge(old).map(Into::into)
+                    } else {
+                        Ok(new)
+                    }
+                })?;
+
+        if let Some(issuer) = issuer.into() {
+            let issuer_fp = issuer.key_handle();
+            let mut lookup = move |sig: &Signature| {
+                if sig.get_issuers().iter().any(|i| i.aliases(&issuer_fp)) {
+                    Some(issuer.clone())
+                } else {
+                    None
+                }
+            };
+            cert = cert.canonicalize_with_context(&mut lookup);
+        }
+
+        let bad_now = cert.bad_signatures().count();
+        if bad_before == bad_now {
+            Ok((cert, changed))
+        } else {
+            Err(Error::InvalidOperation(
+                "Signature does not belong to this cert".into()).into())
+        }
     }
 
     /// Returns whether at least one of the keys includes secret
