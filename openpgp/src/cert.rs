@@ -3148,8 +3148,8 @@ impl Cert {
         self.insert_packets2(packets).map(|(cert, _)| cert)
     }
 
-    /// Adds a signature to the certificate, failing if it does not
-    /// belong to it.
+    /// Adds a self signature to the certificate, failing if it does
+    /// not belong to it.
     ///
     /// This can be used to insert signatures into certificates while
     /// at the same time testing whether they actually belong to the
@@ -3178,30 +3178,27 @@ impl Cert {
     ///       .generate()?;
     ///
     /// // And try to insert the revocation signatures.
-    /// assert!(alice.clone().insert_signature(alice_rev.clone(), None).is_ok());
-    /// assert!(bob.clone().insert_signature(bob_rev.clone(), None).is_ok());
+    /// assert!(alice.clone().insert_self_signature(alice_rev.clone()).is_ok());
+    /// assert!(bob.clone().insert_self_signature(bob_rev.clone()).is_ok());
     ///
-    /// // Note: This seems to work fine, but has a 1 in 65536 chance of
-    /// // succeeding even though the signature doesn't belong into the cert.
-    /// alice.clone().insert_signature(bob_rev.clone(), None)
-    ///    .is_err(); // Most of the time.
-    /// bob.clone().insert_signature(alice_rev.clone(), None)
-    ///    .is_err(); // Most of the time.
+    /// // This fails, because these are not self-signatures.
+    /// assert!(alice.clone().insert_self_signature(bob_rev.clone()).is_err());
+    /// assert!(bob.clone().insert_self_signature(alice_rev.clone()).is_err());
     ///
-    /// // Therefore, it is important to pass in the signature's issuer.
-    /// assert!(alice.clone().insert_signature(
-    ///     bob_rev.clone(), bob.primary_key().key().clone().role_into_unspecified()).is_err());
-    /// assert!(bob.clone().insert_signature(
-    ///     alice_rev.clone(), alice.primary_key().key().clone().role_into_unspecified()).is_err());
+    /// // Instead, we need to use insert_third_party_signature to merge
+    /// // third-party signatures.  This still fails, because the signatures
+    /// // don't belong to these certs.
+    /// assert!(alice.clone().insert_third_party_signature(
+    ///     bob_rev.clone(), &bob.primary_key()).is_err());
+    /// assert!(bob.clone().insert_third_party_signature(
+    ///     alice_rev.clone(), &alice.primary_key()).is_err());
     /// # Ok(()) }
     /// ```
-    pub fn insert_signature<I>(self, sig: Signature, issuer: I)
-                               -> Result<(Self, bool)>
-    where
-        I: Into<Option<Key<key::PublicParts, key::UnspecifiedRole>>>,
+    pub fn insert_self_signature(self, sig: Signature)
+                                 -> Result<(Self, bool)>
     {
         let bad_before = self.bad_signatures().count();
-        let (mut cert, changed) =
+        let (cert, changed) =
             self.insert_packets_merge(
                 std::iter::once(Packet::from(sig)),
                 |old, new| {
@@ -3216,18 +3213,111 @@ impl Cert {
                     }
                 })?;
 
-        if let Some(issuer) = issuer.into() {
-            let issuer_fp = issuer.key_handle();
-            let mut lookup = move |sig: &Signature| {
-                if sig.get_issuers().iter().any(|i| i.aliases(&issuer_fp)) {
-                    Some(issuer.clone())
-                } else {
-                    None
-                }
-            };
-            cert = cert.canonicalize_with_context(&mut lookup);
+        let bad_now = cert.bad_signatures().count();
+        if bad_before == bad_now {
+            Ok((cert, changed))
+        } else {
+            Err(Error::InvalidOperation(
+                "Signature does not belong to this cert".into()).into())
         }
+    }
 
+    /// Adds a third-party signature to the certificate, failing if it
+    /// does not belong to it.
+    ///
+    /// This can be used to insert signatures into certificates while
+    /// at the same time testing whether they actually belong to the
+    /// certificate.  Notably, if you want to merge a revocation
+    /// signature, you cannot know whether you are looking at a
+    /// first-party or third-party revocation.  So you look at the
+    /// issuer, pull a cert from the store, and then you need to try
+    /// to merge it.  If it is a first-party revocation, this will
+    /// succeed.  If it is a third-party revocation, it will fail.
+    /// Then, you need to iterate over all certs in your store that
+    /// have the revocation signature's issuer as designated revoker,
+    /// and try to merge it into those.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use sequoia_openpgp as openpgp;
+    /// # use openpgp::{types::SignatureType, cert::prelude::CertBuilder};
+    /// # fn main() -> openpgp::Result<()> {
+    /// // Create two keys.
+    /// let (alice, alice_rev) =
+    ///       CertBuilder::general_purpose(None, Some("alice@example.org"))
+    ///       .generate()?;
+    /// let (bob, bob_rev) =
+    ///       CertBuilder::general_purpose(None, Some("bob@example.org"))
+    ///       .generate()?;
+    ///
+    /// // And try to insert the revocation signatures.  This fails,
+    /// // because the signatures don't belong to these certs.
+    /// assert!(alice.clone().insert_third_party_signature(
+    ///     bob_rev.clone(), &bob.primary_key()).is_err());
+    /// assert!(bob.clone().insert_third_party_signature(
+    ///     alice_rev.clone(), &alice.primary_key()).is_err());
+    ///
+    /// // Let Alice certify Bob's User ID and key.
+    /// let mut keypair = alice.primary_key().key().clone()
+    ///    .parts_into_secret()?.into_keypair()?;
+    /// let certification =
+    ///     bob.userids().nth(0).unwrap()
+    ///     .certify(&mut keypair, &bob, SignatureType::PositiveCertification,
+    ///              None, None)?;
+    ///
+    /// // We can insert this certification into Bob's certificate.
+    /// assert!(bob.insert_third_party_signature(
+    ///     certification, &alice.primary_key()).is_ok());
+    /// # Ok(()) }
+    /// ```
+    pub fn insert_third_party_signature<P, R>(self,
+                                              sig: Signature,
+                                              issuer: &Key<P, R>)
+                                              -> Result<(Self, bool)>
+    where
+        P: key::KeyParts,
+        R: key::KeyRole,
+    {
+        self._insert_third_party_signature(
+            sig, issuer.parts_as_public().role_as_unspecified())
+    }
+
+    fn _insert_third_party_signature(self, sig: Signature,
+                                     issuer: &Key<key::PublicParts, key::UnspecifiedRole>)
+                                     -> Result<(Self, bool)>
+    {
+        let issuer = issuer.clone(); // XXX:
+        let issuer_fp = issuer.key_handle();
+        let mut lookup = move |sig: &Signature| {
+            if sig.get_issuers().iter().any(|i| i.aliases(&issuer_fp)) {
+                Some(issuer.clone())
+            } else {
+                None
+            }
+        };
+
+        // First, canonicalize the cert with the issuer.
+        let cert = self.canonicalize_with_context(&mut lookup);
+        let bad_before = cert.bad_signatures().count();
+
+        let (cert, changed) =
+            cert.insert_packets_merge(
+                std::iter::once(Packet::from(sig)),
+                |old, new| {
+                    if let Some(old) = old {
+                        let old: Signature =
+                            old.downcast().expect("we inserted a sig");
+                        let new: Signature =
+                            new.downcast().expect("we inserted a sig");
+                        new.merge(old).map(Into::into)
+                    } else {
+                        Ok(new)
+                    }
+                })?;
+
+        // Re-canonicalize with issuer, and count bad sigs.
+        let cert = cert.canonicalize_with_context(&mut lookup);
         let bad_now = cert.bad_signatures().count();
         if bad_before == bad_now {
             Ok((cert, changed))
