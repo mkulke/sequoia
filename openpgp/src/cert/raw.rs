@@ -73,7 +73,7 @@ use std::fmt;
 use std::io::Read;
 use std::path::Path;
 
-use buffered_reader::{BufferedReader, Dup, EOF, File, Generic, Memory};
+use buffered_reader::{BufferedReaderSync, Dup, EOF, File, Generic, Memory};
 
 use crate::Error;
 use crate::Fingerprint;
@@ -566,7 +566,7 @@ pub struct RawCertParser<'a>
     // slice, this is a `buffered_reader::Memory`.  Note: the slice
     // field will not be set, if the input needs to be transferred
     // (i.e., dearmored).
-    reader: Box<dyn BufferedReader<Cookie> + 'a>,
+    reader: Box<dyn BufferedReaderSync<Cookie> + 'a>,
 
     // Whether we are dearmoring the input.
     dearmor: bool,
@@ -584,7 +584,7 @@ assert_send_and_sync!(RawCertParser<'_>);
 
 impl<'a> RawCertParser<'a> {
     fn new<R>(reader: R) -> Result<Self>
-    where R: 'a + BufferedReader<Cookie>
+        where R: 'a + BufferedReaderSync<Cookie>
     {
         // Check that we can read the first header and that it is
         // reasonable.  Note: an empty keyring is not an error; we're
