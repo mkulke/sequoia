@@ -196,6 +196,20 @@ rust-stable:
     CARGO_TARGET_DIR: /target
     CARGO_HOME: /cargo
 
+rust-stable-openssl:
+  tags:
+    - linux
+  stage: build
+  interruptible: true
+  image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/rust-stable-prebuild:latest
+  script:
+    - cargo test --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-openssl,compression
+  rules:
+    - !reference [.default_rules, rules]
+  variables:
+    CARGO_TARGET_DIR: /target
+    CARGO_HOME: /cargo
+
 clippy:
   tags:
     - linux
