@@ -1092,7 +1092,6 @@ impl RegexSet {
     /// ```
     pub fn matches_userid(&self, u: &UserID) -> bool
     {
-        let u = u.borrow();
         if let Ok(u) = std::str::from_utf8(u.value()) {
             self.is_match(u)
         } else {
