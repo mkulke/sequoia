@@ -95,7 +95,7 @@ disclosure, and publish a fix as soon as possible.
      - Send email to:
        - announce@lists.sequoia-pgp.org, devel@lists.sequoia-pgp.org,
          oss-security@lists.openwall.com
-       - Credit the security researcher who did a resonsible disclosure
+       - Credit the security researcher who did a responsible disclosure
          with a thank you note in the release announcement.
 
   1. After flag day:
