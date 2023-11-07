@@ -84,6 +84,7 @@ pub Cert: Option<Cert> = {
                 Ok(Some(cert))
             }
             Some((Packet::Unknown(unknown), sigs)) => {
+                let msg = unknown.error().to_string();
                 let mut packets: Vec<Packet> = Default::default();
                 packets.push(unknown.into());
                 for sig in sigs {
@@ -103,7 +104,7 @@ pub Cert: Option<Cert> = {
                 }
                 Err(ParseError::User {
                     error: Error::UnsupportedCert2(
-                        "Unsupported primary key".into(),
+                        format!("Unsupported primary key: {}", msg),
                         packets),
                 })
             }
