@@ -60,7 +60,6 @@ after_script:
 trixie:
   tags:
     - linux
-    - jampot
   stage: build
   interruptible: true
   image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/trixie-prebuild:latest
@@ -78,7 +77,6 @@ trixie:
 trixie-crypto-rust:
   tags:
     - linux
-    - jampot
   stage: build
   interruptible: true
   image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/trixie-prebuild:latest
@@ -96,7 +94,6 @@ trixie-crypto-rust:
 trixie-crypto-openssl:
   tags:
     - linux
-    - jampot
   stage: build
   interruptible: true
   image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/trixie-prebuild:latest
@@ -114,7 +111,6 @@ trixie-crypto-openssl:
 trixie-crypto-botan:
   tags:
     - linux
-    - jampot
   stage: build
   interruptible: true
   image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/trixie-prebuild:latest
@@ -130,7 +126,6 @@ trixie-crypto-botan:
 trixie-crypto-fuzzing:
   tags:
     - linux
-    - jampot
   stage: build
   interruptible: true
   image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/trixie-prebuild:latest
@@ -146,7 +141,6 @@ all_commits:
   # Test each commit up to main, to facilitate bisecting.
   tags:
     - linux
-    - jampot
   stage: test
   interruptible: true
   image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/trixie-prebuild:latest
@@ -163,7 +157,6 @@ all_commits:
 codespell:
   tags:
     - linux
-    - jampot
   stage: pre-check
   interruptible: true
   image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/trixie:latest
@@ -180,7 +173,6 @@ codespell:
 doc:
   tags:
     - linux
-    - jampot
   stage: build
   interruptible: true
   image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/trixie-prebuild:latest
@@ -195,7 +187,6 @@ doc:
 rust-stable:
   tags:
     - linux
-    - jampot
   stage: build
   interruptible: true
   image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/rust-stable-prebuild:latest
@@ -210,7 +201,6 @@ rust-stable:
 clippy:
   tags:
     - linux
-    - jampot
   stage: build
   interruptible: true
   image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/rust-stable-prebuild:latest
@@ -231,7 +221,6 @@ clippy:
 rust-stable-armv7:
   tags:
     - linux
-    - jampot
   stage: build
   interruptible: true
   image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/bullseye-cross-arm-prebuild:latest
@@ -252,7 +241,6 @@ rust-stable-armv7:
 authenticate-commits:
   tags:
     - linux
-    - jampot
   stage: test
   interruptible: true
   image: registry.gitlab.com/sequoia-pgp/sequoia-git:latest
