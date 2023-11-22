@@ -68,7 +68,7 @@ trixie:
     - $(echo "$CARGO/config.toml" ; cat $CARGO/config.toml ; echo "$CARGO_HOME/config.toml" ; cat $CARGO_HOME/config.toml ; echo "$HOME/.cargo/config.toml" ; cat $HOME/.cargo/config.toml) || true
     - |
       echo '[target.x86_64-unknown-linux-gnu]
-      rustflags = ["-C", "link-arg=-fuse-ld=/usr/bin/mold"]' >> $CARGO_HOME/config.toml
+      rustflags = ["-C", "link-arg=-fuse-ld=mold"]' >> $CARGO_HOME/config.toml
     - cat $CARGO_HOME/config.toml
     - cargo run --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-nettle,compression --example supported-algorithms
     - readelf -p .comment $CARGO_TARGET_DIR/debug/examples/supported-algorithms | grep mold
@@ -94,7 +94,7 @@ trixie-crypto-rust:
     - $(echo "$CARGO/config.toml" ; cat $CARGO/config.toml ; echo "$CARGO_HOME/config.toml" ; cat $CARGO_HOME/config.toml ; echo "$HOME/.cargo/config.toml" ; cat $HOME/.cargo/config.toml) || true
     - |
       echo '[target.x86_64-unknown-linux-gnu]
-      rustflags = ["-C", "link-arg=-fuse-ld=/usr/bin/mold"]' >> $CARGO_HOME/config.toml
+      rustflags = ["-C", "link-arg=-fuse-ld=mold"]' >> $CARGO_HOME/config.toml
     - cat $CARGO_HOME/config.toml
     - cargo run --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-rust,compression,allow-experimental-crypto,allow-variable-time-crypto --example supported-algorithms
     - cargo test --release --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-rust,compression,allow-experimental-crypto,allow-variable-time-crypto
@@ -117,7 +117,7 @@ trixie-crypto-openssl:
     - $(echo "$CARGO/config.toml" ; cat $CARGO/config.toml ; echo "$CARGO_HOME/config.toml" ; cat $CARGO_HOME/config.toml ; echo "$HOME/.cargo/config.toml" ; cat $HOME/.cargo/config.toml) || true
     - |
       echo '[target.x86_64-unknown-linux-gnu]
-      rustflags = ["-C", "link-arg=-fuse-ld=/usr/bin/mold"]' >> $CARGO_HOME/config.toml
+      rustflags = ["-C", "link-arg=-fuse-ld=mold"]' >> $CARGO_HOME/config.toml
     - cat $CARGO_HOME/config.toml
     - cargo run --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-openssl,compression --example supported-algorithms
     - cargo test --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-openssl,compression
@@ -138,7 +138,7 @@ trixie-crypto-botan:
     - $(echo "$CARGO/config.toml" ; cat $CARGO/config.toml ; echo "$CARGO_HOME/config.toml" ; cat $CARGO_HOME/config.toml ; echo "$HOME/.cargo/config.toml" ; cat $HOME/.cargo/config.toml) || true
     - |
       echo '[target.x86_64-unknown-linux-gnu]
-      rustflags = ["-C", "link-arg=-fuse-ld=/usr/bin/mold"]' >> $CARGO_HOME/config.toml
+      rustflags = ["-C", "link-arg=-fuse-ld=mold"]' >> $CARGO_HOME/config.toml
     - cat $CARGO_HOME/config.toml
     - cargo run --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-botan2,compression --example supported-algorithms
     - cargo test --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-botan2,compression
@@ -159,7 +159,7 @@ trixie-crypto-fuzzing:
     - $(echo "$CARGO/config.toml" ; cat $CARGO/config.toml ; echo "$CARGO_HOME/config.toml" ; cat $CARGO_HOME/config.toml ; echo "$HOME/.cargo/config.toml" ; cat $HOME/.cargo/config.toml) || true
     - |
       echo '[target.x86_64-unknown-linux-gnu]
-      rustflags = ["-C", "link-arg=-fuse-ld=/usr/bin/mold"]' >> $CARGO_HOME/config.toml
+      rustflags = ["-C", "link-arg=-fuse-ld=mold"]' >> $CARGO_HOME/config.toml
     - cat $CARGO_HOME/config.toml
     - cargo check --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-fuzzing,compression,allow-experimental-crypto,allow-variable-time-crypto
   rules:
@@ -181,7 +181,7 @@ all_commits:
     - $(echo "$CARGO/config.toml" ; cat $CARGO/config.toml ; echo "$CARGO_HOME/config.toml" ; cat $CARGO_HOME/config.toml ; echo "$HOME/.cargo/config.toml" ; cat $HOME/.cargo/config.toml) || true
     - |
       echo '[target.x86_64-unknown-linux-gnu]
-      rustflags = ["-C", "link-arg=-fuse-ld=/usr/bin/mold"]' >> $CARGO_HOME/config.toml
+      rustflags = ["-C", "link-arg=-fuse-ld=mold"]' >> $CARGO_HOME/config.toml
     - cat $CARGO_HOME/config.toml
     - .ci/all_commits.sh
   rules:
@@ -219,7 +219,7 @@ doc:
     - $(echo "$CARGO/config.toml" ; cat $CARGO/config.toml ; echo "$CARGO_HOME/config.toml" ; cat $CARGO_HOME/config.toml ; echo "$HOME/.cargo/config.toml" ; cat $HOME/.cargo/config.toml) || true
     - |
       echo '[target.x86_64-unknown-linux-gnu]
-      rustflags = ["-C", "link-arg=-fuse-ld=/usr/bin/mold"]' >> $CARGO_HOME/config.toml
+      rustflags = ["-C", "link-arg=-fuse-ld=mold"]' >> $CARGO_HOME/config.toml
     - cat $CARGO_HOME/config.toml
     - cargo doc --document-private-items --no-deps
   rules:
@@ -239,7 +239,7 @@ rust-stable:
     - $(echo "$CARGO/config.toml" ; cat $CARGO/config.toml ; echo "$CARGO_HOME/config.toml" ; cat $CARGO_HOME/config.toml ; echo "$HOME/.cargo/config.toml" ; cat $HOME/.cargo/config.toml) || true
     - |
       echo '[target.x86_64-unknown-linux-gnu]
-      rustflags = ["-C", "link-arg=-fuse-ld=/usr/bin/mold"]' >> $CARGO_HOME/config.toml
+      rustflags = ["-C", "link-arg=-fuse-ld=mold"]' >> $CARGO_HOME/config.toml
     - cat $CARGO_HOME/config.toml
     - CARGO_PACKAGES="-p buffered-reader -p sequoia-openpgp" $MAKE_TOP test
   rules:
@@ -265,7 +265,7 @@ clippy:
     - $(echo "$CARGO/config.toml" ; cat $CARGO/config.toml ; echo "$CARGO_HOME/config.toml" ; cat $CARGO_HOME/config.toml ; echo "$HOME/.cargo/config.toml" ; cat $HOME/.cargo/config.toml) || true
     - |
       echo '[target.x86_64-unknown-linux-gnu]
-      rustflags = ["-C", "link-arg=-fuse-ld=/usr/bin/mold"]' >> $CARGO_HOME/config.toml
+      rustflags = ["-C", "link-arg=-fuse-ld=mold"]' >> $CARGO_HOME/config.toml
     - cargo clippy
   rules:
     - !reference [.default_rules, rules]
