@@ -64,8 +64,18 @@ trixie:
   interruptible: true
   image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/trixie-prebuild:latest
   script:
+    - apt-get update -yqq ; apt-get install tree mold elfutils -yqq
+    - $(echo "$CARGO/config.toml" ; cat $CARGO/config.toml ; echo "$CARGO_HOME/config.toml" ; cat $CARGO_HOME/config.toml ; echo "$HOME/.cargo/config.toml" ; cat $HOME/.cargo/config.toml) || true
+    - |
+      echo '[target.x86_64-unknown-linux-gnu]
+      linker = "/usr/bin/clang"
+      rustflags = ["-C", "link-arg=--ld-path=/usr/bin/mold"]' >> $CARGO_HOME/config.toml
+    - cat $CARGO_HOME/config.toml
     - cargo run --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-nettle,compression --example supported-algorithms
+    - tree $CARGO_TARGET_DIR | grep -E -v '\.o$|\.d$|\.sig$|\.rlib$|\.rmeta$'
     - $MAKE_TOP test
+    - tree $CARGO_TARGET_DIR | grep -E -v '\.o$|\.d$|\.sig$|\.rlib$|\.rmeta$'
+    - readelf -p .comment $CARGO_TARGET_DIR | grep mold
     - if ! git diff --quiet Cargo.lock ; then echo "Cargo.lock changed.  Please add the change to the corresponding commit." ; git diff ; false ; fi
     - if ! git diff --quiet ; then echo "The build changed the source.  Please investigate." ; git diff ; fi
   rules:
