@@ -64,7 +64,6 @@ trixie:
   interruptible: true
   image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/trixie-prebuild:latest
   script:
-    - apt-get update -yqq ; apt-get install tree mold elfutils -yqq
     - $(echo "$CARGO/config.toml" ; cat $CARGO/config.toml ; echo "$CARGO_HOME/config.toml" ; cat $CARGO_HOME/config.toml ; echo "$HOME/.cargo/config.toml" ; cat $HOME/.cargo/config.toml) || true
     - |
       echo '[target.x86_64-unknown-linux-gnu]
@@ -72,10 +71,8 @@ trixie:
       rustflags = ["-C", "link-arg=--ld-path=/usr/bin/mold"]' >> $CARGO_HOME/config.toml
     - cat $CARGO_HOME/config.toml
     - cargo run --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-nettle,compression --example supported-algorithms
-    - tree $CARGO_TARGET_DIR | grep -E -v '\.o$|\.d$|\.sig$|\.rlib$|\.rmeta$'
     - readelf -p .comment $CARGO_TARGET_DIR/debug/examples/supported-algorithms | grep mold
     - $MAKE_TOP test
-    - tree $CARGO_TARGET_DIR | grep -E -v '\.o$|\.d$|\.sig$|\.rlib$|\.rmeta$'
     - if ! git diff --quiet Cargo.lock ; then echo "Cargo.lock changed.  Please add the change to the corresponding commit." ; git diff ; false ; fi
     - if ! git diff --quiet ; then echo "The build changed the source.  Please investigate." ; git diff ; fi
   rules:
@@ -93,6 +90,12 @@ trixie-crypto-rust:
   dependencies:
     - codespell
   script:
+    - $(echo "$CARGO/config.toml" ; cat $CARGO/config.toml ; echo "$CARGO_HOME/config.toml" ; cat $CARGO_HOME/config.toml ; echo "$HOME/.cargo/config.toml" ; cat $HOME/.cargo/config.toml) || true
+    - |
+      echo '[target.x86_64-unknown-linux-gnu]
+      linker = "/usr/bin/clang"
+      rustflags = ["-C", "link-arg=--ld-path=/usr/bin/mold"]' >> $CARGO_HOME/config.toml
+    - cat $CARGO_HOME/config.toml
     - cargo run --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-rust,compression,allow-experimental-crypto,allow-variable-time-crypto --example supported-algorithms
     - cargo test --release --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-rust,compression,allow-experimental-crypto,allow-variable-time-crypto
   rules:
@@ -110,6 +113,12 @@ trixie-crypto-openssl:
   dependencies:
     - codespell
   script:
+    - $(echo "$CARGO/config.toml" ; cat $CARGO/config.toml ; echo "$CARGO_HOME/config.toml" ; cat $CARGO_HOME/config.toml ; echo "$HOME/.cargo/config.toml" ; cat $HOME/.cargo/config.toml) || true
+    - |
+      echo '[target.x86_64-unknown-linux-gnu]
+      linker = "/usr/bin/clang"
+      rustflags = ["-C", "link-arg=--ld-path=/usr/bin/mold"]' >> $CARGO_HOME/config.toml
+    - cat $CARGO_HOME/config.toml
     - cargo run --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-openssl,compression --example supported-algorithms
     - cargo test --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-openssl,compression
   rules:
@@ -125,6 +134,12 @@ trixie-crypto-botan:
   interruptible: true
   image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/trixie-prebuild:latest
   script:
+    - $(echo "$CARGO/config.toml" ; cat $CARGO/config.toml ; echo "$CARGO_HOME/config.toml" ; cat $CARGO_HOME/config.toml ; echo "$HOME/.cargo/config.toml" ; cat $HOME/.cargo/config.toml) || true
+    - |
+      echo '[target.x86_64-unknown-linux-gnu]
+      linker = "/usr/bin/clang"
+      rustflags = ["-C", "link-arg=--ld-path=/usr/bin/mold"]' >> $CARGO_HOME/config.toml
+    - cat $CARGO_HOME/config.toml
     - cargo run --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-botan2,compression --example supported-algorithms
     - cargo test --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-botan2,compression
   rules:
@@ -140,6 +155,12 @@ trixie-crypto-fuzzing:
   interruptible: true
   image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/trixie-prebuild:latest
   script:
+    - $(echo "$CARGO/config.toml" ; cat $CARGO/config.toml ; echo "$CARGO_HOME/config.toml" ; cat $CARGO_HOME/config.toml ; echo "$HOME/.cargo/config.toml" ; cat $HOME/.cargo/config.toml) || true
+    - |
+      echo '[target.x86_64-unknown-linux-gnu]
+      linker = "/usr/bin/clang"
+      rustflags = ["-C", "link-arg=--ld-path=/usr/bin/mold"]' >> $CARGO_HOME/config.toml
+    - cat $CARGO_HOME/config.toml
     - cargo check --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-fuzzing,compression,allow-experimental-crypto,allow-variable-time-crypto
   rules:
     - !reference [.default_rules, rules]
@@ -156,6 +177,12 @@ all_commits:
   image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/trixie-prebuild:latest
   needs: ["rust-stable"]
   script:
+    - $(echo "$CARGO/config.toml" ; cat $CARGO/config.toml ; echo "$CARGO_HOME/config.toml" ; cat $CARGO_HOME/config.toml ; echo "$HOME/.cargo/config.toml" ; cat $HOME/.cargo/config.toml) || true
+    - |
+      echo '[target.x86_64-unknown-linux-gnu]
+      linker = "/usr/bin/clang"
+      rustflags = ["-C", "link-arg=--ld-path=/usr/bin/mold"]' >> $CARGO_HOME/config.toml
+    - cat $CARGO_HOME/config.toml
     - .ci/all_commits.sh
   rules:
     - !reference [.default_rules, rules]
@@ -187,6 +214,12 @@ doc:
   interruptible: true
   image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/trixie-prebuild:latest
   script:
+    - $(echo "$CARGO/config.toml" ; cat $CARGO/config.toml ; echo "$CARGO_HOME/config.toml" ; cat $CARGO_HOME/config.toml ; echo "$HOME/.cargo/config.toml" ; cat $HOME/.cargo/config.toml) || true
+    - |
+      echo '[target.x86_64-unknown-linux-gnu]
+      linker = "/usr/bin/clang"
+      rustflags = ["-C", "link-arg=--ld-path=/usr/bin/mold"]' >> $CARGO_HOME/config.toml
+    - cat $CARGO_HOME/config.toml
     - cargo doc --document-private-items --no-deps
   rules:
     - !reference [.default_rules, rules]
@@ -201,6 +234,12 @@ rust-stable:
   interruptible: true
   image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/rust-stable-prebuild:latest
   script:
+    - $(echo "$CARGO/config.toml" ; cat $CARGO/config.toml ; echo "$CARGO_HOME/config.toml" ; cat $CARGO_HOME/config.toml ; echo "$HOME/.cargo/config.toml" ; cat $HOME/.cargo/config.toml) || true
+    - |
+      echo '[target.x86_64-unknown-linux-gnu]
+      linker = "/usr/bin/clang"
+      rustflags = ["-C", "link-arg=--ld-path=/usr/bin/mold"]' >> $CARGO_HOME/config.toml
+    - cat $CARGO_HOME/config.toml
     - CARGO_PACKAGES="-p buffered-reader -p sequoia-openpgp" $MAKE_TOP test
   rules:
     - !reference [.default_rules, rules]
@@ -221,6 +260,11 @@ clippy:
     - cargo clippy --version
     - *before_script_end
   script:
+    - $(echo "$CARGO/config.toml" ; cat $CARGO/config.toml ; echo "$CARGO_HOME/config.toml" ; cat $CARGO_HOME/config.toml ; echo "$HOME/.cargo/config.toml" ; cat $HOME/.cargo/config.toml) || true
+    - |
+      echo '[target.x86_64-unknown-linux-gnu]
+      linker = "/usr/bin/clang"
+      rustflags = ["-C", "link-arg=--ld-path=/usr/bin/mold"]' >> $CARGO_HOME/config.toml
     - cargo clippy
   rules:
     - !reference [.default_rules, rules]
