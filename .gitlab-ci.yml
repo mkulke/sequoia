@@ -73,9 +73,9 @@ trixie:
     - cat $CARGO_HOME/config.toml
     - cargo run --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-nettle,compression --example supported-algorithms
     - tree $CARGO_TARGET_DIR | grep -E -v '\.o$|\.d$|\.sig$|\.rlib$|\.rmeta$'
+    - readelf -p .comment $CARGO_TARGET_DIR/debug/examples/supported-algorithms | grep mold
     - $MAKE_TOP test
     - tree $CARGO_TARGET_DIR | grep -E -v '\.o$|\.d$|\.sig$|\.rlib$|\.rmeta$'
-    - readelf -p .comment $CARGO_TARGET_DIR | grep mold
     - if ! git diff --quiet Cargo.lock ; then echo "Cargo.lock changed.  Please add the change to the corresponding commit." ; git diff ; false ; fi
     - if ! git diff --quiet ; then echo "The build changed the source.  Please investigate." ; git diff ; fi
   rules:
