@@ -2068,6 +2068,42 @@ mod test {
     }
 
     /// Problem on systems with 32-bit time_t.
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn issue_XXX() {
+        let p = Packet::from_bytes(b"-----BEGIN PGP ARMORED FILE-----
+
+w8BRBU4CAuyZ1F8AIADMWALvqVxDf787kQH3ZhXdebbRpneHZjl7+KlY2wfTVEad
+7wAJB43JggBr6F9Yprbu48JX+xFAFkXbhh/AWD1W7qQXlKIz4HDd3BBE2QNfzKVN
+GQtfXs4AdI53W1L/KibaFcT0cwD8ANn/wtxjP6FO+2eGvRoc6wG+ogDwa8FlrAFy
+hoH9r0Bu3zoXex0jBmRtgN8HXj4A/05z76OfuCyZhgHC/9/8AU+6hyTUYOzyVPES
+uYttawHWpFxW/i9zAUmk0P8ZyRE+/8CCGr8wyscORUuCVrCjjWzSlEpDnh1aNJIY
+/99JYLLapQcL2G7BkCrSKQsB5NkJ+Nb/6JpiAAE+aVYARRal
+=49fD
+-----END PGP ARMORED FILE-----
+").unwrap();
+
+        if p.tag() == Tag::CompressedData {
+            // Mutating compressed data streams is not that
+            // trivial, because there are bits we can flip without
+            // changing the decompressed data.
+            return;
+        }
+
+        let mut buf = p.to_vec().unwrap();
+        eprintln!("bit = {}", bit);
+        buf[bit / 8] ^= 1 << (bit % 8);
+
+        assert_eq!(true,
+            match Packet::from_bytes(&buf) {
+                Ok(q) => p != q,
+                Err(_) => true, // Packet failed to parse.
+            }
+        );
+    }
+
+
+    /// Problem on systems with 32-bit time_t.
     #[test]
     fn issue_802() -> Result<()> {
         let pp = crate::PacketPile::from_bytes(b"-----BEGIN PGP ARMORED FILE-----
