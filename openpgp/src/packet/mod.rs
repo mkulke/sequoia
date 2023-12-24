@@ -2082,6 +2082,7 @@ uYttawHWpFxW/i9zAUmk0P8ZyRE+/8CCGr8wyscORUuCVrCjjWzSlEpDnh1aNJIY
 =49fD
 -----END PGP ARMORED FILE-----
 ").unwrap();
+        let i: usize = 1863593116114256088;
 
         if p.tag() == Tag::CompressedData {
             // Mutating compressed data streams is not that
@@ -2091,7 +2092,7 @@ uYttawHWpFxW/i9zAUmk0P8ZyRE+/8CCGr8wyscORUuCVrCjjWzSlEpDnh1aNJIY
         }
 
         let mut buf = p.to_vec().unwrap();
-        eprintln!("bit = {}", bit);
+        let bit = 40;
         buf[bit / 8] ^= 1 << (bit % 8);
 
         assert_eq!(true,
