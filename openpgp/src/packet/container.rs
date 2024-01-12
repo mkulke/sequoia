@@ -8,7 +8,7 @@ use std::hash::{Hash, Hasher};
 use std::slice;
 use std::vec;
 
-use xxhash_rust::xxh3::Xxh3;
+use ahash::AHasher;
 
 use crate::{
     Packet,
@@ -287,8 +287,8 @@ impl Container {
         use Body::*;
         let mut h = Self::make_body_hash();
         match &body {
-            Unprocessed(bytes) => h.update(bytes),
-            Processed(bytes) => h.update(bytes),
+            Unprocessed(bytes) => h.write(bytes),
+            Processed(bytes) => h.write(bytes),
             Structured(_) => (),
         }
         self.set_body_hash(h);
@@ -299,7 +299,7 @@ impl Container {
     fn empty_body_digest() -> u64 {
         lazy_static::lazy_static!{
             static ref DIGEST: u64 = {
-                Container::make_body_hash().digest()
+                Container::make_body_hash().finish()
             };
         }
 
@@ -308,14 +308,14 @@ impl Container {
 
     /// Creates a hash context for hashing the body.
     pub(crate) // For parse.rs
-    fn make_body_hash() -> Box<Xxh3> {
-        Box::new(Xxh3::new())
+    fn make_body_hash() -> Box<AHasher> {
+        Box::new(AHasher::default())
     }
 
     /// Hashes content that has been streamed.
     pub(crate) // For parse.rs
-    fn set_body_hash(&mut self, h: Box<Xxh3>) {
-        self.body_digest = h.digest();
+    fn set_body_hash(&mut self, h: Box<AHasher>) {
+        self.body_digest = h.finish();
     }
 
     pub(crate)

@@ -177,13 +177,14 @@ use std::io;
 use std::io::prelude::*;
 use std::convert::TryFrom;
 use std::cmp;
+use std::hash::Hasher;
 use std::str;
 use std::mem;
 use std::fmt;
 use std::path::Path;
 use std::result::Result as StdResult;
 
-use xxhash_rust::xxh3::Xxh3;
+use ahash::AHasher;
 
 // Re-export buffered_reader.
 //
@@ -3547,7 +3548,7 @@ pub struct PacketParser<'a> {
 
     /// We compute a hashsum over the body to implement comparison on
     /// containers that have been streamed.
-    body_hash: Option<Box<Xxh3>>,
+    body_hash: Option<Box<AHasher>>,
 
     state: PacketParserState,
 }
@@ -5140,7 +5141,7 @@ impl <'a> PacketParser<'a> {
         if !b.is_empty() {
             assert!(self.body_hash.is_some());
             if let Some(h) = self.body_hash.as_mut() {
-                h.update(b);
+                h.write(b);
             }
             self.content_was_read = true;
         }
@@ -5277,7 +5278,7 @@ impl<'a> BufferedReader<Cookie> for PacketParser<'a> {
         if let Some(mut body_hash) = self.body_hash.take() {
             let data = self.data_hard(amount)
                 .expect("It is an error to consume more than data returns");
-            body_hash.update(&data[..amount]);
+            body_hash.write(&data[..amount]);
             self.body_hash = Some(body_hash);
             self.content_was_read |= amount > 0;
         } else {
@@ -5292,7 +5293,7 @@ impl<'a> BufferedReader<Cookie> for PacketParser<'a> {
         if let Some(mut body_hash) = self.body_hash.take() {
             let data = self.data(amount)?;
             amount = cmp::min(data.len(), amount);
-            body_hash.update(&data[..amount]);
+            body_hash.write(&data[..amount]);
             self.body_hash = Some(body_hash);
             self.content_was_read |= amount > 0;
         } else {
@@ -5306,7 +5307,7 @@ impl<'a> BufferedReader<Cookie> for PacketParser<'a> {
         // This is awkward.  Juggle mutable references around.
         if let Some(mut body_hash) = self.body_hash.take() {
             let data = self.data_hard(amount)?;
-            body_hash.update(&data[..amount]);
+            body_hash.write(&data[..amount]);
             self.body_hash = Some(body_hash);
             self.content_was_read |= amount > 0;
         } else {

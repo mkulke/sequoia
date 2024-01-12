@@ -44,7 +44,7 @@ regex = "1"
 regex-syntax = "0.8"
 sha1collisiondetection = { version = "0.3.1", default-features = false, features = ["std"] }
 thiserror = "1.0.2"
-xxhash-rust = { version = "0.8", features = ["xxh3"] }
+ahash = { version = "0.8", features = ["std"] }
 
 # At least 0.10.55 is needed due `no-ocb` check:
 # https://github.com/sfackler/rust-openssl/blob/master/openssl/CHANGELOG.md
