@@ -343,10 +343,17 @@ fn vec_resize(v: &mut Vec<u8>, new_size: usize) {
     }
 }
 
+/// A version of the [BufferedReader] trait that is also [Send] and [Sync].
+/// This trait is automatically implemented for types that fulfill the requirements.
+///
+/// This trait mainly exists as a workaround for https://github.com/rust-lang/rfcs/issues/2035,
+/// so `Box<dyn BufferedReaderSync<C>>` can be used instead of `Box<dyn BufferedReader<C> + Send + Sync>`
+pub trait BufferedReaderSync<C: fmt::Debug>: BufferedReader<C> + Send + Sync {}
+
+impl<C: fmt::Debug, T: BufferedReader<C> + Send + Sync> BufferedReaderSync<C> for T {}
+
 /// The generic `BufferReader` interface.
-pub trait BufferedReader<C> : io::Read + fmt::Debug + fmt::Display + Send + Sync
-  where C: fmt::Debug + Send + Sync
-{
+pub trait BufferedReader<C: fmt::Debug>: io::Read + fmt::Debug + fmt::Display {
     /// Returns a reference to the internal buffer.
     ///
     /// Note: this returns the same data as `self.data(0)`, but it
@@ -993,7 +1000,7 @@ pub trait BufferedReader<C> : io::Read + fmt::Debug + fmt::Display + Send + Sync
 ///
 /// but, alas, Rust doesn't like that ("error\[E0119\]: conflicting
 /// implementations of trait `std::io::Read` for type `&mut _`").
-pub fn buffered_reader_generic_read_impl<T: BufferedReader<C>, C: fmt::Debug + Sync + Send>
+pub fn buffered_reader_generic_read_impl<T: BufferedReader<C>, C: fmt::Debug>
         (bio: &mut T, buf: &mut [u8]) -> Result<usize, io::Error> {
     bio
         .data_consume(buf.len())

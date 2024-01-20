@@ -28,7 +28,7 @@
 //! # Ok(()) }
 //! ```
 
-use buffered_reader::BufferedReader;
+use buffered_reader::BufferedReaderSync;
 use std::convert::TryFrom;
 use std::fmt;
 use std::io;
@@ -555,7 +555,7 @@ pub struct Reader<'a> {
     // The preferred chunk size.  This is just a hint.
     preferred_chunk_size: usize,
     // The wrapped reader.
-    source: Box<dyn BufferedReader<Cookie> + 'a>,
+    source: Box<dyn BufferedReaderSync<Cookie> + 'a>,
     // Stashed error, if any.
     error: Option<Error>,
     /// Whether we hit EOF on the underlying reader.
@@ -731,7 +731,7 @@ impl<'a> Reader<'a> {
     }
 
     pub(crate) fn from_buffered_reader<M>(
-        inner: Box<dyn BufferedReader<Cookie> + 'a>, mode: M, cookie: Cookie)
+        inner: Box<dyn BufferedReaderSync<Cookie> + 'a>, mode: M, cookie: Cookie)
         -> Self
         where M: Into<Option<ReaderMode>>
     {
@@ -739,7 +739,7 @@ impl<'a> Reader<'a> {
     }
 
     pub(crate) fn from_buffered_reader_csft(
-        inner: Box<dyn BufferedReader<Cookie> + 'a>,
+        inner: Box<dyn BufferedReaderSync<Cookie> + 'a>,
         mode: Option<ReaderMode>,
         cookie: Cookie,
         enable_csft: bool,
