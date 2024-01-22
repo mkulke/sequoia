@@ -275,6 +275,7 @@ pub struct CertBuilder<'a> {
     user_attributes: Vec<(Option<SignatureBuilder>, packet::UserAttribute)>,
     password: Option<Password>,
     revocation_keys: Option<Vec<RevocationKey>>,
+    exportable: bool,
     phantom: PhantomData<&'a ()>,
 }
 assert_send_and_sync!(CertBuilder<'_>);
@@ -331,6 +332,7 @@ impl CertBuilder<'_> {
             user_attributes: vec![],
             password: None,
             revocation_keys: None,
+            exportable: true,
             phantom: PhantomData,
         }
     }
@@ -504,6 +506,46 @@ impl CertBuilder<'_> {
     /// ```
     pub fn set_cipher_suite(mut self, cs: CipherSuite) -> Self {
         self.ciphersuite = cs;
+        self
+    }
+
+    /// Sets whether the certificate is exportable.
+    ///
+    /// This method controls whether the certificate is exportable.
+    /// If the certificate builder is configured to make a
+    /// non-exportable certificate, then all of the signatures that it
+    /// creates include the an [Exportable Certification] subpacket
+    /// that is set to `false`.
+    ///
+    /// [Exportable Certification]: https://datatracker.ietf.org/doc/html/rfc4880#section-5.2.3.11
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sequoia_openpgp as openpgp;
+    /// use openpgp::Result;
+    /// use openpgp::cert::prelude::*;
+    /// use openpgp::parse::Parse;
+    /// use openpgp::serialize::Serialize;
+    ///
+    /// # fn main() -> openpgp::Result<()> {
+    /// let (cert, _) =
+    ///     CertBuilder::general_purpose(None, Some("alice@example.org"))
+    ///         .set_exportable(false)
+    ///         .generate()?;
+    /// let mut exported = Vec::new();
+    /// cert.armored().export(&mut exported)?;
+    ///
+    /// let certs = CertParser::from_bytes(&exported)?
+    ///     .collect::<Result<Vec<Cert>>>()?;
+    /// eprintln!("{} bytes", exported.len());
+    /// eprintln!("{}", String::from_utf8_lossy(&exported));
+    /// assert_eq!(certs.len(), 0);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn set_exportable(mut self, exportable: bool) -> Self {
+        self.exportable = exportable;
         self
     }
 
@@ -1387,7 +1429,8 @@ impl CertBuilder<'_> {
         for (template, uid) in self.userids.into_iter() {
             let sig = template.unwrap_or_else(
                 || SignatureBuilder::new(SignatureType::PositiveCertification));
-            let sig = Self::signature_common(sig, creation_time)?;
+            let sig = Self::signature_common(sig, creation_time,
+                                             self.exportable)?;
             let mut sig = Self::add_primary_key_metadata(sig, &self.primary)?;
 
             // Make sure we mark exactly one User ID or Attribute as
@@ -1417,7 +1460,8 @@ impl CertBuilder<'_> {
         for (template, ua) in self.user_attributes.into_iter() {
             let sig = template.unwrap_or_else(
                 || SignatureBuilder::new(SignatureType::PositiveCertification));
-            let sig = Self::signature_common(sig, creation_time)?;
+            let sig = Self::signature_common(
+                sig, creation_time, self.exportable)?;
             let mut sig = Self::add_primary_key_metadata(sig, &self.primary)?;
 
             // Make sure we mark exactly one User ID or Attribute as
@@ -1453,7 +1497,8 @@ impl CertBuilder<'_> {
 
             let sig = template.unwrap_or_else(
                 || SignatureBuilder::new(SignatureType::SubkeyBinding));
-            let sig = Self::signature_common(sig, creation_time)?;
+            let sig = Self::signature_common(
+                sig, creation_time, self.exportable)?;
             let mut builder = sig
                 .set_key_flags(flags.clone())?
                 .set_key_validity_period(blueprint.validity.or(self.primary.validity))?;
@@ -1507,7 +1552,8 @@ impl CertBuilder<'_> {
             .generate_key(KeyFlags::empty().set_certification())?;
         key.set_creation_time(creation_time)?;
         let sig = SignatureBuilder::new(SignatureType::DirectKey);
-        let sig = Self::signature_common(sig, creation_time)?;
+        let sig = Self::signature_common(
+            sig, creation_time, self.exportable)?;
         let mut sig = Self::add_primary_key_metadata(sig, &self.primary)?;
 
         if let Some(ref revocation_keys) = self.revocation_keys {
@@ -1523,13 +1569,18 @@ impl CertBuilder<'_> {
 
     /// Common settings for generated signatures.
     fn signature_common(builder: SignatureBuilder,
-                        creation_time: time::SystemTime)
+                        creation_time: time::SystemTime,
+                        exportable: bool)
                         -> Result<SignatureBuilder>
     {
-        builder
+        let mut builder = builder
             // GnuPG wants at least a 512-bit hash for P521 keys.
             .set_hash_algo(HashAlgorithm::SHA512)
-            .set_signature_creation_time(creation_time)
+            .set_signature_creation_time(creation_time)?;
+        if ! exportable {
+            builder = builder.set_exportable_certification(false)?;
+        }
+        Ok(builder)
     }
 
 
