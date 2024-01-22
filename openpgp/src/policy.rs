@@ -1512,14 +1512,22 @@ impl<'a> Policy for StandardPolicy<'a> {
 
         for csp in sig.hashed_area().iter().filter(|sp| sp.critical()) {
             self.critical_subpackets.check(csp.tag(), time, None)
-                .context("Policy rejected critical signature subpacket")?;
+                .with_context(|| {
+                    format!(
+                        "Policy rejected critical signature subpacket ({})",
+                        csp.tag())
+                })?;
             if let SubpacketValue::NotationData(n) = csp.value() {
                 if ! self.good_critical_notations.contains(&n.name()) {
                     return Err(anyhow::Error::from(
                         Error::PolicyViolation(
                             format!("Critical notation {:?}",
-                                    n.name()), None))
-                               .context("Policy rejected critical notation"));
+                                    n.name()), None)))
+                               .with_context(|| {
+                                   format!(
+                                       "Policy rejected critical notation ({})",
+                                       n.name())
+                               });
                 }
             }
         }
@@ -1600,13 +1608,19 @@ impl<'a> Policy for StandardPolicy<'a> {
 
         let time = self.time.unwrap_or_else(Timestamp::now);
         self.asymmetric_algos.check(a, time, None)
-            .context("Policy rejected asymmetric algorithm")?;
+            .with_context(|| {
+                format!("Policy rejected asymmetric algorithm ({})",
+                        a)
+            })?;
 
         // Check ECDH KDF and KEK parameters.
         if let PublicKey::ECDH { hash, sym, .. } = ka.mpis() {
             self.symmetric_algorithm(*sym)
-                .context("Policy rejected ECDH \
-                          key encapsulation algorithm")?;
+                .with_context(|| {
+                    format!("Policy rejected ECDH \
+                             key encapsulation algorithm ({})",
+                            *sym)
+                })?;
 
             // RFC6637 says:
             //
@@ -1624,9 +1638,13 @@ impl<'a> Policy for StandardPolicy<'a> {
                     => (), // Good.
                 _ =>
                     return Err(anyhow::Error::from(
-                        Error::PolicyViolation(sym.to_string(), None))
-                               .context("Policy rejected ECDH \
-                                         key encapsulation algorithm")),
+                        Error::PolicyViolation(sym.to_string(), None)))
+                               .with_context(|| {
+                                   format!(
+                                       "Policy rejected ECDH \
+                                        key encapsulation algorithm ({})",
+                                       sym)
+                               }),
             }
 
             // For use in a KDF the hash algorithm does not
@@ -1636,8 +1654,11 @@ impl<'a> Policy for StandardPolicy<'a> {
             self
                 .collision_resistant_hash_algos
                 .check(*hash, time, None)
-                .context("Policy rejected ECDH \
-                          key derivation hash function")?;
+                .with_context(|| {
+                    format!("Policy rejected ECDH \
+                             key derivation hash function ({})",
+                            *hash)
+                })?;
         }
 
         Ok(())
@@ -1650,19 +1671,29 @@ impl<'a> Policy for StandardPolicy<'a> {
                 packet.tag(),
                 packet.version().unwrap_or(0),
                 time, None)
-            .context("Policy rejected packet type")
+            .with_context(|| {
+                format!("Policy rejected packet ({})", packet.tag())
+            })
     }
 
     fn symmetric_algorithm(&self, algo: SymmetricAlgorithm) -> Result<()> {
         let time = self.time.unwrap_or_else(Timestamp::now);
         self.symmetric_algos.check(algo, time, None)
-            .context("Policy rejected symmetric encryption algorithm")
+            .with_context(|| {
+                format!(
+                    "Policy rejected symmetric encryption algorithm ({})",
+                    algo)
+            })
     }
 
     fn aead_algorithm(&self, algo: AEADAlgorithm) -> Result<()> {
         let time = self.time.unwrap_or_else(Timestamp::now);
         self.aead_algos.check(algo, time, None)
-            .context("Policy rejected authenticated encryption algorithm")
+            .with_context(|| {
+                format!(
+                    "Policy rejected authenticated encryption algorithm ({})",
+                    algo)
+            })
     }
 }
 
