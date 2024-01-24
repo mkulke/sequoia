@@ -2474,7 +2474,9 @@ impl crate::packet::Signature {
         let issuers = self.get_issuers();
         for id in std::mem::replace(&mut self.additional_issuers,
                                     Vec::with_capacity(0)) {
-            if ! issuers.contains(&id) {
+            // Use as_bytes, because we are looking for identical
+            // copies.
+            if ! issuers.iter().any(|issuer| issuer.as_bytes() == id.as_bytes()) {
                 match id {
                     KeyHandle::KeyID(id) =>
                         self.unhashed_area_mut().add(authenticated_subpacket(
@@ -2736,8 +2738,12 @@ impl Signature {
             // contained in the signature.
             let issuers = self.get_issuers();
             let id = KeyHandle::from(key.keyid());
-            if ! (issuers.contains(&id)
-                  || self.additional_issuers.contains(&id)) {
+            if ! (issuers.iter()
+                  .chain(self.additional_issuers.iter())
+                  // Use as_bytes, because we are looking for
+                  // identical copies.
+                  .any(|issuer| issuer.as_bytes() == id.as_bytes()))
+            {
                 self.additional_issuers.push(id);
             }
 
