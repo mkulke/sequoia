@@ -74,7 +74,7 @@ trixie:
     CARGO_TARGET_DIR: /target
     CARGO_HOME: /cargo
 
-trixie-crypto-rust:
+.trixie-crypto-rust:
   tags:
     - linux
   stage: build
@@ -91,7 +91,7 @@ trixie-crypto-rust:
     CARGO_TARGET_DIR: /target
     CARGO_HOME: /cargo
 
-trixie-crypto-openssl:
+.trixie-crypto-openssl:
   tags:
     - linux
   stage: build
@@ -108,7 +108,7 @@ trixie-crypto-openssl:
     CARGO_TARGET_DIR: /target
     CARGO_HOME: /cargo
 
-trixie-crypto-botan:
+.trixie-crypto-botan:
   tags:
     - linux
   stage: build
@@ -123,7 +123,7 @@ trixie-crypto-botan:
     CARGO_TARGET_DIR: /target
     CARGO_HOME: /cargo
 
-trixie-crypto-fuzzing:
+.trixie-crypto-fuzzing:
   tags:
     - linux
   stage: build
@@ -137,7 +137,7 @@ trixie-crypto-fuzzing:
     CARGO_TARGET_DIR: /target
     CARGO_HOME: /cargo
 
-all_commits:
+.all_commits:
   # Test each commit up to main, to facilitate bisecting.
   stage: test
   interruptible: true
@@ -152,7 +152,7 @@ all_commits:
     CARGO_HOME: /cargo
     GIT_STRATEGY: clone
 
-codespell:
+.codespell:
   tags:
     - linux
   stage: pre-check
@@ -168,7 +168,7 @@ codespell:
   rules:
     - !reference [.default_rules, rules]
 
-doc:
+.doc:
   tags:
     - linux
   stage: build
@@ -182,7 +182,7 @@ doc:
     CARGO_TARGET_DIR: /target
     CARGO_HOME: /cargo
 
-rust-stable:
+.rust-stable:
   tags:
     - linux
   stage: build
@@ -196,7 +196,7 @@ rust-stable:
     CARGO_TARGET_DIR: /target
     CARGO_HOME: /cargo
 
-clippy:
+.clippy:
   tags:
     - linux
   stage: build
@@ -216,7 +216,7 @@ clippy:
     CARGO_TARGET_DIR: /target
     CARGO_HOME: /cargo
 
-rust-stable-armv7:
+.rust-stable-armv7:
   tags:
     - linux
   stage: build
@@ -302,7 +302,7 @@ windows-msvc32-cng:
   variables:
     CFLAGS: "" # Silence some C warnings when compiling with MSVC
 
-authenticate-commits:
+.authenticate-commits:
   stage: test
   interruptible: true
   image: registry.gitlab.com/sequoia-pgp/sequoia-git:latest
