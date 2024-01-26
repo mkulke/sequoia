@@ -74,7 +74,9 @@ impl Asymmetric for super::Backend {
     fn ed25519_derive_public(secret: &Protected) -> Result<[u8; 32]> {
         debug_assert_eq!(ed25519::ED25519_KEY_SIZE, 32);
         let mut public = [0; 32];
-        ed25519::public_key(&mut public, secret)?;
+        zero_stack!(2048 bytes after running {
+            ed25519::public_key(&mut public, secret)
+        })?;
         Ok(public)
     }
 
