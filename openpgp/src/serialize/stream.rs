@@ -4296,12 +4296,15 @@ mod test {
 
             let mut sink = vec![];
             let message = Message::new(&mut sink);
+            let message = Armorer::new(message).build()?;
             let message =
                 Encryptor2::for_recipients(message, recipients)
                 .build()?;
             let mut message = LiteralWriter::new(message).build()?;
             message.write_all(b"Hello world.")?;
             message.finalize()?;
+
+            eprintln!("{}", std::str::from_utf8(&sink)?);
 
             let h = VHelper::for_decryption(0, 0, 0, 0, Vec::new(),
                                             vec![key], Vec::new());
