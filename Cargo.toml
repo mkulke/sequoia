@@ -11,3 +11,6 @@ members = [
 
 [profile.release]
 debug = true
+
+[patch.crates-io]
+anyhow = { git = 'https://github.com/dtolnay/anyhow.git', rev = 'b91db55c4eb21611832bba2eef4300d2816e1d04' }
