@@ -13,4 +13,4 @@ members = [
 debug = true
 
 [patch.crates-io]
-anyhow = { git = 'https://github.com/dtolnay/anyhow.git', rev = '5121cd2bf9cd1a8acfc7f52f880ee17dfd08182d' }
+anyhow = { git = 'https://github.com/dtolnay/anyhow.git', rev = 'd6acd22200de94b65804e08ca41a4bdff3404512' }
