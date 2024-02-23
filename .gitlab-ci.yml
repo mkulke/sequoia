@@ -196,6 +196,22 @@ rust-stable:
     CARGO_TARGET_DIR: /target
     CARGO_HOME: /cargo
 
+check-minimal-versions:
+  tags:
+    - linux
+  stage: build
+  interruptible: true
+  image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/rust-stable-prebuild:latest
+  before_script:
+    - *before_script_start
+    - rustup default nightly
+    - *before_script_end
+  script:
+    - CARGO_PACKAGES="-p sequoia-openpgp" cargo test -Zdirect-minimal-versions
+  variables:
+    CARGO_TARGET_DIR: /target
+    CARGO_HOME: /cargo
+
 clippy:
   tags:
     - linux
