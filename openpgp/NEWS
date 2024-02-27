@@ -3,6 +3,11 @@
 #+TITLE: sequoia-openpgp NEWS – history of user-visible changes
 #+STARTUP: content hidestars
 
+* Changes in 1.20.0
+** Notable fixes
+** New functionality
+   - Implemented Policy for &dyn Policy, Box<T> where T: Policy,
+     &StandardPolicy and &NullPolicy.
 * Changes in 1.19.0
 ** Notable fixes
    - Key4::import_secret_cv25519 will now clamp some bits of the given

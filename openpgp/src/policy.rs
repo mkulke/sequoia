@@ -153,6 +153,56 @@ pub trait Policy : fmt::Debug + Send + Sync {
     }
 }
 
+impl Policy for &dyn Policy {
+    fn signature(&self, sig: &Signature, sec: HashAlgoSecurity) -> Result<()> {
+        (*self).signature(sig, sec)
+    }
+
+    fn key(&self, ka: &ValidErasedKeyAmalgamation<key::PublicParts>)
+        -> Result<()>
+    {
+        (*self).key(ka)
+    }
+
+    fn symmetric_algorithm(&self, algo: SymmetricAlgorithm) -> Result<()> {
+        (*self).symmetric_algorithm(algo)
+    }
+
+    fn aead_algorithm(&self, algo: AEADAlgorithm) -> Result<()> {
+        (*self).aead_algorithm(algo)
+    }
+
+    fn packet(&self, packet: &Packet) -> Result<()> {
+        (*self).packet(packet)
+    }
+}
+
+impl<T> Policy for Box<T>
+    where T: Policy
+{
+    fn signature(&self, sig: &Signature, sec: HashAlgoSecurity) -> Result<()> {
+        self.as_ref().signature(sig, sec)
+    }
+
+    fn key(&self, ka: &ValidErasedKeyAmalgamation<key::PublicParts>)
+        -> Result<()>
+    {
+        self.as_ref().key(ka)
+    }
+
+    fn symmetric_algorithm(&self, algo: SymmetricAlgorithm) -> Result<()> {
+        self.as_ref().symmetric_algorithm(algo)
+    }
+
+    fn aead_algorithm(&self, algo: AEADAlgorithm) -> Result<()> {
+        self.as_ref().aead_algorithm(algo)
+    }
+
+    fn packet(&self, packet: &Packet) -> Result<()> {
+        self.as_ref().packet(packet)
+    }
+}
+
 /// Whether the signed data requires a hash algorithm with collision
 /// resistance.
 ///
@@ -1666,6 +1716,30 @@ impl<'a> Policy for StandardPolicy<'a> {
     }
 }
 
+impl<'a> Policy for &StandardPolicy<'a> {
+    fn signature(&self, sig: &Signature, sec: HashAlgoSecurity) -> Result<()> {
+        (*self).signature(sig, sec)
+    }
+
+    fn key(&self, ka: &ValidErasedKeyAmalgamation<key::PublicParts>)
+        -> Result<()>
+    {
+        (*self).key(ka)
+    }
+
+    fn symmetric_algorithm(&self, algo: SymmetricAlgorithm) -> Result<()> {
+        (*self).symmetric_algorithm(algo)
+    }
+
+    fn aead_algorithm(&self, algo: AEADAlgorithm) -> Result<()> {
+        (*self).aead_algorithm(algo)
+    }
+
+    fn packet(&self, packet: &Packet) -> Result<()> {
+        (*self).packet(packet)
+    }
+}
+
 /// Asymmetric encryption algorithms.
 ///
 /// This type is for refining the [`StandardPolicy`] with respect to
@@ -1846,6 +1920,30 @@ impl Policy for NullPolicy {
         Ok(())
     }
 
+}
+
+impl Policy for &NullPolicy {
+    fn signature(&self, sig: &Signature, sec: HashAlgoSecurity) -> Result<()> {
+        (*self).signature(sig, sec)
+    }
+
+    fn key(&self, ka: &ValidErasedKeyAmalgamation<key::PublicParts>)
+        -> Result<()>
+    {
+        (*self).key(ka)
+    }
+
+    fn symmetric_algorithm(&self, algo: SymmetricAlgorithm) -> Result<()> {
+        (*self).symmetric_algorithm(algo)
+    }
+
+    fn aead_algorithm(&self, algo: AEADAlgorithm) -> Result<()> {
+        (*self).aead_algorithm(algo)
+    }
+
+    fn packet(&self, packet: &Packet) -> Result<()> {
+        (*self).packet(packet)
+    }
 }
 
 #[cfg(test)]
@@ -3180,5 +3278,25 @@ mod test {
                                        Timestamp::Y2005M2);
         assert_eq!(p.packet_tag_cutoff(Tag::Signature),
                    Some(Timestamp::Y2007M2.into()));
+    }
+
+    #[test]
+    fn policy_blanket_impls() {
+        fn f<T>(_: T) where T: Policy {
+        }
+
+        let p = StandardPolicy::new();
+        f(&p);
+        f(Box::new(&p));
+        f(Box::new(p));
+
+        let p = NullPolicy::new();
+        f(&p);
+        f(Box::new(&p));
+        f(Box::new(p));
+
+        let p: &dyn Policy = &StandardPolicy::new();
+        f(p);
+        f(Box::new(p));
     }
 }
