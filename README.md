@@ -331,3 +331,10 @@ can be found on our web site, via WKD, and [on the keyserver].
   [our bugtracker]: https://gitlab.com/sequoia-pgp/sequoia/issues
   [security@sequoia-pgp.org]: mailto:security@sequoia-pgp.org
   [on the keyserver]: https://keys.openpgp.org/search?q=security%40sequoia-pgp.org
+
+
+### Contributing
+
+You want to help, great!
+We have two guides for you to read: [our guide for new contributors](./GETTING_STARTED.md),
+or you can take a look at our general [contributing](./CONTRIBUTING.md) guide.
