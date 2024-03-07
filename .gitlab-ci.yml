@@ -54,29 +54,29 @@ include:
       cargo_cmd: 'doc'
       cargo_args: '--document-private-items --no-deps'
     
-trixie-build:
+.trixie-build:
   script:
     - cargo run --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-nettle,compression --example supported-algorithms
     - if ! git diff --quiet Cargo.lock ; then echo "Cargo.lock changed.  Please add the change to the corresponding commit." ; git diff ; false ; fi
     - if ! git diff --quiet ; then echo "The build changed the source.  Please investigate." ; git diff ; fi
 
-trixie-crypto-rust-build:
+.trixie-crypto-rust-build:
   script:
     - cargo test --release --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-rust,compression,allow-experimental-crypto,allow-variable-time-crypto
 
-trixie-crypto-openssl-build:
+.trixie-crypto-openssl-build:
   script:
     - cargo test --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-openssl,compression
 
-trixie-crypto-botan-build:
+.trixie-crypto-botan-build:
   script:
     - cargo test --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-botan2,compression
 
-rust-stable-build:
+.rust-stable-build:
   script:
     - CARGO_PACKAGES="-p buffered-reader -p sequoia-openpgp" $MAKE_TOP test
 
-rust-stable-armv7-build:
+.rust-stable-armv7-build:
   before_script:
     - !reference [.before_script, start]
     - cat .ci/snippet_for_cross_compilation_config.toml >> .cargo/config.toml
@@ -85,7 +85,7 @@ rust-stable-armv7-build:
     PKG_CONFIG_PATH: /usr/lib/arm-linux-gnueabihf/pkgconfig
     PKG_CONFIG_ALLOW_CROSS: 1
     
-all_commits:
+.all_commits:
   # Test each commit up to main, to facilitate bisecting.
   stage: test
   interruptible: true
@@ -98,7 +98,7 @@ all_commits:
   variables:
     GIT_STRATEGY: clone
  
-clippy:
+.clippy:
   tags:
     - linux
   stage: build
@@ -115,7 +115,7 @@ clippy:
   rules:
     - !reference [.default_rules, rules]
 
-windows-msvc-cng:
+.windows-msvc-cng:
   tags:
     - win
     - win2019
@@ -135,12 +135,12 @@ windows-msvc-cng:
   script:
     # https://github.com/rust-lang/cargo/issues/5015
     - cargo run --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-cng,compression --example supported-algorithms
-    - cargo test --tests --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-cng,compression
+    - cargo test --tests --manifest-path ipc/Cargo.toml --no-default-features --features sequoia-openpgp/crypto-cng,sequoia-openpgp/compression -- --test-threads 1 --nocapture
   after_script: [] # scriptlet doesn't work on Powershell
   variables:
     CFLAGS: "" # Silence some C warnings when compiling with MSVC
 
-windows-msvc32-cng:
+.windows-msvc32-cng:
   tags:
     - win
     - win2019
@@ -178,3 +178,30 @@ windows-msvc32-cng:
   after_script: [] # scriptlet doesn't work on Powershell
   variables:
     CFLAGS: "" # Silence some C warnings when compiling with MSVC
+
+# We use the gnu image to demonstrate the problem, because the msvc
+# image doesn't have gpg installed.
+windows-gnu-cng:
+  tags:
+    - win
+    - win2019
+  stage: build
+  interruptible: true
+  image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/windows-gnu
+  only:
+    variables:
+      # Forks of this project most likely use gitlab's shared windows runners, which
+      # do not use the docker executor, so disable the windows jobs for forks.
+      - $CI_PROJECT_NAMESPACE == "sequoia-pgp"
+  before_script:
+    # We don't call *before_script_start or *before_script_end as we
+    # don't have bash, clang, etc.
+    - rustup default "1.70.0"
+    - rustc --version --verbose
+    - cargo --version
+  script:
+    # https://github.com/rust-lang/cargo/issues/5015
+    - cargo test --tests --manifest-path ipc/Cargo.toml --no-default-features --features sequoia-openpgp/crypto-cng,sequoia-openpgp/compression -- --test-threads 1 --nocapture
+  after_script: [] # scriptlet doesn't work on Powershell
+  variables:
+    CFLAGS: "" # Silence some C warnings when compiling under Windows
