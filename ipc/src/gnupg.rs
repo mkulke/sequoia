@@ -883,4 +883,12 @@ mod tests {
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async_context())
     }
+
+    #[test]
+    fn homedir() {
+        let ctx = Context::ephemeral()
+            .expect("can create an ephemeral context");
+        let homedir = ctx.homedir().expect("have homedir");
+        assert!(homedir.exists(), "{} should exist", homedir.display());
+    }
 }
