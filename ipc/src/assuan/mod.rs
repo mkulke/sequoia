@@ -63,6 +63,8 @@ pub struct Client {
     buffer: Vec<u8>,
     done: bool,
     w: WriteState,
+    trace_send: Option<Box<dyn Fn(&[u8]) + Send + Sync>>,
+    trace_receive: Option<Box<dyn Fn(&[u8]) + Send + Sync>>,
 }
 assert_send_and_sync!(Client);
 
@@ -155,6 +157,9 @@ impl Client {
                 let mut c = command.to_vec();
                 if ! c.ends_with(b"\n") {
                     c.push(0x0a);
+                }
+                if let Some(t) = self.trace_send.as_ref() {
+                    t(&c);
                 }
                 WriteState::Sending(Box::pin(async move {
                     sink.write_all(&c).await?;
@@ -261,6 +266,24 @@ impl Client {
         write!(&mut request, "\nEND").unwrap();
         self.send(request)
     }
+
+    /// Start tracing the data that is sent to the server.
+    ///
+    /// Note: if a tracing function is already registered, this
+    /// replaces it.
+    pub fn trace_data_sent(&mut self, fun: Box<dyn Fn(&[u8]) + Send + Sync>)
+    {
+        self.trace_send = Some(fun);
+    }
+
+    /// Start tracing the data that is received from the server.
+    ///
+    /// Note: if a tracing function is already registered, this
+    /// replaces it.
+    pub fn trace_data_received(&mut self, fun: Box<dyn Fn(&[u8]) + Send + Sync>)
+    {
+        self.trace_receive = Some(fun);
+    }
 }
 
 /// Returns a convenient Err value for use in the state machines.
@@ -302,7 +325,9 @@ impl ConnectionFuture {
         let buffer = Vec::with_capacity(MAX_LINE_LENGTH);
         Self(Some(Client {
             r: BufReader::new(r), buffer, done: false,
-            w: WriteState::Ready(w)
+            w: WriteState::Ready(w),
+            trace_send: None,
+            trace_receive: None,
         }))
     }
 }
@@ -387,7 +412,7 @@ impl Stream for Client {
 
         // The compiler is not smart enough to figure out disjoint borrows
         // through Pin via DerefMut (which wholly borrows `self`), so unwrap it
-        let Self { buffer, done, r, .. } = Pin::into_inner(self);
+        let Self { buffer, done, r, trace_receive, .. } = Pin::into_inner(self);
         let mut reader = Pin::new(r);
         loop {
             // Try to yield a line from the buffer.  For that, try to
@@ -395,6 +420,9 @@ impl Stream for Client {
             if let Some(p) = buffer.iter().position(|&b| b == 0x0a) {
                 let line: Vec<u8> = buffer.drain(..p+1).collect();
                 // xxx: rtrim linebreak even more? crlf maybe?
+                if let Some(t) = trace_receive {
+                    t(&line[..line.len()-1]);
+                }
                 let r = Response::parse(&line[..line.len()-1])?;
                 // If this response is one of ok, error, or inquire,
                 // we want to surrender control to the client next
