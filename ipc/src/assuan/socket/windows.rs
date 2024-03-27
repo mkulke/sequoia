@@ -5,6 +5,7 @@ use std::path::Path;
 use std::fs::File;
 
 use anyhow::anyhow;
+use anyhow::Context;
 
 use crate::Result;
 
@@ -48,7 +49,9 @@ pub enum UdsEmulation {
 ///
 /// Inspired by `read_port_and nonce` from assuan-socket.c.
 pub fn read_port_and_nonce(fname: &Path) -> Result<Rendezvous> {
-    let mut file = File::open(fname)?;
+    let mut file = File::open(fname).with_context(|| {
+        format!("Opening gpg-agent socket {}", fname.display())
+    })?;
     // Socket connection info will be in either a <= 54 byte long Cygwin format
     // or ~5+1+16 (modulo whitespace separators) custom libassuan format
     let mut contents = Vec::with_capacity(64);

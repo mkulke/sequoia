@@ -223,7 +223,7 @@ impl<'a> crate::serialize::Marshal for RawPacket<'a> {
 pub struct RawCert<'a> {
     data: Cow<'a, [u8]>,
 
-    fingerprint: Fingerprint,
+    primary_key: Key<key::PublicParts, key::PrimaryRole>,
 
     // The packet's tag, the length of the header, and the offset of
     // the start of the packet (including the header) into data.
@@ -234,7 +234,7 @@ assert_send_and_sync!(RawCert<'_>);
 impl<'a> fmt::Debug for RawCert<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RawCert")
-            .field("fingerprint", &self.fingerprint)
+            .field("fingerprint", &self.fingerprint())
             .field("packets",
                    &self.packets
                    .iter()
@@ -267,12 +267,12 @@ impl<'a> RawCert<'a> {
 
     /// Returns the certificate's fingerprint.
     pub fn fingerprint(&self) -> Fingerprint {
-        self.fingerprint.clone()
+        self.primary_key.fingerprint()
     }
 
     /// Returns the certificate's Key ID.
     pub fn keyid(&self) -> KeyID {
-        KeyID::from(&self.fingerprint)
+        KeyID::from(self.fingerprint())
     }
 
     /// Returns the ith packet.
@@ -384,19 +384,15 @@ impl<'a> RawCert<'a> {
     fn keys_internal(&self)
         -> impl Iterator<Item=Key<key::PublicParts, key::UnspecifiedRole>> + '_
     {
-        self.packets()
-            .filter_map(|p| {
-                if matches!(p.tag(),
-                            Tag::PublicKey | Tag::PublicSubkey
-                            | Tag::SecretKey | Tag::SecretSubkey)
-                {
-                    Key::from_bytes(p.body())
-                        .ok()
-                        .map(|k| k.parts_into_public())
-                } else {
-                    None
-                }
-            })
+        std::iter::once(self.primary_key().clone().role_into_unspecified())
+            .chain(self.packets()
+                   .filter(|p| matches!(p.tag(),
+                                        Tag::PublicKey | Tag::PublicSubkey
+                                        | Tag::SecretKey | Tag::SecretSubkey))
+                   .skip(1) // The primary key.
+                   .filter_map(|p| Key::from_bytes(p.body())
+                               .ok()
+                               .map(|k| k.parts_into_public())))
     }
 
     /// Returns the certificate's primary key.
@@ -410,7 +406,7 @@ impl<'a> RawCert<'a> {
     ///
     /// [`ValidCert`]: crate::cert::ValidCert
     pub fn primary_key(&self) -> Key<key::PublicParts, key::PrimaryRole> {
-        self.keys().next().expect("have a primary key").role_into_primary()
+        self.primary_key.clone()
     }
 
     /// Returns the certificate's User IDs.
@@ -758,7 +754,7 @@ impl<'a> Iterator for RawCertParser<'a>
 
         // (Tag, header length, offset from start of the certificate)
         let mut packets: Vec<(Tag, usize, usize)> = Vec::new();
-        let mut fingerprint = None;
+        let mut primary_key = None;
 
         let mut pending_error = None;
         'packet_parser: loop {
@@ -889,9 +885,9 @@ impl<'a> Iterator for RawCertParser<'a>
                                         pending_error = Some(err);
                                         break;
                                     }
-                                    Ok(key) => {
-                                        fingerprint = Some(key.fingerprint());
-                                    }
+                                    Ok(key) => primary_key = Some(
+                                        key.parts_into_public()
+                                            .role_into_primary()),
                                 }
                             }
                         }
@@ -1004,7 +1000,7 @@ impl<'a> Iterator for RawCertParser<'a>
             } else {
                 Cow::Owned(cert_data.to_vec())
             },
-            fingerprint: fingerprint.expect("set"),
+            primary_key: primary_key.expect("set"),
             packets,
         }))
     }

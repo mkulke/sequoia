@@ -503,6 +503,24 @@ impl Agent {
         r.reverse();
         r
     }
+
+    /// Start tracing the data that is sent to the server.
+    ///
+    /// Note: if a tracing function is already registered, this
+    /// replaces it.
+    pub fn trace_data_sent(&mut self, fun: Box<dyn Fn(&[u8]) + Send + Sync>)
+    {
+        self.c.trace_data_sent(fun);
+    }
+
+    /// Start tracing the data that is received from the server.
+    ///
+    /// Note: if a tracing function is already registered, this
+    /// replaces it.
+    pub fn trace_data_received(&mut self, fun: Box<dyn Fn(&[u8]) + Send + Sync>)
+    {
+        self.c.trace_data_received(fun);
+    }
 }
 
 /// A cryptographic key pair.

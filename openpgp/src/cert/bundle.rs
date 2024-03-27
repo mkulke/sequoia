@@ -688,12 +688,15 @@ impl<C> ComponentBundle<C> {
         if let Some(revs)
             = check(&self.self_revocations, self.hash_algo_security)
         {
+            t!("-> RevocationStatus::Revoked({})", revs.len());
             RevocationStatus::Revoked(revs)
         } else if let Some(revs)
             = check(&self.other_revocations, Default::default())
         {
+            t!("-> RevocationStatus::CouldBe({})", revs.len());
             RevocationStatus::CouldBe(revs)
         } else {
+            t!("-> RevocationStatus::NotAsFarAsWeKnow");
             RevocationStatus::NotAsFarAsWeKnow
         }
     }

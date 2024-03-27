@@ -2068,13 +2068,13 @@ impl<'a, C> ValidComponentAmalgamation<'a, C>
     ///   - primary first
     ///   - signature creation first
     ///
-    /// If there is more than one, than one is selected in a
+    /// If there is more than one, then one is selected in a
     /// deterministic, but undefined manner.
     ///
     /// If `valid_cert` is `false`, then this does not also check
     /// whether the certificate is valid; it only checks whether the
     /// component is valid.  Normally, this should be `true`.  This
-    /// option is only expose to allow breaking an infinite recursion:
+    /// option is only exposed to allow breaking an infinite recursion:
     ///
     ///   - To check if a certificate is valid, we check if the
     ///     primary key is valid.

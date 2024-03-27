@@ -381,27 +381,28 @@ impl<P, R> Hash for Key4<P, R>
         // include the tag (1 byte) or the length (2 bytes).
         let len = (9 - 3) + self.mpis().serialized_len() as u16;
 
-        let mut header: Vec<u8> = Vec::with_capacity(9);
+        let mut header = [
+            // Tag.  Note: we use this whether
+            0x99u8,
 
-        // Tag.  Note: we use this whether
-        header.push(0x99);
+            // Length (2 bytes, big endian).  Fixup later.
+            0, 0,
 
-        // Length (2 bytes, big endian).
-        header.extend_from_slice(&len.to_be_bytes());
+            // Version.
+            4,
 
-        // Version.
-        header.push(4);
+            // Creation time.  Fixup later.
+            0, 0, 0, 0,
 
-        // Creation time.
-        let creation_time: u32 =
+            // Algorithm.
+            self.pk_algo().into(),
+        ];
+
+        // Fixup length and creation time and hash the header.
+        header[1..3].copy_from_slice(&len.to_be_bytes());
+        header[4..8].copy_from_slice(&u32::from(
             Timestamp::try_from(self.creation_time())
-            .unwrap_or_else(|_| Timestamp::from(0))
-            .into();
-        header.extend_from_slice(&creation_time.to_be_bytes());
-
-        // Algorithm.
-        header.push(self.pk_algo().into());
-
+            .unwrap_or_else(|_| Timestamp::from(0))).to_be_bytes());
         hash.update(&header[..]);
 
         // MPIs.
@@ -466,13 +467,9 @@ impl Signature4 {
     ///
     /// Because we need to call this from SignatureFields::hash, we
     /// provide this as associated method.
-    fn hash_signature(f: &signature::SignatureFields, hash: &mut dyn Digest) {
-        use crate::serialize::MarshalInto;
-
-        // XXX: Annoyingly, we have no proper way of handling errors
-        // here.
-        let hashed_area = f.hashed_area().to_vec()
-            .unwrap_or_else(|_| Vec::new());
+    fn hash_signature(f: &signature::SignatureFields, mut hash: &mut dyn Digest)
+    {
+        use crate::serialize::{Marshal, MarshalInto};
 
         // A version 4 signature packet is laid out as follows:
         //
@@ -493,11 +490,13 @@ impl Signature4 {
         header[3] = f.hash_algo().into();
 
         // The length of the hashed area, as a 16-bit big endian number.
-        let len = hashed_area.len() as u16;
-        header[4..6].copy_from_slice(&len.to_be_bytes());
+        let hashed_area_len = f.hashed_area().serialized_len();
+        header[4..6].copy_from_slice(&(hashed_area_len as u16).to_be_bytes());
 
         hash.update(&header[..]);
-        hash.update(&hashed_area);
+        // XXX: Annoyingly, we have no proper way of handling errors
+        // here.
+        let _ = f.hashed_area().serialize(&mut hash as &mut dyn Write);
 
         // A version 4 signature trailer is:
         //
@@ -516,7 +515,7 @@ impl Signature4 {
         trailer[1] = 0xff;
         // The signature packet's length, not including the previous
         // two bytes and the length.
-        let len = (header.len() + hashed_area.len()) as u32;
+        let len = (header.len() + hashed_area_len) as u32;
         trailer[2..6].copy_from_slice(&len.to_be_bytes());
 
         hash.update(&trailer[..]);
