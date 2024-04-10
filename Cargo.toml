@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "autocrypt",
     "buffered-reader",
+    "fuzz",
     "guide",
     "ipc",
     "net",
