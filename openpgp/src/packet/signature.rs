@@ -118,6 +118,7 @@ use std::convert::TryFrom;
 use std::fmt;
 use std::hash::Hasher;
 use std::ops::{Deref, DerefMut};
+use std::sync::OnceLock;
 use std::time::SystemTime;
 
 #[cfg(test)]
@@ -1741,7 +1742,7 @@ impl SignatureBuilder {
             fields: self.fields,
             digest_prefix: [digest[0], digest[1]],
             mpis,
-            computed_digest: Some(digest),
+            computed_digest: digest.into(),
             level: 0,
             additional_issuers: Vec::with_capacity(0),
         }.into())
@@ -1812,7 +1813,7 @@ pub struct Signature4 {
     ///
     /// This is also set when a signature is successfully verified,
     /// and on signatures during certificate canonicalization.
-    computed_digest: Option<Vec<u8>>,
+    computed_digest: OnceLock<Vec<u8>>,
 
     /// Signature level.
     ///
@@ -1851,7 +1852,7 @@ impl fmt::Debug for Signature4 {
                 "computed_digest",
                 &self
                     .computed_digest
-                    .as_ref()
+                    .get()
                     .map(|hash| crate::fmt::to_hex(&hash[..], false)),
             )
             .field("level", &self.level)
@@ -1928,7 +1929,7 @@ impl Signature4 {
             },
             digest_prefix,
             mpis,
-            computed_digest: None,
+            computed_digest: OnceLock::new(),
             level: 0,
             additional_issuers: Vec::with_capacity(0),
         }
@@ -1973,14 +1974,15 @@ impl Signature4 {
     ///
     /// [`PacketParser`]: crate::parse::PacketParser
     pub fn computed_digest(&self) -> Option<&[u8]> {
-        self.computed_digest.as_ref().map(|d| &d[..])
+        self.computed_digest.get().map(|d| &d[..])
     }
 
-    /// Sets the computed hash value.
-    pub(crate) fn set_computed_digest(&mut self, hash: Option<Vec<u8>>)
-        -> Option<Vec<u8>>
+    /// Sets the computed hash value, once.
+    ///
+    /// Calling this function a second time has no effect.
+    pub(crate) fn set_computed_digest(&self, hash: Option<Vec<u8>>)
     {
-        ::std::mem::replace(&mut self.computed_digest, hash)
+        let _ = self.computed_digest.set(hash.unwrap_or_default());
     }
 
     /// Gets the signature level.
@@ -2101,7 +2103,7 @@ impl fmt::Debug for Signature3 {
                 "computed_digest",
                 &self
                     .computed_digest
-                    .as_ref()
+                    .get()
                     .map(|hash| crate::fmt::to_hex(&hash[..], false)),
             )
             .field("level", &self.level)
@@ -2204,7 +2206,7 @@ impl Signature3 {
     ///
     /// [`PacketParser`]: crate::parse::PacketParser
     pub fn computed_digest(&self) -> Option<&[u8]> {
-        self.computed_digest.as_ref().map(|d| &d[..])
+        self.computed_digest.get().map(|d| &d[..])
     }
 
     /// Gets the signature level.
@@ -3522,7 +3524,7 @@ impl ArbitraryBounded for Signature4 {
             digest_prefix: [Arbitrary::arbitrary(g),
                             Arbitrary::arbitrary(g)],
             mpis,
-            computed_digest: None,
+            computed_digest: OnceLock::new(),
             level: 0,
             additional_issuers: Vec::with_capacity(0),
         }
