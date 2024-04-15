@@ -2778,13 +2778,13 @@ impl Signature {
 
             // The hashed subpackets are authenticated by the
             // signature.
-            self.hashed_area_mut().iter_mut().for_each(|p| {
+            self.hashed_area().iter().for_each(|p| {
                 p.set_authenticated(true);
             });
 
             // The self-authenticating unhashed subpackets are
             // authenticated by the key's identity.
-            self.unhashed_area_mut().iter_mut().for_each(|p| {
+            self.unhashed_area().iter().for_each(|p| {
                 let authenticated = match p.value() {
                     SubpacketValue::Issuer(id) =>
                         id == &key.keyid(),
