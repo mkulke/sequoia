@@ -1744,7 +1744,7 @@ impl SignatureBuilder {
             mpis,
             computed_digest: digest.into(),
             level: 0,
-            additional_issuers: Vec::with_capacity(0),
+            additional_issuers: OnceLock::new(),
         }.into())
     }
 }
@@ -1832,7 +1832,7 @@ pub struct Signature4 {
     /// verifying, because that would mean that verifying a signature
     /// would change the serialized representation, and signature
     /// verification is usually expected to be idempotent.
-    additional_issuers: Vec<KeyHandle>,
+    additional_issuers: OnceLock<Vec<KeyHandle>>,
 }
 assert_send_and_sync!(Signature4);
 
@@ -1845,7 +1845,7 @@ impl fmt::Debug for Signature4 {
             .field("hash_algo", &self.hash_algo())
             .field("hashed_area", self.hashed_area())
             .field("unhashed_area", self.unhashed_area())
-            .field("additional_issuers", &self.additional_issuers)
+            .field("additional_issuers", &self.additional_issuers())
             .field("digest_prefix",
                    &crate::fmt::to_hex(&self.digest_prefix, false))
             .field(
@@ -1931,7 +1931,7 @@ impl Signature4 {
             mpis,
             computed_digest: OnceLock::new(),
             level: 0,
-            additional_issuers: Vec::with_capacity(0),
+            additional_issuers: OnceLock::new(),
         }
     }
 
@@ -2026,6 +2026,11 @@ impl Signature4 {
 
         Ok(())
     }
+
+    /// Returns the additional (i.e. newly discovered) issuers.
+    fn additional_issuers(&self) -> &[KeyHandle] {
+        self.additional_issuers.get().map(|v| v.as_slice()).unwrap_or(&[])
+    }
 }
 
 impl From<Signature3> for SignatureBuilder {
@@ -2096,7 +2101,7 @@ impl fmt::Debug for Signature3 {
             .field("hash_algo", &self.hash_algo())
             .field("hashed_area", self.hashed_area())
             .field("unhashed_area", self.unhashed_area())
-            .field("additional_issuers", &self.additional_issuers)
+            .field("additional_issuers", &self.additional_issuers())
             .field("digest_prefix",
                    &crate::fmt::to_hex(&self.digest_prefix, false))
             .field(
@@ -2465,7 +2470,7 @@ impl crate::packet::Signature {
     /// change the serialized representation of the signature as a
     /// side-effect of verifying the signature.
     pub fn add_missing_issuers(&mut self) -> Result<()> {
-        if self.additional_issuers.is_empty() {
+        if self.additional_issuers().is_empty() {
             return Ok(());
         }
 
@@ -2475,8 +2480,7 @@ impl crate::packet::Signature {
         }
 
         let issuers = self.get_issuers();
-        for id in std::mem::replace(&mut self.additional_issuers,
-                                    Vec::with_capacity(0)) {
+        for id in self.additional_issuers.take().expect("not empty") {
             if ! issuers.contains(&id) {
                 match id {
                     KeyHandle::KeyID(id) =>
@@ -2602,9 +2606,8 @@ impl crate::packet::Signature {
         let mut size = 0;
 
         // Start with missing issuer information.
-        for id in std::mem::replace(&mut self.additional_issuers,
-                                    Vec::with_capacity(0)).into_iter()
-            .chain(other.additional_issuers.iter().cloned())
+        for id in self.additional_issuers.take().unwrap_or_default().into_iter()
+            .chain(other.additional_issuers().iter().cloned())
         {
             let p = match id {
                 KeyHandle::KeyID(id) => Subpacket::new(
@@ -2798,19 +2801,23 @@ impl Signature {
             // Compute and record any issuer information not yet
             // contained in the signature.
             let issuers = self.get_issuers();
+            let mut additional_issuers = Vec::with_capacity(0);
+
             let id = KeyHandle::from(key.keyid());
-            if ! (issuers.contains(&id)
-                  || self.additional_issuers.contains(&id)) {
-                self.additional_issuers.push(id);
+            if ! issuers.contains(&id) {
+                additional_issuers.push(id);
             }
 
             if self.version() >= 4 {
                 let fp = KeyHandle::from(key.fingerprint());
-                if ! (issuers.contains(&fp)
-                      || self.additional_issuers.contains(&fp)) {
-                    self.additional_issuers.push(fp);
+                if ! issuers.contains(&fp) {
+                    additional_issuers.push(fp);
                 }
             }
+
+            // Replace it.  If it was already set, we simply ignore
+            // the error.
+            let _ = self.additional_issuers.set(additional_issuers);
 
             // Finally, remember the digest.
             if let Some(digest) = computed_digest {
@@ -3526,7 +3533,7 @@ impl ArbitraryBounded for Signature4 {
             mpis,
             computed_digest: OnceLock::new(),
             level: 0,
-            additional_issuers: Vec::with_capacity(0),
+            additional_issuers: OnceLock::new(),
         }
     }
 }
