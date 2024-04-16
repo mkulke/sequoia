@@ -33,7 +33,7 @@ fn fips_186_3_verification() -> Result<()> {
         let mut h = hash.context()?;
         h.update(msg);
         let mut d = h.into_digest()?;
-        let mut sig: Signature =
+        let sig: Signature =
             Signature4::new(SignatureType::Binary,
                             PublicKeyAlgorithm::RSAEncryptSign,
                             hash,

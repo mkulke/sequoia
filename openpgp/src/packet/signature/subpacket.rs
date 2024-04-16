@@ -2000,11 +2000,6 @@ impl Subpacket {
         &self.value
     }
 
-    /// Returns the Subpacket's value.
-    pub(crate) fn value_mut(&mut self) -> &mut SubpacketValue {
-        &mut self.value
-    }
-
     /// Returns whether the information in this subpacket has been
     /// authenticated.
     ///
