@@ -2691,7 +2691,7 @@ impl Signature {
     /// is not revoked, not expired, has a valid self-signature, has a
     /// subkey binding signature (if appropriate), has the signing
     /// capability, etc.
-    pub fn verify_signature<P, R>(&mut self, key: &Key<P, R>) -> Result<()>
+    pub fn verify_signature<P, R>(&self, key: &Key<P, R>) -> Result<()>
         where P: key::KeyParts,
               R: key::KeyRole,
     {
@@ -2715,7 +2715,7 @@ impl Signature {
     /// is not revoked, not expired, has a valid self-signature, has a
     /// subkey binding signature (if appropriate), has the signing
     /// capability, etc.
-    pub fn verify_hash<P, R>(&mut self, key: &Key<P, R>,
+    pub fn verify_hash<P, R>(&self, key: &Key<P, R>,
                              mut hash: Box<dyn hash::Digest>)
         -> Result<()>
         where P: key::KeyParts,
@@ -2740,7 +2740,7 @@ impl Signature {
     /// is not revoked, not expired, has a valid self-signature, has a
     /// subkey binding signature (if appropriate), has the signing
     /// capability, etc.
-    pub fn verify_digest<P, R, D>(&mut self, key: &Key<P, R>, digest: D)
+    pub fn verify_digest<P, R, D>(&self, key: &Key<P, R>, digest: D)
         -> Result<()>
         where P: key::KeyParts,
               R: key::KeyRole,
@@ -2753,7 +2753,7 @@ impl Signature {
 
     /// Verifies the signature against `computed_digest`, or
     /// `self.computed_digest` if the former is `None`.
-    fn verify_digest_internal(&mut self,
+    fn verify_digest_internal(&self,
                               key: &Key<key::PublicParts, key::UnspecifiedRole>,
                               computed_digest: Option<Cow<[u8]>>)
                               -> Result<()>
@@ -2841,7 +2841,7 @@ impl Signature {
     /// is not revoked, not expired, has a valid self-signature, has a
     /// subkey binding signature (if appropriate), has the signing
     /// capability, etc.
-    pub fn verify<P, R>(&mut self, key: &Key<P, R>) -> Result<()>
+    pub fn verify<P, R>(&self, key: &Key<P, R>) -> Result<()>
         where P: key::KeyParts,
               R: key::KeyRole,
     {
@@ -2867,7 +2867,7 @@ impl Signature {
     /// is not revoked, not expired, has a valid self-signature, has a
     /// subkey binding signature (if appropriate), has the signing
     /// capability, etc.
-    pub fn verify_standalone<P, R>(&mut self, key: &Key<P, R>) -> Result<()>
+    pub fn verify_standalone<P, R>(&self, key: &Key<P, R>) -> Result<()>
         where P: key::KeyParts,
               R: key::KeyRole,
     {
@@ -2896,7 +2896,7 @@ impl Signature {
     /// is not revoked, not expired, has a valid self-signature, has a
     /// subkey binding signature (if appropriate), has the signing
     /// capability, etc.
-    pub fn verify_timestamp<P, R>(&mut self, key: &Key<P, R>) -> Result<()>
+    pub fn verify_timestamp<P, R>(&self, key: &Key<P, R>) -> Result<()>
         where P: key::KeyParts,
               R: key::KeyRole,
     {
@@ -2932,7 +2932,7 @@ impl Signature {
     /// key is not revoked, not expired, has a valid self-signature,
     /// has a subkey binding signature (if appropriate), has the
     /// signing capability, etc.
-    pub fn verify_direct_key<P, Q, R>(&mut self,
+    pub fn verify_direct_key<P, Q, R>(&self,
                                       signer: &Key<P, R>,
                                       pk: &Key<Q, key::PrimaryRole>)
         -> Result<()>
@@ -2970,7 +2970,7 @@ impl Signature {
     /// key is not revoked, not expired, has a valid self-signature,
     /// has a subkey binding signature (if appropriate), has the
     /// signing capability, etc.
-    pub fn verify_primary_key_revocation<P, Q, R>(&mut self,
+    pub fn verify_primary_key_revocation<P, Q, R>(&self,
                                                   signer: &Key<P, R>,
                                                   pk: &Key<Q, key::PrimaryRole>)
         -> Result<()>
@@ -3014,7 +3014,7 @@ impl Signature {
     /// has a subkey binding signature (if appropriate), has the
     /// signing capability, etc.
     pub fn verify_subkey_binding<P, Q, R, S>(
-        &mut self,
+        &self,
         signer: &Key<P, R>,
         pk: &Key<Q, key::PrimaryRole>,
         subkey: &Key<S, key::SubordinateRole>)
@@ -3040,11 +3040,11 @@ impl Signature {
             let mut last_result = Err(Error::BadSignature(
                 "Primary key binding signature missing".into()).into());
 
-            for backsig in self.subpackets_mut(SubpacketTag::EmbeddedSignature)
+            for backsig in self.subpackets(SubpacketTag::EmbeddedSignature)
             {
                 let result =
                     if let SubpacketValue::EmbeddedSignature(sig) =
-                        backsig.value_mut()
+                        backsig.value()
                 {
                     sig.verify_primary_key_binding(pk, subkey)
                 } else {
@@ -3083,7 +3083,7 @@ impl Signature {
     /// has a subkey binding signature (if appropriate), has the
     /// signing capability, etc.
     pub fn verify_primary_key_binding<P, Q>(
-        &mut self,
+        &self,
         pk: &Key<P, key::PrimaryRole>,
         subkey: &Key<Q, key::SubordinateRole>)
         -> Result<()>
@@ -3121,7 +3121,7 @@ impl Signature {
     /// has a subkey binding signature (if appropriate), has the
     /// signing capability, etc.
     pub fn verify_subkey_revocation<P, Q, R, S>(
-        &mut self,
+        &self,
         signer: &Key<P, R>,
         pk: &Key<Q, key::PrimaryRole>,
         subkey: &Key<S, key::SubordinateRole>)
@@ -3161,7 +3161,7 @@ impl Signature {
     /// key is not revoked, not expired, has a valid self-signature,
     /// has a subkey binding signature (if appropriate), has the
     /// signing capability, etc.
-    pub fn verify_userid_binding<P, Q, R>(&mut self,
+    pub fn verify_userid_binding<P, Q, R>(&self,
                                           signer: &Key<P, R>,
                                           pk: &Key<Q, key::PrimaryRole>,
                                           userid: &UserID)
@@ -3203,7 +3203,7 @@ impl Signature {
     /// key is not revoked, not expired, has a valid self-signature,
     /// has a subkey binding signature (if appropriate), has the
     /// signing capability, etc.
-    pub fn verify_userid_revocation<P, Q, R>(&mut self,
+    pub fn verify_userid_revocation<P, Q, R>(&self,
                                              signer: &Key<P, R>,
                                              pk: &Key<Q, key::PrimaryRole>,
                                              userid: &UserID)
@@ -3249,7 +3249,7 @@ impl Signature {
     ///
     ///   [Section 5.2.3.30 of RFC 4880bis]: https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-10.html#section-5.2.3.30
     pub fn verify_userid_attestation<P, Q, R>(
-        &mut self,
+        &self,
         signer: &Key<P, R>,
         pk: &Key<Q, key::PrimaryRole>,
         userid: &UserID)
@@ -3297,7 +3297,7 @@ impl Signature {
     /// key is not revoked, not expired, has a valid self-signature,
     /// has a subkey binding signature (if appropriate), has the
     /// signing capability, etc.
-    pub fn verify_user_attribute_binding<P, Q, R>(&mut self,
+    pub fn verify_user_attribute_binding<P, Q, R>(&self,
                                                   signer: &Key<P, R>,
                                                   pk: &Key<Q, key::PrimaryRole>,
                                                   ua: &UserAttribute)
@@ -3340,7 +3340,7 @@ impl Signature {
     /// has a subkey binding signature (if appropriate), has the
     /// signing capability, etc.
     pub fn verify_user_attribute_revocation<P, Q, R>(
-        &mut self,
+        &self,
         signer: &Key<P, R>,
         pk: &Key<Q, key::PrimaryRole>,
         ua: &UserAttribute)
@@ -3386,7 +3386,7 @@ impl Signature {
     ///
     ///   [Section 5.2.3.30 of RFC 4880bis]: https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-10.html#section-5.2.3.30
     pub fn verify_user_attribute_attestation<P, Q, R>(
-        &mut self,
+        &self,
         signer: &Key<P, R>,
         pk: &Key<Q, key::PrimaryRole>,
         ua: &UserAttribute)
@@ -3434,7 +3434,7 @@ impl Signature {
     /// key is not revoked, not expired, has a valid self-signature,
     /// has a subkey binding signature (if appropriate), has the
     /// signing capability, etc.
-    pub fn verify_message<M, P, R>(&mut self, signer: &Key<P, R>,
+    pub fn verify_message<M, P, R>(&self, signer: &Key<P, R>,
                                    msg: M)
         -> Result<()>
         where M: AsRef<[u8]>,
@@ -3836,7 +3836,7 @@ mod test {
             let hash = hash_algo.context().unwrap();
 
             // Make signature.
-            let mut sig = sig.sign_hash(&mut pair, hash).unwrap();
+            let sig = sig.sign_hash(&mut pair, hash).unwrap();
 
             // Good signature.
             let mut hash = hash_algo.context().unwrap();
@@ -3870,7 +3870,7 @@ mod test {
                 = Key4::generate_ecc(true, curve).unwrap().into();
             let msg = b"Hello, World";
             let mut pair = key.into_keypair().unwrap();
-            let mut sig = SignatureBuilder::new(SignatureType::Binary)
+            let sig = SignatureBuilder::new(SignatureType::Binary)
                 .sign_message(&mut pair, msg).unwrap();
 
             sig.verify_message(pair.public(), msg).unwrap();
@@ -3885,7 +3885,7 @@ mod test {
         let p = Packet::from_bytes(
             crate::tests::message("a-cypherpunks-manifesto.txt.ed25519.sig"))
             .unwrap();
-        let mut sig = if let Packet::Signature(s) = p {
+        let sig = if let Packet::Signature(s) = p {
             s
         } else {
             panic!("Expected a Signature, got: {:?}", p);
@@ -3906,7 +3906,7 @@ mod test {
         let p = Packet::from_bytes(
             crate::tests::message("a-cypherpunks-manifesto.txt.dennis-simon-anton-v3.sig"))
             .unwrap();
-        let mut sig = if let Packet::Signature(s) = p {
+        let sig = if let Packet::Signature(s) = p {
             assert_eq!(s.version(), 3);
             s
         } else {
@@ -3955,7 +3955,7 @@ mod test {
         let test2 = Cert::from_bytes(
             crate::tests::key("test2-signed-by-test1.pgp")).unwrap();
         let uid = test2.userids().with_policy(p, None).next().unwrap();
-        let mut cert = uid.certifications().next().unwrap().clone();
+        let cert = uid.certifications().next().unwrap().clone();
 
         cert.verify_userid_binding(cert_key1,
                                    test2.primary_key().key(),
@@ -4018,7 +4018,7 @@ mod test {
             = Key4::generate_ecc(true, Curve::Ed25519).unwrap().into();
         let mut pair = key.into_keypair().unwrap();
 
-        let mut sig = SignatureBuilder::new(SignatureType::Standalone)
+        let sig = SignatureBuilder::new(SignatureType::Standalone)
             .sign_standalone(&mut pair)
             .unwrap();
 
@@ -4036,7 +4036,7 @@ mod test {
             "contrib/gnupg/keys/alpha.pgp")).unwrap();
         let p = Packet::from_bytes(crate::tests::file(
             "contrib/gnupg/timestamp-signature-by-alice.asc")).unwrap();
-        if let Packet::Signature(mut sig) = p {
+        if let Packet::Signature(sig) = p {
             let mut hash = sig.hash_algo().context().unwrap();
             sig.hash_standalone(&mut hash);
             let digest = hash.into_digest().unwrap();
@@ -4053,7 +4053,7 @@ mod test {
             = Key4::generate_ecc(true, Curve::Ed25519).unwrap().into();
         let mut pair = key.into_keypair().unwrap();
 
-        let mut sig = SignatureBuilder::new(SignatureType::Timestamp)
+        let sig = SignatureBuilder::new(SignatureType::Timestamp)
             .sign_timestamp(&mut pair)
             .unwrap();
 
@@ -4247,7 +4247,7 @@ mod test {
             } else {
                 panic!("Expected a subkey");
             };
-        let mut sig =
+        let sig =
             if let Some(Packet::Signature(sig)) = pp.path_ref(&[4]) {
                 sig.clone()
             } else {
@@ -4377,7 +4377,7 @@ mod test {
         // This works because the issuer information is being
         // authenticated by the verification, and the merge process
         // prefers authenticated information.
-        let mut verified = sig.clone();
+        let verified = sig.clone();
         verified.verify_hash(pair.public(), hash.clone())?;
 
         let merged = verified.clone().merge(malicious.clone())?;

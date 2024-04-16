@@ -1645,7 +1645,7 @@ impl Cert {
                 t!("check!({}, {}, {:?}, {}, ...)",
                    $desc, stringify!($binding), $binding.$sigs,
                    stringify!($verify_method));
-                for mut sig in mem::take(&mut $binding.$sigs).into_iter() {
+                for sig in mem::take(&mut $binding.$sigs).into_iter() {
                      match sig.$verify_method(self.primary.key(),
                                               self.primary.key(),
                                               $($verify_args),*) {
@@ -1683,7 +1683,7 @@ impl Cert {
                 t!("check_3rd_party!({}, {}, {:?}, {}, {}, ...)",
                    $desc, stringify!($binding), $binding.$sigs,
                    stringify!($verify_method), stringify!($hash_method));
-                for mut sig in mem::take(&mut $binding.$sigs) {
+                for sig in mem::take(&mut $binding.$sigs) {
                     // Use hash prefix as heuristic.
                     let key = self.primary.key();
                     match sig.hash_algo().context().and_then(|mut ctx| {
@@ -1853,7 +1853,7 @@ impl Cert {
 
         let primary_fp: KeyHandle = self.key_handle();
 
-        'outer: for (unknown_idx, mut sig) in bad_sigs {
+        'outer: for (unknown_idx, sig) in bad_sigs {
             // Did we find a new place for sig?
             let mut found_component = false;
 
@@ -6343,7 +6343,7 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
                       .unwrap();
 
             // Have alice certify the binding "bob@bar.com" and bob's key.
-            let mut alice_certifies_bob
+            let alice_certifies_bob
                 = bob_userid_binding.userid().bind(
                     &mut alice.primary_key().key().clone().parts_into_secret()
                         .unwrap().into_keypair().unwrap(),
