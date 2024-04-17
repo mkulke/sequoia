@@ -11,6 +11,11 @@
      curve P-384.
    - The RustCrypto backend now supports ECDH and ECDSA over the NIST
      curve P-521.
+** Notable changes
+   - Sequoia now rejects subkey binding signatures for
+     authentication-capable and certification-capable subkeys that
+     lack a primary key binding signature (backsig).  Previously, we
+     only required backsigs for signing-capable subkeys.
 * Changes in 1.20.0
 ** New functionality
    - S2K::Implicit

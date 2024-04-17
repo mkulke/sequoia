@@ -329,7 +329,9 @@ impl<C> ComponentBundle<C> {
             // The signature is good, but we may still need to verify the
             // back sig.
             if s.typ() == crate::types::SignatureType::SubkeyBinding &&
-                s.key_flags().map(|kf| kf.for_signing()).unwrap_or(false)
+                s.key_flags()
+                .map(|kf| kf.require_primary_key_binding())
+                .unwrap_or(false)
             {
                 let mut n = 0;
                 let mut one_good_backsig = false;
