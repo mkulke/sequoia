@@ -1999,6 +1999,9 @@ impl<'a, P> ValidErasedKeyAmalgamation<'a, P>
         } else {
             // To extend the validity of the subkey, create a new
             // binding signature with updated key validity period.
+            //
+            // Note: same condition as
+            // KeyFlags::require_primary_key_binding, but on Self.
             let backsig = if self.for_certification() || self.for_signing()
                 || self.for_authentication()
             {

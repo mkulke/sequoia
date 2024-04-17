@@ -826,9 +826,7 @@ impl<'a> SubkeyBuilder<'a> {
         }
 
         if let Some(flags) = builder.key_flags() {
-            if flags.for_certification() || flags.for_signing()
-                || flags.for_authentication()
-            {
+            if flags.require_primary_key_binding() {
                 // We need to create a primary key binding signature.
                 let mut subkey_signer = if let Some(signer) = subkey_signer {
                     signer
