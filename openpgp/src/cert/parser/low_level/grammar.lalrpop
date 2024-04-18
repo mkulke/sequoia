@@ -1,6 +1,7 @@
 // -*- mode: Rust; -*-
 
 use std::convert::TryInto;
+use std::sync::Arc;
 
 use crate::Error;
 use crate::packet::Any;
@@ -17,7 +18,7 @@ use crate::cert::parser::low_level::lexer;
 use crate::cert::parser::low_level::lexer::{Token, Component};
 use crate::cert::parser::low_level::grammar_util::*;
 use crate::cert::ComponentBundles;
-use crate::cert::bundle::{
+use crate::cert::parser::low_level::bundle::{
     PrimaryKeyBundle,
     SubkeyBundle,
     UserIDBundle,
@@ -51,8 +52,10 @@ pub Cert: Option<Cert> = {
                 let c = c.unwrap();
                 let sec = key.hash_algo_security();
 
+                let pk = Arc::new(key.clone());
                 let mut cert = Cert {
-                    primary: PrimaryKeyBundle::new(key, sec, sigs),
+                    primary: PrimaryKeyBundle::new(key, sec, sigs)
+                        .with_context(pk.clone()),
                     subkeys: ComponentBundles::default(),
                     userids: ComponentBundles::default(),
                     user_attributes: ComponentBundles::default(),
@@ -63,13 +66,13 @@ pub Cert: Option<Cert> = {
                 for c in c.into_iter() {
                     match c {
                         Component::SubkeyBundle(b) =>
-                            cert.subkeys.push(b),
+                            cert.subkeys.push(b.with_subkey_context(pk.clone())),
                         Component::UserIDBundle(b) =>
-                            cert.userids.push(b),
+                            cert.userids.push(b.with_context(pk.clone())),
                         Component::UserAttributeBundle(b) =>
-                            cert.user_attributes.push(b),
+                            cert.user_attributes.push(b.with_context(pk.clone())),
                         Component::UnknownBundle(b) =>
-                            cert.unknowns.push(b),
+                            cert.unknowns.push(b.with_context(pk.clone())),
                     }
                 }
 

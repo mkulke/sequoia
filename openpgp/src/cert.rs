@@ -189,6 +189,7 @@ use bundle::{
     SubkeyBundles,
     UnknownBundles,
 };
+mod lazysigs;
 mod parser;
 pub mod raw;
 mod revoke;
@@ -1174,7 +1175,12 @@ impl Cert {
     /// ```
     pub fn bad_signatures(&self)
                           -> impl Iterator<Item = &Signature> + Send + Sync {
-        self.bad.iter()
+        self.primary.bad_signatures()
+            .chain(self.userids.iter().flat_map(|u| u.bad_signatures()))
+            .chain(self.user_attributes.iter().flat_map(|u| u.bad_signatures()))
+            .chain(self.subkeys.iter().flat_map(|u| u.bad_signatures()))
+            .chain(self.unknowns.iter().flat_map(|u| u.bad_signatures()))
+            .chain(self.bad.iter())
     }
 
     /// Returns a list of any designated revokers for this certificate.
@@ -1521,29 +1527,47 @@ impl Cert {
         // verify_args: additional arguments to pass to verify_method
         macro_rules! check {
             ($desc:expr, $binding:expr, $sigs:ident,
-             $verify_method:ident, $($verify_args:expr),*) => ({
+             $hash_method:ident, $($verify_args:expr),*) => ({
                 t!("check!({}, {}, {:?}, {}, ...)",
                    $desc, stringify!($binding), $binding.$sigs,
-                   stringify!($verify_method));
-                for sig in mem::take(&mut $binding.$sigs).into_iter() {
-                     match sig.$verify_method(self.primary.key(),
-                                              self.primary.key(),
-                                              $($verify_args),*) {
-                         Ok(()) => $binding.$sigs.push(sig),
-                         Err(err) => {
-                             t!("Sig {:02X}{:02X}, type = {} \
-                                 doesn't belong to {}: {:?}",
-                                sig.digest_prefix()[0], sig.digest_prefix()[1],
-                                sig.typ(), $desc, err);
+                   stringify!($hash_method));
+                for sig in $binding.$sigs.take().into_iter() {
+                    // Use hash prefix as heuristic.
+                    let key = self.primary.key();
+                    match sig.hash_algo().context().and_then(|mut ctx| {
+                        sig.$hash_method(&mut ctx, key, $($verify_args),*);
+                        ctx.into_digest()
+                    }) {
+                      Ok(hash) => {
+                        if &sig.digest_prefix()[..] == &hash[..2] {
+                            sig.set_computed_digest(Some(hash));
+                            $binding.$sigs.push(sig);
+                        } else {
+                            t!("Sig {:02X}{:02X}, type = {} \
+                                doesn't belong to {} (computed hash's prefix: {:02X}{:02X})",
+                               sig.digest_prefix()[0], sig.digest_prefix()[1],
+                               sig.typ(), $desc,
+                               hash[0], hash[1]);
 
-                             self.bad.push(sig);
-                         }
+                            self.bad.push(sig);
+                        }
+                      },
+                      Err(e) => {
+                        // Hashing failed, we likely don't support
+                        // the hash algorithm.
+                        t!("Sig {:02X}{:02X}, type = {}: \
+                            Hashing failed: {}",
+                           sig.digest_prefix()[0], sig.digest_prefix()[1],
+                           sig.typ(), e);
+
+                        self.bad.push(sig);
+                      },
                     }
                 }
             });
             ($desc:expr, $binding:expr, $sigs:ident,
-             $verify_method:ident) => ({
-                check!($desc, $binding, $sigs, $verify_method,)
+             $hash_method:ident) => ({
+                check!($desc, $binding, $sigs, $hash_method,)
             });
         }
 
@@ -1630,9 +1654,9 @@ impl Cert {
         }
 
         check!("primary key",
-               self.primary, self_signatures, verify_direct_key);
+               self.primary, self_signatures, hash_direct_key);
         check!("primary key",
-               self.primary, self_revocations, verify_primary_key_revocation);
+               self.primary, self_revocations, hash_direct_key);
         check_3rd_party!("primary key",
                          self.primary, certifications, lookup_fn,
                          verify_direct_key, hash_direct_key);
@@ -1643,15 +1667,15 @@ impl Cert {
         for ua in self.userids.iter_mut() {
             check!(format!("userid \"{}\"",
                            String::from_utf8_lossy(ua.userid().value())),
-                   ua, self_signatures, verify_userid_binding,
+                   ua, self_signatures, hash_userid_binding,
                    ua.userid());
             check!(format!("userid \"{}\"",
                            String::from_utf8_lossy(ua.userid().value())),
-                   ua, self_revocations, verify_userid_revocation,
+                   ua, self_revocations, hash_userid_binding,
                    ua.userid());
             check!(format!("userid \"{}\"",
                            String::from_utf8_lossy(ua.userid().value())),
-                   ua, attestations, verify_userid_attestation,
+                   ua, attestations, hash_userid_binding,
                    ua.userid());
             check_3rd_party!(
                 format!("userid \"{}\"",
@@ -1669,13 +1693,13 @@ impl Cert {
 
         for binding in self.user_attributes.iter_mut() {
             check!("user attribute",
-                   binding, self_signatures, verify_user_attribute_binding,
+                   binding, self_signatures, hash_user_attribute_binding,
                    binding.user_attribute());
             check!("user attribute",
-                   binding, self_revocations, verify_user_attribute_revocation,
+                   binding, self_revocations, hash_user_attribute_binding,
                    binding.user_attribute());
             check!("user attribute",
-                   binding, attestations, verify_user_attribute_attestation,
+                   binding, attestations, hash_user_attribute_binding,
                    binding.user_attribute());
             check_3rd_party!(
                 "user attribute",
@@ -1691,10 +1715,10 @@ impl Cert {
 
         for binding in self.subkeys.iter_mut() {
             check!(format!("subkey {}", binding.key().keyid()),
-                   binding, self_signatures, verify_subkey_binding,
+                   binding, self_signatures, hash_subkey_binding,
                    binding.key());
             check!(format!("subkey {}", binding.key().keyid()),
-                   binding, self_revocations, verify_subkey_revocation,
+                   binding, self_revocations, hash_subkey_binding,
                    binding.key());
             check_3rd_party!(
                 format!("subkey {}", binding.key().keyid()),
@@ -1722,13 +1746,13 @@ impl Cert {
         // remember where we took them from.
         for (i, c) in self.unknowns.iter_mut().enumerate() {
             for sig in
-                std::mem::take(&mut c.self_signatures).into_iter()
+                c.self_signatures.take().into_iter()
                 .chain(
                     std::mem::take(&mut c.certifications).into_iter())
                 .chain(
-                    std::mem::take(&mut c.attestations).into_iter())
+                    c.attestations.take().into_iter())
                 .chain(
-                    std::mem::take(&mut c.self_revocations).into_iter())
+                    c.self_revocations.take().into_iter())
                 .chain(
                     std::mem::take(&mut c.other_revocations).into_iter())
             {
@@ -7021,16 +7045,6 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
         let cert = Cert::try_from(pp)?;
         assert_eq!(cert.clone().merge_public_and_secret(cert.clone())?, cert);
 
-        // Specifically, the issuer information should have been added
-        // back by the canonicalization.
-        assert_eq!(
-            cert.userids().next().unwrap().self_signatures().next().unwrap()
-                .unhashed_area().subpackets(SubpacketTag::Issuer).count(),
-            1);
-        assert_eq!(
-            cert.keys().subkeys().next().unwrap().self_signatures().next().unwrap()
-                .unhashed_area().subpackets(SubpacketTag::Issuer).count(),
-            1);
         Ok(())
     }
 
