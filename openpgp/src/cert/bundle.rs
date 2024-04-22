@@ -84,7 +84,7 @@ use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
 use crate::{
-    cert::lazysigs::LazySignatures,
+    cert::lazysigs::{LazySignatures, SigState},
     Error,
     packet::Signature,
     packet::Key,
@@ -275,7 +275,9 @@ impl<C> ComponentBundle<C> {
       /// is unfortunately monomorphized for every `C`.  Prevent
       /// this by moving the code to a function independent of `C`.
       fn find_binding_signature<'s>(policy: &dyn Policy,
-                                    self_signatures: &'s [Signature],
+                                    self_signatures: &'s LazySignatures,
+                                    backsig_signer:
+                                    Option<&Key<key::PublicParts, key::SubordinateRole>>,
                                     hash_algo_security: HashAlgoSecurity,
                                     t: time::SystemTime)
                                     -> Result<&'s Signature>
@@ -286,18 +288,26 @@ impl<C> ComponentBundle<C> {
         // We want the newest signature that is older than `t`, or
         // that has been created at `t`.  So, search for `t`.
 
-          // XXX: this should be done over all signatures, independent
-          // of their state:
+        // We search all signatures without triggering the signature
+        // verification.  Later, we will verify the candidates, and
+        // reject bad signatures.
+        let unverified_self_signatures = self_signatures.as_slice_unverified();
 
         let i =
             // Usually, the first signature is what we are looking for.
             // Short circuit the binary search.
-            if Some(t) >= self_signatures.get(0)
-                              .and_then(|s| s.signature_creation_time())
+              if unverified_self_signatures.get(0)
+              .filter(
+                  // Verify the signature now.
+                  |_| matches!(self_signatures.verify_sig(0, backsig_signer),
+                               Ok(SigState::Good)))
+              .and_then(|s| s.signature_creation_time())
+              .map(|c| t >= c)
+              .unwrap_or(false)
             {
                 0
             } else {
-                match self_signatures.binary_search_by(
+                match unverified_self_signatures.binary_search_by(
                     |s| canonical_signature_order(
                         s.signature_creation_time(), Some(t)))
                 {
@@ -311,7 +321,7 @@ impl<C> ComponentBundle<C> {
                     // return index 1, 2, 3 or 4.
                     Ok(mut i) => {
                         while i > 0
-                            && self_signatures[i - 1].signature_creation_time()
+                            && unverified_self_signatures[i - 1].signature_creation_time()
                             == Some(t)
                         {
                             i -= 1;
@@ -340,7 +350,9 @@ impl<C> ComponentBundle<C> {
         // `t`.
         let mut error = None;
 
-        'next_sig: for s in self_signatures[i..].iter() {
+        'next_sig: for (j, s) in unverified_self_signatures[i..].iter()
+            .enumerate()
+        {
             if let Err(e) = s.signature_alive(t, time::Duration::new(0, 0)) {
                 // We know that t >= signature's creation time.  So,
                 // it is expired.  But an older signature might not
@@ -359,9 +371,12 @@ impl<C> ComponentBundle<C> {
                 continue;
             }
 
-
-            // XXX: and here we lazily verify the signature, skipping bad ones.
-
+            // Verify the signature now.
+            if ! matches!(self_signatures.verify_sig(i + j, backsig_signer),
+                          Ok(SigState::Good)) {
+                // Reject bad signatures.
+                continue;
+            }
 
             // The signature is good, but we may still need to verify the
             // back sig.
@@ -428,7 +443,8 @@ impl<C> ComponentBundle<C> {
 
         find_binding_signature(
             policy,
-            self.self_signatures.slice_verified(self.backsig_signer.as_ref()),
+            &self.self_signatures,
+            self.backsig_signer.as_ref(),
             self.hash_algo_security, t)
     }
 
@@ -699,10 +715,10 @@ impl<C> ComponentBundle<C> {
                 selfsig.signature_alive(t, time::Duration::new(0, 0)).is_ok());
         }
 
-        let check = |revs: &'a [Signature], sec: HashAlgoSecurity|
+        let check = |revs: &mut dyn Iterator<Item=&'a Signature>, sec: HashAlgoSecurity|
             -> Option<Vec<&'a Signature>>
         {
-            let revs = revs.iter().filter(|rev| {
+            let revs = revs.filter(|rev| {
                 if let Err(err) = policy.signature(rev, sec) {
                     t!("  revocation rejected by caller policy: {}", err);
                     false
@@ -759,13 +775,13 @@ impl<C> ComponentBundle<C> {
         };
 
         if let Some(revs)
-            = check(self.self_revocations.slice_verified(self.backsig_signer.as_ref()),
-                    self.hash_algo_security) // XXX must use iterator for lazy verification
+            = check(&mut self.self_revocations.iter_verified(self.backsig_signer.as_ref()),
+                    self.hash_algo_security)
         {
             t!("-> RevocationStatus::Revoked({})", revs.len());
             RevocationStatus::Revoked(revs)
         } else if let Some(revs)
-            = check(&self.other_revocations, Default::default())
+            = check(&mut self.other_revocations.iter(), Default::default())
         {
             t!("-> RevocationStatus::CouldBe({})", revs.len());
             RevocationStatus::CouldBe(revs)

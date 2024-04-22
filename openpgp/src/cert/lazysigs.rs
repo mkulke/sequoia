@@ -208,6 +208,12 @@ impl LazySignatures {
         self.sigs.into_iter()
     }
 
+    /// Like [`Vec::as_slice`], but gives out **potentially
+    /// unverified** signatures.
+    pub fn as_slice_unverified(&self) -> &[Signature] {
+        self.sigs.as_slice()
+    }
+
     /// Like [`Vec::iter`], but only gives out verified signatures.
     ///
     /// If this is a subkey binding, `subkey` must be the bundle's
