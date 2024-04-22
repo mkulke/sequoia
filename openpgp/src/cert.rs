@@ -1649,6 +1649,10 @@ impl Cert {
                            String::from_utf8_lossy(ua.userid().value())),
                    ua, self_revocations, verify_userid_revocation,
                    ua.userid());
+            check!(format!("userid \"{}\"",
+                           String::from_utf8_lossy(ua.userid().value())),
+                   ua, attestations, verify_userid_attestation,
+                   ua.userid());
             check_3rd_party!(
                 format!("userid \"{}\"",
                         String::from_utf8_lossy(ua.userid().value())),
@@ -1669,6 +1673,9 @@ impl Cert {
                    binding.user_attribute());
             check!("user attribute",
                    binding, self_revocations, verify_user_attribute_revocation,
+                   binding.user_attribute());
+            check!("user attribute",
+                   binding, attestations, verify_user_attribute_attestation,
                    binding.user_attribute());
             check_3rd_party!(
                 "user attribute",
