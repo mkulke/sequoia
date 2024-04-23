@@ -1506,9 +1506,7 @@ impl CertBuilder<'_> {
                 .set_key_flags(flags.clone())?
                 .set_key_validity_period(blueprint.validity.or(self.primary.validity))?;
 
-            if flags.for_certification() || flags.for_signing()
-                || flags.for_authentication()
-            {
+            if flags.require_primary_key_binding() {
                 // We need to create a primary key binding signature.
                 let mut subkey_signer = subkey.clone().into_keypair().unwrap();
                 let backsig =

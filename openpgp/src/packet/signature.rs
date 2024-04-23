@@ -3027,7 +3027,10 @@ impl Signature {
 
         // The signature is good, but we may still need to verify the
         // back sig.
-        if self.key_flags().map(|kf| kf.for_signing()).unwrap_or(false) {
+        if self.key_flags()
+            .map(|kf| kf.require_primary_key_binding())
+            .unwrap_or(false)
+        {
             let mut last_result = Err(Error::BadSignature(
                 "Primary key binding signature missing".into()).into());
 

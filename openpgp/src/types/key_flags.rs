@@ -453,6 +453,23 @@ impl KeyFlags {
     pub fn is_empty(&self) -> bool {
         self.as_bitfield().as_bytes().iter().all(|b| *b == 0)
     }
+
+    /// Returns whether subkey binding signatures must contain an
+    /// embedded primary key binding signature ("backsig").
+    ///
+    /// See [Section 11.1 of RFC4880]:
+    ///
+    /// > For subkeys that can issue signatures, the subkey binding
+    /// > signature MUST contain an Embedded Signature subpacket
+    /// > with a primary key binding signature (0x19) issued by the
+    /// > subkey on the top-level key.
+    ///
+    ///   [Section 11.1 of RFC4880]: https://datatracker.ietf.org/doc/html/rfc4880#section-11.1
+    pub fn require_primary_key_binding(&self) -> bool {
+        self.for_signing()
+            || self.for_certification()
+            || self.for_authentication()
+    }
 }
 
 /// This key may be used to certify other keys.

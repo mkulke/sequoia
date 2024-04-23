@@ -2898,9 +2898,9 @@ mod test {
         let p = &mut P::new();
         let t = crate::frozen_time();
 
-        assert_eq!(cert.with_policy(p, t).unwrap().keys().count(), 4);
+        assert_eq!(cert.with_policy(p, t).unwrap().keys().count(), 3);
         p.reject_asymmetric_algo(AsymmetricAlgorithm::RSA1024);
-        assert_eq!(cert.with_policy(p, t).unwrap().keys().count(), 4);
+        assert_eq!(cert.with_policy(p, t).unwrap().keys().count(), 3);
         p.reject_asymmetric_algo(AsymmetricAlgorithm::RSA2048);
         assert_eq!(cert.with_policy(p, t).unwrap().keys().count(), 1);
         Ok(())
