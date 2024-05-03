@@ -19,12 +19,12 @@
 //! manage the cache, the entries indicate if they were added
 //! ([`Entry::added`]), and whether they were accessed
 //! ([`Entry::accessed`]).
-use std::collections::BTreeMap;
-use std::collections::btree_map;
 use std::io::Write;
-use std::sync::atomic::AtomicBool;
+use std::path::PathBuf;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-use std::sync::RwLock;
+use std::sync::Mutex;
+use std::sync::MutexGuard;
 
 use crate::crypto::hash::Digest;
 use crate::HashAlgorithm;
@@ -59,77 +59,12 @@ enum Error {
     ParseError(String),
 }
 
-/// The type of a value in the signature verification cache.
-#[derive(Debug)]
-pub struct Value {
-    value: [u8; HASH_BYTES_TRUNCATED],
-
-    /// Whether the entry was added.
-    ///
-    /// Entries added by [`SignatureVerificationCache::merge`] have
-    /// this cleared.
-    added: bool,
-
-    /// Whether the entry was accessed.
-    ///
-    /// Entries added by [`SignatureVerificationCache::merge`] have
-    /// this cleared.
-    accessed: AtomicBool,
-}
-
-impl Clone for Value {
-    fn clone(&self) -> Value {
-        Self {
-            value: self.value().clone(),
-            added: self.added,
-            accessed: AtomicBool::from(self.accessed.load(Ordering::Relaxed)),
-        }
-    }
-}
-
-impl Value {
-    /// Instantiate a value.
-    ///
-    /// `added` is whether this should be considered an add or not.
-    fn new(value: [u8; HASH_BYTES_TRUNCATED], added: bool) -> Self {
-        Value {
-            value,
-            added,
-            accessed: false.into(),
-        }
-    }
-
-    /// The entry's value.
-    ///
-    /// This value is opaque and must not be interpreted.
-    fn value(&self) -> &[u8; HASH_BYTES_TRUNCATED] {
-        &self.value
-    }
-
-    /// Whether the entry was added.
-    ///
-    /// Entries added by [`SignatureVerificationCache::merge`] have
-    /// this cleared.
-    pub fn added(&self) -> bool {
-        self.added
-    }
-
-    /// Whether the entry was accessed.
-    ///
-    /// Entries added by [`SignatureVerificationCache::merge`] have
-    /// this cleared.
-    pub fn accessed(&self) -> bool {
-        self.accessed.load(Ordering::Relaxed)
-    }
-}
-
 /// An entry in the signature verification cache.
 ///
 /// You can iterate over the cache using
 /// [`SignatureVerificationCache::dump`].
 pub struct Entry {
     key: [u8; HASH_BYTES_TRUNCATED],
-    value: Value,
 }
 
 impl Entry {
@@ -141,48 +76,34 @@ impl Entry {
     {
         use crate::serialize::Marshal;
 
-        // Hash(Version || Signature MPIs)
+        // Hash(Version || Signature MPIs || Hash Algorithm || Digest || Key.mpis())
         //
         // - Version: one byte, currently 0.
         // - Signature MPIs: variable number of bytes, the signature's MPIs
-        let mut context = HASH_ALGO.context()?;
-        sig.mpis.export(&mut context)?;
-        let sig_hash = context.into_digest()?;
-
-        // Hash(Version || Hash Algorithm || Digest || Key.mpis())
-        //
-        // - Version: one byte, currently 0.
         // - Hash algorithm: one byte, the hash algorithm
         // - Digest: HashAlgorithm::len() bytes, the digest's length
         // - Key: variable number of bytes, the key's MPIs
+        //
+        // XXX: encode the length of the MPIs to prevent aliasing.
         let mut context = HASH_ALGO.context()?;
+        sig.mpis.export(&mut context)?;
+
         context.update(&[
-            0u8,
             u8::from(sig.hash_algo())
         ]);
         context.update(computed_digest);
         key.mpis().export(&mut context)?;
         let context_hash = context.into_digest()?;
 
-        let mut key = [0u8; HASH_BYTES_TRUNCATED];
-        key.copy_from_slice(&sig_hash[..HASH_BYTES_TRUNCATED]);
-
-        let mut value = [0u8; HASH_BYTES_TRUNCATED];
-        value.copy_from_slice(&context_hash[..HASH_BYTES_TRUNCATED]);
+        let mut context = ZERO_ENTRY;
+        context.copy_from_slice(&context_hash[..ENTRY_BYTES]);
 
         Ok(Entry {
-            key: key,
-            value: Value::new(value, true),
+            key: context,
         })
     }
 
-    fn from_components(key: [u8; HASH_BYTES_TRUNCATED],
-                       value: Value) -> Self {
-        Entry {
-            key,
-            value,
-        }
-    }
+    const SERIALIZED_LEN: usize = ENTRY_BYTES;
 
     /// Parse an cache entry.
     ///
@@ -198,80 +119,12 @@ impl Entry {
                bytes_len, Entry::SERIALIZED_LEN)).into());
         }
 
-        let mut offset = 0;
-        macro_rules! chomp {
-            ($count:expr) => {{
-                offset += $count;
-                &bytes[offset-$count..offset]
-            }};
-        }
-
-        let version = chomp!(1)[0];
-        if version != 0 {
-            return Err(Error::ParseError(format!(
-                "Unsupported version: got {}", version)).into());
-        }
-
-        let len = chomp!(1)[0] as usize;
-        if len != bytes_len {
-            return Err(Error::ParseError(format!(
-                "Invalid length: length is {}, got {} bytes",
-                len, bytes_len)).into());
-        }
-
-        let hash_algo = chomp!(1)[0];
-        if hash_algo != HASH_ALGO.into() {
-            return Err(Error::ParseError(format!(
-                "Unexpected hash algorithm: got: {}, expected: {}",
-                hash_algo, u8::from(HASH_ALGO))).into());
-        }
-
-        let mut signature_hash = [0u8; HASH_BYTES_TRUNCATED];
-        signature_hash.copy_from_slice(chomp!(HASH_BYTES_TRUNCATED));
-
-        let mut context_hash = [0u8; HASH_BYTES_TRUNCATED];
-        context_hash.copy_from_slice(chomp!(HASH_BYTES_TRUNCATED));
-
-        let mut context = HASH_ALGO.context().expect("have SHA-512");
-        context.update(&bytes[..offset]);
-        let computed_checksum
-            = context.into_digest().expect("have SHA-512");
-        debug_assert!(computed_checksum.len()
-                      == HASH_BYTES_UNTRUNCATED);
-        let computed_checksum
-            = &computed_checksum[..Entry::CHECKSUM_LEN];
-
-        let checksum = chomp!(Entry::CHECKSUM_LEN);
-
-        assert_eq!(offset, Entry::SERIALIZED_LEN);
-
-        if computed_checksum != checksum  {
-            return Err(Error::ParseError(format!(
-                "Checksum mismatch: got: {:?}, expected: {:?}",
-                computed_checksum, checksum)).into());
-        }
-
+        let mut key = ZERO_ENTRY;
+        key.copy_from_slice(bytes);
         Ok(Entry {
-            key: signature_hash,
-            value: Value::new(context_hash, false),
+            key,
         })
     }
-
-    const CHECKSUM_LEN: usize = 5;
-    const SERIALIZED_LEN: usize =
-        // Version.
-        1
-        // Len (including the version, length, hash and checksum)
-        + 1
-        // Hash algorithm
-        + 1
-        // Hash(signature's mpis)
-        + HASH_BYTES_TRUNCATED
-        // Hash(signature's context)
-        + HASH_BYTES_TRUNCATED
-        // Truncated hash (most significant bytes) of
-        // the above `Hash(Version || .. || Hash(signature's context))`.
-        + Self::CHECKSUM_LEN;
 
     /// Serialize the entry.
     ///
@@ -281,41 +134,9 @@ impl Entry {
     /// must be provided as is.
     pub fn serialize(&self, output: &mut dyn Write) -> Result<()> {
         assert!(Entry::SERIALIZED_LEN <= u8::MAX as usize);
+        assert_eq!(self.key.len(), Entry::SERIALIZED_LEN);
 
-        let mut len = 0;
-        let mut write = |buffer: &[u8]| -> Result<()> {
-            output.write_all(buffer)?;
-            len += buffer.len();
-            Ok(())
-        };
-
-        let header: [u8; 3] = [
-            // Version.
-            0,
-            // Len
-            Self::SERIALIZED_LEN as u8,
-            // Hash algorithm.
-            u8::from(HASH_ALGO),
-        ];
-        write(&header[..])?;
-
-        // Signature hash.
-        write(&self.key)?;
-
-        // Context hash.
-        write(self.value.value())?;
-
-        // Checksum.
-        let mut context = HASH_ALGO.context().expect("have SHA-512");
-        context.update(&header);
-        context.update(&self.key);
-        context.update(self.value.value());
-        let checksum = context.into_digest().expect("have SHA-512");
-        debug_assert!(checksum.len() == HASH_BYTES_UNTRUNCATED);
-
-        write(&checksum[..Self::CHECKSUM_LEN])?;
-
-        assert_eq!(len, Self::SERIALIZED_LEN);
+        output.write_all(&self.key)?;
 
         Ok(())
     }
@@ -347,8 +168,7 @@ impl Entry {
     /// - If the entry is present, but the signature is not valid,
     ///   returns `Some(false)`.
     pub(super) fn lookup(&self) -> Option<bool> {
-        SIGNATURE_VERIFICATION_CACHE
-            .contains(&self.key, &self.value.value)
+        SIGNATURE_VERIFICATION_CACHE.contains(&self.key)
     }
 
     /// Inserts the entry in the cache.
@@ -358,29 +178,12 @@ impl Entry {
     pub(super) fn insert(self, verified: bool) {
         // We don't insert negative results.
         if verified {
-            SIGNATURE_VERIFICATION_CACHE
-                .insert(self.key, self.value.value);
+            SIGNATURE_VERIFICATION_CACHE.insert(self.key);
         }
-    }
-
-    /// Whether the entry was added.
-    ///
-    /// Entries added by [`SignatureVerificationCache::merge`] have
-    /// this cleared.
-    pub fn added(&self) -> bool {
-        self.value.added
-    }
-
-    /// Whether the entry was accessed.
-    ///
-    /// Entries added by [`SignatureVerificationCache::merge`] have
-    /// this cleared.
-    pub fn accessed(&self) -> bool {
-        self.value.accessed.load(Ordering::Relaxed)
     }
 }
 
-// We split on the `BUCKETS_BITS` least significant bits of the key's
+// We split on the `BUCKETS_BITS` most significant bits of the key's
 // most significant byte to reduce locking contention.
 const BUCKETS_BITS: usize = 4;
 const BUCKETS: usize = 1 << BUCKETS_BITS;
@@ -388,46 +191,246 @@ const BUCKETS_MASK: u8 = (BUCKETS - 1) as u8;
 
 /// A signature verification cache.
 pub struct SignatureVerificationCache {
-    updated: AtomicBool,
-    buckets: [
-        RwLock<BTreeMap<
-                // SHA-512(mpi::Signature),
-                [u8; HASH_BYTES_TRUNCATED],
-                Value>>;
+    path: Option<PathBuf>,
+    mmapped: bool,
+    memory: [
+        Mutex<Option<Box<[SET]>>>;
         BUCKETS
     ],
+    hits: AtomicUsize,
+    misses: AtomicUsize,
+    preloads: AtomicUsize,
+    insertions: AtomicUsize,
+    evictions: AtomicUsize,
 }
+
+// A single hash, which includes both the signature and the
+// signature's context.
+const ENTRY_BYTES: usize = HASH_BYTES_TRUNCATED;
+
+// The cache's set associativity.
+const ASSOCIATIVITY_LOG2: usize = 2;
+const ASSOCIATIVITY: usize = 1 << ASSOCIATIVITY_LOG2;
+const SET_BYTES: usize = ENTRY_BYTES << ASSOCIATIVITY_LOG2;
+
+// The cache's size.
+const TAG_BITS: usize = 18;
+const SETS: usize = 1 << TAG_BITS;
+
+const TOTAL_ENTRIES: usize = SETS << ASSOCIATIVITY_LOG2;
+const CACHE_BYTES: usize = SETS * SET_BYTES;
+
+
+type ENTRY = [u8; ENTRY_BYTES];
+type SET = [ENTRY; ASSOCIATIVITY];
+type CACHE = [SET; SETS];
+
+const ZERO_ENTRY: ENTRY = [0u8; ENTRY_BYTES];
 
 impl SignatureVerificationCache {
     const fn empty() -> Self {
         SignatureVerificationCache {
-            updated: AtomicBool::new(false),
-            buckets: [
+            path: None,
+            mmapped: false,
+            memory: [
                 // 0
-                RwLock::new(BTreeMap::new()),
-                RwLock::new(BTreeMap::new()),
-                RwLock::new(BTreeMap::new()),
-                RwLock::new(BTreeMap::new()),
-                RwLock::new(BTreeMap::new()),
-                RwLock::new(BTreeMap::new()),
-                RwLock::new(BTreeMap::new()),
-                RwLock::new(BTreeMap::new()),
+                Mutex::new(None),
+                Mutex::new(None),
+                Mutex::new(None),
+                Mutex::new(None),
+                Mutex::new(None),
+                Mutex::new(None),
+                Mutex::new(None),
+                Mutex::new(None),
                 // 8
-                RwLock::new(BTreeMap::new()),
-                RwLock::new(BTreeMap::new()),
-                RwLock::new(BTreeMap::new()),
-                RwLock::new(BTreeMap::new()),
-                RwLock::new(BTreeMap::new()),
-                RwLock::new(BTreeMap::new()),
-                RwLock::new(BTreeMap::new()),
-                RwLock::new(BTreeMap::new()),
+                Mutex::new(None),
+                Mutex::new(None),
+                Mutex::new(None),
+                Mutex::new(None),
+                Mutex::new(None),
+                Mutex::new(None),
+                Mutex::new(None),
+                Mutex::new(None),
             ],
+            hits: AtomicUsize::new(0),
+            misses: AtomicUsize::new(0),
+            insertions: AtomicUsize::new(0),
+            evictions: AtomicUsize::new(0),
+            preloads: AtomicUsize::new(0),
         }
     }
 
-    /// Returns the bucket that a signature goes into.
-    fn bucket(signature_hash: &[u8]) -> usize {
-        (signature_hash[0] & BUCKETS_MASK) as usize
+    // The number of allocated lines and the capacity.
+    fn usage() -> (usize, usize) {
+        let mut allocated: usize = 0;
+
+        for bucket in 0..BUCKETS {
+            let memory = SignatureVerificationCache::memory(bucket);
+
+            if let Some(memory) = memory.as_ref() {
+                allocated += memory.iter()
+                    .flat_map(|set| {
+                        set.into_iter().map(|e| {
+                            if e == &ZERO_ENTRY {
+                                0
+                            } else {
+                                1
+                            }
+                        })
+                    })
+                    .sum::<usize>();
+            }
+        }
+
+        (allocated, TOTAL_ENTRIES)
+    }
+
+    // Return the bucket.
+    fn memory(bucket: usize)
+        -> MutexGuard<'static, Option<Box<[SET]>>>
+    {
+        tracer!(false, "SignatureVerificationCache::memory");
+
+        let mut memory = SIGNATURE_VERIFICATION_CACHE.memory[bucket].lock().unwrap();
+        if memory.is_some() {
+            return memory;
+        }
+
+        if let Some(_path) = SIGNATURE_VERIFICATION_CACHE.path.as_ref() {
+            todo!()
+        }
+
+        t!("Allocating bucket {}: {} bytes ({}-associative, \
+            {} entries with {} bytes per entry)",
+           bucket, CACHE_BYTES / BUCKETS, ASSOCIATIVITY,
+           TOTAL_ENTRIES / BUCKETS, ENTRY_BYTES);
+
+        let layout = std::alloc::Layout::from_size_align(
+            CACHE_BYTES / BUCKETS, ENTRY_BYTES).unwrap();
+        let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+        if ptr.is_null() {
+            return memory;
+        }
+        let ptr = ptr as *mut SET;
+
+        let slice: *mut [SET] = std::ptr::slice_from_raw_parts_mut(
+            ptr, SETS / BUCKETS);
+
+        *memory = Some(unsafe { Box::from_raw(slice) });
+
+        memory
+    }
+
+    /// Returns the bucket, and the set that a signature goes into.
+    fn index(hash: &[u8]) -> (usize, usize) {
+        let mut addr = 0usize;
+
+        let mut bits = TAG_BITS;
+        let mut i = 0;
+
+        while bits >= 8 {
+            addr = (addr << 8) | (hash[i] as usize);
+            i += 1;
+            bits -= 8;
+        }
+
+        if bits > 0 {
+            addr <<= bits;
+            addr += (hash[i] >> (8 - bits)) as usize;
+        }
+
+        assert!(addr < SETS);
+
+        let bucket = addr >> (TAG_BITS - BUCKETS_BITS);
+        assert!(bucket < BUCKETS);
+
+        let addr = addr & ((1 << (TAG_BITS - BUCKETS_BITS)) - 1);
+        assert!(addr < SETS / BUCKETS);
+
+        (bucket, addr)
+    }
+
+    /// Returns whether the cache contains `hash`.
+    fn contains(&self, hash: &[u8]) -> Option<bool>
+    {
+        assert_eq!(hash.len(), ENTRY_BYTES);
+
+        let (bucket, i) = Self::index(hash);
+        let memory = SignatureVerificationCache::memory(bucket);
+        if let Some(sets) = memory.as_ref() {
+            if sets[i].iter().any(|entry| entry == hash) {
+                self.hits.fetch_add(1, Ordering::Relaxed);
+                Some(true)
+            } else {
+                self.misses.fetch_add(1, Ordering::Relaxed);
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    fn insert_locked(memory: &mut MutexGuard<'_, Option<Box<[SET]>>>,
+                     addr: usize, hash: [u8; ENTRY_BYTES])
+    {
+        tracer!(false, "SignatureVerificationCache::insert_locked");
+
+        if let Some(sets) = memory.as_mut() {
+            t!("insert({:02x}{:02x}{:02x}{:02x}...)",
+               hash[0], hash[1], hash[2], hash[3]);
+
+            t!(" -> set {} ({:02x})", addr, addr);
+            let set = &mut sets[addr];
+
+            // See if it is already there.
+            if set.iter().enumerate().any(|(j, entry)| {
+                if entry == &hash {
+                    t!("Already present (line {})", j);
+                    true
+                } else {
+                    false
+                }
+            }) {
+                return;
+            }
+
+            // Look for a free entry.
+            if let Some((j, entry)) = set.iter_mut().enumerate().find(|(_, entry)| entry == &&ZERO_ENTRY) {
+                t!("Using unallocated line {}", j);
+                *entry = hash;
+                SIGNATURE_VERIFICATION_CACHE.insertions.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+
+            // Choose a random entry to replace.
+            let j = if ASSOCIATIVITY_LOG2 == 0 {
+                0
+            } else {
+                let mut random = [0u8; 1];
+                crate::crypto::random(&mut random);
+                let random = random[0] & (ASSOCIATIVITY as u8 - 1);
+                assert!((random as usize) < ASSOCIATIVITY);
+                random
+            };
+
+            {
+                let hash = set[j as usize];
+                t!("Evicting line {} {:02x}{:02x}{:02x}{:02x}...)",
+                   j, hash[0], hash[1], hash[2], hash[3]);
+                SIGNATURE_VERIFICATION_CACHE.evictions.fetch_add(1, Ordering::Relaxed);
+            }
+
+            SIGNATURE_VERIFICATION_CACHE.insertions.fetch_add(1, Ordering::Relaxed);
+            set[j as usize] = hash;
+        }
+    }
+
+    /// Inserts a verified signature.
+    fn insert(&self, hash: [u8; ENTRY_BYTES])
+    {
+        let (bucket, i) = Self::index(&hash);
+        let mut memory = SignatureVerificationCache::memory(bucket);
+        Self::insert_locked(&mut memory, i, hash);
     }
 
     /// Initializes the signature verification cache.
@@ -442,8 +445,6 @@ impl SignatureVerificationCache {
     pub fn merge<'a>(
         entries: impl Iterator<Item=Entry> + Send + Sync + 'static)
     {
-        // Sanity check the constants here: this function is run once.
-
         // Must fit in a byte.
         assert!(BUCKETS_BITS <= 8);
 
@@ -451,80 +452,50 @@ impl SignatureVerificationCache {
         assert_eq!(BUCKETS, 1 << BUCKETS_BITS);
 
         let _detached_thread = std::thread::spawn(move || {
-            let mut buckets: [
-                Vec<([u8; HASH_BYTES_TRUNCATED],
-                     [u8; HASH_BYTES_TRUNCATED])>;
-                BUCKETS
-            ] = Default::default();
+            tracer!(TRACE, "SignatureVerificationCache::merge");
 
-            for entry in entries {
-                let signature_hash = entry.key;
-                let context_hash = entry.value.value;
+            time_it!("Load signature cache", {
+                let mut buckets: [MutexGuard<Option<Box<[SET]>>>; BUCKETS]
+                    = [
+                        SignatureVerificationCache::memory(0),
+                        SignatureVerificationCache::memory(1),
+                        SignatureVerificationCache::memory(2),
+                        SignatureVerificationCache::memory(3),
+                        SignatureVerificationCache::memory(4),
+                        SignatureVerificationCache::memory(5),
+                        SignatureVerificationCache::memory(6),
+                        SignatureVerificationCache::memory(7),
+                        SignatureVerificationCache::memory(8),
+                        SignatureVerificationCache::memory(9),
+                        SignatureVerificationCache::memory(10),
+                        SignatureVerificationCache::memory(11),
+                        SignatureVerificationCache::memory(12),
+                        SignatureVerificationCache::memory(13),
+                        SignatureVerificationCache::memory(14),
+                        SignatureVerificationCache::memory(15),
+                    ];
 
-                let i = Self::bucket(&signature_hash);
-                buckets[i].push((signature_hash, context_hash));
-            }
+                let mut inserted = 0;
 
-            for (bucket, items)
-                in SIGNATURE_VERIFICATION_CACHE.buckets.iter().zip(buckets)
-            {
-                let mut bucket = bucket.write().unwrap();
-
-                bucket.extend(
-                    items.into_iter().map(|(k, v)| {
-                        let mut k_array = [0u8; HASH_BYTES_TRUNCATED];
-                        k_array.copy_from_slice(&k);
-
-                        let mut v_array = [0u8; HASH_BYTES_TRUNCATED];
-                        v_array.copy_from_slice(&v);
-
-                        (k_array, Value::new(v_array, false))
-                    }));
-            }
-        });
-    }
-
-    /// Returns whether the cache contains `signature_hash`, and if
-    /// the context matches `verification_hash`.
-    fn contains(&self,
-                signature_hash: &[u8],
-                verification_hash: &[u8])
-        -> Option<bool>
-    {
-        assert_eq!(signature_hash.len(), HASH_BYTES_TRUNCATED);
-
-        let i = Self::bucket(signature_hash);
-        let entries = self.buckets[i].read().unwrap();
-        if let Some(entry) = entries.get(signature_hash) {
-            entry.accessed.store(true, Ordering::Relaxed);
-            assert_eq!(verification_hash.len(), HASH_BYTES_TRUNCATED);
-            Some(&entry.value()[..] == verification_hash)
-        } else {
-            None
-        }
-    }
-
-    /// Inserts a verified signature.
-    fn insert(&self,
-              signature_hash: [u8; HASH_BYTES_TRUNCATED],
-              verification_hash: [u8; HASH_BYTES_TRUNCATED])
-    {
-        let i = Self::bucket(&signature_hash);
-        let mut entries = self.buckets[i].write().unwrap();
-        match entries.entry(signature_hash) {
-            btree_map::Entry::Vacant(e) => {
-                // Some entry was added.  Note it.
-                self.updated.store(true, Ordering::Relaxed);
-
-                // Add the entry.
-                e.insert(Value::new(verification_hash, true));
-            }
-            btree_map::Entry::Occupied(e) => {
-                if &e.get().value()[..] != &verification_hash[..] {
-                    eprintln!("sequoia-openpgp: Signature cache corrupted.");
+                for entry in entries {
+                    inserted += 1;
+                    let (bucket, i) = Self::index(&entry.key);
+                    Self::insert_locked(&mut buckets[bucket], i, entry.key);
+                    SIGNATURE_VERIFICATION_CACHE.preloads.fetch_add(1, Ordering::Relaxed);
                 }
-            }
-        }
+
+                drop(buckets);
+                if TRACE {
+                    let (allocated, capacity) = Self::usage();
+
+                    t!("{} of {} ({}%) entries allocated",
+                       allocated, capacity,
+                       (allocated * 100 + 50) / capacity);
+                    t!("Preloaded {} entries (capacity: {})",
+                       inserted, capacity);
+                }
+            })
+        });
     }
 
     /// Returns whether the cache has been updated.
@@ -536,14 +507,8 @@ impl SignatureVerificationCache {
     /// This does not include entries added via
     /// [`SignatureVerificationCache::merge`].
     pub fn updated() -> bool {
-        SIGNATURE_VERIFICATION_CACHE
-            .updated.load(Ordering::Relaxed)
-    }
-
-    /// Resets the update counter.
-    pub fn clear_updated() {
-        SIGNATURE_VERIFICATION_CACHE
-            .updated.store(false, Ordering::Relaxed);
+        // XXX
+        true
     }
 
     /// Dumps the contents of the cache.
@@ -560,9 +525,59 @@ impl SignatureVerificationCache {
     /// Also, you may want to prune the entries to avoid having the
     /// cache grow too large.
     pub fn dump<'a>() -> impl IntoIterator<Item=Entry> {
+        tracer!(TRACE, "SignatureVerificationCache::dump");
+
+        t!("{}-way associative cache: {} entries; {} sets, {} bytes per entry",
+           ASSOCIATIVITY, TOTAL_ENTRIES, SETS, ENTRY_BYTES);
+        let cache_size = TOTAL_ENTRIES * ENTRY_BYTES;
+        let bucket_size = cache_size / BUCKETS;
+        t!("Cache size: {} ({} per cache bucket)",
+           if cache_size > 1024 * 1024 {
+               format!("{} MB", cache_size / 1024 / 1024)
+           } else if cache_size > 1024 {
+               format!("{} KB", cache_size / 1024)
+           } else {
+               format!("{} bytes", cache_size)
+           },
+           if bucket_size > 1024 * 1024 {
+               format!("{} MB", bucket_size / 1024 / 1024)
+           } else if bucket_size > 1024 {
+               format!("{} KB", bucket_size / 1024)
+           } else {
+               format!("{} bytes", bucket_size)
+           });
+
+        let preloads = SIGNATURE_VERIFICATION_CACHE.preloads.load(Ordering::Relaxed);
+        t!("preloaded: {}", preloads);
+        t!("new insertions: {}",
+           SIGNATURE_VERIFICATION_CACHE.insertions.load(Ordering::Relaxed) - preloads);
+        t!("evictions: {}", SIGNATURE_VERIFICATION_CACHE.evictions.load(Ordering::Relaxed));
+        t!("hits: {}", SIGNATURE_VERIFICATION_CACHE.hits.load(Ordering::Relaxed));
+        t!("misses: {}", SIGNATURE_VERIFICATION_CACHE.misses.load(Ordering::Relaxed));
+
+        let mut entries = Vec::new();
+        for bucket in 0..BUCKETS {
+            let memory = SignatureVerificationCache::memory(bucket);
+
+            if let Some(memory) = memory.as_ref() {
+                entries.extend(memory.iter()
+                    .flat_map(|set: &SET| {
+                        set.into_iter()
+                            .filter(|&e: &&ENTRY| e != &ZERO_ENTRY)
+                            .map(|e| {
+                                Entry { key: *e }
+                            })
+                    }));
+            }
+        }
+
+        let (allocated, capacity) = SignatureVerificationCache::usage();
+        t!("{} of {} ({}%) entries allocated",
+           allocated, capacity,
+           (allocated * 100 + 50) / capacity);
+
         DumpIter {
-            bucket: 0,
-            iter: None,
+            iter: entries.into_iter(),
         }
     }
 }
@@ -572,37 +587,13 @@ impl SignatureVerificationCache {
 /// Note: to avoid lock contention, this may or may not return
 /// individual entries added after it was instantiated.
 struct DumpIter {
-    bucket: usize,
-    iter: Option<std::vec::IntoIter<Entry>>,
+    iter: std::vec::IntoIter<Entry>,
 }
 
 impl Iterator for DumpIter {
     type Item = Entry;
 
     fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            if let Some(ref mut iter) = self.iter {
-                if let Some(item) = iter.next() {
-                    return Some(item);
-                }
-            }
-
-            if self.bucket == BUCKETS {
-                return None;
-            }
-
-            let bucket = &SIGNATURE_VERIFICATION_CACHE.buckets[self.bucket];
-            self.bucket += 1;
-
-            let bucket = bucket.read().unwrap();
-
-            self.iter = Some(
-                bucket.iter()
-                    .map(|(k, v)| {
-                        Entry::from_components(k.clone(), v.clone())
-                    })
-                    .collect::<Vec<_>>()
-                    .into_iter())
-        }
+        self.iter.next()
     }
 }
