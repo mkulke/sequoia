@@ -5,181 +5,34 @@ stages:
 
 
 include:
-  - component: gitlab.com/sequoia-pgp/common-ci/precheck@main
-  - component: gitlab.com/sequoia-pgp/common-ci/authenticate-commits@main
-  - component: gitlab.com/sequoia-pgp/common-ci/rust-basic@main
+  - component: "gitlab.com/sequoia-pgp/common-ci/sequoia-pipeline@main"
     inputs:
-      job_name: trixie
-      image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/trixie-prebuild
-  - component: gitlab.com/sequoia-pgp/common-ci/rust-basic@main
-    inputs:
-      job_name: trixie-crypto-rust
-      image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/trixie-prebuild
-      cargo_args: '--manifest-path openpgp/Cargo.toml --no-default-features --features crypto-rust,compression,allow-experimental-crypto,allow-variable-time-crypto --example supported-algorithms'
-  - component: gitlab.com/sequoia-pgp/common-ci/rust-basic@main
-    inputs:
-      job_name: trixie-crypto-openssl
-      image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/trixie-prebuild
-      cargo_args: '--manifest-path openpgp/Cargo.toml --no-default-features --features crypto-openssl,compression --example supported-algorithms'
-  - component: gitlab.com/sequoia-pgp/common-ci/rust-basic@main
-    inputs:
-      job_name: trixie-crypto-botan
-      image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/trixie-prebuild
-      cargo_args: '--manifest-path openpgp/Cargo.toml --no-default-features --features crypto-botan2,compression --example supported-algorithms'
-  - component: gitlab.com/sequoia-pgp/common-ci/rust-basic@main
-    inputs:
-      job_name: trixie-crypto-fuzzing
-      image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/trixie-prebuild
-      run_test_job: "false"
-      cargo_cmd: 'check'
-      cargo_args: '--manifest-path openpgp/Cargo.toml --no-default-features --features crypto-fuzzing,compression,allow-experimental-crypto,allow-variable-time-crypto'
-  - component: gitlab.com/sequoia-pgp/common-ci/rust-basic@main
-    inputs:
-      job_name: rust-stable
-      image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/rust-stable-prebuild
-      run_test_job: "false"
-      cargo_args: '--manifest-path openpgp/Cargo.toml --no-default-features --features crypto-nettle,compression --example supported-algorithms'
-  - component: gitlab.com/sequoia-pgp/common-ci/rust-basic@main
-    inputs:
-      job_name: rust-stable-armv7
-      image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/bullseye-cross-arm-prebuild
-      run_test_job: "false"
-      cargo_cmd: 'test'
-      cargo_args: '--tests --target=armv7-unknown-linux-gnueabihf -p buffered-reader -p sequoia-openpgp'
-  - component: gitlab.com/sequoia-pgp/common-ci/rust-basic@main
-    inputs:
-      job_name: doc
-      image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/trixie-prebuild
-      run_test_job: "false"
-      cargo_cmd: 'doc'
-      cargo_args: '--document-private-items --no-deps'
-    
-trixie-build:
+      extra_args: "-- --skip leak_tests"
+
+fuzzing:
+  image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/trixie-prebuild
+  stage: pre-check
+  before_script:
+    - !reference [.before_script, start]
+    - !reference [.before_script, end]
   script:
-    - cargo run --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-nettle,compression --example supported-algorithms
-    - cargo test --workspace
+    - cargo check --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-fuzzing,compression,allow-experimental-crypto,allow-variable-time-crypto
     - if ! git diff --quiet Cargo.lock ; then echo "Cargo.lock changed.  Please add the change to the corresponding commit." ; git diff ; false ; fi
     - if ! git diff --quiet ; then echo "The build changed the source.  Please investigate." ; git diff ; fi
+  after_script:
+    - !reference [.after_script, end]
+  rules:
+    - !reference [.default_rules, rules]
 
-trixie-crypto-rust-build:
-  script:
-    - cargo test --release --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-rust,compression,allow-experimental-crypto,allow-variable-time-crypto
-
-trixie-crypto-openssl-build:
-  script:
-    - cargo test --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-openssl,compression
-
-trixie-crypto-botan-build:
-  script:
-    - cargo test --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-botan2,compression
-
-rust-stable-build:
-  script:
-    - cargo test -p buffered-reader -p sequoia-openpgp
-
-rust-stable-armv7-build:
+doc:
+  image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/trixie-prebuild
+  stage: build
   before_script:
     - !reference [.before_script, start]
-    - cat .ci/snippet_for_cross_compilation_config.toml >> .cargo/config.toml
-    - !reference [.before_script, end]
-  variables:
-    PKG_CONFIG_PATH: /usr/lib/arm-linux-gnueabihf/pkgconfig
-    PKG_CONFIG_ALLOW_CROSS: 1
-    
-all_commits:
-  # Test each commit up to main, to facilitate bisecting.
-  stage: test
-  interruptible: true
-  image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/trixie-prebuild:latest
-  needs: ["rust-stable-build"]
-  script:
-    - .ci/all_commits.sh
-  rules:
-    - !reference [.default_rules, rules]
-  variables:
-    GIT_STRATEGY: clone
- 
-clippy:
-  tags:
-    - linux
-  stage: build
-  interruptible: true
-  image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/rust-stable-prebuild:latest
-  before_script:
-    - !reference [.before_script, start]
-    - rustup default 1.70.0 # Pin clippy.
-    - rustup component add clippy
-    - cargo clippy --version
     - !reference [.before_script, end]
   script:
-    - cargo clippy
+    - cargo doc --document-private-items --no-deps
+  after_script:
+    - !reference [.after_script, end]
   rules:
     - !reference [.default_rules, rules]
-
-windows-msvc-cng:
-  tags:
-    - win
-    - win2019
-  stage: build
-  interruptible: true
-  image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/windows-msvc
-  rules:
-    # Forks of this project most likely use gitlab's shared windows runners, which
-    # do not use the docker executor, so disable the windows jobs for forks.
-    - if: $CI_PROJECT_NAMESPACE != "sequoia-pgp"
-      when: never
-    - !reference [.default_rules, rules]
-  before_script:
-    - 'powershell Get-ChildItem env:'
-    - rustc --version --verbose
-    - cargo --version
-  script:
-    # https://github.com/rust-lang/cargo/issues/5015
-    - cargo run --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-cng,compression --example supported-algorithms
-    - cargo test --tests --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-cng,compression
-    - cargo test --tests --manifest-path ipc/Cargo.toml --no-default-features --features sequoia-openpgp/crypto-cng,sequoia-openpgp/compression
-    - cargo test --tests --manifest-path net/Cargo.toml --no-default-features --features sequoia-openpgp/crypto-cng,sequoia-openpgp/compression
-  after_script: [] # scriptlet doesn't work on Powershell
-  variables:
-    CFLAGS: "" # Silence some C warnings when compiling with MSVC
-
-windows-msvc32-cng:
-  tags:
-    - win
-    - win2019
-  stage: build
-  interruptible: true
-  # Depend on the main configuration.  As the jobs have common error
-  # conditions, if one fails it is often not worth trying the other.
-  # Therefore, we can short-circuit here.  Also, this pipelines
-  # Windows jobs, allowing us to test the other toolchain as well.
-  needs:
-    - windows-msvc-cng
-  image:
-    name: 192.168.122.1:5000/sequoia-pgp/build-docker-image/windows-msvc
-    # Set up a cross compilation environment for building x86 binaries on amd64, line copied from Dockerfile.windows.msvc
-    # see https://renenyffenegger.ch/notes/Windows/dirs/Program-Files-x86/Microsoft-Visual-Studio/version/edition/Common7/Tools/VsDevCmd_bat
-    #
-    # Alternatively: ["C:\\BuildTools\\VC\\Auxiliary\\Build\\vcvarsamd64_x86.bat", "&&", "type", "README", "&&", "powershell.exe", "-NoLogo", "-ExecutionPolicy", "Bypass"]
-    # see https://docs.microsoft.com/en-us/cpp/build/building-on-the-command-line?view=msvc-160
-    entrypoint: ["C:\\BuildTools\\Common7\\Tools\\VsDevCmd.bat", "-arch=x86", "-host_arch=amd64", "&&", "type", "README", "&&", "powershell.exe", "-NoLogo", "-ExecutionPolicy", "Bypass"]
-  rules:
-    # Forks of this project most likely use gitlab's shared windows runners, which
-    # do not use the docker executor, so disable the windows jobs for forks.
-    - if: $CI_PROJECT_NAMESPACE != "sequoia-pgp"
-      when: never
-    - !reference [.default_rules, rules]
-  before_script:
-    - 'powershell Get-ChildItem env:'
-    - rustup target add i686-pc-windows-msvc
-    - rustup show
-    - rustc --version --verbose
-    - cargo --version
-  script:
-    # https://github.com/rust-lang/cargo/issues/5015
-    - cargo test --tests --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-cng,compression --target i686-pc-windows-msvc
-    - cargo test --tests --manifest-path ipc/Cargo.toml --no-default-features --features sequoia-openpgp/crypto-cng,sequoia-openpgp/compression --target i686-pc-windows-msvc
-    - cargo test --tests --manifest-path net/Cargo.toml --no-default-features --features sequoia-openpgp/crypto-cng,sequoia-openpgp/compression --target i686-pc-windows-msvc
-  after_script: [] # scriptlet doesn't work on Powershell
-  variables:
-    CFLAGS: "" # Silence some C warnings when compiling with MSVC
