@@ -118,6 +118,7 @@ use std::convert::TryFrom;
 use std::fmt;
 use std::hash::Hasher;
 use std::ops::{Deref, DerefMut};
+use std::sync::OnceLock;
 use std::time::SystemTime;
 
 #[cfg(test)]
@@ -1741,9 +1742,9 @@ impl SignatureBuilder {
             fields: self.fields,
             digest_prefix: [digest[0], digest[1]],
             mpis,
-            computed_digest: Some(digest),
+            computed_digest: digest.into(),
             level: 0,
-            additional_issuers: Vec::with_capacity(0),
+            additional_issuers: OnceLock::new(),
         }.into())
     }
 }
@@ -1812,7 +1813,7 @@ pub struct Signature4 {
     ///
     /// This is also set when a signature is successfully verified,
     /// and on signatures during certificate canonicalization.
-    computed_digest: Option<Vec<u8>>,
+    computed_digest: OnceLock<Vec<u8>>,
 
     /// Signature level.
     ///
@@ -1831,7 +1832,7 @@ pub struct Signature4 {
     /// verifying, because that would mean that verifying a signature
     /// would change the serialized representation, and signature
     /// verification is usually expected to be idempotent.
-    additional_issuers: Vec<KeyHandle>,
+    additional_issuers: OnceLock<Vec<KeyHandle>>,
 }
 assert_send_and_sync!(Signature4);
 
@@ -1844,14 +1845,14 @@ impl fmt::Debug for Signature4 {
             .field("hash_algo", &self.hash_algo())
             .field("hashed_area", self.hashed_area())
             .field("unhashed_area", self.unhashed_area())
-            .field("additional_issuers", &self.additional_issuers)
+            .field("additional_issuers", &self.additional_issuers())
             .field("digest_prefix",
                    &crate::fmt::to_hex(&self.digest_prefix, false))
             .field(
                 "computed_digest",
                 &self
                     .computed_digest
-                    .as_ref()
+                    .get()
                     .map(|hash| crate::fmt::to_hex(&hash[..], false)),
             )
             .field("level", &self.level)
@@ -1928,9 +1929,9 @@ impl Signature4 {
             },
             digest_prefix,
             mpis,
-            computed_digest: None,
+            computed_digest: OnceLock::new(),
             level: 0,
-            additional_issuers: Vec::with_capacity(0),
+            additional_issuers: OnceLock::new(),
         }
     }
 
@@ -1973,14 +1974,15 @@ impl Signature4 {
     ///
     /// [`PacketParser`]: crate::parse::PacketParser
     pub fn computed_digest(&self) -> Option<&[u8]> {
-        self.computed_digest.as_ref().map(|d| &d[..])
+        self.computed_digest.get().map(|d| &d[..])
     }
 
-    /// Sets the computed hash value.
-    pub(crate) fn set_computed_digest(&mut self, hash: Option<Vec<u8>>)
-        -> Option<Vec<u8>>
+    /// Sets the computed hash value, once.
+    ///
+    /// Calling this function a second time has no effect.
+    pub(crate) fn set_computed_digest(&self, hash: Option<Vec<u8>>)
     {
-        ::std::mem::replace(&mut self.computed_digest, hash)
+        let _ = self.computed_digest.set(hash.unwrap_or_default());
     }
 
     /// Gets the signature level.
@@ -2023,6 +2025,11 @@ impl Signature4 {
         }
 
         Ok(())
+    }
+
+    /// Returns the additional (i.e. newly discovered) issuers.
+    fn additional_issuers(&self) -> &[KeyHandle] {
+        self.additional_issuers.get().map(|v| v.as_slice()).unwrap_or(&[])
     }
 }
 
@@ -2094,14 +2101,14 @@ impl fmt::Debug for Signature3 {
             .field("hash_algo", &self.hash_algo())
             .field("hashed_area", self.hashed_area())
             .field("unhashed_area", self.unhashed_area())
-            .field("additional_issuers", &self.additional_issuers)
+            .field("additional_issuers", &self.additional_issuers())
             .field("digest_prefix",
                    &crate::fmt::to_hex(&self.digest_prefix, false))
             .field(
                 "computed_digest",
                 &self
                     .computed_digest
-                    .as_ref()
+                    .get()
                     .map(|hash| crate::fmt::to_hex(&hash[..], false)),
             )
             .field("level", &self.level)
@@ -2204,7 +2211,7 @@ impl Signature3 {
     ///
     /// [`PacketParser`]: crate::parse::PacketParser
     pub fn computed_digest(&self) -> Option<&[u8]> {
-        self.computed_digest.as_ref().map(|d| &d[..])
+        self.computed_digest.get().map(|d| &d[..])
     }
 
     /// Gets the signature level.
@@ -2463,7 +2470,7 @@ impl crate::packet::Signature {
     /// change the serialized representation of the signature as a
     /// side-effect of verifying the signature.
     pub fn add_missing_issuers(&mut self) -> Result<()> {
-        if self.additional_issuers.is_empty() {
+        if self.additional_issuers().is_empty() {
             return Ok(());
         }
 
@@ -2473,8 +2480,7 @@ impl crate::packet::Signature {
         }
 
         let issuers = self.get_issuers();
-        for id in std::mem::replace(&mut self.additional_issuers,
-                                    Vec::with_capacity(0)) {
+        for id in self.additional_issuers.take().expect("not empty") {
             if ! issuers.contains(&id) {
                 match id {
                     KeyHandle::KeyID(id) =>
@@ -2600,9 +2606,8 @@ impl crate::packet::Signature {
         let mut size = 0;
 
         // Start with missing issuer information.
-        for id in std::mem::replace(&mut self.additional_issuers,
-                                    Vec::with_capacity(0)).into_iter()
-            .chain(other.additional_issuers.iter().cloned())
+        for id in self.additional_issuers.take().unwrap_or_default().into_iter()
+            .chain(other.additional_issuers().iter().cloned())
         {
             let p = match id {
                 KeyHandle::KeyID(id) => Subpacket::new(
@@ -2686,7 +2691,7 @@ impl Signature {
     /// is not revoked, not expired, has a valid self-signature, has a
     /// subkey binding signature (if appropriate), has the signing
     /// capability, etc.
-    pub fn verify_signature<P, R>(&mut self, key: &Key<P, R>) -> Result<()>
+    pub fn verify_signature<P, R>(&self, key: &Key<P, R>) -> Result<()>
         where P: key::KeyParts,
               R: key::KeyRole,
     {
@@ -2710,7 +2715,7 @@ impl Signature {
     /// is not revoked, not expired, has a valid self-signature, has a
     /// subkey binding signature (if appropriate), has the signing
     /// capability, etc.
-    pub fn verify_hash<P, R>(&mut self, key: &Key<P, R>,
+    pub fn verify_hash<P, R>(&self, key: &Key<P, R>,
                              mut hash: Box<dyn hash::Digest>)
         -> Result<()>
         where P: key::KeyParts,
@@ -2735,7 +2740,7 @@ impl Signature {
     /// is not revoked, not expired, has a valid self-signature, has a
     /// subkey binding signature (if appropriate), has the signing
     /// capability, etc.
-    pub fn verify_digest<P, R, D>(&mut self, key: &Key<P, R>, digest: D)
+    pub fn verify_digest<P, R, D>(&self, key: &Key<P, R>, digest: D)
         -> Result<()>
         where P: key::KeyParts,
               R: key::KeyRole,
@@ -2748,7 +2753,7 @@ impl Signature {
 
     /// Verifies the signature against `computed_digest`, or
     /// `self.computed_digest` if the former is `None`.
-    fn verify_digest_internal(&mut self,
+    fn verify_digest_internal(&self,
                               key: &Key<key::PublicParts, key::UnspecifiedRole>,
                               computed_digest: Option<Cow<[u8]>>)
                               -> Result<()>
@@ -2776,13 +2781,13 @@ impl Signature {
 
             // The hashed subpackets are authenticated by the
             // signature.
-            self.hashed_area_mut().iter_mut().for_each(|p| {
+            self.hashed_area().iter().for_each(|p| {
                 p.set_authenticated(true);
             });
 
             // The self-authenticating unhashed subpackets are
             // authenticated by the key's identity.
-            self.unhashed_area_mut().iter_mut().for_each(|p| {
+            self.unhashed_area().iter().for_each(|p| {
                 let authenticated = match p.value() {
                     SubpacketValue::Issuer(id) =>
                         id == &key.keyid(),
@@ -2796,19 +2801,23 @@ impl Signature {
             // Compute and record any issuer information not yet
             // contained in the signature.
             let issuers = self.get_issuers();
+            let mut additional_issuers = Vec::with_capacity(0);
+
             let id = KeyHandle::from(key.keyid());
-            if ! (issuers.contains(&id)
-                  || self.additional_issuers.contains(&id)) {
-                self.additional_issuers.push(id);
+            if ! issuers.contains(&id) {
+                additional_issuers.push(id);
             }
 
             if self.version() >= 4 {
                 let fp = KeyHandle::from(key.fingerprint());
-                if ! (issuers.contains(&fp)
-                      || self.additional_issuers.contains(&fp)) {
-                    self.additional_issuers.push(fp);
+                if ! issuers.contains(&fp) {
+                    additional_issuers.push(fp);
                 }
             }
+
+            // Replace it.  If it was already set, we simply ignore
+            // the error.
+            let _ = self.additional_issuers.set(additional_issuers);
 
             // Finally, remember the digest.
             if let Some(digest) = computed_digest {
@@ -2832,7 +2841,7 @@ impl Signature {
     /// is not revoked, not expired, has a valid self-signature, has a
     /// subkey binding signature (if appropriate), has the signing
     /// capability, etc.
-    pub fn verify<P, R>(&mut self, key: &Key<P, R>) -> Result<()>
+    pub fn verify<P, R>(&self, key: &Key<P, R>) -> Result<()>
         where P: key::KeyParts,
               R: key::KeyRole,
     {
@@ -2858,7 +2867,7 @@ impl Signature {
     /// is not revoked, not expired, has a valid self-signature, has a
     /// subkey binding signature (if appropriate), has the signing
     /// capability, etc.
-    pub fn verify_standalone<P, R>(&mut self, key: &Key<P, R>) -> Result<()>
+    pub fn verify_standalone<P, R>(&self, key: &Key<P, R>) -> Result<()>
         where P: key::KeyParts,
               R: key::KeyRole,
     {
@@ -2887,7 +2896,7 @@ impl Signature {
     /// is not revoked, not expired, has a valid self-signature, has a
     /// subkey binding signature (if appropriate), has the signing
     /// capability, etc.
-    pub fn verify_timestamp<P, R>(&mut self, key: &Key<P, R>) -> Result<()>
+    pub fn verify_timestamp<P, R>(&self, key: &Key<P, R>) -> Result<()>
         where P: key::KeyParts,
               R: key::KeyRole,
     {
@@ -2923,7 +2932,7 @@ impl Signature {
     /// key is not revoked, not expired, has a valid self-signature,
     /// has a subkey binding signature (if appropriate), has the
     /// signing capability, etc.
-    pub fn verify_direct_key<P, Q, R>(&mut self,
+    pub fn verify_direct_key<P, Q, R>(&self,
                                       signer: &Key<P, R>,
                                       pk: &Key<Q, key::PrimaryRole>)
         -> Result<()>
@@ -2961,7 +2970,7 @@ impl Signature {
     /// key is not revoked, not expired, has a valid self-signature,
     /// has a subkey binding signature (if appropriate), has the
     /// signing capability, etc.
-    pub fn verify_primary_key_revocation<P, Q, R>(&mut self,
+    pub fn verify_primary_key_revocation<P, Q, R>(&self,
                                                   signer: &Key<P, R>,
                                                   pk: &Key<Q, key::PrimaryRole>)
         -> Result<()>
@@ -3005,7 +3014,7 @@ impl Signature {
     /// has a subkey binding signature (if appropriate), has the
     /// signing capability, etc.
     pub fn verify_subkey_binding<P, Q, R, S>(
-        &mut self,
+        &self,
         signer: &Key<P, R>,
         pk: &Key<Q, key::PrimaryRole>,
         subkey: &Key<S, key::SubordinateRole>)
@@ -3031,11 +3040,11 @@ impl Signature {
             let mut last_result = Err(Error::BadSignature(
                 "Primary key binding signature missing".into()).into());
 
-            for backsig in self.subpackets_mut(SubpacketTag::EmbeddedSignature)
+            for backsig in self.subpackets(SubpacketTag::EmbeddedSignature)
             {
                 let result =
                     if let SubpacketValue::EmbeddedSignature(sig) =
-                        backsig.value_mut()
+                        backsig.value()
                 {
                     sig.verify_primary_key_binding(pk, subkey)
                 } else {
@@ -3074,7 +3083,7 @@ impl Signature {
     /// has a subkey binding signature (if appropriate), has the
     /// signing capability, etc.
     pub fn verify_primary_key_binding<P, Q>(
-        &mut self,
+        &self,
         pk: &Key<P, key::PrimaryRole>,
         subkey: &Key<Q, key::SubordinateRole>)
         -> Result<()>
@@ -3112,7 +3121,7 @@ impl Signature {
     /// has a subkey binding signature (if appropriate), has the
     /// signing capability, etc.
     pub fn verify_subkey_revocation<P, Q, R, S>(
-        &mut self,
+        &self,
         signer: &Key<P, R>,
         pk: &Key<Q, key::PrimaryRole>,
         subkey: &Key<S, key::SubordinateRole>)
@@ -3152,7 +3161,7 @@ impl Signature {
     /// key is not revoked, not expired, has a valid self-signature,
     /// has a subkey binding signature (if appropriate), has the
     /// signing capability, etc.
-    pub fn verify_userid_binding<P, Q, R>(&mut self,
+    pub fn verify_userid_binding<P, Q, R>(&self,
                                           signer: &Key<P, R>,
                                           pk: &Key<Q, key::PrimaryRole>,
                                           userid: &UserID)
@@ -3194,7 +3203,7 @@ impl Signature {
     /// key is not revoked, not expired, has a valid self-signature,
     /// has a subkey binding signature (if appropriate), has the
     /// signing capability, etc.
-    pub fn verify_userid_revocation<P, Q, R>(&mut self,
+    pub fn verify_userid_revocation<P, Q, R>(&self,
                                              signer: &Key<P, R>,
                                              pk: &Key<Q, key::PrimaryRole>,
                                              userid: &UserID)
@@ -3240,7 +3249,7 @@ impl Signature {
     ///
     ///   [Section 5.2.3.30 of RFC 4880bis]: https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-10.html#section-5.2.3.30
     pub fn verify_userid_attestation<P, Q, R>(
-        &mut self,
+        &self,
         signer: &Key<P, R>,
         pk: &Key<Q, key::PrimaryRole>,
         userid: &UserID)
@@ -3288,7 +3297,7 @@ impl Signature {
     /// key is not revoked, not expired, has a valid self-signature,
     /// has a subkey binding signature (if appropriate), has the
     /// signing capability, etc.
-    pub fn verify_user_attribute_binding<P, Q, R>(&mut self,
+    pub fn verify_user_attribute_binding<P, Q, R>(&self,
                                                   signer: &Key<P, R>,
                                                   pk: &Key<Q, key::PrimaryRole>,
                                                   ua: &UserAttribute)
@@ -3331,7 +3340,7 @@ impl Signature {
     /// has a subkey binding signature (if appropriate), has the
     /// signing capability, etc.
     pub fn verify_user_attribute_revocation<P, Q, R>(
-        &mut self,
+        &self,
         signer: &Key<P, R>,
         pk: &Key<Q, key::PrimaryRole>,
         ua: &UserAttribute)
@@ -3377,7 +3386,7 @@ impl Signature {
     ///
     ///   [Section 5.2.3.30 of RFC 4880bis]: https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-10.html#section-5.2.3.30
     pub fn verify_user_attribute_attestation<P, Q, R>(
-        &mut self,
+        &self,
         signer: &Key<P, R>,
         pk: &Key<Q, key::PrimaryRole>,
         ua: &UserAttribute)
@@ -3425,7 +3434,7 @@ impl Signature {
     /// key is not revoked, not expired, has a valid self-signature,
     /// has a subkey binding signature (if appropriate), has the
     /// signing capability, etc.
-    pub fn verify_message<M, P, R>(&mut self, signer: &Key<P, R>,
+    pub fn verify_message<M, P, R>(&self, signer: &Key<P, R>,
                                    msg: M)
         -> Result<()>
         where M: AsRef<[u8]>,
@@ -3522,9 +3531,9 @@ impl ArbitraryBounded for Signature4 {
             digest_prefix: [Arbitrary::arbitrary(g),
                             Arbitrary::arbitrary(g)],
             mpis,
-            computed_digest: None,
+            computed_digest: OnceLock::new(),
             level: 0,
-            additional_issuers: Vec::with_capacity(0),
+            additional_issuers: OnceLock::new(),
         }
     }
 }
@@ -3827,7 +3836,7 @@ mod test {
             let hash = hash_algo.context().unwrap();
 
             // Make signature.
-            let mut sig = sig.sign_hash(&mut pair, hash).unwrap();
+            let sig = sig.sign_hash(&mut pair, hash).unwrap();
 
             // Good signature.
             let mut hash = hash_algo.context().unwrap();
@@ -3861,7 +3870,7 @@ mod test {
                 = Key4::generate_ecc(true, curve).unwrap().into();
             let msg = b"Hello, World";
             let mut pair = key.into_keypair().unwrap();
-            let mut sig = SignatureBuilder::new(SignatureType::Binary)
+            let sig = SignatureBuilder::new(SignatureType::Binary)
                 .sign_message(&mut pair, msg).unwrap();
 
             sig.verify_message(pair.public(), msg).unwrap();
@@ -3876,7 +3885,7 @@ mod test {
         let p = Packet::from_bytes(
             crate::tests::message("a-cypherpunks-manifesto.txt.ed25519.sig"))
             .unwrap();
-        let mut sig = if let Packet::Signature(s) = p {
+        let sig = if let Packet::Signature(s) = p {
             s
         } else {
             panic!("Expected a Signature, got: {:?}", p);
@@ -3897,7 +3906,7 @@ mod test {
         let p = Packet::from_bytes(
             crate::tests::message("a-cypherpunks-manifesto.txt.dennis-simon-anton-v3.sig"))
             .unwrap();
-        let mut sig = if let Packet::Signature(s) = p {
+        let sig = if let Packet::Signature(s) = p {
             assert_eq!(s.version(), 3);
             s
         } else {
@@ -3946,7 +3955,7 @@ mod test {
         let test2 = Cert::from_bytes(
             crate::tests::key("test2-signed-by-test1.pgp")).unwrap();
         let uid = test2.userids().with_policy(p, None).next().unwrap();
-        let mut cert = uid.certifications().next().unwrap().clone();
+        let cert = uid.certifications().next().unwrap().clone();
 
         cert.verify_userid_binding(cert_key1,
                                    test2.primary_key().key(),
@@ -4009,7 +4018,7 @@ mod test {
             = Key4::generate_ecc(true, Curve::Ed25519).unwrap().into();
         let mut pair = key.into_keypair().unwrap();
 
-        let mut sig = SignatureBuilder::new(SignatureType::Standalone)
+        let sig = SignatureBuilder::new(SignatureType::Standalone)
             .sign_standalone(&mut pair)
             .unwrap();
 
@@ -4027,7 +4036,7 @@ mod test {
             "contrib/gnupg/keys/alpha.pgp")).unwrap();
         let p = Packet::from_bytes(crate::tests::file(
             "contrib/gnupg/timestamp-signature-by-alice.asc")).unwrap();
-        if let Packet::Signature(mut sig) = p {
+        if let Packet::Signature(sig) = p {
             let mut hash = sig.hash_algo().context().unwrap();
             sig.hash_standalone(&mut hash);
             let digest = hash.into_digest().unwrap();
@@ -4044,7 +4053,7 @@ mod test {
             = Key4::generate_ecc(true, Curve::Ed25519).unwrap().into();
         let mut pair = key.into_keypair().unwrap();
 
-        let mut sig = SignatureBuilder::new(SignatureType::Timestamp)
+        let sig = SignatureBuilder::new(SignatureType::Timestamp)
             .sign_timestamp(&mut pair)
             .unwrap();
 
@@ -4238,7 +4247,7 @@ mod test {
             } else {
                 panic!("Expected a subkey");
             };
-        let mut sig =
+        let sig =
             if let Some(Packet::Signature(sig)) = pp.path_ref(&[4]) {
                 sig.clone()
             } else {
@@ -4368,7 +4377,7 @@ mod test {
         // This works because the issuer information is being
         // authenticated by the verification, and the merge process
         // prefers authenticated information.
-        let mut verified = sig.clone();
+        let verified = sig.clone();
         verified.verify_hash(pair.public(), hash.clone())?;
 
         let merged = verified.clone().merge(malicious.clone())?;

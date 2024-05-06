@@ -2250,7 +2250,7 @@ mod tests {
             let hash = HashAlgorithm::default();
 
             // Sign.
-            let mut sig = SignatureBuilder::new(SignatureType::Binary)
+            let sig = SignatureBuilder::new(SignatureType::Binary)
                 .sign_hash(&mut keypair, hash.context().unwrap()).unwrap();
 
             // Verify.
@@ -2431,7 +2431,7 @@ mod tests {
                                   mpi::Signature::EdDSA{
                                       r: mpi::MPI::new(r), s: mpi::MPI::new(s)
                                   });
-        let mut sig: Signature = sig.into();
+        let sig: Signature = sig.into();
         sig.verify_message(&key, b"Hello, World\n").unwrap();
     }
 
