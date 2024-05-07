@@ -2008,14 +2008,28 @@ impl Cert {
             }
 
             // Keep them for later.
-            t!("{} {:02X}{:02X}, {:?} doesn't belong \
-                to any known component or is bad.",
+            t!("{} {:02X}{:02X}, {:?}, originally found on {:?} \
+                doesn't belong to any known component or is bad.",
                if is_selfsig { "Self-sig" } else { "3rd-party-sig" },
                sig.digest_prefix()[0], sig.digest_prefix()[1],
-               sig.typ());
+               sig.typ(), unknown_idx);
 
             if let Some(i) = unknown_idx {
-                self.unknowns[i].certifications.push(sig);
+                let is_revocation = match sig.typ() {
+                    CertificationRevocation | KeyRevocation | SubkeyRevocation
+                        => true,
+                    _ => false,
+                };
+                match (is_selfsig, is_revocation) {
+                    (false, false) =>
+                        self.unknowns[i].certifications.push(sig),
+                    (false, true) =>
+                        self.unknowns[i].other_revocations.push(sig),
+                    (true, false) =>
+                        self.unknowns[i].self_signatures.push(sig),
+                    (true, true) =>
+                        self.unknowns[i].self_revocations.push(sig),
+                }
             } else {
                 self.bad.push(sig);
             }
@@ -2024,12 +2038,6 @@ impl Cert {
         if !self.bad.is_empty() {
             t!("{}: ignoring {} bad self signatures",
                self.keyid(), self.bad.len());
-        }
-
-        // Split signatures on unknown components.
-        let primary_fp: KeyHandle = self.key_handle();
-        for c in self.unknowns.iter_mut() {
-            parser::split_sigs(&primary_fp, c);
         }
 
         // Sort again.  We may have moved signatures to the right
@@ -3180,18 +3188,10 @@ impl Cert {
     /// # }
     /// ```
     pub fn strip_secret_key_material(mut self) -> Cert {
-        let (pk, _sk) = self.primary.component.take_secret();
-        self.primary.component = pk;
-
-        let subkeys = self.subkeys.into_iter()
-            .map(|mut kb| {
-                let (pk, _sk) = kb.component.take_secret();
-                kb.component = pk;
-                kb
-            })
-            .collect::<Vec<_>>();
-        self.subkeys = subkeys.into();
-
+        self.primary.key_mut().steal_secret();
+        self.subkeys.iter_mut().for_each(|sk| {
+            sk.key_mut().steal_secret();
+        });
         self
     }
 
@@ -4404,8 +4404,9 @@ mod test {
             assert_eq!(cert.userids.len(), 1);
             assert_eq!(cert.userids[0].userid().value(),
                        &b"Testy McTestface <testy@example.org>"[..]);
-            assert_eq!(cert.userids[0].self_signatures.len(), 1);
-            assert_eq!(cert.userids[0].self_signatures[0].digest_prefix(),
+            assert_eq!(cert.userids[0].self_signatures2().count(), 1);
+            assert_eq!(cert.userids[0].self_signatures2().next().unwrap()
+                       .digest_prefix(),
                        &[ 0xc6, 0x8f ]);
             assert_eq!(cert.user_attributes.len(), 0);
             assert_eq!(cert.subkeys.len(), 1);
@@ -4426,8 +4427,9 @@ mod test {
             assert_eq!(cert.userids.len(), 1, "number of userids");
             assert_eq!(cert.userids[0].userid().value(),
                        &b"Testy McTestface <testy@example.org>"[..]);
-            assert_eq!(cert.userids[0].self_signatures.len(), 1);
-            assert_eq!(cert.userids[0].self_signatures[0].digest_prefix(),
+            assert_eq!(cert.userids[0].self_signatures2().count(), 1);
+            assert_eq!(cert.userids[0].self_signatures2().next().unwrap()
+                       .digest_prefix(),
                        &[ 0xc6, 0x8f ]);
 
             assert_eq!(cert.user_attributes.len(), 0);
@@ -4435,7 +4437,8 @@ mod test {
             assert_eq!(cert.subkeys.len(), 1, "number of subkeys");
             assert_eq!(cert.subkeys[0].key().creation_time(),
                        Timestamp::from(1511355130).into());
-            assert_eq!(cert.subkeys[0].self_signatures[0].digest_prefix(),
+            assert_eq!(cert.subkeys[0].self_signatures2().next().unwrap()
+                       .digest_prefix(),
                        &[ 0xb7, 0xb9 ]);
 
             let cert = parse_cert(crate::tests::key("testy-no-subkey.pgp"),
@@ -4450,8 +4453,9 @@ mod test {
             assert_eq!(cert.userids.len(), 1, "number of userids");
             assert_eq!(cert.userids[0].userid().value(),
                        &b"Testy McTestface <testy@example.org>"[..]);
-            assert_eq!(cert.userids[0].self_signatures.len(), 1);
-            assert_eq!(cert.userids[0].self_signatures[0].digest_prefix(),
+            assert_eq!(cert.userids[0].self_signatures2().count(), 1);
+            assert_eq!(cert.userids[0].self_signatures2().next().unwrap()
+                       .digest_prefix(),
                        &[ 0xc6, 0x8f ]);
 
             assert_eq!(cert.subkeys.len(), 0, "number of subkeys");
@@ -4590,20 +4594,20 @@ mod test {
             .unwrap();
 
         assert!(cert_donald_signs_base.userids.len() == 1);
-        assert!(cert_donald_signs_base.userids[0].self_signatures.len() == 1);
+        assert!(cert_donald_signs_base.userids[0].self_signatures2().count() == 1);
         assert!(cert_base.userids[0].certifications.is_empty());
         assert!(cert_donald_signs_base.userids[0].certifications.len() == 1);
 
         let merged = cert_donald_signs_base.clone()
             .merge_public_and_secret(cert_ivanka_signs_base.clone()).unwrap();
         assert!(merged.userids.len() == 1);
-        assert!(merged.userids[0].self_signatures.len() == 1);
+        assert!(merged.userids[0].self_signatures2().count() == 1);
         assert!(merged.userids[0].certifications.len() == 2);
 
         let merged = cert_donald_signs_base.clone()
             .merge_public_and_secret(cert_donald_signs_all.clone()).unwrap();
         assert!(merged.userids.len() == 3);
-        assert!(merged.userids[0].self_signatures.len() == 1);
+        assert!(merged.userids[0].self_signatures2().count() == 1);
         // There should be two certifications from the Donald on the
         // first user id.
         assert!(merged.userids[0].certifications.len() == 2);
@@ -4615,7 +4619,7 @@ mod test {
             .merge_public_and_secret(cert_ivanka_signs_base.clone()).unwrap()
             .merge_public_and_secret(cert_ivanka_signs_all.clone()).unwrap();
         assert!(merged.userids.len() == 3);
-        assert!(merged.userids[0].self_signatures.len() == 1);
+        assert!(merged.userids[0].self_signatures2().count() == 1);
         // There should be two certifications from each of the Donald
         // and Ivanka on the first user id, and one each on the rest.
         assert!(merged.userids[0].certifications.len() == 4);
@@ -4633,7 +4637,7 @@ mod test {
             .merge_public_and_secret(cert_donald_signs_all.clone()).unwrap()
             .merge_public_and_secret(cert_ivanka_signs_all.clone()).unwrap();
         assert!(merged.userids.len() == 3);
-        assert!(merged.userids[0].self_signatures.len() == 1);
+        assert!(merged.userids[0].self_signatures2().count() == 1);
         // There should be two certifications from each of the Donald
         // and Ivanka on the first user id, and one each on the rest.
         assert!(merged.userids[0].certifications.len() == 4);
@@ -6166,19 +6170,20 @@ Pu1xwz57O4zo1VYf6TqHJzVC3OMvMUM2hhdecMUe5x6GorNaj6g=
                 cert = cert.insert_packets(binding).unwrap();
                 // A time that matches multiple signatures.
                 let direct_signatures =
-                    cert.primary_key().bundle().self_signatures();
+                    cert.primary_key().bundle().self_signatures2()
+                    .collect::<Vec<_>>();
                 assert_eq!(cert.primary_key().with_policy(p, *t).unwrap()
                            .direct_key_signature().ok(),
-                           direct_signatures.get(*offset));
+                           direct_signatures.get(*offset).cloned());
                 // A time that doesn't match any signature.
                 assert_eq!(cert.primary_key().with_policy(p, *t + a_sec).unwrap()
                            .direct_key_signature().ok(),
-                           direct_signatures.get(*offset));
+                           direct_signatures.get(*offset).cloned());
 
                 // The current time, which should use the first signature.
                 assert_eq!(cert.primary_key().with_policy(p, None).unwrap()
                            .direct_key_signature().ok(),
-                           direct_signatures.get(0));
+                           direct_signatures.get(0).cloned());
 
                 // The beginning of time, which should return no
                 // binding signatures.

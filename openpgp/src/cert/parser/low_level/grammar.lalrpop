@@ -10,7 +10,7 @@ use crate::packet::UserAttribute;
 use crate::packet::{key, Key};
 use crate::packet::Unknown;
 use crate::Packet;
-use crate::policy::HashAlgoSecurity::SecondPreImageResistance;
+use crate::policy::HashAlgoSecurity::CollisionResistance;
 use crate::cert::prelude::*;
 
 use crate::cert::parser::low_level::lexer;
@@ -180,7 +180,7 @@ Component: Option<Component> = {
                     SubkeyBundle::new(key, sec, sigs)))
             },
             Some(Err(u)) => Some(Component::UnknownBundle(
-                UnknownBundle::new(u, SecondPreImageResistance,
+                UnknownBundle::new(u, CollisionResistance,
                                    sigs.unwrap_or_default()))),
             // Just validating a cert...
             None => None,
@@ -196,7 +196,7 @@ Component: Option<Component> = {
                     UserIDBundle::new(u, sec, sigs)))
             },
             Some(Err(u)) => Some(Component::UnknownBundle(
-                UnknownBundle::new(u, SecondPreImageResistance,
+                UnknownBundle::new(u, CollisionResistance,
                                    sigs.unwrap_or_default()))),
             // Just validating a cert...
             None => None,
@@ -212,7 +212,7 @@ Component: Option<Component> = {
                     UserAttributeBundle::new(u, sec, sigs)))
             },
             Some(Err(u)) => Some(Component::UnknownBundle(
-                UnknownBundle::new(u, SecondPreImageResistance,
+                UnknownBundle::new(u, CollisionResistance,
                                    sigs.unwrap_or_default()))),
             // Just validating a cert...
             None => None,

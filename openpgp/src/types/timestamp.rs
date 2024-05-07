@@ -19,7 +19,7 @@ use crate::{
 ///
 /// They cannot express dates further than 7th February of 2106 or earlier than
 /// the [UNIX epoch]. Unlike Unix's `time_t`, OpenPGP's timestamp is unsigned so
-/// it rollsover in 2106, not 2038.
+/// it rolls over in 2106, not 2038.
 ///
 /// # Examples
 ///
@@ -45,7 +45,7 @@ use crate::{
 ///     .generate()?;
 ///
 /// let subkey = cert.keys().subkeys().next().unwrap();
-/// let packets = subkey.bundle().self_signatures()[0].hashed_area();
+/// let packets = subkey.bundle().self_signatures2().next().unwrap().hashed_area();
 ///
 /// match packets.subpacket(SubpacketTag::SignatureCreationTime).unwrap().value() {
 ///     SubpacketValue::SignatureCreationTime(ts) => assert!(u32::from(*ts) > 0),

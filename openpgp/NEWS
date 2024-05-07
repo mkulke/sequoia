@@ -6,10 +6,23 @@
 
 * Changes in 1.21.0
 ** New functionality
+   - ComponentBundle::certifications2
+   - ComponentBundle::other_revocations2
+   - ComponentBundle::self_revocations2
+   - ComponentBundle::self_signatures2
+   - Key::<PublicParts, _>::steal_secret
+   - Key::<UnknownParts, _>::steal_secret
+   - Key4::<PublicParts, _>::steal_secret
+   - Key4::<UnknownParts, _>::steal_secret
    - The RustCrypto backend now supports ECDH and ECDSA over the NIST
      curve P-384.
    - The RustCrypto backend now supports ECDH and ECDSA over the NIST
      curve P-521.
+** Deprecated functionality
+   - ComponentBundle::certifications
+   - ComponentBundle::other_revocations
+   - ComponentBundle::self_revocations
+   - ComponentBundle::self_signatures
 * Changes in 1.20.0
 ** New functionality
    - S2K::Implicit

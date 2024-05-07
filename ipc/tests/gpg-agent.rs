@@ -59,7 +59,7 @@ async fn nop() -> openpgp::Result<()> {
     agent.send("NOP").unwrap();
     let response = agent.collect::<Vec<_>>().await;
     assert_eq!(response.len(), 1);
-    assert!(response[0].is_ok());
+    response.into_iter().next().unwrap().unwrap();
     Ok(())
 }
 
@@ -70,7 +70,7 @@ async fn help() -> openpgp::Result<()>  {
     agent.send("HELP").unwrap();
     let response = agent.collect::<Vec<_>>().await;
     assert!(response.len() > 3);
-    assert!(response.iter().last().unwrap().is_ok());
+    response.into_iter().last().unwrap().unwrap();
     Ok(())
 }
 
@@ -331,8 +331,7 @@ fn decrypt(also_try_explicit_async: bool) -> openpgp::Result<()> {
             other.keys().with_policy(p, None)
                 .for_storage_encryption().for_transport_encryption()
                 .take(1).next().unwrap().key())?;
-        assert!(rt.block_on(agent.decrypt(&keypair, pkesk_1.esk(), None))
-                .is_err());
+        rt.block_on(agent.decrypt(&keypair, pkesk_1.esk(), None)).unwrap_err();
 
         // Now try "our" key.
         let mut keypair = KeyPair::new(
@@ -344,8 +343,7 @@ fn decrypt(also_try_explicit_async: bool) -> openpgp::Result<()> {
             keypair = keypair.with_password(p);
         }
 
-        assert!(rt.block_on(agent.decrypt(&keypair, pkesk_0.esk(), None))
-                .is_ok());
+        rt.block_on(agent.decrypt(&keypair, pkesk_0.esk(), None)).unwrap();
 
         // Close connection.
         drop(agent);

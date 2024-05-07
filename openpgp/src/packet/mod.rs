@@ -1866,6 +1866,14 @@ macro_rules! impl_common_secret_functions {
                     },
                 }
             }
+
+            /// Takes the key packet's `SecretKeyMaterial`, if any.
+            pub fn steal_secret(&mut self) -> Option<key::SecretKeyMaterial>
+            {
+                match self {
+                    Key::V4(k) => k.steal_secret(),
+                }
+            }
         }
     }
 }

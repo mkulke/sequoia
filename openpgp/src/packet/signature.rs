@@ -4403,6 +4403,7 @@ mod test {
                     SubpacketValue::SignatureExpirationTime(hour_t), true)?)?;
                 Ok(a)
             })?;
+        let sig = sig.set_reference_time(now);
         assert_eq!(sig.signature_expiration_time(), Some(now + hour));
         let sig = sig.set_reference_time(past);
         assert_eq!(sig.signature_expiration_time(), Some(now - hour));

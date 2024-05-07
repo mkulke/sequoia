@@ -1479,6 +1479,12 @@ macro_rules! impl_common_secret_functions {
                 let old = std::mem::replace(&mut self.secret, Some(secret));
                 (self.parts_into_secret().expect("secret just set"), old)
             }
+
+            /// Takes the `Key`'s `SecretKeyMaterial`, if any.
+            pub fn steal_secret(&mut self) -> Option<SecretKeyMaterial>
+            {
+                std::mem::replace(&mut self.secret, None)
+            }
         }
     }
 }
