@@ -81,8 +81,10 @@
 use std::time;
 use std::cmp::{self, Ordering};
 use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
 
 use crate::{
+    cert::lazysigs::{LazySignatures, SigState},
     Error,
     packet::Signature,
     packet::Key,
@@ -116,17 +118,21 @@ pub struct ComponentBundle<C> {
     pub(super) hash_algo_security: HashAlgoSecurity,
 
     // Self signatures.
-    pub(super) self_signatures: Vec<Signature>,
+    pub(super) self_signatures: LazySignatures,
+
+    /// If set, is equal to `component`, and provides context to
+    /// verify primary key binding signatures.
+    backsig_signer: Option<Key<key::PublicParts, key::SubordinateRole>>,
 
     // Third-party certifications.  (In general, this will only be by
     // designated revokers.)
     pub(super) certifications: Vec<Signature>,
 
     // Attestation key signatures.
-    pub(super) attestations: Vec<Signature>,
+    pub(super) attestations: LazySignatures,
 
     // Self revocations.
-    pub(super) self_revocations: Vec<Signature>,
+    pub(super) self_revocations: LazySignatures,
 
     // Third-party revocations (e.g., designated revokers).
     pub(super) other_revocations: Vec<Signature>,
@@ -185,17 +191,19 @@ impl<C> ComponentBundle<C> {
     /// use `pub(in ...)` because the cert parser isn't an ancestor of
     /// this module.
     pub(crate) fn new(component: C,
-           hash_algo_security: HashAlgoSecurity,
-           sigs: Vec<Signature>)
+                      hash_algo_security: HashAlgoSecurity,
+                      sigs: Vec<Signature>,
+                      primary_key: Arc<Key<key::PublicParts, key::PrimaryRole>>)
            -> ComponentBundle<C>
     {
         ComponentBundle {
             component,
             hash_algo_security,
-            self_signatures: vec![],
+            self_signatures: LazySignatures::new(primary_key.clone()),
+            backsig_signer: None,
             certifications: sigs,
-            attestations: vec![],
-            self_revocations: vec![],
+            attestations: LazySignatures::new(primary_key.clone()),
+            self_revocations: LazySignatures::new(primary_key),
             other_revocations: vec![],
         }
     }
@@ -267,7 +275,9 @@ impl<C> ComponentBundle<C> {
       /// is unfortunately monomorphized for every `C`.  Prevent
       /// this by moving the code to a function independent of `C`.
       fn find_binding_signature<'s>(policy: &dyn Policy,
-                                    self_signatures: &'s [Signature],
+                                    self_signatures: &'s LazySignatures,
+                                    backsig_signer:
+                                    Option<&Key<key::PublicParts, key::SubordinateRole>>,
                                     hash_algo_security: HashAlgoSecurity,
                                     t: time::SystemTime)
                                     -> Result<&'s Signature>
@@ -278,15 +288,26 @@ impl<C> ComponentBundle<C> {
         // We want the newest signature that is older than `t`, or
         // that has been created at `t`.  So, search for `t`.
 
+        // We search all signatures without triggering the signature
+        // verification.  Later, we will verify the candidates, and
+        // reject bad signatures.
+        let unverified_self_signatures = self_signatures.as_slice_unverified();
+
         let i =
             // Usually, the first signature is what we are looking for.
             // Short circuit the binary search.
-            if Some(t) >= self_signatures.get(0)
-                              .and_then(|s| s.signature_creation_time())
+              if unverified_self_signatures.get(0)
+              .filter(
+                  // Verify the signature now.
+                  |_| matches!(self_signatures.verify_sig(0, backsig_signer),
+                               Ok(SigState::Good)))
+              .and_then(|s| s.signature_creation_time())
+              .map(|c| t >= c)
+              .unwrap_or(false)
             {
                 0
             } else {
-                match self_signatures.binary_search_by(
+                match unverified_self_signatures.binary_search_by(
                     |s| canonical_signature_order(
                         s.signature_creation_time(), Some(t)))
                 {
@@ -300,7 +321,7 @@ impl<C> ComponentBundle<C> {
                     // return index 1, 2, 3 or 4.
                     Ok(mut i) => {
                         while i > 0
-                            && self_signatures[i - 1].signature_creation_time()
+                            && unverified_self_signatures[i - 1].signature_creation_time()
                             == Some(t)
                         {
                             i -= 1;
@@ -329,7 +350,9 @@ impl<C> ComponentBundle<C> {
         // `t`.
         let mut error = None;
 
-        'next_sig: for s in self_signatures[i..].iter() {
+        'next_sig: for (j, s) in unverified_self_signatures[i..].iter()
+            .enumerate()
+        {
             if let Err(e) = s.signature_alive(t, time::Duration::new(0, 0)) {
                 // We know that t >= signature's creation time.  So,
                 // it is expired.  But an older signature might not
@@ -345,6 +368,13 @@ impl<C> ComponentBundle<C> {
                 if error.is_none() {
                     error = Some(e);
                 }
+                continue;
+            }
+
+            // Verify the signature now.
+            if ! matches!(self_signatures.verify_sig(i + j, backsig_signer),
+                          Ok(SigState::Good)) {
+                // Reject bad signatures.
                 continue;
             }
 
@@ -411,8 +441,11 @@ impl<C> ComponentBundle<C> {
         }
       }
 
-        find_binding_signature(policy, &self.self_signatures,
-                               self.hash_algo_security, t)
+        find_binding_signature(
+            policy,
+            &self.self_signatures,
+            self.backsig_signer.as_ref(),
+            self.hash_algo_security, t)
     }
 
     /// Returns the component's self-signatures.
@@ -443,13 +476,13 @@ impl<C> ComponentBundle<C> {
     // XXXv2: Rename this function.
     pub fn self_signatures2(&self)
                             -> impl Iterator<Item=&Signature> + Send + Sync {
-        self.self_signatures.iter()
+        self.self_signatures.iter_verified(self.backsig_signer.as_ref())
     }
 
     /// Returns the component's self-signatures.
     #[deprecated(note = "Use self_signatures2 instead.")]
     pub fn self_signatures(&self) -> &[Signature] {
-        &self.self_signatures
+        &self.self_signatures.slice_verified(self.backsig_signer.as_ref())
     }
 
     /// Returns the component's third-party certifications.
@@ -518,14 +551,14 @@ impl<C> ComponentBundle<C> {
     // XXXv2: Rename this function.
     pub fn self_revocations2(&self)
                              -> impl Iterator<Item=&Signature> + Send + Sync {
-        self.self_revocations.iter()
+        self.self_revocations.iter_verified(self.backsig_signer.as_ref())
     }
 
     /// Returns the component's revocations that were issued by the
     /// certificate holder.
     #[deprecated(note = "Use self_revocations2 instead.")]
     pub fn self_revocations(&self) -> &[Signature] {
-        &self.self_revocations
+        &self.self_revocations.slice_verified(self.backsig_signer.as_ref())
     }
 
     /// Returns the component's revocations that were issued by other
@@ -603,7 +636,7 @@ impl<C> ComponentBundle<C> {
     pub fn attestations(&self)
                       -> impl Iterator<Item = &Signature> + Send + Sync
     {
-        self.attestations.iter()
+        self.attestations.iter_verified(None)
     }
 
     /// Returns all of the component's signatures.
@@ -682,10 +715,10 @@ impl<C> ComponentBundle<C> {
                 selfsig.signature_alive(t, time::Duration::new(0, 0)).is_ok());
         }
 
-        let check = |revs: &'a [Signature], sec: HashAlgoSecurity|
+        let check = |revs: &mut dyn Iterator<Item=&'a Signature>, sec: HashAlgoSecurity|
             -> Option<Vec<&'a Signature>>
         {
-            let revs = revs.iter().filter(|rev| {
+            let revs = revs.filter(|rev| {
                 if let Err(err) = policy.signature(rev, sec) {
                     t!("  revocation rejected by caller policy: {}", err);
                     false
@@ -742,12 +775,13 @@ impl<C> ComponentBundle<C> {
         };
 
         if let Some(revs)
-            = check(&self.self_revocations, self.hash_algo_security)
+            = check(&mut self.self_revocations.iter_verified(self.backsig_signer.as_ref()),
+                    self.hash_algo_security)
         {
             t!("-> RevocationStatus::Revoked({})", revs.len());
             RevocationStatus::Revoked(revs)
         } else if let Some(revs)
-            = check(&self.other_revocations, Default::default())
+            = check(&mut self.other_revocations.iter(), Default::default())
         {
             t!("-> RevocationStatus::CouldBe({})", revs.len());
             RevocationStatus::CouldBe(revs)
@@ -780,9 +814,9 @@ impl<C> ComponentBundle<C> {
     {
         let p : Packet = self.component.into();
         std::iter::once(p)
-            .chain(self.self_revocations.into_iter().map(|s| s.into()))
-            .chain(self.self_signatures.into_iter().map(|s| s.into()))
-            .chain(self.attestations.into_iter().map(|s| s.into()))
+            .chain(self.self_revocations.into_unverified().map(|s| s.into()))
+            .chain(self.self_signatures.into_unverified().map(|s| s.into()))
+            .chain(self.attestations.into_unverified().map(|s| s.into()))
             .chain(self.certifications.into_iter().map(|s| s.into()))
             .chain(self.other_revocations.into_iter().map(|s| s.into()))
     }
@@ -829,12 +863,12 @@ impl<C> ComponentBundle<C> {
         // Order self signatures so that the most recent one comes
         // first.
         self.self_signatures.sort_by(sig_cmp);
-        self.self_signatures.iter_mut().for_each(sig_fixup);
+        self.self_signatures.iter_mut_unverified().for_each(sig_fixup);
 
         self.attestations.sort_by(Signature::normalized_cmp);
         self.attestations.dedup_by(sig_merge);
         self.attestations.sort_by(sig_cmp);
-        self.attestations.iter_mut().for_each(sig_fixup);
+        self.attestations.iter_mut_unverified().for_each(sig_fixup);
 
         self.certifications.sort_by(Signature::normalized_cmp);
         self.certifications.dedup_by(sig_merge);
@@ -849,7 +883,7 @@ impl<C> ComponentBundle<C> {
         self.self_revocations.sort_by(Signature::normalized_cmp);
         self.self_revocations.dedup_by(sig_merge);
         self.self_revocations.sort_by(sig_cmp);
-        self.self_revocations.iter_mut().for_each(sig_fixup);
+        self.self_revocations.iter_mut_unverified().for_each(sig_fixup);
 
         self.other_revocations.sort_by(Signature::normalized_cmp);
         self.other_revocations.dedup_by(sig_merge);
@@ -892,7 +926,42 @@ impl<P: key::KeyParts, R: key::KeyRole> ComponentBundle<Key<P, R>> {
     }
 }
 
+impl<P: key::KeyParts> ComponentBundle<Key<P, key::PrimaryRole>> {
+    /// Returns all of the bundles's bad signatures.
+    pub(crate) fn bad_signatures(&self)
+        -> impl Iterator<Item = &Signature> + Send + Sync
+    {
+        self.self_signatures.iter_bad(self.backsig_signer.as_ref())
+            .chain(self.self_revocations.iter_bad(self.backsig_signer.as_ref()))
+    }
+}
+
 impl<P: key::KeyParts> ComponentBundle<Key<P, key::SubordinateRole>> {
+    /// Creates a new subkey component.
+    ///
+    /// Should only be used from the cert parser.  However, we cannot
+    /// use `pub(in ...)` because the cert parser isn't an ancestor of
+    /// this module.
+    pub(crate) fn new_subkey(component: Key<P, key::SubordinateRole>,
+                             hash_algo_security: HashAlgoSecurity,
+                             sigs: Vec<Signature>,
+                             primary_key: Arc<Key<key::PublicParts, key::PrimaryRole>>)
+           -> Self
+    {
+        let backsig_signer = component.pk_algo().for_signing()
+            .then(|| component.parts_as_public().clone());
+        ComponentBundle {
+            component,
+            hash_algo_security,
+            self_signatures: LazySignatures::new(primary_key.clone()),
+            backsig_signer,
+            certifications: sigs,
+            attestations: LazySignatures::new(primary_key.clone()),
+            self_revocations: LazySignatures::new(primary_key),
+            other_revocations: vec![],
+        }
+    }
+
     /// Returns the subkey's revocation status at time `t`.
     ///
     /// A subkey is revoked at time `t` if:
@@ -936,6 +1005,14 @@ impl<P: key::KeyParts> ComponentBundle<Key<P, key::SubordinateRole>> {
         let t = t.into();
         self._revocation_status(policy, t, true,
                                 self.binding_signature(policy, t).ok())
+    }
+
+    /// Returns all of the bundles's bad signatures.
+    pub(crate) fn bad_signatures(&self)
+        -> impl Iterator<Item = &Signature> + Send + Sync
+    {
+        self.self_signatures.iter_bad(self.backsig_signer.as_ref())
+            .chain(self.self_revocations.iter_bad(self.backsig_signer.as_ref()))
     }
 }
 
@@ -1012,6 +1089,14 @@ impl ComponentBundle<UserID> {
         let t = t.into();
         self._revocation_status(policy, t, false, self.binding_signature(policy, t).ok())
     }
+
+    /// Returns all of the bundles's bad signatures.
+    pub(crate) fn bad_signatures(&self)
+        -> impl Iterator<Item = &Signature> + Send + Sync
+    {
+        self.self_signatures.iter_bad(self.backsig_signer.as_ref())
+            .chain(self.self_revocations.iter_bad(self.backsig_signer.as_ref()))
+    }
 }
 
 impl ComponentBundle<UserAttribute> {
@@ -1083,6 +1168,14 @@ impl ComponentBundle<UserAttribute> {
         self._revocation_status(policy, t, false,
                                 self.binding_signature(policy, t).ok())
     }
+
+    /// Returns all of the bundles's bad signatures.
+    pub(crate) fn bad_signatures(&self)
+        -> impl Iterator<Item = &Signature> + Send + Sync
+    {
+        self.self_signatures.iter_bad(self.backsig_signer.as_ref())
+            .chain(self.self_revocations.iter_bad(self.backsig_signer.as_ref()))
+    }
 }
 
 impl ComponentBundle<Unknown> {
@@ -1111,6 +1204,14 @@ impl ComponentBundle<Unknown> {
     /// ```
     pub fn unknown(&self) -> &Unknown {
         self.component()
+    }
+
+    /// Returns all of the bundles's bad signatures.
+    pub(crate) fn bad_signatures(&self)
+        -> impl Iterator<Item = &Signature> + Send + Sync
+    {
+        self.self_signatures.iter_bad(self.backsig_signer.as_ref())
+            .chain(self.self_revocations.iter_bad(self.backsig_signer.as_ref()))
     }
 }
 
