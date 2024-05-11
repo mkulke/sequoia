@@ -1,38 +1,10 @@
 stages:
   - pre-check
   - build
-  - test
 
 
 include:
-  - component: "gitlab.com/sequoia-pgp/common-ci/sequoia-pipeline@main"
+  - remote: 'https://gitlab.com/sequoia-pgp/common-ci/-/raw/main/common_ci.yml'
+  - component: "gitlab.com/sequoia-pgp/common-ci/rust-matrix@dvn0/add-botan3"
     inputs:
       extra_args: "-- --skip leak_tests"
-
-fuzzing:
-  image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/trixie-prebuild
-  stage: pre-check
-  before_script:
-    - !reference [.before_script, start]
-    - !reference [.before_script, end]
-  script:
-    - cargo check --manifest-path openpgp/Cargo.toml --no-default-features --features crypto-fuzzing,compression,allow-experimental-crypto,allow-variable-time-crypto
-    - if ! git diff --quiet Cargo.lock ; then echo "Cargo.lock changed.  Please add the change to the corresponding commit." ; git diff ; false ; fi
-    - if ! git diff --quiet ; then echo "The build changed the source.  Please investigate." ; git diff ; fi
-  after_script:
-    - !reference [.after_script, end]
-  rules:
-    - !reference [.default_rules, rules]
-
-doc:
-  image: 192.168.122.1:5000/sequoia-pgp/build-docker-image/trixie-prebuild
-  stage: build
-  before_script:
-    - !reference [.before_script, start]
-    - !reference [.before_script, end]
-  script:
-    - cargo doc --document-private-items --no-deps
-  after_script:
-    - !reference [.after_script, end]
-  rules:
-    - !reference [.default_rules, rules]
